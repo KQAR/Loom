@@ -3,9 +3,8 @@ import ComposableArchitecture
 import SwiftUI
 
 /// The status-bar popover: a compact **config & control console**, not a traffic
-/// view. It shows whether the proxy is on, whether Loom is the system proxy, and
-/// which rules are active — plus a button to open the main window (the request
-/// list lives there). See DESIGN.md `menu-panel`.
+/// view. State rows toggle on tap and show a leading checkmark when on; an action
+/// row opens the main window in the same style. See DESIGN.md `menu-panel`.
 public struct PanelView: View {
     @Bindable var store: StoreOf<AppFeature>
     @Environment(\.openWindow) private var openWindow
@@ -19,26 +18,25 @@ public struct PanelView: View {
             header
             Divider().opacity(0.5)
 
-            VStack(spacing: LoomTheme.Space.sm) {
+            VStack(spacing: 0) {
                 proxyRow
                 systemProxyRow
                 sslRow
                 rulesRow
-            }
-            .padding(LoomTheme.Space.md)
 
-            Divider().opacity(0.5)
+                Divider().opacity(0.5).padding(.vertical, LoomTheme.Space.xxs)
 
-            Button {
-                openWindow(id: "main")
-                NSApplication.shared.activate(ignoringOtherApps: true)
-            } label: {
-                Label("Open Main Window", systemImage: "list.bullet.rectangle")
-                    .frame(maxWidth: .infinity)
+                PanelRow(
+                    kind: .action,
+                    icon: "list.bullet.rectangle",
+                    title: "Open Main Window",
+                    detail: nil
+                ) {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .padding(LoomTheme.Space.md)
+            .padding(.vertical, LoomTheme.Space.xs)
 
             Divider().opacity(0.5)
             footer
@@ -64,79 +62,92 @@ public struct PanelView: View {
         .padding(.vertical, LoomTheme.Space.sm)
     }
 
-    // MARK: Config rows
+    // MARK: State rows
 
     private var proxyRow: some View {
-        configRow(
+        PanelRow(
+            kind: .state(on: store.status.isRunning),
             icon: "network",
             title: "Proxy",
-            subtitle: store.status.isRunning ? "127.0.0.1:\(store.status.port)" : "off"
+            detail: store.status.isRunning ? "127.0.0.1:\(store.status.port)" : "off"
         ) {
-            Toggle("", isOn: Binding(
-                get: { store.status.isRunning },
-                set: { _ in store.send(.toggleProxyTapped) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
+            store.send(.toggleProxyTapped)
         }
     }
 
     @ViewBuilder private var systemProxyRow: some View {
-        configRow(
+        PanelRow(
+            kind: .state(on: store.isSystemProxy),
             icon: "globe",
             title: "System proxy",
-            subtitle: store.isSystemProxy ? "on · routing all traffic through Loom" : "off · clients use explicit proxy"
+            detail: store.isSystemProxy ? "on" : "off",
+            disabled: store.systemProxyBusy,
+            help: "Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password)"
         ) {
-            Toggle("", isOn: Binding(
-                get: { store.isSystemProxy },
-                set: { _ in store.send(.toggleSystemProxyTapped) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .disabled(store.systemProxyBusy)
-            .help("Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password)")
+            store.send(.toggleSystemProxyTapped)
         }
         if store.systemProxyBusy || store.systemProxyMessage != nil {
-            HStack(spacing: LoomTheme.Space.xs) {
-                if store.systemProxyBusy { ProgressView().controlSize(.small) }
-                Text(store.systemProxyMessage ?? "")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.leading, 28)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            inlineNote(store.systemProxyMessage ?? "", busy: store.systemProxyBusy)
         }
     }
 
     @ViewBuilder private var sslRow: some View {
-        configRow(
+        PanelRow(
+            kind: .state(on: store.sslEnabled),
             icon: "lock.shield",
             title: "HTTPS (SSL)",
-            subtitle: sslSubtitle
+            detail: sslDetail
         ) {
-            Toggle("", isOn: Binding(
-                get: { store.sslEnabled },
-                set: { _ in store.send(.toggleSSLTapped) }
-            ))
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.small)
+            store.send(.toggleSSLTapped)
         }
-        // The certificate card guides the human through "generate → trust →
-        // decrypt" with one clear next step, shown only while SSL is on and the
-        // CA isn't trusted yet.
+        // Cert setup card: only while SSL is on and the CA isn't trusted yet.
         if store.sslEnabled, !store.certificateStatus.trustState.isReady {
             certificateCard
+                .padding(.horizontal, LoomTheme.Space.md)
+                .padding(.top, LoomTheme.Space.xxs)
         }
     }
 
-    private var sslSubtitle: String {
-        guard store.sslEnabled else { return "off · HTTPS blind-tunneled" }
-        if store.certificateStatus.isTrusted { return "decrypting · CA trusted" }
-        return "on · CA not trusted yet"
+    private var sslDetail: String {
+        guard store.sslEnabled else { return "off" }
+        if store.certificateStatus.isTrusted { return "decrypting" }
+        return "CA not trusted"
+    }
+
+    @ViewBuilder private var rulesRow: some View {
+        PanelRow(
+            kind: .state(on: store.rulesEnabled),
+            icon: "slider.horizontal.3",
+            title: "Rules",
+            detail: store.enabledRules.isEmpty ? "none (M3)" : "\(store.enabledRules.count) active"
+        ) {
+            store.send(.toggleRulesTapped)
+        }
+        if !store.enabledRules.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(store.enabledRules, id: \.self) { rule in
+                    Label(rule, systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.leading, PanelRow.titleLeadingInset)
+            .padding(.horizontal, LoomTheme.Space.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func inlineNote(_ text: String, busy: Bool) -> some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            if busy { ProgressView().controlSize(.small) }
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.leading, PanelRow.titleLeadingInset)
+        .padding(.horizontal, LoomTheme.Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Certificate setup card
@@ -164,8 +175,6 @@ public struct PanelView: View {
                     .textSelection(.enabled)
             }
 
-            // Automatic: one click via the privileged helper. Recheck: re-validate
-            // after a manual install. Export…: fall back to the manual path.
             HStack(spacing: LoomTheme.Space.sm) {
                 Button {
                     store.send(.installAndTrustCATapped)
@@ -196,7 +205,6 @@ public struct PanelView: View {
                 Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
-            // Manual fallback appears once the CA has been exported.
             if let path = store.certificateStatus.exportedPEMPath {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Manual trust:").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
@@ -228,49 +236,6 @@ public struct PanelView: View {
         }
     }
 
-    @ViewBuilder private var rulesRow: some View {
-        configRow(
-            icon: "slider.horizontal.3",
-            title: "Rules",
-            subtitle: store.enabledRules.isEmpty ? "no rules yet (M3)" : "\(store.enabledRules.count) active"
-        ) {
-            Text(store.rulesEnabled ? "On" : "Off")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-        if !store.enabledRules.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(store.enabledRules, id: \.self) { rule in
-                    Label(rule, systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.leading, 28)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func configRow(
-        icon: String,
-        title: String,
-        subtitle: String,
-        @ViewBuilder trailing: () -> some View
-    ) -> some View {
-        HStack(spacing: LoomTheme.Space.sm) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.body)
-                Text(subtitle).font(.caption).foregroundStyle(.tertiary)
-            }
-            Spacer()
-            trailing()
-        }
-    }
-
     // MARK: Footer
 
     private var footer: some View {
@@ -286,5 +251,79 @@ public struct PanelView: View {
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.xs + 2)
+    }
+}
+
+/// One tappable console row. State rows show a leading checkmark when on and
+/// toggle on tap; action rows show a trailing chevron. Full-width hover highlight
+/// (DESIGN `panel-selection`). Replaces the old per-row switch controls.
+private struct PanelRow: View {
+    enum Kind: Equatable {
+        case state(on: Bool)
+        case action
+    }
+
+    let kind: Kind
+    let icon: String
+    let title: String
+    var detail: String?
+    var disabled: Bool = false
+    var help: String?
+    let action: () -> Void
+
+    /// Leading inset of the title = checkmark slot + icon slot + their spacings.
+    /// Sub-rows (inline notes, rule list) align to this so they sit under the title.
+    static let titleLeadingInset: CGFloat = 16 + LoomTheme.Space.xs + 20 + LoomTheme.Space.sm
+
+    @State private var hovering = false
+
+    private var isOn: Bool {
+        if case let .state(on) = kind { return on }
+        return false
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 0) {
+                // Checkmark slot — visible only when a state row is on.
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
+                    .opacity(isOn ? 1 : 0)
+                    .frame(width: 16, alignment: .center)
+                    .padding(.trailing, LoomTheme.Space.xs)
+
+                Image(systemName: icon)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+                    .padding(.trailing, LoomTheme.Space.sm)
+
+                Text(title).font(.body)
+                Spacer(minLength: LoomTheme.Space.xs)
+
+                if let detail {
+                    Text(detail).font(.callout).foregroundStyle(.tertiary)
+                }
+                if kind == .action {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, LoomTheme.Space.xxs)
+                }
+            }
+            .padding(.horizontal, LoomTheme.Space.md)
+            .padding(.vertical, LoomTheme.Space.xs)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
+                    .fill(Color.accentColor.opacity(hovering && !disabled ? 0.12 : 0))
+                    .padding(.horizontal, LoomTheme.Space.xs)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { hovering = $0 }
+        .help(help ?? "")
     }
 }

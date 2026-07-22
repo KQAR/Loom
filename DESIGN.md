@@ -53,10 +53,11 @@ components:
   menu-panel:
     material: "{colors.panel-material}"
     width: "{metrics.console-width}"
-    structure: "header (status) · config rows (proxy / system-proxy / rules) · Open Main Window · footer (count · Quit)"
+    structure: "header (status) · unified rows (proxy / system-proxy / SSL / rules · then Open Main Window) · footer (count · Quit)"
     note: "config & control only — NO request list here"
   config-row:
-    anatomy: "SF Symbol (secondary, 20pt) · title ({typography.body}) over subtitle ({typography.callout} .tertiary) · trailing control (Toggle .switch, or status text)"
+    anatomy: "one tappable full-width row: leading checkmark slot (accent, shown when the state is ON) · SF Symbol (secondary, 20pt) · title ({typography.body}) · trailing detail ({typography.callout} .tertiary). NO switch/toggle controls — the row toggles on tap and the checkmark is the state. Hover fills the row with {colors.panel-selection}."
+    action-row: "same anatomy for non-state actions (e.g. Open Main Window): no checkmark, a trailing chevron.right instead of a detail. Keeps the panel one consistent, compact list."
   approval-card:   # M3, appears above config rows when pending
     backgroundColor: "{colors.attention-fill} @ ~12%"
     rounded: "{rounded.md}"
