@@ -16,29 +16,33 @@ enum SystemProxyApplier {
     static func apply(enabled: Bool, host: String, port: Int) -> (Bool, String?) {
         let script = enabled ? enableScript(host: host, port: port) : disableScript()
 
-        // Write the shell script to a user-only temp file.
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("loom-sysproxy-\(UUID().uuidString).sh")
-        do {
-            try script.write(to: url, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-        } catch {
-            return (false, "could not stage proxy script: \(error.localizedDescription)")
-        }
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        // 1) Direct, silent path (works for admin users).
-        _ = run("/bin/sh", [url.path])
+        // 1) Direct, silent path (works for admin users): feed the script to sh on
+        //    stdin-equivalent `-c`, never touching disk.
+        _ = run("/bin/sh", ["-c", script])
         if verified(enabled: enabled, host: host, port: port) { return (true, nil) }
 
-        // 2) Fallback: same script under one admin prompt.
-        let osascript = "do shell script \"/bin/sh \(url.path)\" with administrator privileges"
+        // 2) Fallback: the SAME script inlined into one admin prompt. Inlining the
+        //    text (rather than writing a script file and running it as root) closes
+        //    a privilege-escalation TOCTOU — a same-uid process could otherwise
+        //    swap the staged file between our write and the privileged execution,
+        //    turning Loom's authorization dialog into arbitrary root code.
+        let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
         let (status, stderr) = run("/usr/bin/osascript", ["-e", osascript])
         if status == 0, verified(enabled: enabled, host: host, port: port) { return (true, nil) }
         if stderr.contains("User canceled") || stderr.contains("-128") {
             return (false, "Authorization cancelled.")
         }
         return (false, stderr.isEmpty ? "networksetup failed" : stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Quote a shell script as an AppleScript string literal for `do shell script`.
+    /// Escape backslashes first, then double quotes; osascript unescapes it back to
+    /// the exact bytes and runs them via `/bin/sh -c`.
+    static func appleScriptString(_ s: String) -> String {
+        let escaped = s
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     /// Whether the *effective* system proxy currently routes HTTP+HTTPS through

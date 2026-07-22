@@ -17,6 +17,26 @@ public enum HelperIdentity {
     /// os.Logger subsystem shared by app + helper.
     public static let logSubsystem = "com.loom"
 
+    /// Apple Team ID to pin in the caller requirement. Empty for a personal /
+    /// locally-signed build; a distribution build (Developer ID / notarized) sets
+    /// it so the requirement also pins the team.
+    public static let teamIdentifier = ""
+
+    /// Code-signing requirement an XPC caller must satisfy, enforced by the OS via
+    /// `NSXPCConnection.setCodeSigningRequirement` (audit-token based — no PID-reuse
+    /// window, no private KVC accessor). `anchor apple generic` blocks an ad-hoc /
+    /// self-signed impostor that merely claims our bundle id; a set `teamIdentifier`
+    /// pins it to our team as well. An identifier alone (the old check) was
+    /// satisfied by any locally-built binary, so the helper trusted anyone.
+    public static var callerCodeRequirement: String {
+        let ids = allowedCallerBundleIDs.map { "identifier \"\($0)\"" }.joined(separator: " or ")
+        var requirement = "anchor apple generic and (\(ids))"
+        if !teamIdentifier.isEmpty {
+            requirement += " and certificate leaf[subject.OU] = \"\(teamIdentifier)\""
+        }
+        return requirement
+    }
+
     /// Bumped whenever the XPC contract changes so the app can detect a stale
     /// helper after an update and re-register.
     public static let protocolVersion = 1

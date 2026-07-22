@@ -46,4 +46,18 @@ final class QUICBlockerTests: XCTestCase {
         // Namespacing keeps restore from touching anyone else's pf anchors.
         XCTAssertTrue(QUICBlocker.anchorName.hasPrefix("com.loom"))
     }
+
+    func test_workingFilesAreRootOnly_notWorldWritableTmp() {
+        // Regression: predictable /tmp paths let a non-root process pre-plant a
+        // symlink that redirected our root-run writes. Work files must live under
+        // /var/root, which non-root can't write to.
+        for path in [QUICBlocker.rulesPath, QUICBlocker.mainConfPath, QUICBlocker.disabledMarkerPath] {
+            XCTAssertTrue(path.hasPrefix("/var/root/"), "\(path) must be under /var/root")
+            XCTAssertFalse(path.hasPrefix("/tmp/"), "\(path) must not be in world-writable /tmp")
+        }
+        // And we defend in depth: drop any pre-existing file before writing.
+        let s = QUICBlocker.enableFragment
+        XCTAssertTrue(s.contains("set -C"), "noclobber guards against a planted symlink")
+        XCTAssertTrue(s.contains("rm -f \(QUICBlocker.rulesPath)"))
+    }
 }

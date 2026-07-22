@@ -173,11 +173,19 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
+    /// Cap the accumulated request body. Even though the endpoint is loopback +
+    /// bearer-gated, any local process (or a browser via a no-preflight POST) can
+    /// stream at the port; bound it so a hostile client can't buffer us to death.
+    static let maxBodyBytes = 10_000_000
+
     private let dispatcher: MCPDispatcher
     private let token: String
 
     private var head: HTTPRequestHead?
     private var body: ByteBuffer?
+    /// Set once we've rejected the request at `.head` (bad method/path/auth) or
+    /// mid-body (oversize); remaining parts are then ignored.
+    private var rejected = false
 
     init(dispatcher: MCPDispatcher, token: String) {
         self.dispatcher = dispatcher
@@ -189,29 +197,46 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         case let .head(head):
             self.head = head
             body = context.channel.allocator.buffer(capacity: 0)
+            rejected = false
+            // Validate method / path / auth up front, before buffering any body,
+            // so an unauthorized or wrong-path request is rejected immediately.
+            if head.method != .POST || Self.path(head.uri) != "/mcp" {
+                reject(channel: context.channel, status: .notFound, message: "not found")
+            } else if !authorized(head) {
+                reject(channel: context.channel, status: .unauthorized, message: "unauthorized")
+            }
         case var .body(chunk):
+            guard !rejected else { return }
+            if (body?.readableBytes ?? 0) + chunk.readableBytes > Self.maxBodyBytes {
+                reject(channel: context.channel, status: .payloadTooLarge, message: "request body too large")
+                return
+            }
             body?.writeBuffer(&chunk)
         case .end:
-            guard let head else { return }
+            defer { head = nil; body = nil }
+            guard !rejected else { return }
+            guard let head else {
+                writeJSON(channel: context.channel, status: .badRequest, data: Data(#"{"error":"missing request head"}"#.utf8))
+                return
+            }
             let payload = body.flatMap { buf in
                 buf.getBytes(at: buf.readerIndex, length: buf.readableBytes).map { Data($0) }
             } ?? Data()
             respond(channel: context.channel, head: head, payload: payload)
-            self.head = nil
-            body = nil
         }
     }
 
-    private func respond(channel: Channel, head: HTTPRequestHead, payload: Data) {
-        guard head.method == .POST, head.uri.hasPrefix("/mcp") else {
-            writeJSON(channel: channel, status: .notFound, data: Data(#"{"error":"not found"}"#.utf8))
-            return
-        }
-        guard authorized(head) else {
-            writeJSON(channel: channel, status: .unauthorized, data: Data(#"{"error":"unauthorized"}"#.utf8))
-            return
-        }
+    /// The path component of a request-target, without any query string.
+    private static func path(_ uri: String) -> Substring {
+        uri[uri.startIndex ..< (uri.firstIndex(of: "?") ?? uri.endIndex)]
+    }
 
+    private func reject(channel: Channel, status: HTTPResponseStatus, message: String) {
+        rejected = true
+        writeJSON(channel: channel, status: status, data: Data(#"{"error":"\#(message)"}"#.utf8))
+    }
+
+    private func respond(channel: Channel, head: HTTPRequestHead, payload: Data) {
         let dispatcher = self.dispatcher
         Task {
             let response = await dispatcher.handle(requestBody: payload)
@@ -225,7 +250,17 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private func authorized(_ head: HTTPRequestHead) -> Bool {
         guard let auth = head.headers.first(name: "Authorization") else { return false }
-        return auth == "Bearer \(token)"
+        return Self.constantTimeEqual(auth, "Bearer \(token)")
+    }
+
+    /// Compare in time independent of where the first mismatch is, so a local
+    /// attacker can't recover the token byte-by-byte via timing.
+    private static func constantTimeEqual(_ a: String, _ b: String) -> Bool {
+        let x = Array(a.utf8), y = Array(b.utf8)
+        guard x.count == y.count else { return false }
+        var diff: UInt8 = 0
+        for i in x.indices { diff |= x[i] ^ y[i] }
+        return diff == 0
     }
 
     private func writeJSON(channel: Channel, status: HTTPResponseStatus, data: Data) {
