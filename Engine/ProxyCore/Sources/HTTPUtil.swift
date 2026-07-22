@@ -66,17 +66,34 @@ enum HTTPUtil {
 
     // MARK: - Streaming response writers (M4)
 
-    /// Write just the response head, framed as chunked so the body can stream in
-    /// pieces without knowing its total length up front (SSE / large downloads).
-    /// Keep-alive is preserved via chunked framing. Must hop to the event loop.
-    static func writeResponseHead(channel: Channel, status: Int, headers: [HeaderPair], keepAlive: Bool) {
+    /// A response to this request/status carries no message body (RFC 7230 §3.3):
+    /// any response to HEAD, plus 1xx / 204 / 304. Such a response must NOT be
+    /// framed `Transfer-Encoding: chunked` — emitting a `0\r\n\r\n` terminator
+    /// after it corrupts framing on a keep-alive connection (e.g. `curl -I`).
+    static func responseHasNoBody(requestMethod: String, status: Int) -> Bool {
+        if requestMethod.caseInsensitiveCompare("HEAD") == .orderedSame { return true }
+        switch status {
+        case 100 ..< 200, 204, 304: return true
+        default: return false
+        }
+    }
+
+    /// Write just the response head. When `chunked` (the streaming default), frames
+    /// as `Transfer-Encoding: chunked` so the body can stream without a known
+    /// length (SSE / large downloads). When not chunked (bodyless responses), the
+    /// upstream `Content-Length` is preserved and no chunk framing is added. Must
+    /// hop to the event loop.
+    static func writeResponseHead(channel: Channel, status: Int, headers: [HeaderPair], keepAlive: Bool, chunked: Bool = true) {
         var responseHeaders = HTTPHeaders()
         for header in headers {
             let lower = header.name.lowercased()
-            if isHopByHop(lower) || lower == "content-length" || lower == "transfer-encoding" { continue }
+            if isHopByHop(lower) || lower == "transfer-encoding" { continue }
+            if chunked, lower == "content-length" { continue }
             responseHeaders.add(name: header.name, value: header.value)
         }
-        responseHeaders.replaceOrAdd(name: "Transfer-Encoding", value: "chunked")
+        if chunked {
+            responseHeaders.replaceOrAdd(name: "Transfer-Encoding", value: "chunked")
+        }
         responseHeaders.replaceOrAdd(name: "Connection", value: keepAlive ? "keep-alive" : "close")
         let head = HTTPResponseHead(version: .http1_1, status: .init(statusCode: status), headers: responseHeaders)
         channel.eventLoop.execute {

@@ -50,7 +50,7 @@ public struct PanelView: View {
             footer
         }
         .frame(width: 300)
-        .task { store.send(.task) }
+        .task { store.send(.viewAppeared) }
     }
 
     // MARK: Header

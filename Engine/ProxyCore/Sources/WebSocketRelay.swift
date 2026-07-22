@@ -133,52 +133,72 @@ enum WebSocketRelay {
 
 /// Accumulates captured frames for one WebSocket flow and re-upserts it. Only
 /// touched on the shared event loop (client + upstream share one loop), so the
-/// message list needs no locking; each upsert hands the store a snapshot copy.
+/// message list needs no locking.
+///
+/// Upserts are funneled through a single long-lived consumer task reading an
+/// `AsyncStream`, so they land in the order produced. The previous design fired
+/// one unstructured `Task` per frame, which had no ordering guarantee: a stale
+/// per-frame snapshot could land after `finish()`, leaving the flow permanently
+/// un-completed. Captured messages are also capped so a chatty socket can't grow
+/// the store without bound (the relay still forwards every byte; only the
+/// recorded copy stops).
 final class WebSocketCaptureSink: @unchecked Sendable {
+    static let maxMessages = 10_000
+    static let maxCapturedBytes = 5_000_000
+
     private let flowID: UUID
     private let request: CapturedRequest
     private let startedAt: Date
     private let sourceApp: SourceApp?
-    private let store: FlowStore
     private var messages: [WebSocketMessage] = []
+    private var capturedBytes = 0
+    private var capped = false
     private var finished = false
+    private let continuation: AsyncStream<Flow>.Continuation
 
     init(flowID: UUID, request: CapturedRequest, startedAt: Date, sourceApp: SourceApp?, store: FlowStore) {
         self.flowID = flowID
         self.request = request
         self.startedAt = startedAt
         self.sourceApp = sourceApp
-        self.store = store
+
+        let (stream, continuation) = AsyncStream.makeStream(of: Flow.self)
+        self.continuation = continuation
+        Task { for await flow in stream { await store.upsert(flow, force: true) } }
     }
 
     func record(direction: WebSocketMessage.Direction, frame: WebSocketFrameParser.Frame) {
-        let message = WebSocketMessage(
+        if capped { return } // relay still forwards the bytes; we just stop recording
+        if messages.count >= Self.maxMessages || capturedBytes >= Self.maxCapturedBytes {
+            capped = true
+            Log.ws.notice("WebSocket capture cap reached for flow \(self.flowID, privacy: .public); further frames not recorded.")
+            return
+        }
+        messages.append(WebSocketMessage(
             direction: direction,
             kind: WebSocketMessage.Kind(opcode: frame.opcode),
             payload: frame.payload,
             isFinal: frame.isFinal,
             timestamp: Date()
-        )
-        messages.append(message)
-        upsert(completed: false)
+        ))
+        capturedBytes += frame.payload.count
+        enqueue(completed: false)
     }
 
     func finish() {
         guard !finished else { return }
         finished = true
-        upsert(completed: true)
+        enqueue(completed: true)
+        continuation.finish()
     }
 
-    private func upsert(completed: Bool) {
-        let snapshot = messages
-        let flow = Flow(
+    private func enqueue(completed: Bool) {
+        continuation.yield(Flow(
             id: flowID, request: request,
             response: CapturedResponse(statusCode: 101, headers: [], body: nil),
             startedAt: startedAt, completedAt: completed ? Date() : nil,
-            sourceApp: sourceApp, webSocketMessages: snapshot
-        )
-        let store = self.store
-        Task { await store.upsert(flow, force: true) }
+            sourceApp: sourceApp, webSocketMessages: messages
+        ))
     }
 }
 

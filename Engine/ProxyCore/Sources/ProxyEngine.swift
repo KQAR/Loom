@@ -73,18 +73,27 @@ public actor ProxyEngine: ProxyControlling {
     @discardableResult
     public func start(port: Int = 9090) async throws -> Int {
         guard !running else { return boundPort }
-        await store.loadPersisted(limit: 2000) // restore prior captures once
-        let ca = ensureCA()
-        boundPort = try await server.start(
-            host: "127.0.0.1",
-            port: port,
-            store: store,
-            forwarder: forwarder,
-            ca: ca,
-            config: config
-        )
+        // Claim `running` synchronously, before the first await, so a reentrant
+        // start() (actor reentrancy during the awaits below) bails at the guard
+        // instead of racing a second bind on the same port. Reverted on failure
+        // so a bind error (port in use) can still be retried.
         running = true
-        return boundPort
+        do {
+            await store.loadPersisted(limit: 2000) // restore prior captures once
+            let ca = ensureCA()
+            boundPort = try await server.start(
+                host: "127.0.0.1",
+                port: port,
+                store: store,
+                forwarder: forwarder,
+                ca: ca,
+                config: config
+            )
+            return boundPort
+        } catch {
+            running = false
+            throw error
+        }
     }
 
     public func stop() async {

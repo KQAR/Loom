@@ -19,8 +19,17 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         let plan = RuleEngine.planRequest(
             state: rules.snapshot(), method: method, url: url, headers: headers, body: body
         )
+        return try await execute(plan: plan)
+    }
+
+    /// Execute an already-computed plan. Taking the plan as a parameter (rather
+    /// than re-planning) means the `touchesResponse` decision in `forwardStream`
+    /// and the plan actually run can't disagree if rules mutate mid-request.
+    private func execute(plan: RuleEngine.RequestPlan) async throws -> ForwardResult {
         if plan.delayMilliseconds > 0 {
-            try? await Task.sleep(nanoseconds: UInt64(plan.delayMilliseconds) * 1_000_000)
+            // `try await` (not `try?`) so a cancelled — client-gone — request
+            // aborts here instead of sleeping then forwarding anyway.
+            try await Task.sleep(nanoseconds: UInt64(plan.delayMilliseconds) * 1_000_000)
         }
 
         var result: ForwardResult
@@ -58,11 +67,12 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         }
 
         if touchesResponse {
-            // Buffered: reuse `forward` (re-plans and applies the response changes).
+            // Buffered: run the SAME plan (a body rewrite / mock / block needs the
+            // whole body). Executing the precomputed plan avoids a second snapshot.
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
-                        let result = try await self.forward(method: method, url: url, headers: headers, body: body)
+                        let result = try await self.execute(plan: plan)
                         continuation.yield(.head(statusCode: result.statusCode, headers: result.headers, appliedRules: result.appliedRules))
                         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                         continuation.yield(.end)
@@ -86,8 +96,10 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         let planBody = plan.body
         return AsyncThrowingStream { continuation in
             let task = Task {
-                if delayMs > 0 { try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
                 do {
+                    // Cancellation (client gone) aborts the delay instead of
+                    // sleeping then forwarding anyway.
+                    if delayMs > 0 { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
                     for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: planBody) {
                         switch event {
                         case let .head(code, headers, _):

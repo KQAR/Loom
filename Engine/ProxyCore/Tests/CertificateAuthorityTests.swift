@@ -162,6 +162,17 @@ final class SSLScopeTests: XCTestCase {
         XCTAssertFalse(SSLScope.matches(pattern: "api.example.com", host: "other.com"))
     }
 
+    func test_wildcardMatching_prefixAndSuffixDoNotOverlap() {
+        // Regression: prefix "ab" + suffix "b" reused the same 'b', so a bare "ab"
+        // wrongly matched "ab*b".
+        XCTAssertFalse(SSLScope.matches(pattern: "ab*b", host: "ab"))
+        XCTAssertTrue(SSLScope.matches(pattern: "ab*b", host: "abb"))
+        XCTAssertTrue(SSLScope.matches(pattern: "ab*b", host: "abXb"))
+        // The empty-wildcard cases stay correct.
+        XCTAssertTrue(SSLScope.matches(pattern: "a*c", host: "ac"))
+        XCTAssertFalse(SSLScope.matches(pattern: "a*c", host: "ab"))
+    }
+
     func test_shouldIntercept_respectsEnableIncludeExclude() {
         XCTAssertFalse(SSLScope(enabled: false, include: ["*"]).shouldIntercept(host: "x.com"))
         XCTAssertTrue(SSLScope(enabled: true, include: ["*"]).shouldIntercept(host: "x.com"))

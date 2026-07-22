@@ -21,21 +21,49 @@ enum StreamRelay {
         sourceApp: SourceApp?,
         store: FlowStore
     ) async {
+        // If the client disconnects mid-stream (closed SSE tab, aborted download),
+        // cancel consumption so the stream's onTermination cancels the upstream
+        // connection — otherwise Loom holds an open upstream socket forever,
+        // writing into a dead channel. Run the relay in a child task the
+        // client's closeFuture can cancel.
+        let work = Task { await relayInner(
+            stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
+            request: request, startedAt: startedAt, sourceApp: sourceApp, store: store
+        ) }
+        channel.closeFuture.whenComplete { _ in work.cancel() }
+        await work.value
+    }
+
+    private static func relayInner(
+        stream: AsyncThrowingStream<UpstreamResponseEvent, Error>,
+        channel: Channel,
+        keepAlive: Bool,
+        flowID: UUID,
+        request: CapturedRequest,
+        startedAt: Date,
+        sourceApp: SourceApp?,
+        store: FlowStore
+    ) async {
         var statusCode = 0
         var responseHeaders: [HeaderPair] = []
         var appliedRules: [String] = []
         var capturedBody = Data()
         var headWritten = false
+        var bodyless = false
 
         do {
             for try await event in stream {
+                // Client gone — stop relaying and let the loop's end tear down the
+                // upstream stream (onTermination → upstream close).
+                if Task.isCancelled || !channel.isActive { break }
                 switch event {
                 case let .head(code, headers, rules):
                     statusCode = code
                     responseHeaders = headers
                     appliedRules = rules
                     headWritten = true
-                    HTTPUtil.writeResponseHead(channel: channel, status: code, headers: headers, keepAlive: keepAlive)
+                    bodyless = HTTPUtil.responseHasNoBody(requestMethod: request.method, status: code)
+                    HTTPUtil.writeResponseHead(channel: channel, status: code, headers: headers, keepAlive: keepAlive, chunked: !bodyless)
                     // Surface the response status while the body is still streaming.
                     await store.upsert(Flow(
                         id: flowID, request: request,
@@ -44,7 +72,9 @@ enum StreamRelay {
                         appliedRules: rules.isEmpty ? nil : rules
                     ))
                 case let .body(chunk):
-                    HTTPUtil.writeResponseChunk(channel: channel, data: chunk)
+                    // A bodyless response (HEAD / 204 / 304) must never carry body
+                    // bytes on the wire; still capture them for the inspector.
+                    if !bodyless { HTTPUtil.writeResponseChunk(channel: channel, data: chunk) }
                     if capturedBody.count < captureCap {
                         let remaining = captureCap - capturedBody.count
                         capturedBody.append(chunk.count <= remaining ? chunk : chunk.prefix(remaining))
