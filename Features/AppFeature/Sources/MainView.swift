@@ -104,9 +104,18 @@ public struct MainView: View {
     private var requestTable: some View {
         Table(store.displayFlows, selection: $store.selectedFlowID.sending(\.flowSelected)) {
             TableColumn("") { flow in
-                StatusPill(flow: flow)
+                StatusDot(flow: flow)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            .width(54)
+            .width(28)
+
+            TableColumn("#") { flow in
+                // 1-based capture order: position in the oldest-first store + 1.
+                Text("\((store.flows.index(id: flow.id) ?? 0) + 1)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            .width(min: 36, ideal: 44, max: 64)
 
             TableColumn("App") { flow in
                 AppIconView(app: flow.sourceApp)
@@ -296,26 +305,22 @@ public struct MainView: View {
 
 // MARK: - Status pill (table Status column)
 
-struct StatusPill: View {
+/// Request status as a color dot: green 2xx · orange 3xx · red 4xx/5xx/error ·
+/// gray in-flight. The numeric code stays reachable as a tooltip (color isn't the
+/// only signal) and in the inspector.
+struct StatusDot: View {
     let flow: Flow
 
     var body: some View {
-        Group {
-            if let code = flow.statusCode {
-                pill(text: "\(code)", color: LoomTheme.statusColor(status: code, isError: false))
-            } else if flow.error != nil {
-                pill(text: "ERR", color: .red)
-            } else {
-                ProgressView().controlSize(.small).frame(width: 44, height: 20)
-            }
-        }
+        Circle()
+            .fill(LoomTheme.statusColor(status: flow.statusCode, isError: flow.error != nil))
+            .frame(width: 9, height: 9)
+            .help(statusText)
     }
 
-    private func pill(text: String, color: Color) -> some View {
-        Text(text)
-            .font(.caption.monospacedDigit().weight(.semibold))
-            .foregroundStyle(color)
-            .frame(width: 44, height: 20)
-            .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+    private var statusText: String {
+        if let code = flow.statusCode { return "\(code)" }
+        if flow.error != nil { return "Error" }
+        return "In flight"
     }
 }

@@ -75,13 +75,12 @@ components:
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Replayed (each Label + system .badge count) · Section 'Hosts' — one Label per host (globe icon + .badge count). Selection scopes the table."
   request-table:   # top of the split — a multi-column SwiftUI Table
-    columns: "status-pill (54) · Method (mono) · Host (mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
+    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary) · App (icon) · Method (mono) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
     selection: "single, drives the inspector below"
-  status-pill:     # the table's status column
-    typography: "{typography.numeric} semibold"
-    rounded: "{rounded.sm}"
-    size: "44×20 fixed"
-    anatomy: "3-digit code, status-class color 100% text / ~15% fill; ERR on transport error; ProgressView while pending. Method is a separate ink column, never chromatic"
+  status-dot:      # the table's status column
+    anatomy: "a 9pt status-class color dot: green 2xx · orange 3xx · red 4xx/5xx/error · gray in-flight. Color is not the only signal — the numeric code is a tooltip and appears in the inspector Summary. Method is a separate ink column, never chromatic."
+  seq-column:      # request order
+    anatomy: "1-based capture order (#1 = first request), {typography.numeric} .tertiary. Global + stable per flow, independent of the current filter/sort."
   inspector-panel: # bottom of the split — Request | Response, referenced from Proxyman
     backgroundColor: "{colors.window-canvas}"
     visibility: "shown ONLY when a flow is selected; otherwise the table fills the whole pane"
