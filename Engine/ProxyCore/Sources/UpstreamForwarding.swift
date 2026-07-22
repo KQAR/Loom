@@ -8,6 +8,9 @@ struct ForwardResult: Sendable {
     var statusCode: Int
     var headers: [HeaderPair]
     var body: Data
+    /// Names of traffic rules that acted on this exchange (set by
+    /// `RuleApplyingForwarder`); copied onto the captured flow for audit.
+    var appliedRules: [String] = []
 }
 
 protocol UpstreamForwarding: Sendable {

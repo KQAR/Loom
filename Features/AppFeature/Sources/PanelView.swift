@@ -127,7 +127,7 @@ public struct PanelView: View {
             kind: .state(on: store.rulesEnabled),
             icon: "slider.horizontal.3",
             title: "Rules",
-            detail: store.enabledRules.isEmpty ? "none (M3)" : "\(store.enabledRules.count) active"
+            detail: rulesDetail
         ) {
             store.send(.toggleRulesTapped)
         }
@@ -143,6 +143,11 @@ public struct PanelView: View {
             .padding(.horizontal, LoomTheme.Space.md)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var rulesDetail: String {
+        guard store.rulesEnabled else { return "off" }
+        return store.enabledRules.isEmpty ? "no rules yet" : "\(store.enabledRules.count) active"
     }
 
     private func inlineNote(_ text: String, busy: Bool) -> some View {

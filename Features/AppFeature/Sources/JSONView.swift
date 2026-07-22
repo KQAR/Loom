@@ -25,6 +25,46 @@ indirect enum JSONValue: Equatable {
         return parser.parseTopLevel()
     }
 
+    /// Pretty-print back to JSON text, preserving key order (unlike
+    /// `JSONSerialization`, which would reshuffle object keys). Used by the rule
+    /// editor's Format action so reformatting never reorders a mock body.
+    func prettyPrinted(indent: Int = 0) -> String {
+        let pad = String(repeating: "  ", count: indent)
+        let childPad = String(repeating: "  ", count: indent + 1)
+        switch self {
+        case let .object(pairs):
+            guard !pairs.isEmpty else { return "{}" }
+            let body = pairs.map { key, value in
+                "\(childPad)\(Self.encodeString(key)): \(value.prettyPrinted(indent: indent + 1))"
+            }.joined(separator: ",\n")
+            return "{\n\(body)\n\(pad)}"
+        case let .array(items):
+            guard !items.isEmpty else { return "[]" }
+            let body = items.map { "\(childPad)\($0.prettyPrinted(indent: indent + 1))" }
+                .joined(separator: ",\n")
+            return "[\n\(body)\n\(pad)]"
+        case let .string(s): return Self.encodeString(s)
+        case let .number(n): return n
+        case let .bool(b): return b ? "true" : "false"
+        case .null: return "null"
+        }
+    }
+
+    private static func encodeString(_ s: String) -> String {
+        var out = "\""
+        for scalar in s.unicodeScalars {
+            switch scalar {
+            case "\"": out += "\\\""
+            case "\\": out += "\\\\"
+            case "\n": out += "\\n"
+            case "\t": out += "\\t"
+            case "\r": out += "\\r"
+            default: out.unicodeScalars.append(scalar)
+            }
+        }
+        return out + "\""
+    }
+
     static func == (lhs: JSONValue, rhs: JSONValue) -> Bool {
         switch (lhs, rhs) {
         case let (.object(a), .object(b)):

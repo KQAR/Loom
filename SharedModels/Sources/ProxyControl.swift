@@ -53,6 +53,8 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     case invalidURL(String)
     case replayFailed(String)
     case certificateUnavailable(String)
+    case ruleNotFound(UUID)
+    case invalidRule(String)
 }
 
 /// Read side of the engine — what the MCP server and TCA client both query.
@@ -77,4 +79,4 @@ public protocol CaptureControlling: Sendable {
     func setRecording(_ recording: Bool) async
 }
 
-public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling
+public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling

@@ -75,6 +75,11 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     public var replayedFrom: UUID?
     /// The local app/process that made the request, when it could be resolved.
     public var sourceApp: SourceApp?
+    /// Names of traffic rules that acted on this exchange (mocked, rewrote,
+    /// re-mapped, blocked or delayed it), in the order they applied. Nil when
+    /// the exchange passed through untouched — the audit trail for "what did
+    /// the rules do to my traffic".
+    public var appliedRules: [String]?
 
     public init(
         id: UUID = UUID(),
@@ -84,7 +89,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         completedAt: Date? = nil,
         error: String? = nil,
         replayedFrom: UUID? = nil,
-        sourceApp: SourceApp? = nil
+        sourceApp: SourceApp? = nil,
+        appliedRules: [String]? = nil
     ) {
         self.id = id
         self.request = request
@@ -94,6 +100,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.error = error
         self.replayedFrom = replayedFrom
         self.sourceApp = sourceApp
+        self.appliedRules = appliedRules
     }
 
     public var statusCode: Int? { response?.statusCode }

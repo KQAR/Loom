@@ -156,6 +156,26 @@ private struct ResponsePane: View {
             .frame(height: 34)
             Divider()
 
+            // Rule audit trail: on the Raw tab, say plainly that this response
+            // was shaped by rules (mocked/rewritten/blocked/delayed) and by which.
+            if tab == .raw, let applied = flow.appliedRules, !applied.isEmpty {
+                HStack(spacing: LoomTheme.Space.xs) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.caption)
+                    Text("Modified by \(applied.count == 1 ? "rule" : "rules"): \(applied.joined(separator: ", "))")
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(Color.purple)
+                .padding(.horizontal, LoomTheme.Space.md)
+                .padding(.vertical, LoomTheme.Space.xs)
+                .background(Color.purple.opacity(0.08))
+                Divider()
+            }
+
             ScrollView {
                 Group {
                     if let response = flow.response {
@@ -284,6 +304,9 @@ private struct SummaryTable: View {
             if let ms = flow.durationMS { row("Duration", "\(ms) ms") }
             row("Started", flow.startedAt.formatted(date: .abbreviated, time: .standard))
             if flow.replayedFrom != nil { row("Origin", "Replayed") }
+            if let applied = flow.appliedRules, !applied.isEmpty {
+                row("Rules", applied.joined(separator: ", "), color: .purple)
+            }
             if let error = flow.error { row("Error", error, color: .red) }
         }
         .font(.callout)

@@ -98,7 +98,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                     response: CapturedResponse(statusCode: result.statusCode, headers: result.headers, body: result.body),
                     startedAt: startedAt,
                     completedAt: Date(),
-                    sourceApp: sourceApp
+                    sourceApp: sourceApp,
+                    appliedRules: result.appliedRules.isEmpty ? nil : result.appliedRules
                 ))
                 HTTPUtil.writeResponse(channel: channel, status: result.statusCode,
                                        headers: result.headers, body: result.body, keepAlive: keepAlive)

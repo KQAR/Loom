@@ -23,6 +23,30 @@ public struct MainView: View {
                 .toolbar { toolbarContent }
         }
         .task { store.send(.task) }
+        .sheet(item: editorBinding) { rule in
+            RuleEditorView(
+                rule: rule,
+                isNew: store.editingRuleIsNew,
+                existingGroups: existingGroups,
+                onSave: { store.send(.ruleEditorSaved($0, isNew: store.editingRuleIsNew)) },
+                onCancel: { store.send(.ruleEditorCancelled) }
+            )
+        }
+    }
+
+    /// Distinct group names already in use, for the editor's group dropdown.
+    private var existingGroups: [String] {
+        var seen = Set<String>()
+        return store.rulesState.rules.compactMap(\.group).filter { seen.insert($0).inserted }
+    }
+
+    /// Drives the rule-editor sheet. Dismissal (Esc / outside click) maps to cancel;
+    /// Save/Cancel buttons send their own actions.
+    private var editorBinding: Binding<TrafficRule?> {
+        Binding(
+            get: { store.editingRule },
+            set: { if $0 == nil { store.send(.ruleEditorCancelled) } }
+        )
     }
 
     // MARK: Sidebar — categories
@@ -38,6 +62,9 @@ public struct MainView: View {
             Label("Replayed", systemImage: "arrow.triangle.2.circlepath")
                 .badge(store.replayedCount)
                 .tag(FlowCategory.replayed)
+            Label("Rules", systemImage: "wand.and.stars")
+                .badge(store.rulesState.rules.count)
+                .tag(FlowCategory.rules)
 
             if !store.apps.isEmpty {
                 Section("Apps") {
@@ -152,6 +179,12 @@ public struct MainView: View {
                             .font(.caption2)
                             .foregroundStyle(Color.accentColor)
                     }
+                    if let applied = flow.appliedRules, !applied.isEmpty {
+                        Image(systemName: "wand.and.stars")
+                            .font(.caption2)
+                            .foregroundStyle(Color.purple)
+                            .help("Modified by rules: \(applied.joined(separator: ", "))")
+                    }
                 }
             }
 
@@ -171,6 +204,15 @@ public struct MainView: View {
                     Button("URL") { Self.copy(flow.request.url) }
                     Divider()
                     Button("as cURL") { Self.copy(Self.curlCommand(flow)) }
+                }
+                Menu("Add Rule") {
+                    Button("Mock This Response") { store.send(.addRuleFromFlow(id, .mockResponse)) }
+                        .disabled(flow.response == nil)
+                    Divider()
+                    Button("Block This URL") { store.send(.addRuleFromFlow(id, .blockURL)) }
+                    Button("Block Host \(Self.host(flow.request.url))") {
+                        store.send(.addRuleFromFlow(id, .blockHost))
+                    }
                 }
             }
         }
@@ -213,7 +255,9 @@ public struct MainView: View {
     // MARK: Content — table only, or table + inspector when a flow is selected
 
     @ViewBuilder private var content: some View {
-        if let flow = store.selectedFlow {
+        if store.selectedCategory == .rules {
+            RulesPanelView(store: store)
+        } else if let flow = store.selectedFlow {
             VSplitView {
                 requestArea
                     .frame(minHeight: 160, idealHeight: 280, maxHeight: .infinity)

@@ -10,6 +10,8 @@ public enum FlowCategory: Hashable, Sendable {
     case all
     case errors
     case replayed
+    /// Not a flow filter: selecting it swaps the detail area for the rules panel.
+    case rules
     case host(String)
     case app(String)
 }
@@ -35,8 +37,16 @@ public struct AppFeature: Sendable {
         public var certActionMessage: String?    // M2: transient feedback under the cert card
         public var systemProxyBusy = false       // M2: system-proxy change in flight
         public var systemProxyMessage: String?   // M2: transient feedback under the row
-        public var rulesEnabled = false         // M3: rule engine
-        public var enabledRules: [String] = []   // M3: names of active rules
+        /// Rule-engine config, mirrored from the engine (which persists it).
+        /// Loaded at boot and re-synced when the panel opens or the human toggles.
+        public var rulesState = RulesState()
+        public var rulesEnabled: Bool { rulesState.enabled }
+        /// Names of rules that currently apply — empty when the master switch is off.
+        public var enabledRules: [String] { rulesState.activeRules.map(\.name) }
+        /// The rule being edited in the sheet (nil = sheet closed); `editingRuleIsNew`
+        /// tells save whether to add or update it.
+        public var editingRule: TrafficRule?
+        public var editingRuleIsNew = false
         public var isIntercepting = false        // M3: breakpoint interception (no UI yet)
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
@@ -57,6 +67,9 @@ public struct AppFeature: Sendable {
                 result = result.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }
             case .replayed:
                 result = result.filter { $0.replayedFrom != nil }
+            case .rules:
+                return [] // the rules panel replaces the table
+
             case let .host(host):
                 result = result.filter { $0.host == host }
             case let .app(key):
@@ -127,6 +140,16 @@ public struct AppFeature: Sendable {
         case proxyStarted(port: Int)
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
+        case rulesStateLoaded(RulesState)
+        case refreshRules
+        case addRuleFromFlow(Flow.ID, RuleTemplate)
+        case newRuleTapped
+        case editRuleTapped(TrafficRule.ID)
+        case ruleEditorSaved(TrafficRule, isNew: Bool)
+        case ruleEditorCancelled
+        case ruleToggled(TrafficRule.ID)
+        case ruleDeleted(TrafficRule.ID)
+        case ruleGroupToggled(group: String?, enabled: Bool)
         case flowReceived(Flow)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
@@ -172,6 +195,7 @@ public struct AppFeature: Sendable {
                     await send(.systemProxyStateLoaded(privilegedHelperClient.isSystemProxyActive(port)))
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
                     for flow in await proxyClient.recentFlows(200).reversed() {
                         await send(.flowReceived(flow))
                     }
@@ -246,9 +270,88 @@ public struct AppFeature: Sendable {
                 }
 
             case .toggleRulesTapped:
-                // UI wired now; the map/rewrite (mock) rule engine is M3.
-                state.rulesEnabled.toggle()
+                let enabling = !state.rulesState.enabled
+                state.rulesState.enabled = enabling // optimistic; re-synced below
+                return .run { send in
+                    await proxyClient.setRulesEnabled(enabling)
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
+
+            case let .rulesStateLoaded(rulesState):
+                state.rulesState = rulesState
                 return .none
+
+            case .refreshRules:
+                return .run { send in
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
+
+            case let .addRuleFromFlow(id, template):
+                guard let flow = state.flows[id: id],
+                      let rule = RuleFactory.rule(from: flow, template: template)
+                else { return .none }
+                // Prefill the editor from the captured flow; nothing is persisted
+                // until the human hits Save.
+                state.editingRule = rule
+                state.editingRuleIsNew = true
+                return .none
+
+            case .newRuleTapped:
+                state.editingRule = TrafficRule(name: "", match: RuleMatch(urlPattern: ""), actions: RuleActions())
+                state.editingRuleIsNew = true
+                return .none
+
+            case let .editRuleTapped(id):
+                guard let rule = state.rulesState.rules.first(where: { $0.id == id }) else { return .none }
+                state.editingRule = rule
+                state.editingRuleIsNew = false
+                return .none
+
+            case let .ruleEditorSaved(rule, isNew):
+                state.editingRule = nil
+                if isNew {
+                    // Saving a new rule means "make it live now": flip the master
+                    // switch too so it isn't silently inert.
+                    state.rulesState.enabled = true
+                    state.rulesState.rules.append(rule) // optimistic; re-synced below
+                    return .run { send in
+                        await proxyClient.setRulesEnabled(true)
+                        try? await proxyClient.addRule(rule)
+                        await send(.rulesStateLoaded(proxyClient.rulesState()))
+                    }
+                }
+                if let index = state.rulesState.rules.firstIndex(where: { $0.id == rule.id }) {
+                    state.rulesState.rules[index] = rule
+                }
+                return .run { send in
+                    try? await proxyClient.updateRule(rule)
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
+
+            case .ruleEditorCancelled:
+                state.editingRule = nil
+                return .none
+
+            case let .ruleToggled(id):
+                guard var rule = state.rulesState.rules.first(where: { $0.id == id }) else { return .none }
+                rule.isEnabled.toggle()
+                let updated = rule
+                return .run { send in
+                    try? await proxyClient.updateRule(updated)
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
+
+            case let .ruleDeleted(id):
+                return .run { send in
+                    try? await proxyClient.deleteRule(id)
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
+
+            case let .ruleGroupToggled(group, enabled):
+                return .run { send in
+                    await proxyClient.setGroupEnabled(group, enabled)
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
 
             case let .proxyStarted(port):
                 state.status.isRunning = true

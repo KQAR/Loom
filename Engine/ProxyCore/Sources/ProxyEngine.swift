@@ -15,6 +15,7 @@ public actor ProxyEngine: ProxyControlling {
     private let forwarder: UpstreamForwarding
     private let caStore: CAStore
     private let config: InterceptionConfig
+    private let rulesConfig: RulesConfig
 
     /// Lazily generated on first `start()` (or first cert query) and cached.
     private var ca: CertificateAuthority?
@@ -23,7 +24,11 @@ public actor ProxyEngine: ProxyControlling {
     private var boundPort = 9090
 
     public init() {
-        self.forwarder = URLSessionForwarder()
+        let rulesConfig = RulesConfig() // persisted across launches (JSON file in App Support)
+        self.rulesConfig = rulesConfig
+        // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
+        // this one forwarder, so decorating it applies traffic rules everywhere.
+        self.forwarder = RuleApplyingForwarder(base: URLSessionForwarder(), rules: rulesConfig)
         // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
         // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
         // launch. One-time migration preserves an already-trusted Keychain CA.
@@ -47,7 +52,9 @@ public actor ProxyEngine: ProxyControlling {
     /// interception can be exercised without the network or the Keychain. The
     /// config is non-persisting so tests never read or clobber the real scope.
     init(forwarder: UpstreamForwarding, caStore: CAStore) {
-        self.forwarder = forwarder
+        let rulesConfig = RulesConfig(fileURL: nil)
+        self.rulesConfig = rulesConfig
+        self.forwarder = RuleApplyingForwarder(base: forwarder, rules: rulesConfig)
         self.caStore = caStore
         self.config = InterceptionConfig(defaults: nil)
     }
@@ -179,6 +186,42 @@ public actor ProxyEngine: ProxyControlling {
         config.update(scope)
     }
 
+    // MARK: - RulesControlling
+
+    public func rulesState() async -> RulesState {
+        rulesConfig.snapshot()
+    }
+
+    public func setRulesEnabled(_ enabled: Bool) async {
+        rulesConfig.setEnabled(enabled)
+    }
+
+    public func addRule(_ rule: TrafficRule) async throws {
+        if let reason = rule.validationError() {
+            throw ProxyControlError.invalidRule(reason)
+        }
+        rulesConfig.add(rule)
+    }
+
+    public func updateRule(_ rule: TrafficRule) async throws {
+        if let reason = rule.validationError() {
+            throw ProxyControlError.invalidRule(reason)
+        }
+        guard rulesConfig.update(rule) else {
+            throw ProxyControlError.ruleNotFound(rule.id)
+        }
+    }
+
+    public func deleteRule(id: UUID) async throws {
+        guard rulesConfig.delete(id: id) else {
+            throw ProxyControlError.ruleNotFound(id)
+        }
+    }
+
+    public func setGroupEnabled(group: String?, enabled: Bool) async {
+        rulesConfig.setGroupEnabled(group: group, enabled: enabled)
+    }
+
     private var exportedPEMPath: URL?
 
     private static var defaultCAExportURL: URL {
@@ -228,7 +271,8 @@ public actor ProxyEngine: ProxyControlling {
                 response: CapturedResponse(statusCode: result.statusCode, headers: result.headers, body: result.body),
                 startedAt: startedAt,
                 completedAt: Date(),
-                replayedFrom: id
+                replayedFrom: id,
+                appliedRules: result.appliedRules.isEmpty ? nil : result.appliedRules
             )
             await store.upsert(flow, force: true) // explicit action: record even when capture is paused
             return flow

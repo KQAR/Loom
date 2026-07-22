@@ -48,7 +48,8 @@ Tuist is pinned to **4.202.5** in `mise.toml` — do not downgrade (see Known Is
 ## Scope
 
 **In scope now (M1 + M2 interception, done)**: HTTP capture proxy, HTTPS MITM interception (on-demand P-256 CA + per-host leaf certs, TLS termination, SSL-proxying scope), in-app MCP server + `loom-mcp` bridge, read tools + write tools (`replay_flow`, `set_ssl_scope`, `export_ca_certificate`), menu-bar shell + Inspector window.
-**Next (ordered — see [`ROADMAP.md`](ROADMAP.md))**: finish M2 (privileged helper for system-trust install + system-proxy — currently an unverified scaffold), M3 write actions closed loop (rules / breakpoints / diff + scoped guardrail), M4 protocol breadth (HTTP/2, WebSocket, GraphQL) + persistence.
+**In scope now also (M3, partial)**: traffic rules — structured `TrafficRule` model (no text DSL; whistle-inspired semantics only) with optional **groups** (batch enable/disable, scenario switching), applied for all paths in one choke point (`RuleApplyingForwarder` decorating `UpstreamForwarding`), persisted in UserDefaults (`com.loom.rules`), exposed as 7 MCP tools + UI (sidebar Rules panel, row context-menu rule templates, rule-hit indicators, `appliedRules` audit on flows). **Owner decision: no approval mode** — all MCP write tools act directly; INTERACTION.md's approval-card gating is not implemented for rules by design.
+**Next (ordered — see [`ROADMAP.md`](ROADMAP.md))**: finish M2 (privileged helper for system-trust install + system-proxy — currently an unverified scaffold), rest of M3 (breakpoints, `diff_flows`), M4 protocol breadth (HTTP/2, WebSocket, GraphQL) + persistence.
 **Deferred**: Windows/Linux, iOS device capture, team sessions, in-app LLM assistant.
 
 ## Core Concepts
@@ -92,6 +93,13 @@ Both the UI and the AI act through the **same** `ProxyEngine.shared` — "AI mod
 | `get_ssl_scope` | read | current interception scope (enabled + include/exclude host globs) |
 | `export_ca_certificate` | **write** | write the root CA (PEM) to disk for trusting; returns the path |
 | `set_ssl_scope` | **write** | enable/disable HTTPS interception and set include/exclude host globs |
+| `list_rules` | read | master switch + all traffic rules (long bodies truncated) |
+| `get_rule` | read | one rule by id, full bodies |
+| `create_rule` | **write** | structured traffic rule: URL glob/regex + methods → mock / map remote (+exclude/keep-host) / map local / rewrite req+res / find-replace substitutions (request_substitutions/response_substitutions) / block / delay; optional `group` label |
+| `update_rule` | **write** | replace fields of a rule by id (per-rule enable/disable, regroup with `group`, `""` ungroups) |
+| `delete_rule` | **write** | remove a rule by id |
+| `set_rules_enabled` | **write** | master switch for the rule engine |
+| `set_group_enabled` | **write** | enable/disable every rule in a group (scenario switching) |
 
 Write tools are the reason Loom exists. When adding one (M3: `create_rule`, breakpoints, `diff_flows`), it must be scoped and — if destructive — gated per [`INTERACTION.md`](INTERACTION.md).
 

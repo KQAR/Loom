@@ -26,6 +26,12 @@ public struct ProxyClient: Sendable {
     public var setSSLScope: @Sendable (_ scope: SSLScope) async -> Void
     /// Pause/resume capture; forwarding is unaffected.
     public var setRecording: @Sendable (_ recording: Bool) async -> Void
+    public var rulesState: @Sendable () async -> RulesState = { RulesState() }
+    public var setRulesEnabled: @Sendable (_ enabled: Bool) async -> Void
+    public var addRule: @Sendable (_ rule: TrafficRule) async throws -> Void
+    public var updateRule: @Sendable (_ rule: TrafficRule) async throws -> Void
+    public var deleteRule: @Sendable (_ id: UUID) async throws -> Void
+    public var setGroupEnabled: @Sendable (_ group: String?, _ enabled: Bool) async -> Void
 }
 
 extension ProxyClient: DependencyKey {
@@ -46,7 +52,13 @@ extension ProxyClient: DependencyKey {
             exportCACertificate: { try await engine.exportCACertificate() },
             sslScope: { await engine.sslScope() },
             setSSLScope: { await engine.setSSLScope($0) },
-            setRecording: { await engine.setRecording($0) }
+            setRecording: { await engine.setRecording($0) },
+            rulesState: { await engine.rulesState() },
+            setRulesEnabled: { await engine.setRulesEnabled($0) },
+            addRule: { try await engine.addRule($0) },
+            updateRule: { try await engine.updateRule($0) },
+            deleteRule: { try await engine.deleteRule(id: $0) },
+            setGroupEnabled: { await engine.setGroupEnabled(group: $0, enabled: $1) }
         )
     }()
 
