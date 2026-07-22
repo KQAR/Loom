@@ -533,10 +533,10 @@ private struct HeadersList: View {
             Text("No headers").foregroundStyle(.secondary)
         } else {
             VStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
-                ForEach(headers) { header in
+                ForEach(headers.indices, id: \.self) { i in
                     HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
-                        Text(header.name).foregroundStyle(.secondary)
-                        Text(header.value).textSelection(.enabled)
+                        Text(headers[i].name).foregroundStyle(.secondary)
+                        Text(headers[i].value).textSelection(.enabled)
                     }
                     .font(.callout.monospaced())
                 }

@@ -47,6 +47,28 @@ final class HARExportTests: XCTestCase {
         XCTAssertEqual((response["content"] as? [String: Any])?["text"] as? String, #"{"ok":true}"#)
     }
 
+    func test_encode_binaryBody_isBase64NotDropped() throws {
+        // Regression: a non-UTF-8 body used to vanish from the export entirely.
+        let binary = Data([0xFF, 0xD8, 0xFF, 0x00, 0x01, 0x02]) // not valid UTF-8
+        let flow = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "http://x.test/img", headers: []),
+            response: CapturedResponse(
+                statusCode: 200,
+                headers: [HeaderPair(name: "Content-Type", value: "image/jpeg")],
+                body: binary
+            ),
+            startedAt: Date(timeIntervalSince1970: 0),
+            completedAt: Date(timeIntervalSince1970: 0)
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "1"))
+        let entry = try XCTUnwrap((json["log"] as? [String: Any])?["entries"] as? [[String: Any]]).first
+        let content = try XCTUnwrap((entry?["response"] as? [String: Any])?["content"] as? [String: Any])
+        XCTAssertEqual(content["encoding"] as? String, "base64")
+        XCTAssertEqual(content["text"] as? String, binary.base64EncodedString())
+        XCTAssertEqual(content["size"] as? Int, binary.count)
+    }
+
     func test_encode_inFlightFlow_hasEmptyResponse() throws {
         let flow = Flow(
             id: UUID(),
