@@ -28,7 +28,9 @@ public actor ProxyEngine: ProxyControlling {
         self.rulesConfig = rulesConfig
         // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
         // this one forwarder, so decorating it applies traffic rules everywhere.
-        self.forwarder = RuleApplyingForwarder(base: URLSessionForwarder(), rules: rulesConfig)
+        // M4: a hand-rolled SwiftNIO client (owns the Host header, originates its
+        // own TLS) replaces URLSession as the upstream leg.
+        self.forwarder = RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig)
         // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
         // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
         // launch. One-time migration preserves an already-trusted Keychain CA.

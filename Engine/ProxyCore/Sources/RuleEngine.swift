@@ -59,6 +59,12 @@ enum RuleEngine {
             if let map = actions.mapRemote, !isExcluded(plan.url, by: map.excludePattern),
                let mapped = retarget(plan.url, at: map.destination) {
                 plan.url = mapped
+                // By default the Host header should follow the new origin; drop it so
+                // the forwarder derives it from the mapped URL. keepHostHeader leaves
+                // the original Host in place.
+                if !map.keepHostHeader {
+                    plan.headers.removeAll { $0.name.lowercased() == "host" }
+                }
             }
             if let delay = actions.delayMilliseconds {
                 plan.delayMilliseconds = max(plan.delayMilliseconds, delay)

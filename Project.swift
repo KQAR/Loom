@@ -77,6 +77,7 @@ let project = Project(
                 .external(name: "NIOCore"),
                 .external(name: "NIOPosix"),
                 .external(name: "NIOHTTP1"),
+                .external(name: "NIOHTTPCompression"), // M4: decompress upstream responses in the NIO client
                 .external(name: "NIOSSL"),   // M2: TLS termination for HTTPS interception
                 .external(name: "X509"),     // M2: on-demand CA + leaf certificate minting
                 .external(name: "Crypto"),

@@ -15,6 +15,7 @@ let packageSettings = PackageSettings(
         "NIOCore": .framework,
         "NIOPosix": .framework,
         "NIOHTTP1": .framework,
+        "NIOHTTPCompression": .framework,
         "NIOConcurrencyHelpers": .framework,
         "NIOEmbedded": .framework,
         "NIOTLS": .framework,
@@ -34,6 +35,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/pointfreeco/swift-composable-architecture", from: "1.17.0"),
         .package(url: "https://github.com/apple/swift-nio", from: "2.72.0"),
+        // M4: NIOHTTPCompression (upstream response decompression in the NIO client).
+        .package(url: "https://github.com/apple/swift-nio-extras", from: "1.20.0"),
         // M2 HTTPS interception: TLS termination in the NIO pipeline + on-demand
         // X.509 CA/leaf generation. swift-certificates pulls swift-crypto + swift-asn1.
         .package(url: "https://github.com/apple/swift-nio-ssl", from: "2.26.0"),

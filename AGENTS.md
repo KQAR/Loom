@@ -140,7 +140,7 @@ Features never depend on each other (M1 keeps a single `AppFeature`; split later
 - **App / Features / Clients**: Swift 6 language mode, strict concurrency.
 - **ProxyCore + MCPServer**: **Swift 5 language mode** (`SWIFT_VERSION=5.0` in `Project.swift`). SwiftNIO's channel model fights Swift 6 Sendable; handlers are `@unchecked Sendable`. Keep NIO code in these two modules; do not leak channel types across the client boundary.
 - `ProxyEngine` and `FlowStore` are **actors**; the shared engine is `ProxyEngine.shared`.
-- Replay and proxy forwarding use `URLSession` (M1 pragmatism); replace with streaming NIO client if transparency demands it.
+- Replay and proxy forwarding use a hand-rolled SwiftNIO upstream client (`NIOStreamingForwarder`, M4) — Loom owns every request header, so a map-remote rule's `keepHostHeader` is honored (default drops Host so it follows the mapped origin). Still buffered per exchange (whole body collected) and decompresses via `NIOHTTPResponseDecompressor`; true chunk-streaming (SSE / large bodies), WebSocket, and HTTP/2 build on this same client. `URLSessionForwarder` remains only as reference/fallback.
 
 ### Conventions
 

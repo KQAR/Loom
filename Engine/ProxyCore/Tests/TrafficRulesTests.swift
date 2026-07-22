@@ -165,6 +165,24 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(String(decoding: result.body, as: UTF8.self), #"{"code": 0}"#)
     }
 
+    func test_mapRemote_dropsHostByDefault_keepsWithFlag() {
+        let host = HeaderPair(name: "Host", value: "api.example.test")
+        let drop = TrafficRule(
+            name: "map", match: RuleMatch(urlPattern: "*"),
+            actions: RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001"))
+        )
+        let dropped = plan(state(drop), headers: [host])
+        XCTAssertFalse(dropped.headers.contains { $0.name.lowercased() == "host" },
+                       "Host should be dropped so it follows the mapped origin")
+
+        let keep = TrafficRule(
+            name: "map", match: RuleMatch(urlPattern: "*"),
+            actions: RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001", keepHostHeader: true))
+        )
+        let kept = plan(state(keep), headers: [host])
+        XCTAssertEqual(kept.headers.first { $0.name.lowercased() == "host" }?.value, "api.example.test")
+    }
+
     func test_mapRemote_excludeSkipsRedirect() {
         let rule = TrafficRule(
             name: "map", match: RuleMatch(urlPattern: "*"),
