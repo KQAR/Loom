@@ -100,6 +100,18 @@ struct MCPToolExecutor {
                 ],
             ],
             [
+                "name": "export_har",
+                "description": "Export captured flows to a HAR 1.2 file (readable by Chrome DevTools / Charles / Proxyman) and return the path. Optionally filter by host and cap the count. This is a write action (writes a file).",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "host": ["type": "string", "description": "Only include flows whose host contains this string."],
+                        "limit": ["type": "integer", "description": "Max flows to include (default 1000, newest first)."],
+                        "path": ["type": "string", "description": "Absolute output path; defaults to ~/Library/Application Support/com.loom/exports/loom-export.har."],
+                    ],
+                ],
+            ],
+            [
                 "name": "list_rules",
                 "description": "List all traffic rules and the master rules switch. Mock/rewrite bodies are truncated; use get_rule for the full rule.",
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
@@ -356,6 +368,30 @@ struct MCPToolExecutor {
             )
             await engine.setSSLScope(scope)
             return prettyJSON(Self.scope(scope))
+
+        case "export_har":
+            let limit = (arguments["limit"] as? Int) ?? 1000
+            var flows = await engine.recentFlows(limit: limit)
+            if let host = (arguments["host"] as? String), !host.isEmpty {
+                let needle = host.lowercased()
+                flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
+            }
+            let data = HARExport.encode(flows, appVersion: appVersion)
+            let url: URL
+            if let path = arguments["path"] as? String, !path.isEmpty {
+                url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            } else {
+                url = HandshakeStore.directory
+                    .appendingPathComponent("exports", isDirectory: true)
+                    .appendingPathComponent("loom-export.har")
+            }
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                throw MCPError.internalError("could not write HAR to \(url.path): \(error.localizedDescription)")
+            }
+            return prettyJSON(["path": url.path, "entries": flows.count])
 
         case "list_rules":
             let state = await engine.rulesState()

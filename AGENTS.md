@@ -100,6 +100,7 @@ Both the UI and the AI act through the **same** `ProxyEngine.shared` — "AI mod
 | `delete_rule` | **write** | remove a rule by id |
 | `set_rules_enabled` | **write** | master switch for the rule engine |
 | `set_group_enabled` | **write** | enable/disable every rule in a group (scenario switching) |
+| `export_har` | **write** | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
 
 Write tools are the reason Loom exists. When adding one (M3: `create_rule`, breakpoints, `diff_flows`), it must be scoped and — if destructive — gated per [`INTERACTION.md`](INTERACTION.md).
 
