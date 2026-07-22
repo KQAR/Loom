@@ -87,8 +87,9 @@ components:
     backgroundColor: "{colors.window-canvas}"
     visibility: "shown ONLY when a flow is selected; otherwise the table fills the whole pane"
     structure: "HSplitView — left Request pane, right Response pane, each with its own tab strip"
-    requestPane: "tab strip [Summary · Headers(n) · Body · Diff(replays only)] + method badge + Replay button; a copyable URL bar below the tabs. Summary = key/value table (Status/Method/Code/Host/Duration/Started/Origin)."
-    responsePane: "tab strip [Headers(n) · Body · Raw] + status badge + ✕ close (deselects). Raw = status line + headers + body with a line-number gutter."
+    requestPane: "tab strip [Summary · Raw · Headers(n) · Cookies(n, only if any) · Body · Diff(replays only)] + method badge + Replay button; a copyable URL bar below the tabs. Summary = key/value table (Status/Method/Code/Host/Duration/Started/Origin). Raw = request line + headers + body with a line-number gutter."
+    responsePane: "tab strip [Raw(default) · Headers(n) · Cookies(n, only if any) · Body] + status badge + ✕ close (deselects). Raw = status line + headers + body with a line-number gutter."
+    cookies-tab: "shown only when present — request from the `Cookie` header (name=value pairs), response from `Set-Cookie` headers (name/value + attributes). A name/value list, values selectable."
     tabStrip: "text tabs, selected = semibold + 2pt accent underline (custom, not segmented)"
   button-primary:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+

@@ -28,15 +28,19 @@ private struct RequestPane: View {
     let original: Flow?
     let onReplay: () -> Void
 
-    enum Tab: Hashable { case summary, headers, body, diff }
+    enum Tab: Hashable { case summary, raw, headers, cookies, body, diff }
     @State private var tab: Tab = .summary
+
+    private var cookies: [CookieItem] { CookieParsing.requestCookies(flow.request.headers) }
 
     private var tabs: [(String, Tab)] {
         var t: [(String, Tab)] = [
             ("Summary", .summary),
+            ("Raw", .raw),
             ("Headers(\(flow.request.headers.count))", .headers),
-            ("Body", .body),
         ]
+        if !cookies.isEmpty { t.append(("Cookies(\(cookies.count))", .cookies)) }
+        t.append(("Body", .body))
         if original != nil { t.append(("Diff", .diff)) }
         return t
     }
@@ -65,7 +69,9 @@ private struct RequestPane: View {
                 Group {
                     switch tab {
                     case .summary: SummaryTable(flow: flow)
+                    case .raw: RawView(text: Self.rawText(flow))
                     case .headers: HeadersList(headers: flow.request.headers)
+                    case .cookies: CookiesView(cookies: cookies)
                     case .body: BodyView(data: flow.request.body)
                     case .diff: DiffView(original: original, replayed: flow)
                     }
@@ -75,8 +81,22 @@ private struct RequestPane: View {
             }
         }
         .onChange(of: flow.id) {
+            // Reset if the selected tab no longer applies to the new flow.
             if tab == .diff, original == nil { tab = .summary }
+            if tab == .cookies, cookies.isEmpty { tab = .summary }
         }
+    }
+
+    /// The captured request as raw text: request line · headers · blank · body.
+    static func rawText(_ flow: Flow) -> String {
+        let request = flow.request
+        var lines = ["\(request.method) \(request.url)"]
+        lines += request.headers.map { "\($0.name): \($0.value)" }
+        lines.append("")
+        if let body = request.body, let string = String(data: body, encoding: .utf8) {
+            lines.append(string)
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -86,17 +106,27 @@ private struct ResponsePane: View {
     let flow: Flow
     let onClose: () -> Void
 
-    enum Tab: Hashable { case headers, body, raw }
-    @State private var tab: Tab = .body
+    enum Tab: Hashable { case raw, headers, cookies, body }
+    @State private var tab: Tab = .raw
+
+    private var cookies: [CookieItem] {
+        CookieParsing.responseCookies(flow.response?.headers ?? [])
+    }
+
+    private var tabs: [(String, Tab)] {
+        var t: [(String, Tab)] = [
+            ("Raw", .raw),
+            ("Headers(\(flow.response?.headers.count ?? 0))", .headers),
+        ]
+        if !cookies.isEmpty { t.append(("Cookies(\(cookies.count))", .cookies)) }
+        t.append(("Body", .body))
+        return t
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: LoomTheme.Space.sm) {
-                InspectorTabStrip(tabs: [
-                    ("Headers(\(flow.response?.headers.count ?? 0))", .headers),
-                    ("Body", .body),
-                    ("Raw", .raw),
-                ], selection: $tab)
+                InspectorTabStrip(tabs: tabs, selection: $tab)
                 Spacer(minLength: LoomTheme.Space.xs)
                 if let code = flow.statusCode {
                     StatusBadge(code: code)
@@ -118,9 +148,10 @@ private struct ResponsePane: View {
                 Group {
                     if let response = flow.response {
                         switch tab {
-                        case .headers: HeadersList(headers: response.headers)
-                        case .body: BodyView(data: response.body)
                         case .raw: RawView(text: Self.rawText(flow))
+                        case .headers: HeadersList(headers: response.headers)
+                        case .cookies: CookiesView(cookies: cookies)
+                        case .body: BodyView(data: response.body)
                         }
                     } else if let error = flow.error {
                         Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
@@ -131,6 +162,9 @@ private struct ResponsePane: View {
                 .padding(LoomTheme.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        .onChange(of: flow.id) {
+            if tab == .cookies, cookies.isEmpty { tab = .raw }
         }
     }
 
@@ -252,6 +286,83 @@ private struct SummaryTable: View {
                 .foregroundStyle(color)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
+        }
+    }
+}
+
+// MARK: - Cookies
+
+struct CookieItem: Identifiable, Equatable {
+    let id = UUID()
+    let name: String
+    let value: String
+    /// Set-Cookie attributes (Path, HttpOnly, …), joined for display; empty for request cookies.
+    var attributes: String = ""
+}
+
+enum CookieParsing {
+    /// Request cookies come from `Cookie: a=1; b=2` header(s).
+    static func requestCookies(_ headers: [HeaderPair]) -> [CookieItem] {
+        headers
+            .filter { $0.name.lowercased() == "cookie" }
+            .flatMap { $0.value.components(separatedBy: ";") }
+            .compactMap { pair in
+                let trimmed = pair.trimmingCharacters(in: .whitespaces)
+                guard let eq = trimmed.firstIndex(of: "="), eq != trimmed.startIndex else { return nil }
+                return CookieItem(
+                    name: String(trimmed[..<eq]),
+                    value: String(trimmed[trimmed.index(after: eq)...])
+                )
+            }
+    }
+
+    /// Response cookies come from `Set-Cookie` header(s); the first `k=v` is the
+    /// cookie, the rest are attributes.
+    static func responseCookies(_ headers: [HeaderPair]) -> [CookieItem] {
+        headers
+            .filter { $0.name.lowercased() == "set-cookie" }
+            .compactMap { header in
+                let parts = header.value.components(separatedBy: ";")
+                guard let first = parts.first?.trimmingCharacters(in: .whitespaces),
+                      let eq = first.firstIndex(of: "="), eq != first.startIndex else { return nil }
+                let attrs = parts.dropFirst()
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: " · ")
+                return CookieItem(
+                    name: String(first[..<eq]),
+                    value: String(first[first.index(after: eq)...]),
+                    attributes: attrs
+                )
+            }
+    }
+}
+
+private struct CookiesView: View {
+    let cookies: [CookieItem]
+    var body: some View {
+        if cookies.isEmpty {
+            Text("No cookies").foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
+                ForEach(cookies) { cookie in
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
+                            Text(cookie.name)
+                                .foregroundStyle(.secondary)
+                            Text(cookie.value)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.callout.monospaced())
+                        if !cookie.attributes.isEmpty {
+                            Text(cookie.attributes)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
         }
     }
 }
