@@ -388,9 +388,16 @@ private struct HeadersList: View {
 
 private struct BodyView: View {
     let data: Data?
+    /// Above this size the collapsible tree gets janky; show raw text instead.
+    private let jsonRenderLimit = 200_000
+
     var body: some View {
         if let data, !data.isEmpty {
-            RawView(text: String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>")
+            if data.count <= jsonRenderLimit, let json = JSONValue.parse(data), json.isContainer {
+                JSONView(value: json)
+            } else {
+                RawView(text: String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>")
+            }
         } else {
             Text("No body").foregroundStyle(.secondary)
         }

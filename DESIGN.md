@@ -90,6 +90,7 @@ components:
     requestPane: "tab strip [Summary · Raw · Headers(n) · Cookies(n, only if any) · Body · Diff(replays only)] + method badge + Replay button; a copyable URL bar below the tabs. Summary = key/value table (Status/Method/Code/Host/Duration/Started/Origin). Raw = request line + headers + body with a line-number gutter."
     responsePane: "tab strip [Raw(default) · Headers(n) · Cookies(n, only if any) · Body] + status badge + ✕ close (deselects). Raw = status line + headers + body with a line-number gutter."
     cookies-tab: "shown only when present — request from the `Cookie` header (name=value pairs), response from `Set-Cookie` headers (name/value + attributes). A name/value list, values selectable."
+    body-json: "when a body parses as JSON (object/array, ≤200KB), Body renders a collapsible, syntax-highlighted tree (JSONView) preserving original key order — chevron nodes, keys .label, strings green, numbers orange, bool purple, null secondary; deep nodes start collapsed. Non-JSON / oversized falls back to the line-numbered raw view. Editor syntax colors are a deliberate exception to 'color only for status'."
     tabStrip: "text tabs, selected = semibold + 2pt accent underline (custom, not segmented)"
   button-primary:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+
