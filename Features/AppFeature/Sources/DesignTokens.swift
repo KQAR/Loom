@@ -17,6 +17,10 @@ public enum LoomTheme {
         public static let lg: CGFloat = 16
     }
 
+    /// Fill opacity for an attention/audit tint (e.g. the rule-modified banner),
+    /// applied over the single accent — never a second accent hue (DESIGN.md).
+    public static let attentionOpacity: CGFloat = 0.12
+
     /// HTTP status class → semantic color. Color is never the only signal; it always
     /// accompanies the numeric code (see `StatusBadge`).
     public static func statusColor(status: Int?, isError: Bool) -> Color {

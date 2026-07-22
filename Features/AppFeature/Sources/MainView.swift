@@ -182,7 +182,7 @@ public struct MainView: View {
                     if let applied = flow.appliedRules, !applied.isEmpty {
                         Image(systemName: "wand.and.stars")
                             .font(.caption2)
-                            .foregroundStyle(Color.purple)
+                            .foregroundStyle(Color.accentColor)
                             .help("Modified by rules: \(applied.joined(separator: ", "))")
                     }
                     if flow.isWebSocket {

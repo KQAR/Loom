@@ -17,7 +17,7 @@ public struct PanelView: View {
     public var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().opacity(0.5)
+            Divider()
 
             VStack(spacing: 0) {
                 proxyRow
@@ -25,7 +25,7 @@ public struct PanelView: View {
                 sslRow
                 rulesRow
 
-                Divider().opacity(0.5).padding(.vertical, LoomTheme.Space.xxs)
+                Divider().padding(.vertical, LoomTheme.Space.xxs)
 
                 PanelRow(
                     kind: .action,
@@ -46,7 +46,7 @@ public struct PanelView: View {
             }
             .padding(.vertical, LoomTheme.Space.xs)
 
-            Divider().opacity(0.5)
+            Divider()
             footer
         }
         .frame(width: 300)
