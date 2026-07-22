@@ -195,6 +195,13 @@ private struct JSONNode: View {
     let depth: Int
     @State private var expanded: Bool
 
+    /// A dedicated left gutter that holds every disclosure chevron in one column
+    /// at the far left, and per-level indentation applied only to the content —
+    /// so the chevron never sits flush against the key/value.
+    private static let gutter: CGFloat = 18
+    private static let indentUnit: CGFloat = 14
+    private static let contentGap: CGFloat = 4
+
     init(key: String?, value: JSONValue, depth: Int) {
         self.key = key
         self.value = value
@@ -221,6 +228,23 @@ private struct JSONNode: View {
         }
     }
 
+    /// Fixed-width chevron gutter (far left). `expanded == nil` renders an empty
+    /// slot so leaves and closing braces align under the same column.
+    private func gutterChevron(_ expanded: Bool?) -> some View {
+        ZStack {
+            if let expanded {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: Self.gutter, alignment: .center)
+    }
+
+    private func indent(_ depth: Int) -> some View {
+        Color.clear.frame(width: CGFloat(depth) * Self.indentUnit + Self.contentGap, height: 1)
+    }
+
     @ViewBuilder
     private func container<Children: View>(
         count: Int, open: String, close: String, @ViewBuilder children: () -> Children
@@ -229,11 +253,9 @@ private struct JSONNode: View {
             Button {
                 expanded.toggle()
             } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 10)
+                HStack(spacing: 0) {
+                    gutterChevron(expanded)
+                    indent(depth)
                     if expanded {
                         keyPrefix + Text(open).foregroundColor(.secondary)
                     } else {
@@ -248,10 +270,10 @@ private struct JSONNode: View {
             .buttonStyle(.plain)
 
             if expanded {
-                VStack(alignment: .leading, spacing: 1, content: children)
-                    .padding(.leading, 14)
+                children()
                 HStack(spacing: 0) {
-                    Color.clear.frame(width: 14, height: 1)
+                    gutterChevron(nil)
+                    indent(depth)
                     Text(close).foregroundColor(.secondary)
                     Spacer(minLength: 0)
                 }
@@ -261,7 +283,8 @@ private struct JSONNode: View {
 
     private var leaf: some View {
         HStack(alignment: .top, spacing: 0) {
-            Color.clear.frame(width: 14, height: 1) // align with the chevron column
+            gutterChevron(nil)
+            indent(depth)
             (keyPrefix + valueText)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
