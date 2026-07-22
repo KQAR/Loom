@@ -79,6 +79,7 @@ components:
     order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
     tail-follow: "auto-scroll to the newest row as the list grows; a user scroll stops following, and scrolling back to the bottom resumes it (live-scroll notifications distinguish user gestures from programmatic scrolls)"
     selection: "single, drives the inspector below"
+    row-context-menu: "right-click a row → Copy ▸ Host · Path · URL · as cURL (curl reconstructs method/headers/body)"
   status-dot:      # the table's status column
     anatomy: "a 9pt status-class color dot: green 2xx · orange 3xx · red 4xx/5xx/error · gray in-flight. Color is not the only signal — the numeric code is a tooltip and appears in the inspector Summary. Method is a separate ink column, never chromatic."
   seq-column:      # request order
@@ -90,6 +91,7 @@ components:
     requestPane: "tab strip [Summary · Raw · Headers(n) · Cookies(n, only if any) · Body · Diff(replays only)] + method badge + Replay button; a copyable URL bar below the tabs. Summary = key/value table (Status/Method/Code/Host/Duration/Started/Origin). Raw = request line + headers + body with a line-number gutter."
     responsePane: "tab strip [Raw(default) · Headers(n) · Cookies(n, only if any) · Body] + status badge + ✕ close (deselects). Raw = status line + headers + body with a line-number gutter."
     cookies-tab: "shown only when present — request from the `Cookie` header (name=value pairs), response from `Set-Cookie` headers (name/value + attributes). A name/value list, values selectable."
+    body-copy: "Body panes (request + response) show a floating copy button pinned top-right that copies the whole body; flips to a checkmark briefly."
     body-json: "when a body parses as JSON (object/array, ≤200KB), Body renders a collapsible, syntax-highlighted tree (JSONView) preserving original key order — chevron nodes, keys .label, strings green, numbers orange, bool purple, null secondary; deep nodes start collapsed. Non-JSON / oversized falls back to the line-numbered raw view. Editor syntax colors are a deliberate exception to 'color only for status'."
     tabStrip: "text tabs, selected = semibold + 2pt accent underline (custom, not segmented)"
   button-primary:

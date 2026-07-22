@@ -79,12 +79,24 @@ private struct RequestPane: View {
                 .padding(LoomTheme.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .overlay(alignment: .topTrailing) {
+                if tab == .body, let text = Self.bodyText(flow.request.body) {
+                    FloatingCopyButton(text: text)
+                }
+            }
         }
         .onChange(of: flow.id) {
             // Reset if the selected tab no longer applies to the new flow.
             if tab == .diff, original == nil { tab = .summary }
             if tab == .cookies, cookies.isEmpty { tab = .summary }
         }
+    }
+
+    /// Body as a UTF-8 string, or nil when empty/non-text (no copy button then).
+    static func bodyText(_ data: Data?) -> String? {
+        guard let data, !data.isEmpty, let text = String(data: data, encoding: .utf8), !text.isEmpty
+        else { return nil }
+        return text
     }
 
     /// The captured request as raw text: request line · headers · blank · body.
@@ -161,6 +173,11 @@ private struct ResponsePane: View {
                 }
                 .padding(LoomTheme.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .overlay(alignment: .topTrailing) {
+                if tab == .body, let text = RequestPane.bodyText(flow.response?.body) {
+                    FloatingCopyButton(text: text)
+                }
             }
         }
         .onChange(of: flow.id) {
@@ -287,6 +304,35 @@ private struct SummaryTable: View {
                 .textSelection(.enabled)
             Spacer(minLength: 0)
         }
+    }
+}
+
+/// Floating copy button pinned to the top-right of a body pane; copies the whole
+/// body and briefly flips to a checkmark for feedback.
+private struct FloatingCopyButton: View {
+    let text: String
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            copied = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.callout)
+                .foregroundStyle(copied ? Color.accentColor : .secondary)
+                .padding(6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
+                        .stroke(.quaternary, lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .help("Copy body")
+        .padding(LoomTheme.Space.sm)
     }
 }
 
