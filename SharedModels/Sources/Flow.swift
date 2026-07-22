@@ -80,6 +80,9 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// the exchange passed through untouched — the audit trail for "what did
     /// the rules do to my traffic".
     public var appliedRules: [String]?
+    /// Non-nil once this flow is a WebSocket connection (its HTTP upgrade
+    /// succeeded); frames captured in either direction append here over time.
+    public var webSocketMessages: [WebSocketMessage]?
 
     public init(
         id: UUID = UUID(),
@@ -90,7 +93,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         error: String? = nil,
         replayedFrom: UUID? = nil,
         sourceApp: SourceApp? = nil,
-        appliedRules: [String]? = nil
+        appliedRules: [String]? = nil,
+        webSocketMessages: [WebSocketMessage]? = nil
     ) {
         self.id = id
         self.request = request
@@ -101,7 +105,11 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.replayedFrom = replayedFrom
         self.sourceApp = sourceApp
         self.appliedRules = appliedRules
+        self.webSocketMessages = webSocketMessages
     }
+
+    /// True once the exchange upgraded to WebSocket.
+    public var isWebSocket: Bool { webSocketMessages != nil }
 
     public var statusCode: Int? { response?.statusCode }
 
