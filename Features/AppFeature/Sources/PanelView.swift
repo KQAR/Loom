@@ -8,6 +8,7 @@ import SwiftUI
 public struct PanelView: View {
     @Bindable var store: StoreOf<AppFeature>
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismiss) private var dismiss
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -32,8 +33,15 @@ public struct PanelView: View {
                     title: "Open Main Window",
                     detail: nil
                 ) {
+                    // Capture the popover (the key window at click time) so we can
+                    // close it after the main window is up. `dismiss()` alone is
+                    // unreliable for a MenuBarExtra window; closing the exact panel
+                    // window is deterministic.
+                    let panel = NSApp.keyWindow
                     openWindow(id: "main")
                     NSApplication.shared.activate(ignoringOtherApps: true)
+                    dismiss()
+                    panel?.close()
                 }
             }
             .padding(.vertical, LoomTheme.Space.xs)
@@ -325,5 +333,14 @@ private struct PanelRow: View {
         .disabled(disabled)
         .onHover { hovering = $0 }
         .help(help ?? "")
+        .accessibilityLabel(title)
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        switch kind {
+        case let .state(on): return on ? "on" : "off"
+        case .action: return ""
+        }
     }
 }
