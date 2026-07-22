@@ -39,31 +39,56 @@ public struct MainView: View {
             if !store.apps.isEmpty {
                 Section("Apps") {
                     ForEach(store.apps, id: \.app.groupingKey) { entry in
+                        let key = entry.app.groupingKey
+                        let pinned = store.pinnedApps.contains(key)
                         Label {
-                            Text(entry.app.name)
+                            rowTitle(entry.app.name, pinned: pinned)
                         } icon: {
                             AppIconView(app: entry.app)
                         }
                         .badge(entry.count)
-                        .tag(FlowCategory.app(entry.app.groupingKey))
+                        .tag(FlowCategory.app(key))
+                        .contextMenu {
+                            Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
+                                store.send(.pinAppToggled(key))
+                            }
+                        }
                     }
                 }
             }
 
             Section("Hosts") {
                 ForEach(store.hosts, id: \.host) { entry in
+                    let pinned = store.pinnedHosts.contains(entry.host)
                     Label {
-                        Text(entry.host)
+                        rowTitle(entry.host, pinned: pinned)
                     } icon: {
                         FaviconView(host: entry.host)
                     }
                     .badge(entry.count)
                     .tag(FlowCategory.host(entry.host))
+                    .contextMenu {
+                        Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
+                            store.send(.pinHostToggled(entry.host))
+                        }
+                    }
                 }
             }
         }
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+    }
+
+    /// Sidebar row title with a trailing pin glyph when pinned.
+    @ViewBuilder private func rowTitle(_ text: String, pinned: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text(text).lineLimit(1).truncationMode(.middle)
+            if pinned {
+                Image(systemName: "pin.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     // MARK: Request area (table, or a full-bleed empty state)

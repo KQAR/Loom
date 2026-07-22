@@ -39,6 +39,8 @@ public struct AppFeature: Sendable {
         public var enabledRules: [String] = []   // M3: names of active rules
         public var isIntercepting = false        // M3: breakpoint interception (no UI yet)
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
+        public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
+        public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
 
         public var displayHost: String { localIP ?? "127.0.0.1" }
 
@@ -70,16 +72,20 @@ public struct AppFeature: Sendable {
             return result
         }
 
-        /// Distinct hosts with counts, alphabetical — the sidebar's Hosts section.
+        /// Distinct hosts with counts — pinned first, then alphabetical.
         public var hosts: [(host: String, count: Int)] {
             var counts: [String: Int] = [:]
             for flow in flows {
                 if let host = flow.host { counts[host, default: 0] += 1 }
             }
-            return counts.sorted { $0.key < $1.key }.map { (host: $0.key, count: $0.value) }
+            return counts.sorted { a, b in
+                let pa = pinnedHosts.contains(a.key), pb = pinnedHosts.contains(b.key)
+                if pa != pb { return pa }        // pinned rows float to the top
+                return a.key < b.key
+            }.map { (host: $0.key, count: $0.value) }
         }
 
-        /// Distinct source apps with counts, most-active first — the Apps section.
+        /// Distinct source apps with counts — pinned first, then most-active.
         /// Keyed by `groupingKey` (bundle id or name); a representative `SourceApp`
         /// carries the display name + icon path.
         public var apps: [(app: SourceApp, count: Int)] {
@@ -92,7 +98,11 @@ public struct AppFeature: Sendable {
                 counts[key, default: 0] += 1
             }
             return counts
-                .sorted { $0.value != $1.value ? $0.value > $1.value : ($0.key < $1.key) }
+                .sorted { a, b in
+                    let pa = pinnedApps.contains(a.key), pb = pinnedApps.contains(b.key)
+                    if pa != pb { return pa }    // pinned rows float to the top
+                    return a.value != b.value ? a.value > b.value : (a.key < b.key)
+                }
                 .compactMap { key, count in reps[key].map { (app: $0, count: count) } }
         }
 
@@ -124,6 +134,9 @@ public struct AppFeature: Sendable {
         case clearTapped
         case toggleInterceptTapped
         case toggleRecordingTapped
+        case pinHostToggled(String)
+        case pinAppToggled(String)
+        case pinsLoaded(hosts: Set<String>, apps: Set<String>)
         case exportCATapped
         case caExported(URL?)
         case installAndTrustCATapped
@@ -148,6 +161,8 @@ public struct AppFeature: Sendable {
 
             case .task:
                 return .run { send in
+                    let pins = PinsStore.load()
+                    await send(.pinsLoaded(hosts: pins.hosts, apps: pins.apps))
                     await send(.localIPResolved(LocalIP.primaryIPv4()))
                     let port = try await proxyClient.start(9090)
                     await send(.proxyStarted(port: port))
@@ -289,6 +304,23 @@ public struct AppFeature: Sendable {
                 state.isRecording.toggle()
                 let recording = state.isRecording
                 return .run { _ in await proxyClient.setRecording(recording) }
+
+            case let .pinHostToggled(host):
+                if state.pinnedHosts.contains(host) { state.pinnedHosts.remove(host) }
+                else { state.pinnedHosts.insert(host) }
+                let (hosts, apps) = (state.pinnedHosts, state.pinnedApps)
+                return .run { _ in PinsStore.save(hosts: hosts, apps: apps) }
+
+            case let .pinAppToggled(key):
+                if state.pinnedApps.contains(key) { state.pinnedApps.remove(key) }
+                else { state.pinnedApps.insert(key) }
+                let (hosts, apps) = (state.pinnedHosts, state.pinnedApps)
+                return .run { _ in PinsStore.save(hosts: hosts, apps: apps) }
+
+            case let .pinsLoaded(hosts, apps):
+                state.pinnedHosts = hosts
+                state.pinnedApps = apps
+                return .none
 
             case .exportCATapped:
                 return .run { send in
