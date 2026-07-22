@@ -53,11 +53,6 @@ public enum GraphQLParser {
         )
     }
 
-    /// A request looks like GraphQL (cheap check for list flags, no full parse).
-    public static func isGraphQL(_ request: CapturedRequest) -> Bool {
-        parse(request) != nil
-    }
-
     private static func inferKind(_ query: String) -> GraphQLOperation.Kind {
         // The first significant keyword sets the operation type; a bare `{ ... }`
         // is a shorthand query.

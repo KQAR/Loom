@@ -1,8 +1,5 @@
 import Foundation
-
-/// Loom's Application Support subdirectory. The app writes the handshake here
-/// and the `loom-mcp` bridge reads it, so both must agree on this name.
-public let loomAppSupportDirectoryName = "com.loom"
+import SharedModels
 
 public struct MCPHandshake: Codable, Sendable {
     public let token: String
@@ -15,13 +12,10 @@ public struct MCPHandshake: Codable, Sendable {
 }
 
 public enum HandshakeStore {
-    public static var directory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent(loomAppSupportDirectoryName, isDirectory: true)
-    }
+    public static var directory: URL { LoomPaths.appSupportDirectory }
 
     public static var fileURL: URL {
-        directory.appendingPathComponent("mcp-handshake.json")
+        LoomPaths.appSupportFile("mcp-handshake.json")
     }
 
     /// Persist token+port with owner-only permissions so other users on the

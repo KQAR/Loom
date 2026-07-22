@@ -125,8 +125,7 @@ enum WebSocketRelay {
     }
 
     private static func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
-        let context = try NIOSSLContext(configuration: .makeClientConfiguration())
-        return try NIOSSLClientHandler(context: context, serverHostname: host)
+        try NIOSSLClientHandler(context: SharedTLS.clientContext, serverHostname: host)
     }
 }
 

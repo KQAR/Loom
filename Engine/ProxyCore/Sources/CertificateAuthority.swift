@@ -36,6 +36,10 @@ final class CertificateAuthority: @unchecked Sendable {
            let existing = try? CertificateAuthority(material: material) {
             return existing
         }
+        // No usable CA on disk — mint a fresh one. If a previously-trusted CA was
+        // present but corrupt, this orphans it (clients will distrust the new
+        // leaf until the human re-trusts), so make that loud.
+        Log.tls.notice("No usable CA loaded; generating a new root CA.")
         let material = try generateMaterial()
         try store.save(material)
         return try CertificateAuthority(material: material)

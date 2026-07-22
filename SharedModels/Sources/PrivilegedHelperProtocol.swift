@@ -44,9 +44,6 @@ public enum HelperIdentity {
     /// Current proxy state: `(isOverriddenByLoom, port)`.
     func getProxyStatus(withReply reply: @escaping (Bool, Int) -> Void)
 
-    /// Set the system proxy bypass (no-proxy) domain list on all enabled services.
-    func setBypassDomains(_ domains: [String], withReply reply: @escaping (Bool, String?) -> Void)
-
     /// Install a DER root CA into the system keychain and mark it a trusted root.
     func installTrustedCertificate(_ der: Data, withReply reply: @escaping (Bool, String?) -> Void)
 

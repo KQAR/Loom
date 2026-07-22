@@ -14,6 +14,20 @@ public struct HeaderPair: Equatable, Codable, Sendable, Identifiable {
     }
 }
 
+public extension [HeaderPair] {
+    /// The first value whose header name matches case-insensitively (HTTP header
+    /// names are case-insensitive), or nil. One definition of header-name equality
+    /// for every layer that reads a header off a flow.
+    func value(named name: String) -> String? {
+        first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value
+    }
+
+    /// Whether any header matches `name` case-insensitively.
+    func contains(named name: String) -> Bool {
+        contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+}
+
 public struct CapturedRequest: Equatable, Codable, Sendable {
     public var method: String
     public var url: String

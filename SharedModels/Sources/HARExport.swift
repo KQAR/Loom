@@ -98,11 +98,11 @@ public enum HARExport {
     }
 
     private static func contentType(_ headers: [HeaderPair]) -> String? {
-        headers.first { $0.name.lowercased() == "content-type" }?.value
+        headers.value(named: "content-type")
     }
 
     private static func location(_ headers: [HeaderPair]) -> String? {
-        headers.first { $0.name.lowercased() == "location" }?.value
+        headers.value(named: "location")
     }
 
     // A fresh formatter per call: ISO8601DateFormatter isn't Sendable, so it can't

@@ -44,12 +44,7 @@ final class FlowPersistence: @unchecked Sendable {
     deinit { sqlite3_close(db) }
 
     static func makeDefault() -> FlowPersistence? {
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        else { return nil }
-        let url = base
-            .appendingPathComponent("com.loom", isDirectory: true)
-            .appendingPathComponent("flows.sqlite")
-        return FlowPersistence(fileURL: url)
+        FlowPersistence(fileURL: LoomPaths.appSupportFile("flows.sqlite"))
     }
 
     func save(_ flow: Flow) {

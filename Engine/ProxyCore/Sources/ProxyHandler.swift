@@ -153,7 +153,10 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         do {
             sslContext = try ca.serverContext(for: host)
         } catch {
-            openTunnel(context: context, host: host, port: port) // fail open: don't break the site
+            // Fail open: blind-tunnel so the site still works, but record why this
+            // host wasn't intercepted (otherwise "nothing captured" is a mystery).
+            Log.tls.error("Leaf mint failed for \(host, privacy: .public); blind-tunneling: \(String(describing: error))")
+            openTunnel(context: context, host: host, port: port)
             return
         }
 

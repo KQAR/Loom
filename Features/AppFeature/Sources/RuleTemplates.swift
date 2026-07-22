@@ -19,7 +19,7 @@ enum RuleFactory {
         switch template {
         case .mockResponse:
             let response = flow.response
-            let contentType = response?.headers.first { $0.name.lowercased() == "content-type" }?.value
+            let contentType = response?.headers.value(named: "content-type")
             return TrafficRule(
                 name: "Mock \(shortPath(flow.request.url))",
                 comment: "Pinned from a captured \(flow.request.method) exchange",

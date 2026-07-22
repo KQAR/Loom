@@ -107,8 +107,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
 
     private static func synthesize(_ mock: MockResponseAction) -> ForwardResult {
         var headers = mock.headers
-        if let contentType = mock.contentType,
-           !headers.contains(where: { $0.name.lowercased() == "content-type" }) {
+        if let contentType = mock.contentType, !headers.contains(named: "content-type") {
             headers.append(HeaderPair(name: "Content-Type", value: contentType))
         }
         return ForwardResult(

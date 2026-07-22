@@ -9,6 +9,10 @@ struct MCPToolExecutor {
     let appVersion: String
     let protocolVersion: String
 
+    /// `ISO8601DateFormatter` is expensive to allocate; render every timestamp
+    /// through one shared instance.
+    private static let iso8601 = ISO8601DateFormatter()
+
     /// JSON metadata advertised by `tools/list`.
     var toolDefinitions: [[String: Any]] {
         [
@@ -574,7 +578,7 @@ struct MCPToolExecutor {
         ]
         if let cn = status.commonName { out["commonName"] = cn }
         if let fp = status.sha256Fingerprint { out["sha256Fingerprint"] = fp }
-        if let notAfter = status.notAfter { out["notAfter"] = ISO8601DateFormatter().string(from: notAfter) }
+        if let notAfter = status.notAfter { out["notAfter"] = Self.iso8601.string(from: notAfter) }
         if let path = status.exportedPEMPath { out["exportedPEMPath"] = path }
         return out
     }
@@ -684,7 +688,7 @@ struct MCPToolExecutor {
                 if !rule.match.methods.isEmpty { match["methods"] = rule.match.methods }
                 return match
             }(),
-            "createdAt": ISO8601DateFormatter().string(from: rule.createdAt),
+            "createdAt": Self.iso8601.string(from: rule.createdAt),
         ]
         if let comment = rule.comment { out["comment"] = comment }
         if let group = rule.group { out["group"] = group }

@@ -31,13 +31,9 @@ final class RulesConfig: @unchecked Sendable {
     }
 
     /// `~/Library/Application Support/com.loom/rules.json` — mirrors `FileCAStore`'s
-    /// directory. `nil` only if the Application Support URL can't be resolved.
+    /// directory.
     static var defaultFileURL: URL? {
-        guard let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        else { return nil }
-        return base
-            .appendingPathComponent("com.loom", isDirectory: true)
-            .appendingPathComponent("rules.json")
+        LoomPaths.appSupportFile("rules.json")
     }
 
     func snapshot() -> RulesState {
@@ -101,14 +97,20 @@ final class RulesConfig: @unchecked Sendable {
     private static func persist(_ state: RulesState, to url: URL) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(state) else { return }
-        let dir = url.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        guard (try? data.write(to: url, options: .atomic)) != nil else { return }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        do {
+            let data = try encoder.encode(state)
+            let dir = url.deletingLastPathComponent()
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            // Rules are primary user data; a lost write means edits vanish on
+            // relaunch. Can't throw from here (mutation setters are sync), so log.
+            Log.store.error("Rules persist failed; changes may not survive relaunch: \(String(describing: error))")
+        }
     }
 
     private static func load(from url: URL) -> RulesState? {

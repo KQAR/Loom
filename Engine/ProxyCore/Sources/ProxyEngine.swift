@@ -111,7 +111,11 @@ public actor ProxyEngine: ProxyControlling {
     /// keeps plain capture and blind tunneling working.
     private func ensureCA() -> CertificateAuthority? {
         if let ca { return ca }
-        ca = try? CertificateAuthority.loadOrGenerate(store: caStore)
+        do {
+            ca = try CertificateAuthority.loadOrGenerate(store: caStore)
+        } catch {
+            Log.tls.error("CA load/generate failed; HTTPS interception unavailable: \(String(describing: error))")
+        }
         return ca
     }
 
@@ -239,12 +243,7 @@ public actor ProxyEngine: ProxyControlling {
     private let caExportURL: URL
 
     private static var defaultCAExportURL: URL {
-        // Mirrors `loomAppSupportDirectoryName` (defined in MCPServer, off ProxyCore's
-        // dependency path). Both must stay "com.loom".
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base
-            .appendingPathComponent("com.loom", isDirectory: true)
-            .appendingPathComponent("loom-ca.pem")
+        LoomPaths.appSupportFile("loom-ca.pem")
     }
 
     // MARK: - FlowReplaying
