@@ -111,7 +111,7 @@ struct MCPToolExecutor {
                     "properties": [
                         "host": ["type": "string", "description": "Only include flows whose host contains this string."],
                         "limit": ["type": "integer", "description": "Max flows to include (default 1000, newest first)."],
-                        "path": ["type": "string", "description": "Absolute output path; defaults to ~/Library/Application Support/com.loom/exports/loom-export.har."],
+                        "filename": ["type": "string", "description": "Output file name (basename only; a .har suffix is added if missing). Written under ~/Library/Application Support/com.loom/exports/. Defaults to loom-export.har."],
                     ],
                 ],
             ],
@@ -381,16 +381,23 @@ struct MCPToolExecutor {
                 flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
             }
             let data = HARExport.encode(flows, appVersion: appVersion)
-            let url: URL
-            if let path = arguments["path"] as? String, !path.isEmpty {
-                url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+            // Confine exports to the exports/ directory and take only a basename,
+            // so the AI can't overwrite arbitrary user files (~/.zshrc, plists) via
+            // a path argument. Any directory component in `filename` is stripped.
+            let exportsDir = HandshakeStore.directory.appendingPathComponent("exports", isDirectory: true)
+            let filename: String
+            if let raw = arguments["filename"] as? String, !raw.isEmpty {
+                let base = (raw as NSString).lastPathComponent
+                guard !base.isEmpty, base != ".", base != "..", !base.hasPrefix(".") else {
+                    throw MCPError.invalidParams("invalid filename: \(raw)")
+                }
+                filename = base.hasSuffix(".har") ? base : base + ".har"
             } else {
-                url = HandshakeStore.directory
-                    .appendingPathComponent("exports", isDirectory: true)
-                    .appendingPathComponent("loom-export.har")
+                filename = "loom-export.har"
             }
+            let url = exportsDir.appendingPathComponent(filename)
             do {
-                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.createDirectory(at: exportsDir, withIntermediateDirectories: true)
                 try data.write(to: url, options: .atomic)
             } catch {
                 throw MCPError.internalError("could not write HAR to \(url.path): \(error.localizedDescription)")

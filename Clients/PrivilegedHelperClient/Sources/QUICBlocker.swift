@@ -18,12 +18,19 @@ import Foundation
 /// appends our anchor, and loads the copy; a marker file records whether pf was
 /// already enabled so restore can put it back exactly. Restore reloads the
 /// pristine `/etc/pf.conf`, dropping our rules.
+///
+/// The working files live under `/var/root` (root's home, `drwxr-xr-x root:wheel`)
+/// — a non-root process can't create files there, so it can't pre-plant a symlink
+/// that redirects our root-run `>`/`cp` at `/etc/pf.conf` or plant a fake ruleset
+/// for `pfctl -f` to load. Predictable `/tmp` paths (world-writable) previously
+/// made both attacks trivial. `rm -f` + `set -C` (noclobber) add defense in depth.
 enum QUICBlocker {
     /// pf anchor name namespaced to Loom so restore can target only our rules.
     static let anchorName = "com.loom.quic"
-    static let rulesPath = "/tmp/loom-quic.rules"
-    static let mainConfPath = "/tmp/loom-pf.conf"
-    static let disabledMarkerPath = "/tmp/loom-pf-was-disabled"
+    static let workDir = "/var/root/com.loom"
+    static let rulesPath = "\(workDir)/quic.rules"
+    static let mainConfPath = "\(workDir)/pf.conf"
+    static let disabledMarkerPath = "\(workDir)/pf-was-disabled"
 
     /// The single pf rule: drop outbound UDP/443 (QUIC). `quick` makes it decisive
     /// the moment it's reached; the anchor is appended last so nothing overrides it.
@@ -35,6 +42,10 @@ enum QUICBlocker {
     static var enableFragment: String {
         """
         # --- Block QUIC (UDP/443) so browser HTTP/3 falls back to capturable TCP ---
+        umask 077
+        /bin/mkdir -p \(workDir)
+        set -C                              # noclobber: never follow a planted symlink
+        rm -f \(rulesPath) \(mainConfPath)  # drop any pre-existing file/symlink first
         printf '%s\\n' '\(rule)' > \(rulesPath)
         /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || touch \(disabledMarkerPath)
         cp /etc/pf.conf \(mainConfPath) 2>/dev/null || printf '' > \(mainConfPath)
