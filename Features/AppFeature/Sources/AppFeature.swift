@@ -49,6 +49,7 @@ public struct AppFeature: Sendable {
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
+        var didBoot = false                      // guards the one-shot boot effect
 
         public var displayHost: String { localIP ?? "127.0.0.1" }
 
@@ -119,7 +120,13 @@ public struct AppFeature: Sendable {
 
     public enum Action: BindableAction, Sendable {
         case binding(BindingAction<State>)
+        /// One-shot boot: start the proxy + subscribe to the flow stream. Sent only
+        /// from the always-present menu-bar label so opening a window can't re-run
+        /// it (which would cancel the live subscription and restart the proxy).
         case task
+        /// Lightweight re-sync when a window/panel appears: reloads config state
+        /// without touching the proxy or the flow subscription.
+        case viewAppeared
         case localIPResolved(String?)
         case toggleProxyTapped
         case toggleSystemProxyTapped
@@ -128,6 +135,7 @@ public struct AppFeature: Sendable {
         case toggleSSLTapped
         case toggleRulesTapped
         case proxyStarted(port: Int)
+        case proxyStartFailed(String)
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
         case rulesStateLoaded(RulesState)
@@ -173,18 +181,23 @@ public struct AppFeature: Sendable {
                 return .none
 
             case .task:
+                // Idempotent: the menu-bar label can re-render, but boot must run
+                // once — re-running would cancel the live flow subscription.
+                guard !state.didBoot else { return .none }
+                state.didBoot = true
                 return .run { send in
                     let pins = PinsStore.load()
                     await send(.pinsLoaded(hosts: pins.hosts, apps: pins.apps))
                     await send(.localIPResolved(LocalIP.primaryIPv4()))
-                    let port = try await proxyClient.start(9090)
-                    await send(.proxyStarted(port: port))
-                    // Sync with reality: a previous run (or crash) may have left
-                    // the system proxy pointing at us.
-                    await send(.systemProxyStateLoaded(privilegedHelperClient.isSystemProxyActive(port)))
-                    await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
-                    await send(.sslScopeLoaded(proxyClient.sslScope()))
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                    do {
+                        let port = try await proxyClient.start(9090)
+                        await send(.proxyStarted(port: port))
+                    } catch {
+                        // A bind failure (port in use) must not abort the whole
+                        // effect — still load config + subscribe so the UI is live.
+                        await send(.proxyStartFailed(error.localizedDescription))
+                    }
+                    await send(.viewAppeared)
                     for flow in await proxyClient.recentFlows(200).reversed() {
                         await send(.flowReceived(flow))
                     }
@@ -193,6 +206,22 @@ public struct AppFeature: Sendable {
                     }
                 }
                 .cancellable(id: CancelID.subscription, cancelInFlight: true)
+
+            case .viewAppeared:
+                // Cheap re-sync of config state on window/panel open — never
+                // restarts the proxy or the flow subscription.
+                let port = state.status.port
+                return .run { send in
+                    await send(.systemProxyStateLoaded(privilegedHelperClient.isSystemProxyActive(port)))
+                    await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
+                    await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                }
+
+            case let .proxyStartFailed(message):
+                state.status.isRunning = false
+                state.systemProxyMessage = "Proxy failed to start: \(message)"
+                return .none
 
             case .toggleProxyTapped:
                 if state.status.isRunning {

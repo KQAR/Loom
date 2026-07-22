@@ -122,14 +122,18 @@ public struct SSLScope: Equatable, Codable, Sendable {
             guard host.hasPrefix(first) else { return false }
             index = host.index(index, offsetBy: first.count)
         }
-        // A trailing non-"*" segment must anchor at the end.
-        if let last = segments.last, !last.isEmpty {
-            guard host.hasSuffix(last) else { return false }
-        }
-        // Interior segments must appear in order.
+        // Interior segments must appear in order, after the prefix.
         for segment in segments.dropFirst().dropLast() where !segment.isEmpty {
             guard let range = host.range(of: segment, range: index ..< host.endIndex) else { return false }
             index = range.upperBound
+        }
+        // A trailing non-"*" segment must anchor at the end *without overlapping*
+        // what the prefix/interior already consumed — otherwise "ab*b" would match
+        // the bare "ab" (prefix "ab" and suffix "b" reusing the same 'b').
+        if segments.count > 1, let last = segments.last, !last.isEmpty {
+            guard host.hasSuffix(last),
+                  host.distance(from: index, to: host.endIndex) >= last.count
+            else { return false }
         }
         return true
     }

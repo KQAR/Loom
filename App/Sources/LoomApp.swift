@@ -14,11 +14,11 @@ struct LoomApp: App {
     private let mcp = MCPServer(engine: ProxyEngine.shared, appVersion: appVersion)
 
     init() {
+        // The proxy is started by AppFeature's one-shot boot effect (fired by the
+        // always-present menu-bar label at launch) — the single start owner, so we
+        // don't race a second bind here. The MCP server is independent; start it.
         let mcp = self.mcp
         Task {
-            // Start capture immediately so traffic is collected even before any
-            // window is opened.
-            try? await ProxyEngine.shared.start(port: 9090)
             do {
                 let port = try await mcp.start()
                 NSLog("Loom MCP server listening on 127.0.0.1:\(port)")

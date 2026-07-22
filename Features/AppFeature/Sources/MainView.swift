@@ -22,7 +22,7 @@ public struct MainView: View {
             content
                 .toolbar { toolbarContent }
         }
-        .task { store.send(.task) }
+        .task { store.send(.viewAppeared) }
         .sheet(item: editorBinding) { rule in
             RuleEditorView(
                 rule: rule,
