@@ -1,4 +1,5 @@
 import NIOSSL
+import X509
 import XCTest
 @testable import ProxyCore
 import SharedModels
@@ -53,6 +54,21 @@ final class CertificateAuthorityTests: XCTestCase {
             XCTAssertLessThanOrEqual(octets, 20, "leaf serial must be ≤ 20 octets (RFC 5280), got \(octets)")
             XCTAssertGreaterThan(octets, 0, "serial must be positive/non-empty")
         }
+    }
+
+    func test_mintedLeaf_carriesSKIAndAKIMatchingCA() throws {
+        // Regression: strict verifiers (Python 3.13's default VERIFY_X509_STRICT)
+        // reject a leaf without an Authority Key Identifier.
+        let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
+        let leaf = try ca.mintLeaf(for: "aki.example.test")
+
+        let leafSKI = try XCTUnwrap(try leaf.extensions.subjectKeyIdentifier)
+        XCTAssertFalse(leafSKI.keyIdentifier.isEmpty)
+
+        let aki = try XCTUnwrap(try leaf.extensions.authorityKeyIdentifier)
+        let caSKI = try XCTUnwrap(try ca.certificate.extensions.subjectKeyIdentifier)
+        XCTAssertEqual(aki.keyIdentifier, caSKI.keyIdentifier,
+                       "leaf AKI must reference the issuing CA's SKI")
     }
 
     func test_fingerprint_isColonSeparatedSHA256() throws {
