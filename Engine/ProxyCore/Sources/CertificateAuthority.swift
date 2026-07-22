@@ -96,10 +96,14 @@ final class CertificateAuthority: @unchecked Sendable {
 
         let leaf = try mintLeaf(for: host)
         let nioLeaf = try NIOSSLCertificate(bytes: Array(leaf.serializeAsPEM().pemString.utf8), format: .pem)
-        let config = TLSConfiguration.makeServerConfiguration(
+        var config = TLSConfiguration.makeServerConfiguration(
             certificateChain: [.certificate(nioLeaf), .certificate(nioCACert)],
             privateKey: .privateKey(nioLeafKey)
         )
+        // Advertise HTTP/2 so h2 clients negotiate it (we demux + capture per
+        // stream); http/1.1 stays the fallback. A client that offers neither just
+        // gets http/1.1.
+        config.applicationProtocols = ["h2", "http/1.1"]
         let context = try NIOSSLContext(configuration: config)
         contextCache[host] = context
         return context

@@ -2,6 +2,8 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOHTTP1
+import NIOHTTP2
+import NIOTLS
 import NIOSSL
 import SharedModels
 
@@ -177,11 +179,15 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 channel.writeAndFlush(NIOAny(ack)).whenComplete { _ in
                     pipeline.addHandler(NIOSSLServerHandler(context: sslContext), name: "loom.tls", position: .first)
                         .flatMap {
-                            // Named so a WebSocket upgrade can strip the HTTP framing
-                            // (keeping loom.tls) and splice a raw frame relay.
-                            pipeline.addHandler(HTTPResponseEncoder(), name: "loom.mitm.encoder")
-                                .flatMap { pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)), name: "loom.mitm.decoder") }
-                                .flatMap { pipeline.addHandler(TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder), name: "loom.mitm.intercept") }
+                            // After TLS, branch on the negotiated ALPN protocol: HTTP/2
+                            // if the client asked for it, else the HTTP/1.1 stack.
+                            let alpn = ApplicationProtocolNegotiationHandler { negotiated in
+                                Self.configureInterceptedPipeline(
+                                    channel: channel, negotiated: negotiated,
+                                    host: host, port: port, store: store, forwarder: forwarder
+                                )
+                            }
+                            return pipeline.addHandler(alpn)
                         }
                         .whenComplete { result in
                             switch result {
@@ -194,6 +200,30 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                         }
                 }
             }
+    }
+
+    /// Install the decrypted capture stack once ALPN is known. HTTP/2 demuxes each
+    /// stream into an HTTP/1-shaped child channel (via the h2↔h1 codec) so the same
+    /// `TLSInterceptHandler` captures + forwards it; http/1.1 uses the named h1 stack
+    /// (kept removable so a WebSocket upgrade can splice a raw relay).
+    private static func configureInterceptedPipeline(
+        channel: Channel, negotiated: ALPNResult,
+        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding
+    ) -> EventLoopFuture<Void> {
+        if case .negotiated("h2") = negotiated {
+            return channel.configureHTTP2Pipeline(mode: .server) { streamChannel in
+                streamChannel.pipeline.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
+                    .flatMap {
+                        streamChannel.pipeline.addHandler(
+                            TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder)
+                        )
+                    }
+            }.map { _ in () }
+        }
+        let pipeline = channel.pipeline
+        return pipeline.addHandler(HTTPResponseEncoder(), name: "loom.mitm.encoder")
+            .flatMap { pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)), name: "loom.mitm.decoder") }
+            .flatMap { pipeline.addHandler(TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder), name: "loom.mitm.intercept") }
     }
 
     // MARK: - CONNECT (blind HTTPS pass-through)
