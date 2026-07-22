@@ -87,6 +87,20 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         let sourcePort = channel.remoteAddress?.port
         let proxyPort = channel.localAddress?.port
 
+        // WebSocket upgrade (ws://): splice the connection and capture frames
+        // instead of doing a request/response fetch.
+        if WebSocketRelay.isUpgrade(head) {
+            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
+            let port = url.port ?? (url.scheme?.lowercased() == "wss" ? 443 : 80)
+            WebSocketRelay.start(
+                clientChannel: channel, head: head, requestPath: Self.originForm(url), host: url.host ?? "",
+                port: port, upstreamTLS: url.scheme?.lowercased() == "wss",
+                removeHandlerNames: ["loom.http.encoder", "loom.http.decoder", "loom.proxy"],
+                flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
+            )
+            return
+        }
+
         Task {
             let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
             await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))
@@ -96,6 +110,16 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
             )
         }
+    }
+
+    /// Origin-form request target (path + query) for an absolute proxied URL.
+    private static func originForm(_ url: URL) -> String {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.path.isEmpty ? "/" : url.path
+        }
+        let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
+        if let query = components.percentEncodedQuery { return "\(path)?\(query)" }
+        return path
     }
 
     // MARK: - CONNECT
