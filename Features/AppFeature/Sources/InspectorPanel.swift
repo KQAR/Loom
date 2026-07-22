@@ -118,14 +118,20 @@ private struct ResponsePane: View {
     let flow: Flow
     let onClose: () -> Void
 
-    enum Tab: Hashable { case raw, headers, cookies, body }
+    enum Tab: Hashable { case messages, raw, headers, cookies, body }
     @State private var tab: Tab = .raw
 
     private var cookies: [CookieItem] {
         CookieParsing.responseCookies(flow.response?.headers ?? [])
     }
 
+    private var messages: [WebSocketMessage] { flow.webSocketMessages ?? [] }
+
     private var tabs: [(String, Tab)] {
+        if flow.isWebSocket {
+            // A WebSocket flow's payload is its frames, not a body.
+            return [("Messages(\(messages.count))", .messages), ("Headers(\(flow.response?.headers.count ?? 0))", .headers)]
+        }
         var t: [(String, Tab)] = [
             ("Raw", .raw),
             ("Headers(\(flow.response?.headers.count ?? 0))", .headers),
@@ -178,8 +184,11 @@ private struct ResponsePane: View {
 
             ScrollView {
                 Group {
-                    if let response = flow.response {
+                    if tab == .messages {
+                        WebSocketMessagesView(messages: messages)
+                    } else if let response = flow.response {
                         switch tab {
+                        case .messages: EmptyView()
                         case .raw: RawView(text: Self.rawText(flow))
                         case .headers: HeadersList(headers: response.headers)
                         case .cookies: CookiesView(cookies: cookies)
@@ -200,8 +209,11 @@ private struct ResponsePane: View {
                 }
             }
         }
+        .onAppear { if flow.isWebSocket { tab = .messages } }
         .onChange(of: flow.id) {
-            if tab == .cookies, cookies.isEmpty { tab = .raw }
+            if flow.isWebSocket { tab = .messages }
+            else if tab == .messages { tab = .raw }
+            else if tab == .cookies, cookies.isEmpty { tab = .raw }
         }
     }
 
@@ -428,6 +440,45 @@ private struct CookiesView: View {
                             Text(cookie.attributes)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// WebSocket frame log: one row per message, ↑ client→server / ↓ server→client,
+/// with a kind badge and the text (or a byte count for binary/control frames).
+private struct WebSocketMessagesView: View {
+    let messages: [WebSocketMessage]
+
+    var body: some View {
+        if messages.isEmpty {
+            Text("No frames yet").foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
+                ForEach(messages) { message in
+                    HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
+                        Image(systemName: message.direction == .clientToServer ? "arrow.up" : "arrow.down")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(message.direction == .clientToServer ? Color.orange : Color.accentColor)
+                            .frame(width: 14)
+                        Text(message.kind.rawValue)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(.quaternary, in: Capsule())
+                        if let text = message.textPayload {
+                            Text(text)
+                                .font(.callout.monospaced())
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            Text("\(message.payload.count) bytes")
+                                .font(.callout.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }

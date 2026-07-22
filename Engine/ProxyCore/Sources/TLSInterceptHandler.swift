@@ -65,6 +65,21 @@ final class TLSInterceptHandler: ChannelInboundHandler, @unchecked Sendable {
         let sourcePort = channel.remoteAddress?.port
         let proxyPort = channel.localAddress?.port
 
+        // WebSocket over TLS (wss): splice the decrypted stream and originate a
+        // fresh TLS connection upstream, capturing frames. Keep the client's TLS
+        // handler in place; strip only the HTTP framing + this handler.
+        if WebSocketRelay.isUpgrade(head) {
+            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
+            let requestPath = head.uri.hasPrefix("/") ? head.uri : "/\(head.uri)"
+            WebSocketRelay.start(
+                clientChannel: channel, head: head, requestPath: requestPath, host: host,
+                port: port, upstreamTLS: true,
+                removeHandlerNames: ["loom.mitm.encoder", "loom.mitm.decoder", "loom.mitm.intercept"],
+                flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
+            )
+            return
+        }
+
         Task {
             let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
             await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))

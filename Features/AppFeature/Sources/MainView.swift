@@ -185,6 +185,12 @@ public struct MainView: View {
                             .foregroundStyle(Color.purple)
                             .help("Modified by rules: \(applied.joined(separator: ", "))")
                     }
+                    if flow.isWebSocket {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.caption2)
+                            .foregroundStyle(Color.accentColor)
+                            .help("WebSocket · \(flow.webSocketMessages?.count ?? 0) messages")
+                    }
                 }
             }
 

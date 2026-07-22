@@ -102,6 +102,8 @@ Both the UI and the AI act through the **same** `ProxyEngine.shared` — "AI mod
 | `set_group_enabled` | **write** | enable/disable every rule in a group (scenario switching) |
 | `export_har` | **write** | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
 
+WebSocket flows (ws:// and wss:// via MITM) are captured as a single flow whose frames appear in `get_flow_detail` under `webSocket.messages` (direction/kind/text-or-bytes) and are flagged in `get_recent_flows`.
+
 Write tools are the reason Loom exists. When adding one (M3: `create_rule`, breakpoints, `diff_flows`), it must be scoped and — if destructive — gated per [`INTERACTION.md`](INTERACTION.md).
 
 ### Key Modules

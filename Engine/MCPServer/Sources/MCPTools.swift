@@ -513,6 +513,10 @@ struct MCPToolExecutor {
         if let error = flow.error { out["error"] = error }
         if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
         if let applied = flow.appliedRules { out["appliedRules"] = applied }
+        if let messages = flow.webSocketMessages {
+            out["webSocket"] = true
+            out["wsMessageCount"] = messages.count
+        }
         if let app = flow.sourceApp {
             var appOut: [String: Any] = ["name": app.name, "pid": Int(app.pid)]
             if let bundleID = app.bundleID { appOut["bundleID"] = bundleID }
@@ -534,6 +538,24 @@ struct MCPToolExecutor {
                 "status": response.statusCode,
                 "headers": response.headers.map { ["name": $0.name, "value": $0.value] },
                 "body": response.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
+            ]
+        }
+        if let messages = flow.webSocketMessages {
+            out["webSocket"] = [
+                "messageCount": messages.count,
+                "messages": messages.map { message in
+                    var msg: [String: Any] = [
+                        "direction": message.direction.rawValue,
+                        "kind": message.kind.rawValue,
+                        "isFinal": message.isFinal,
+                    ]
+                    if let text = message.textPayload {
+                        msg["text"] = text
+                    } else {
+                        msg["bytes"] = message.payload.count
+                    }
+                    return msg
+                },
             ]
         }
         return out

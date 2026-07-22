@@ -177,11 +177,11 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 channel.writeAndFlush(NIOAny(ack)).whenComplete { _ in
                     pipeline.addHandler(NIOSSLServerHandler(context: sslContext), name: "loom.tls", position: .first)
                         .flatMap {
-                            pipeline.addHandlers([
-                                HTTPResponseEncoder(),
-                                ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
-                                TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder),
-                            ])
+                            // Named so a WebSocket upgrade can strip the HTTP framing
+                            // (keeping loom.tls) and splice a raw frame relay.
+                            pipeline.addHandler(HTTPResponseEncoder(), name: "loom.mitm.encoder")
+                                .flatMap { pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)), name: "loom.mitm.decoder") }
+                                .flatMap { pipeline.addHandler(TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder), name: "loom.mitm.intercept") }
                         }
                         .whenComplete { result in
                             switch result {
