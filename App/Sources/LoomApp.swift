@@ -46,7 +46,7 @@ struct LoomApp: App {
 }
 
 private let appVersion: String =
-    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.1"
 
 /// Quit-time cleanup: if the system proxy still routes through Loom, turn it
 /// off before the process dies — otherwise every app on the machine keeps

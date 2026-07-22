@@ -23,6 +23,8 @@ let project = Project(
             infoPlist: .extendingDefault(with: [
                 "LSUIElement": true, // agent app: no Dock icon, status bar only
                 "CFBundleDisplayName": "Loom",
+                "CFBundleShortVersionString": "0.0.1", // marketing version
+                "CFBundleVersion": "1",                // build number
                 // A proxy must reach arbitrary upstreams, including plain HTTP;
                 // without this, ATS blocks the app's own forwarding (502s).
                 "NSAppTransportSecurity": .dictionary([
