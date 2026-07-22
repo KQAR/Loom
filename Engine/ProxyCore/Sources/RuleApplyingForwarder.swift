@@ -46,6 +46,65 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         return result
     }
 
+    /// Stream the response through when no matched rule touches it; otherwise fall
+    /// back to the buffered path (a body rewrite / mock / block needs the whole
+    /// body). Request-side rules and delay still apply either way.
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        let plan = RuleEngine.planRequest(
+            state: rules.snapshot(), method: method, url: url, headers: headers, body: body
+        )
+        let touchesResponse = plan.shortCircuit != nil || plan.matched.contains { rule in
+            (rule.actions.rewriteResponse?.isEmpty == false) || !rule.actions.activeResponseSubstitutions.isEmpty
+        }
+
+        if touchesResponse {
+            // Buffered: reuse `forward` (re-plans and applies the response changes).
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        let result = try await self.forward(method: method, url: url, headers: headers, body: body)
+                        continuation.yield(.head(statusCode: result.statusCode, headers: result.headers, appliedRules: result.appliedRules))
+                        if !result.body.isEmpty { continuation.yield(.body(result.body)) }
+                        continuation.yield(.end)
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+
+        // Streaming: the request is already rewritten in the plan; the response is
+        // relayed chunk-by-chunk with the applied-rule names stamped on the head.
+        let base = self.base
+        let appliedRules = plan.appliedRuleNames
+        let delayMs = plan.delayMilliseconds
+        let planMethod = plan.method
+        let planURL = plan.url
+        let planHeaders = plan.headers
+        let planBody = plan.body
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                if delayMs > 0 { try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
+                do {
+                    for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: planBody) {
+                        switch event {
+                        case let .head(code, headers, _):
+                            continuation.yield(.head(statusCode: code, headers: headers, appliedRules: appliedRules))
+                        case .body, .end:
+                            continuation.yield(event)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     private static func synthesize(_ mock: MockResponseAction) -> ForwardResult {
         var headers = mock.headers
         if let contentType = mock.contentType,

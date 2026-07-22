@@ -90,6 +90,45 @@ enum HTTPUtil {
         }
     }
 
+    // MARK: - Streaming response writers (M4)
+
+    /// Write just the response head, framed as chunked so the body can stream in
+    /// pieces without knowing its total length up front (SSE / large downloads).
+    /// Keep-alive is preserved via chunked framing. Must hop to the event loop.
+    static func writeResponseHead(channel: Channel, status: Int, headers: [HeaderPair], keepAlive: Bool) {
+        var responseHeaders = HTTPHeaders()
+        for header in headers {
+            let lower = header.name.lowercased()
+            if isHopByHop(lower) || lower == "content-length" || lower == "transfer-encoding" { continue }
+            responseHeaders.add(name: header.name, value: header.value)
+        }
+        responseHeaders.replaceOrAdd(name: "Transfer-Encoding", value: "chunked")
+        responseHeaders.replaceOrAdd(name: "Connection", value: keepAlive ? "keep-alive" : "close")
+        let head = HTTPResponseHead(version: .http1_1, status: .init(statusCode: status), headers: responseHeaders)
+        channel.eventLoop.execute {
+            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
+        }
+    }
+
+    /// Write one streamed body chunk (chunk-encoded by the response encoder).
+    static func writeResponseChunk(channel: Channel, data: Data) {
+        guard !data.isEmpty else { return }
+        var buffer = channel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        channel.eventLoop.execute {
+            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
+        }
+    }
+
+    /// Terminate a streamed response (sends the final chunk) and close if needed.
+    static func finishResponse(channel: Channel, keepAlive: Bool) {
+        channel.eventLoop.execute {
+            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil))).whenComplete { _ in
+                if !keepAlive { channel.close(promise: nil) }
+            }
+        }
+    }
+
     /// A shared session for forwarding and replay. Redirects are surfaced as-is
     /// so the debugger shows the real 3xx rather than the followed result.
     /// Upstream connections must be direct: with Loom set as the system proxy,

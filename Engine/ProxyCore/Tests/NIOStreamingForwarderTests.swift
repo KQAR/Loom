@@ -67,6 +67,65 @@ final class NIOStreamingForwarderTests: XCTestCase {
         XCTAssertEqual(recorder.headerValue("Host"), "keep.example.com",
                        "a caller-supplied Host must survive (keepHostHeader relies on this)")
     }
+
+    func test_forwardStream_deliversChunksInOrder() async throws {
+        // A chunked server that emits three body parts with small gaps, so they
+        // arrive as distinct reads and prove the response streams (not buffers).
+        let chunkGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { try? chunkGroup.syncShutdownGracefully() }
+        let chunkServer = try ServerBootstrap(group: chunkGroup)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { ch in
+                ch.pipeline.configureHTTPServerPipeline().flatMap {
+                    ch.pipeline.addHandler(ChunkingResponder())
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        defer { try? chunkServer.close().wait() }
+        let url = URL(string: "http://127.0.0.1:\(chunkServer.localAddress!.port!)/stream")!
+
+        let forwarder = NIOStreamingForwarder(group: group)
+        var order: [String] = []
+        var bodies: [String] = []
+        for try await event in forwarder.forwardStream(method: "GET", url: url, headers: [], body: nil) {
+            switch event {
+            case .head: order.append("head")
+            case let .body(data): order.append("body"); bodies.append(String(decoding: data, as: UTF8.self))
+            case .end: order.append("end")
+            }
+        }
+
+        XCTAssertEqual(order.first, "head", "head must arrive first")
+        XCTAssertEqual(order.last, "end", "end must arrive last")
+        XCTAssertGreaterThanOrEqual(bodies.count, 2, "body should arrive in multiple streamed chunks")
+        XCTAssertEqual(bodies.joined(), "part1part2part3")
+    }
+}
+
+/// Responds with a chunked body written in three spaced-out parts.
+private final class ChunkingResponder: ChannelInboundHandler {
+    typealias InboundIn = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        guard case .end = unwrapInboundIn(data) else { return }
+        var headers = HTTPHeaders()
+        headers.add(name: "Transfer-Encoding", value: "chunked")
+        context.writeAndFlush(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))), promise: nil)
+
+        let loop = context.eventLoop
+        let parts = ["part1", "part2", "part3"]
+        for (index, part) in parts.enumerated() {
+            loop.scheduleTask(in: .milliseconds(Int64(index) * 30)) {
+                var buffer = context.channel.allocator.buffer(capacity: part.utf8.count)
+                buffer.writeString(part)
+                context.writeAndFlush(self.wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+            }
+        }
+        loop.scheduleTask(in: .milliseconds(Int64(parts.count) * 30)) {
+            context.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+        }
+    }
 }
 
 /// Records the last request the server saw and echoes its body back with 200.

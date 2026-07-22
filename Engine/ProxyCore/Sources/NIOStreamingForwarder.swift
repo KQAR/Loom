@@ -25,48 +25,65 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        guard let host = url.host else {
-            throw ForwarderError.invalidURL(url.absoluteString)
+        // Collect the streaming events back into a buffered result.
+        var statusCode = 200
+        var responseHeaders: [HeaderPair] = []
+        var bodyData = Data()
+        for try await event in forwardStream(method: method, url: url, headers: headers, body: body) {
+            switch event {
+            case let .head(code, headers, _): statusCode = code; responseHeaders = headers
+            case let .body(chunk): bodyData.append(chunk)
+            case .end: break
+            }
         }
-        let isTLS = (url.scheme?.lowercased() == "https")
-        let port = url.port ?? (isTLS ? 443 : 80)
+        return ForwardResult(statusCode: statusCode, headers: responseHeaders, body: bodyData)
+    }
 
-        // Build the TLS context up front so the channel initializer can't throw.
-        let sslHandler: NIOSSLClientHandler? = try isTLS ? Self.makeSSLHandler(host: host) : nil
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        AsyncThrowingStream { continuation in
+            guard let host = url.host else {
+                continuation.finish(throwing: ForwarderError.invalidURL(url.absoluteString))
+                return
+            }
+            let isTLS = (url.scheme?.lowercased() == "https")
+            let port = url.port ?? (isTLS ? 443 : 80)
 
-        let promise = group.next().makePromise(of: ForwardResult.self)
-        let bootstrap = ClientBootstrap(group: group)
-            .connectTimeout(connectTimeout)
-            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-            .channelInitializer { channel in
-                let tlsFuture: EventLoopFuture<Void> = sslHandler.map {
-                    channel.pipeline.addHandler($0)
-                } ?? channel.eventLoop.makeSucceededVoidFuture()
-                return tlsFuture
-                    .flatMap { channel.pipeline.addHTTPClientHandlers() }
-                    // Decompress gzip/deflate so the captured body is plaintext; the
-                    // now-wrong Content-Encoding/Length are stripped from the result.
-                    .flatMap { channel.pipeline.addHandler(NIOHTTPResponseDecompressor(limit: .none)) }
-                    .flatMap { channel.pipeline.addHandler(ResponseCollector(promise: promise)) }
+            let sslHandler: NIOSSLClientHandler?
+            do {
+                sslHandler = try isTLS ? Self.makeSSLHandler(host: host) : nil
+            } catch {
+                continuation.finish(throwing: error)
+                return
             }
 
-        let channel: Channel
-        do {
-            channel = try await bootstrap.connect(host: host, port: port).get()
-        } catch {
-            promise.fail(error)
-            throw error
-        }
-
-        Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
-
-        do {
-            let result = try await promise.futureResult.get()
-            channel.close(promise: nil)
-            return result
-        } catch {
-            channel.close(promise: nil)
-            throw error
+            let group = self.group
+            let connectTimeout = self.connectTimeout
+            let box = ChannelBox()
+            let task = Task {
+                let bootstrap = ClientBootstrap(group: group)
+                    .connectTimeout(connectTimeout)
+                    .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                    .channelInitializer { channel in
+                        let tlsFuture: EventLoopFuture<Void> = sslHandler.map {
+                            channel.pipeline.addHandler($0)
+                        } ?? channel.eventLoop.makeSucceededVoidFuture()
+                        return tlsFuture
+                            .flatMap { channel.pipeline.addHTTPClientHandlers() }
+                            // Decompress gzip/deflate so relayed/captured bytes are plaintext;
+                            // the now-wrong Content-Encoding/Length are stripped on `.head`.
+                            .flatMap { channel.pipeline.addHandler(NIOHTTPResponseDecompressor(limit: .none)) }
+                            .flatMap { channel.pipeline.addHandler(StreamingResponseHandler(continuation: continuation)) }
+                    }
+                do {
+                    let channel = try await bootstrap.connect(host: host, port: port).get()
+                    box.set(channel)
+                    Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            // On stream completion/cancellation, stop connecting and close the socket.
+            continuation.onTermination = { _ in task.cancel(); box.close() }
         }
     }
 
@@ -151,58 +168,74 @@ enum ForwarderError: Error {
     case connectionClosed
 }
 
-/// Collects one HTTP response (head + full body) and fulfills the promise on `.end`.
-private final class ResponseCollector: ChannelInboundHandler, @unchecked Sendable {
+/// Thread-safe holder so the stream's onTermination can close the upstream channel
+/// once it's connected (connect happens asynchronously inside a Task).
+private final class ChannelBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var channel: Channel?
+    private var closed = false
+
+    func set(_ channel: Channel) {
+        lock.lock(); defer { lock.unlock() }
+        if closed { channel.close(promise: nil) } else { self.channel = channel }
+    }
+
+    func close() {
+        lock.lock(); defer { lock.unlock() }
+        closed = true
+        channel?.close(promise: nil)
+        channel = nil
+    }
+}
+
+/// Relays one HTTP response upstream→stream as it arrives: `.head` then each body
+/// chunk then `.end`, so SSE / long-poll / large downloads flow through instead of
+/// being buffered. Closes the upstream channel when the response ends.
+private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPClientResponsePart
 
-    private let promise: EventLoopPromise<ForwardResult>
-    private var head: HTTPResponseHead?
-    private var body: ByteBuffer?
+    private let continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation
     private var finished = false
 
-    init(promise: EventLoopPromise<ForwardResult>) {
-        self.promise = promise
+    init(continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation) {
+        self.continuation = continuation
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         switch unwrapInboundIn(data) {
         case let .head(head):
-            self.head = head
+            // Body is decompressed by the decompressor, so Content-Encoding/Length
+            // no longer describe the bytes — strip them (the client writer re-frames).
+            let headers = HTTPUtil.sanitizeDecodedResponseHeaders(HTTPUtil.headerPairs(head.headers))
+            continuation.yield(.head(statusCode: Int(head.status.code), headers: headers, appliedRules: []))
         case var .body(chunk):
-            if body == nil { body = context.channel.allocator.buffer(capacity: chunk.readableBytes) }
-            body?.writeBuffer(&chunk)
+            if let bytes = chunk.readBytes(length: chunk.readableBytes) {
+                continuation.yield(.body(Data(bytes)))
+            }
         case .end:
-            complete(context: context)
+            finish(nil)
+            context.close(promise: nil)
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        if !finished { finish(.failure(ForwarderError.connectionClosed)) }
+        finish(ForwarderError.connectionClosed)
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        if !finished { finish(.failure(error)) }
+        finish(error)
         context.close(promise: nil)
     }
 
-    private func complete(context: ChannelHandlerContext) {
-        guard let head else { finish(.failure(ForwarderError.connectionClosed)); return }
-        let bytes = body.flatMap { buf in buf.getBytes(at: buf.readerIndex, length: buf.readableBytes) } ?? []
-        let rawHeaders = HTTPUtil.headerPairs(head.headers)
-        // Body was decompressed by NIOHTTPResponseDecompressor, so Content-Encoding /
-        // Content-Length no longer describe the bytes — drop them (writer recomputes).
-        let result = ForwardResult(
-            statusCode: Int(head.status.code),
-            headers: HTTPUtil.sanitizeDecodedResponseHeaders(rawHeaders),
-            body: Data(bytes)
-        )
-        finish(.success(result))
-    }
-
-    private func finish(_ result: Result<ForwardResult, Error>) {
+    private func finish(_ error: Error?) {
         guard !finished else { return }
         finished = true
-        promise.completeWith(result)
+        if let error {
+            continuation.finish(throwing: error)
+        } else {
+            continuation.yield(.end)
+            continuation.finish()
+        }
     }
 }

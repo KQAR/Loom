@@ -68,31 +68,11 @@ final class TLSInterceptHandler: ChannelInboundHandler, @unchecked Sendable {
         Task {
             let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
             await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))
-            do {
-                let result = try await forwarder.forward(method: method, url: url, headers: headers, body: body)
-                await store.upsert(Flow(
-                    id: flowID,
-                    request: capturedRequest,
-                    response: CapturedResponse(statusCode: result.statusCode, headers: result.headers, body: result.body),
-                    startedAt: startedAt,
-                    completedAt: Date(),
-                    sourceApp: sourceApp,
-                    appliedRules: result.appliedRules.isEmpty ? nil : result.appliedRules
-                ))
-                HTTPUtil.writeResponse(channel: channel, status: result.statusCode,
-                                       headers: result.headers, body: result.body, keepAlive: keepAlive)
-            } catch {
-                await store.upsert(Flow(
-                    id: flowID,
-                    request: capturedRequest,
-                    startedAt: startedAt,
-                    completedAt: Date(),
-                    error: error.localizedDescription,
-                    sourceApp: sourceApp
-                ))
-                HTTPUtil.writeResponse(channel: channel, status: 502, headers: [],
-                                       body: Data("Loom upstream error: \(error.localizedDescription)\n".utf8), keepAlive: false)
-            }
+            await StreamRelay.relay(
+                stream: forwarder.forwardStream(method: method, url: url, headers: headers, body: body),
+                channel: channel, keepAlive: keepAlive, flowID: flowID,
+                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
+            )
         }
     }
 
