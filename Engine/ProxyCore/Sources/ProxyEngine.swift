@@ -8,7 +8,7 @@ import SharedModels
 public actor ProxyEngine: ProxyControlling {
     public static let shared = ProxyEngine()
 
-    private let store = FlowStore()
+    private let store: FlowStore
     private let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
     private lazy var server = ProxyServer(group: group)
 
@@ -24,6 +24,8 @@ public actor ProxyEngine: ProxyControlling {
     private var boundPort = 9090
 
     public init() {
+        // Durable flow store (SQLite) so captures survive relaunch.
+        self.store = FlowStore(persistence: FlowPersistence.makeDefault())
         let rulesConfig = RulesConfig() // persisted across launches (JSON file in App Support)
         self.rulesConfig = rulesConfig
         // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
@@ -54,6 +56,7 @@ public actor ProxyEngine: ProxyControlling {
     /// interception can be exercised without the network or the Keychain. The
     /// config is non-persisting so tests never read or clobber the real scope.
     init(forwarder: UpstreamForwarding, caStore: CAStore) {
+        self.store = FlowStore(persistence: nil) // no disk in tests
         let rulesConfig = RulesConfig(fileURL: nil)
         self.rulesConfig = rulesConfig
         self.forwarder = RuleApplyingForwarder(base: forwarder, rules: rulesConfig)
@@ -66,6 +69,7 @@ public actor ProxyEngine: ProxyControlling {
     @discardableResult
     public func start(port: Int = 9090) async throws -> Int {
         guard !running else { return boundPort }
+        await store.loadPersisted(limit: 2000) // restore prior captures once
         let ca = ensureCA()
         boundPort = try await server.start(
             host: "127.0.0.1",

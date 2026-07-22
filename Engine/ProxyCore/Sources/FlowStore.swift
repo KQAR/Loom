@@ -8,9 +8,21 @@ actor FlowStore {
     private let capacity: Int
     private var continuations: [UUID: AsyncStream<Flow>.Continuation] = [:]
     private var recording = true
+    /// Durable backing (nil in tests). Only completed flows are written.
+    private let persistence: FlowPersistence?
+    private var didLoadPersisted = false
 
-    init(capacity: Int = 2000) {
+    init(capacity: Int = 2000, persistence: FlowPersistence? = nil) {
         self.capacity = capacity
+        self.persistence = persistence
+    }
+
+    /// Load recent persisted flows into the ring once (at boot), so captures
+    /// survive a relaunch. No broadcast — these are history, not live updates.
+    func loadPersisted(limit: Int) {
+        guard !didLoadPersisted, flows.isEmpty, let persistence else { return }
+        didLoadPersisted = true
+        flows = persistence.recent(limit: limit).reversed() // ring is oldest-first
     }
 
     var isRecording: Bool { recording }
@@ -36,6 +48,11 @@ actor FlowStore {
                 flows.removeFirst(flows.count - capacity)
             }
         }
+        // Persist only completed exchanges — in-flight flows live in the ring, so
+        // streaming/WebSocket flows write once at the end, not per chunk/frame.
+        if flow.completedAt != nil {
+            persistence?.save(flow)
+        }
         for continuation in continuations.values {
             continuation.yield(flow)
         }
@@ -47,6 +64,7 @@ actor FlowStore {
 
     func clear() {
         flows.removeAll()
+        persistence?.deleteAll()
     }
 
     func flow(id: UUID) -> Flow? {
