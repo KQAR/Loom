@@ -177,10 +177,10 @@ private struct ResponsePane: View {
                         .textSelection(.enabled)
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(Color.purple)
+                .foregroundStyle(Color.accentColor)
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.vertical, LoomTheme.Space.xs)
-                .background(Color.purple.opacity(0.08))
+                .background(Color.accentColor.opacity(LoomTheme.attentionOpacity))
                 Divider()
             }
 
@@ -319,7 +319,7 @@ private struct SummaryTable: View {
             row("Started", flow.startedAt.formatted(date: .abbreviated, time: .standard))
             if flow.replayedFrom != nil { row("Origin", "Replayed") }
             if let applied = flow.appliedRules, !applied.isEmpty {
-                row("Rules", applied.joined(separator: ", "), color: .purple)
+                row("Rules", applied.joined(separator: ", "), color: .accentColor)
             }
             if let error = flow.error { row("Error", error, color: .red) }
         }

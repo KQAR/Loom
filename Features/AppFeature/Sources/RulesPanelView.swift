@@ -26,6 +26,17 @@ struct RulesPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let message = store.rulesMessage {
+                HStack(spacing: LoomTheme.Space.xs) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(message).lineLimit(2)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(.red)
+                .padding(.horizontal, LoomTheme.Space.md)
+                .padding(.vertical, LoomTheme.Space.xs)
+            }
             Divider()
             if store.rulesState.rules.isEmpty {
                 emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)

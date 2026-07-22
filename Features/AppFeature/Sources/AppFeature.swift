@@ -46,6 +46,10 @@ public struct AppFeature: Sendable {
         /// tells save whether to add or update it.
         public var editingRule: TrafficRule?
         public var editingRuleIsNew = false
+        /// Transient error shown in the Rules panel when a rule write (or replay)
+        /// fails, so a failure isn't silently swallowed. Cleared when the next
+        /// write starts.
+        public var rulesMessage: String?
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
@@ -136,6 +140,7 @@ public struct AppFeature: Sendable {
         case toggleRulesTapped
         case proxyStarted(port: Int)
         case proxyStartFailed(String)
+        case ruleWriteFailed(String)
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
         case rulesStateLoaded(RulesState)
@@ -221,6 +226,10 @@ public struct AppFeature: Sendable {
             case let .proxyStartFailed(message):
                 state.status.isRunning = false
                 state.systemProxyMessage = "Proxy failed to start: \(message)"
+                return .none
+
+            case let .ruleWriteFailed(message):
+                state.rulesMessage = message
                 return .none
 
             case .toggleProxyTapped:
@@ -327,6 +336,7 @@ public struct AppFeature: Sendable {
 
             case let .ruleEditorSaved(rule, isNew):
                 state.editingRule = nil
+                state.rulesMessage = nil
                 if isNew {
                     // Saving a new rule means "make it live now": flip the master
                     // switch too so it isn't silently inert.
@@ -334,7 +344,8 @@ public struct AppFeature: Sendable {
                     state.rulesState.rules.append(rule) // optimistic; re-synced below
                     return .run { send in
                         await proxyClient.setRulesEnabled(true)
-                        try? await proxyClient.addRule(rule)
+                        do { try await proxyClient.addRule(rule) }
+                        catch { await send(.ruleWriteFailed("Couldn’t save rule: \(error.localizedDescription)")) }
                         await send(.rulesStateLoaded(proxyClient.rulesState()))
                     }
                 }
@@ -342,7 +353,8 @@ public struct AppFeature: Sendable {
                     state.rulesState.rules[index] = rule
                 }
                 return .run { send in
-                    try? await proxyClient.updateRule(rule)
+                    do { try await proxyClient.updateRule(rule) }
+                    catch { await send(.ruleWriteFailed("Couldn’t update rule: \(error.localizedDescription)")) }
                     await send(.rulesStateLoaded(proxyClient.rulesState()))
                 }
 
@@ -354,14 +366,18 @@ public struct AppFeature: Sendable {
                 guard var rule = state.rulesState.rules.first(where: { $0.id == id }) else { return .none }
                 rule.isEnabled.toggle()
                 let updated = rule
+                state.rulesMessage = nil
                 return .run { send in
-                    try? await proxyClient.updateRule(updated)
+                    do { try await proxyClient.updateRule(updated) }
+                    catch { await send(.ruleWriteFailed("Couldn’t toggle rule: \(error.localizedDescription)")) }
                     await send(.rulesStateLoaded(proxyClient.rulesState()))
                 }
 
             case let .ruleDeleted(id):
+                state.rulesMessage = nil
                 return .run { send in
-                    try? await proxyClient.deleteRule(id)
+                    do { try await proxyClient.deleteRule(id) }
+                    catch { await send(.ruleWriteFailed("Couldn’t delete rule: \(error.localizedDescription)")) }
                     await send(.rulesStateLoaded(proxyClient.rulesState()))
                 }
 
@@ -399,9 +415,14 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .replayTapped(id):
+                state.rulesMessage = nil
                 return .run { send in
-                    let flow = try? await proxyClient.replay(id, .none)
-                    await send(.replayFinished(flow))
+                    do {
+                        let flow = try await proxyClient.replay(id, .none)
+                        await send(.replayFinished(flow))
+                    } catch {
+                        await send(.ruleWriteFailed("Replay failed: \(error.localizedDescription)"))
+                    }
                 }
 
             case let .replayFinished(flow):
