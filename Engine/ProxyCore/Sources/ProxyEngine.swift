@@ -280,7 +280,12 @@ public actor ProxyEngine: ProxyControlling {
             }
         }
 
-        let body: Data? = overrides.clearBody ? nil : (overrides.body ?? source.request.body)
+        let body: Data?
+        switch overrides.body {
+        case .keep: body = source.request.body
+        case .clear: body = nil
+        case let .replace(data): body = data
+        }
         let capturedRequest = CapturedRequest(method: method, url: urlString, headers: headers, body: body)
 
         let newID = UUID()

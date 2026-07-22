@@ -103,7 +103,7 @@ enum RuleEngine {
             case .url:
                 if let newURL = URL(string: sub.apply(to: plan.url.absoluteString)) { plan.url = newURL }
             case .header:
-                plan.headers = plan.headers.map { HeaderPair(id: $0.id, name: $0.name, value: sub.apply(to: $0.value)) }
+                plan.headers = plan.headers.map { HeaderPair(name: $0.name, value: sub.apply(to: $0.value)) }
             case .body:
                 if let body = plan.body, let text = String(data: body, encoding: .utf8) {
                     plan.body = Data(sub.apply(to: text).utf8)
@@ -119,7 +119,7 @@ enum RuleEngine {
             case .url:
                 continue // no URL on a response
             case .header:
-                result.headers = result.headers.map { HeaderPair(id: $0.id, name: $0.name, value: sub.apply(to: $0.value)) }
+                result.headers = result.headers.map { HeaderPair(name: $0.name, value: sub.apply(to: $0.value)) }
             case .body:
                 if let text = String(data: result.body, encoding: .utf8) {
                     result.body = Data(sub.apply(to: text).utf8)

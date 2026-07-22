@@ -1,7 +1,19 @@
 import Foundation
 
-/// How a flow should be mutated before being (re)sent. All fields are optional;
-/// nil means "leave as the source flow had it".
+/// How the request body should change on replay. A single sum type instead of a
+/// `body: Data?` + `clearBody: Bool` pair, whose fourth combination (a body *and*
+/// clearBody) was a representable illegal state.
+public enum BodyOverride: Equatable, Codable, Sendable {
+    /// Keep the source flow's body (the default).
+    case keep
+    /// Send an empty body.
+    case clear
+    /// Replace with these bytes.
+    case replace(Data)
+}
+
+/// How a flow should be mutated before being (re)sent. `method`/`url`/headers are
+/// optional (nil = "leave as the source flow had it"); the body uses `BodyOverride`.
 public struct ReplayOverrides: Equatable, Codable, Sendable {
     public var method: String?
     public var url: String?
@@ -9,24 +21,20 @@ public struct ReplayOverrides: Equatable, Codable, Sendable {
     public var setHeaders: [HeaderPair]?
     /// Header names to remove (matched case-insensitively).
     public var removeHeaders: [String]?
-    /// Replacement body. Use `clearBody` to explicitly send an empty body.
-    public var body: Data?
-    public var clearBody: Bool
+    public var body: BodyOverride
 
     public init(
         method: String? = nil,
         url: String? = nil,
         setHeaders: [HeaderPair]? = nil,
         removeHeaders: [String]? = nil,
-        body: Data? = nil,
-        clearBody: Bool = false
+        body: BodyOverride = .keep
     ) {
         self.method = method
         self.url = url
         self.setHeaders = setHeaders
         self.removeHeaders = removeHeaders
         self.body = body
-        self.clearBody = clearBody
     }
 
     public static let none = ReplayOverrides()

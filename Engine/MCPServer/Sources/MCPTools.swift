@@ -64,6 +64,7 @@ struct MCPToolExecutor {
                             "description": "Header names to remove.",
                         ],
                         "body": ["type": "string", "description": "Replacement request body (UTF-8)."],
+                        "clear_body": ["type": "boolean", "description": "Send an empty request body (ignored if `body` is set)."],
                     ],
                     "required": ["id"],
                 ],
@@ -779,13 +780,20 @@ struct MCPToolExecutor {
             setHeaders = raw.map { HeaderPair(name: $0.key, value: String(describing: $0.value)) }
         }
         let removeHeaders = arguments["remove_headers"] as? [String]
-        let bodyString = arguments["body"] as? String
+        let body: BodyOverride
+        if let bodyString = arguments["body"] as? String {
+            body = .replace(Data(bodyString.utf8))
+        } else if (arguments["clear_body"] as? Bool) == true {
+            body = .clear
+        } else {
+            body = .keep
+        }
         return ReplayOverrides(
             method: arguments["method"] as? String,
             url: arguments["url"] as? String,
             setHeaders: setHeaders,
             removeHeaders: removeHeaders,
-            body: bodyString.map { Data($0.utf8) }
+            body: body
         )
     }
 

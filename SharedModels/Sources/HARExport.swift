@@ -39,7 +39,6 @@ public enum HARExport {
     }
 
     private static func request(_ request: CapturedRequest) -> [String: Any] {
-        let bodyString = request.body.flatMap { String(data: $0, encoding: .utf8) }
         var out: [String: Any] = [
             "method": request.method,
             "url": request.url,
@@ -50,11 +49,15 @@ public enum HARExport {
             "headersSize": -1,
             "bodySize": request.body?.count ?? 0,
         ]
-        if let bodyString, !bodyString.isEmpty {
-            out["postData"] = [
+        if let body = request.body, !body.isEmpty {
+            let rendered = renderBody(body)
+            var postData: [String: Any] = [
                 "mimeType": contentType(request.headers) ?? "application/octet-stream",
-                "text": bodyString,
+                "text": rendered.text,
             ]
+            // postData has no spec `encoding` field, so flag base64 as an extension.
+            if rendered.base64 { postData["_encoding"] = "base64" }
+            out["postData"] = postData
         }
         return out
     }
@@ -69,15 +72,19 @@ public enum HARExport {
                 "redirectURL": "", "headersSize": -1, "bodySize": 0,
             ]
         }
-        let bodyString = response.body.flatMap { String(data: $0, encoding: .utf8) } ?? ""
         var content: [String: Any] = [
             "size": response.body?.count ?? 0,
             "mimeType": contentType(response.headers) ?? "",
         ]
-        if !bodyString.isEmpty { content["text"] = bodyString }
+        if let body = response.body, !body.isEmpty {
+            let rendered = renderBody(body)
+            content["text"] = rendered.text
+            // Standard HAR content field — DevTools decodes this automatically.
+            if rendered.base64 { content["encoding"] = "base64" }
+        }
         return [
             "status": response.statusCode,
-            "statusText": HTTPURLResponse.localizedString(forStatusCode: response.statusCode),
+            "statusText": reasonPhrase(response.statusCode),
             "httpVersion": "HTTP/1.1",
             "headers": headers(response.headers),
             "cookies": [Any](),
@@ -95,6 +102,35 @@ public enum HARExport {
     private static func queryString(_ url: String) -> [[String: String]] {
         guard let items = URLComponents(string: url)?.queryItems else { return [] }
         return items.map { ["name": $0.name, "value": $0.value ?? ""] }
+    }
+
+    /// Render a body for HAR: UTF-8 text when decodable, else base64 (so binary
+    /// payloads — images, protobuf, non-UTF-8 — aren't silently dropped, which was
+    /// a data-loss bug on every non-text response).
+    private static func renderBody(_ data: Data) -> (text: String, base64: Bool) {
+        if let text = String(data: data, encoding: .utf8) { return (text, false) }
+        return (data.base64EncodedString(), true)
+    }
+
+    /// A fixed reason phrase so exports are deterministic; the OS
+    /// `localizedString(forStatusCode:)` varies by locale.
+    private static func reasonPhrase(_ status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 201: return "Created"
+        case 204: return "No Content"
+        case 301: return "Moved Permanently"
+        case 302: return "Found"
+        case 304: return "Not Modified"
+        case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
+        case 404: return "Not Found"
+        case 500: return "Internal Server Error"
+        case 502: return "Bad Gateway"
+        case 503: return "Service Unavailable"
+        default: return ""
+        }
     }
 
     private static func contentType(_ headers: [HeaderPair]) -> String? {

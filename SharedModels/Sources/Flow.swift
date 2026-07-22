@@ -1,14 +1,16 @@
 import Foundation
 
 /// An ordered HTTP header. Modeled as a list (not a dictionary) so we preserve
-/// order and repeated header names exactly as they appeared on the wire.
-public struct HeaderPair: Equatable, Codable, Sendable, Identifiable {
-    public var id: UUID
+/// order and repeated header names exactly as they appeared on the wire. It is a
+/// pure value (name + value) — no synthetic identity — so equality is value
+/// equality (two identical headers compare equal), it encodes as just the wire
+/// bytes, and replay/HAR round-trips don't mutate it. Views that need
+/// `Identifiable` use positional identity (`ForEach(headers.indices, …)`).
+public struct HeaderPair: Equatable, Codable, Sendable {
     public var name: String
     public var value: String
 
-    public init(id: UUID = UUID(), name: String, value: String) {
-        self.id = id
+    public init(name: String, value: String) {
         self.name = name
         self.value = value
     }
