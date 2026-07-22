@@ -38,9 +38,13 @@ public struct MainView: View {
 
             Section("Hosts") {
                 ForEach(store.hosts, id: \.host) { entry in
-                    Label(entry.host, systemImage: "globe")
-                        .badge(entry.count)
-                        .tag(FlowCategory.host(entry.host))
+                    Label {
+                        Text(entry.host)
+                    } icon: {
+                        FaviconView(host: entry.host)
+                    }
+                    .badge(entry.count)
+                    .tag(FlowCategory.host(entry.host))
                 }
             }
         }
@@ -71,11 +75,14 @@ public struct MainView: View {
             .width(min: 52, ideal: 62, max: 90)
 
             TableColumn("Host") { flow in
-                Text(Self.host(flow.request.url))
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    FaviconView(host: Self.host(flow.request.url))
+                    Text(Self.host(flow.request.url))
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
-            .width(min: 110, ideal: 160, max: 260)
+            .width(min: 110, ideal: 180, max: 280)
 
             TableColumn("Path") { flow in
                 HStack(spacing: LoomTheme.Space.xs) {
