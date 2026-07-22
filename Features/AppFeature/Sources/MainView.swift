@@ -7,6 +7,8 @@ import SwiftUI
 /// on top, a tabbed inspector below.
 public struct MainView: View {
     @Bindable var store: StoreOf<AppFeature>
+    /// Tail-follow the newest row until the user scrolls away.
+    @State private var followTail = true
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -159,6 +161,7 @@ public struct MainView: View {
             }
             .width(min: 56, ideal: 70, max: 100)
         }
+        .background(RequestTableAutoScroll(rowCount: store.displayFlows.count, follow: $followTail))
     }
 
     // MARK: Content — table only, or table + inspector when a flow is selected

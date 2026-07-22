@@ -46,9 +46,10 @@ public struct AppFeature: Sendable {
 
         public init() {}
 
-        /// Requests for the selected category, filtered by search, newest-first.
+        /// Requests for the selected category, filtered by search, oldest-first
+        /// (chronological — newest at the bottom, like a log/terminal).
         public var displayFlows: [Flow] {
-            var result = Array(flows.reversed())
+            var result = Array(flows)
             switch selectedCategory ?? .all {
             case .all:
                 break

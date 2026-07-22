@@ -76,6 +76,8 @@ components:
     anatomy: "All Flows · Errors · Replayed (each Label + system .badge count) · Section 'Hosts' — one Label per host (globe icon + .badge count). Selection scopes the table."
   request-table:   # top of the split — a multi-column SwiftUI Table
     columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary) · App (icon) · Method (mono) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
+    order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
+    tail-follow: "auto-scroll to the newest row as the list grows; a user scroll stops following, and scrolling back to the bottom resumes it (live-scroll notifications distinguish user gestures from programmatic scrolls)"
     selection: "single, drives the inspector below"
   status-dot:      # the table's status column
     anatomy: "a 9pt status-class color dot: green 2xx · orange 3xx · red 4xx/5xx/error · gray in-flight. Color is not the only signal — the numeric code is a tooltip and appears in the inspector Summary. Method is a separate ink column, never chromatic."
