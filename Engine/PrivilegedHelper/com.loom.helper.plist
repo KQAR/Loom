@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd definition for the Loom privileged helper (M2, scaffold).
+  To finish wiring: embed the built LoomHelper at
+  Loom.app/Contents/MacOS/LoomHelper and place this file at
+  Loom.app/Contents/Library/LaunchDaemons/com.loom.helper.plist, then register
+  with SMAppService.daemon(plistName: "com.loom.helper.plist"). AssociatedBundleIdentifiers
+  ties the daemon to the app so it appears under Login Items for approval.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.loom.helper</string>
+    <key>BundleProgram</key>
+    <string>Contents/MacOS/LoomHelper</string>
+    <key>MachServices</key>
+    <dict>
+        <key>com.loom.helper</key>
+        <true/>
+    </dict>
+    <key>AssociatedBundleIdentifiers</key>
+    <array>
+        <string>com.loom.app</string>
+    </array>
+</dict>
+</plist>

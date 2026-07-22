@@ -1,0 +1,233 @@
+import Foundation
+import NIOPosix
+import SharedModels
+
+/// The single source of truth for proxy state and captured flows. Both the TCA
+/// `ProxyClient` and the `MCPServer` talk to this same shared instance, so AI
+/// actions and UI actions run through one write path.
+public actor ProxyEngine: ProxyControlling {
+    public static let shared = ProxyEngine()
+
+    private let store = FlowStore()
+    private let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+    private lazy var server = ProxyServer(group: group)
+
+    private let forwarder: UpstreamForwarding
+    private let caStore: CAStore
+    private let config: InterceptionConfig
+
+    /// Lazily generated on first `start()` (or first cert query) and cached.
+    private var ca: CertificateAuthority?
+
+    private var running = false
+    private var boundPort = 9090
+
+    public init() {
+        self.forwarder = URLSessionForwarder()
+        self.caStore = KeychainCAStore()
+        self.config = InterceptionConfig() // persisted across launches (UserDefaults)
+    }
+
+    /// Test seam: inject a deterministic forwarder and an in-memory CA store so
+    /// interception can be exercised without the network or the Keychain. The
+    /// config is non-persisting so tests never read or clobber the real scope.
+    init(forwarder: UpstreamForwarding, caStore: CAStore) {
+        self.forwarder = forwarder
+        self.caStore = caStore
+        self.config = InterceptionConfig(defaults: nil)
+    }
+
+    // MARK: - Lifecycle
+
+    @discardableResult
+    public func start(port: Int = 9090) async throws -> Int {
+        guard !running else { return boundPort }
+        let ca = ensureCA()
+        boundPort = try await server.start(
+            host: "127.0.0.1",
+            port: port,
+            store: store,
+            forwarder: forwarder,
+            ca: ca,
+            config: config
+        )
+        running = true
+        return boundPort
+    }
+
+    public func stop() async {
+        guard running else { return }
+        await server.stop()
+        running = false
+    }
+
+    public var isRunning: Bool { running }
+
+    public func clearFlows() async {
+        await store.clear()
+    }
+
+    // MARK: - CaptureControlling
+
+    /// Pause/resume recording. Forwarding (and MITM decryption) is unaffected;
+    /// paused means observed traffic just isn't stored as flows.
+    public func setRecording(_ recording: Bool) async {
+        await store.setRecording(recording)
+    }
+
+    /// Generate-or-load the CA once. Failure leaves interception unavailable but
+    /// keeps plain capture and blind tunneling working.
+    private func ensureCA() -> CertificateAuthority? {
+        if let ca { return ca }
+        ca = try? CertificateAuthority.loadOrGenerate(store: caStore)
+        return ca
+    }
+
+    // MARK: - FlowProviding
+
+    public func status() async -> ProxyStatus {
+        ProxyStatus(
+            isRunning: running,
+            port: boundPort,
+            capturedCount: await store.count,
+            isRecording: await store.isRecording
+        )
+    }
+
+    public func recentFlows(limit: Int) async -> [Flow] {
+        await store.recent(limit: limit)
+    }
+
+    public func flow(id: UUID) async -> Flow? {
+        await store.flow(id: id)
+    }
+
+    public func flowStream() async -> AsyncStream<Flow> {
+        await store.stream()
+    }
+
+    // MARK: - TLSInterceptControlling
+
+    public func certificateStatus() async -> CertificateStatus {
+        guard let ca = ensureCA() else { return .notGenerated }
+        return CertificateStatus(
+            isGenerated: true,
+            isTrusted: CertificateTrust.isTrusted(pem: ca.caCertificatePEM()),
+            commonName: CertificateAuthority.commonName,
+            sha256Fingerprint: ca.sha256Fingerprint,
+            notAfter: ca.certificate.notValidAfter,
+            exportedPEMPath: exportedPEMPath?.path
+        )
+    }
+
+    /// DER bytes of the root CA, for a one-click keychain install via the helper.
+    /// Not part of `TLSInterceptControlling` — the TCA client reaches it directly.
+    public func caCertificateDER() async -> Data? {
+        ensureCA()?.caCertificateDER()
+    }
+
+    /// Trust the root CA for the current user (login keychain + user-domain trust).
+    /// Needs no privileged helper; macOS prompts once for the login password. Runs
+    /// off the actor's executor because the prompt is modal. Returns `(ok, message)`.
+    public func trustCACertificate() async -> (Bool, String?) {
+        guard let der = ensureCA()?.caCertificateDER() else {
+            return (false, "root CA unavailable")
+        }
+        return await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                switch CertificateTrust.installUserTrust(der: der) {
+                case .trusted: continuation.resume(returning: (true, nil))
+                case .cancelled: continuation.resume(returning: (false, "Trust request was cancelled."))
+                case let .failed(reason): continuation.resume(returning: (false, reason))
+                }
+            }
+        }
+    }
+
+    public func exportCACertificate() async throws -> URL {
+        guard let ca = ensureCA() else {
+            throw ProxyControlError.certificateUnavailable("root CA could not be generated")
+        }
+        let url = Self.defaultCAExportURL
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try ca.exportCACertificate(to: url)
+        exportedPEMPath = url
+        return url
+    }
+
+    public func sslScope() async -> SSLScope {
+        config.snapshot()
+    }
+
+    public func setSSLScope(_ scope: SSLScope) async {
+        _ = ensureCA() // make sure a CA exists before we start intercepting
+        config.update(scope)
+    }
+
+    private var exportedPEMPath: URL?
+
+    private static var defaultCAExportURL: URL {
+        // Mirrors `loomAppSupportDirectoryName` (defined in MCPServer, off ProxyCore's
+        // dependency path). Both must stay "com.loom".
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return base
+            .appendingPathComponent("com.loom", isDirectory: true)
+            .appendingPathComponent("loom-ca.pem")
+    }
+
+    // MARK: - FlowReplaying
+
+    public func replay(id: UUID, overrides: ReplayOverrides) async throws -> Flow {
+        guard let source = await store.flow(id: id) else {
+            throw ProxyControlError.flowNotFound(id)
+        }
+
+        let method = overrides.method ?? source.request.method
+        let urlString = overrides.url ?? source.request.url
+        guard let url = URL(string: urlString) else {
+            throw ProxyControlError.invalidURL(urlString)
+        }
+
+        var headers = source.request.headers
+        if let removals = overrides.removeHeaders {
+            let lowered = Set(removals.map { $0.lowercased() })
+            headers.removeAll { lowered.contains($0.name.lowercased()) }
+        }
+        if let sets = overrides.setHeaders {
+            for header in sets {
+                headers.removeAll { $0.name.lowercased() == header.name.lowercased() }
+                headers.append(header)
+            }
+        }
+
+        let body: Data? = overrides.clearBody ? nil : (overrides.body ?? source.request.body)
+        let capturedRequest = CapturedRequest(method: method, url: urlString, headers: headers, body: body)
+
+        let newID = UUID()
+        let startedAt = Date()
+        do {
+            let result = try await forwarder.forward(method: method, url: url, headers: headers, body: body)
+            let flow = Flow(
+                id: newID,
+                request: capturedRequest,
+                response: CapturedResponse(statusCode: result.statusCode, headers: result.headers, body: result.body),
+                startedAt: startedAt,
+                completedAt: Date(),
+                replayedFrom: id
+            )
+            await store.upsert(flow, force: true) // explicit action: record even when capture is paused
+            return flow
+        } catch {
+            let flow = Flow(
+                id: newID,
+                request: capturedRequest,
+                startedAt: startedAt,
+                completedAt: Date(),
+                error: error.localizedDescription,
+                replayedFrom: id
+            )
+            await store.upsert(flow, force: true)
+            throw ProxyControlError.replayFailed(error.localizedDescription)
+        }
+    }
+}

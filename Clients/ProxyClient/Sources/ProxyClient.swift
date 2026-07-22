@@ -1,0 +1,61 @@
+import ComposableArchitecture
+import Foundation
+import ProxyCore
+import SharedModels
+
+/// TCA-facing surface over the shared `ProxyEngine`. Reducers depend on this,
+/// never on NIO directly, which keeps the feature layer testable and Swift-6 clean.
+@DependencyClient
+public struct ProxyClient: Sendable {
+    public var start: @Sendable (_ port: Int) async throws -> Int
+    public var stop: @Sendable () async -> Void
+    public var status: @Sendable () async -> ProxyStatus = {
+        ProxyStatus(isRunning: false, port: 0, capturedCount: 0)
+    }
+    public var recentFlows: @Sendable (_ limit: Int) async -> [Flow] = { _ in [] }
+    public var flow: @Sendable (_ id: UUID) async -> Flow? = { _ in nil }
+    public var flowStream: @Sendable () async -> AsyncStream<Flow> = { AsyncStream { $0.finish() } }
+    public var replay: @Sendable (_ id: UUID, _ overrides: ReplayOverrides) async throws -> Flow
+    public var clearFlows: @Sendable () async -> Void
+    public var certificateStatus: @Sendable () async -> CertificateStatus = { .notGenerated }
+    public var certificateDER: @Sendable () async -> Data? = { nil }
+    /// Trust the CA for the current user (login keychain). `(ok, message)`.
+    public var trustCertificate: @Sendable () async -> (ok: Bool, message: String?) = { (false, nil) }
+    public var exportCACertificate: @Sendable () async throws -> URL
+    public var sslScope: @Sendable () async -> SSLScope = { .disabled }
+    public var setSSLScope: @Sendable (_ scope: SSLScope) async -> Void
+    /// Pause/resume capture; forwarding is unaffected.
+    public var setRecording: @Sendable (_ recording: Bool) async -> Void
+}
+
+extension ProxyClient: DependencyKey {
+    public static let liveValue: ProxyClient = {
+        let engine = ProxyEngine.shared
+        return ProxyClient(
+            start: { try await engine.start(port: $0) },
+            stop: { await engine.stop() },
+            status: { await engine.status() },
+            recentFlows: { await engine.recentFlows(limit: $0) },
+            flow: { await engine.flow(id: $0) },
+            flowStream: { await engine.flowStream() },
+            replay: { try await engine.replay(id: $0, overrides: $1) },
+            clearFlows: { await engine.clearFlows() },
+            certificateStatus: { await engine.certificateStatus() },
+            certificateDER: { await engine.caCertificateDER() },
+            trustCertificate: { await engine.trustCACertificate() },
+            exportCACertificate: { try await engine.exportCACertificate() },
+            sslScope: { await engine.sslScope() },
+            setSSLScope: { await engine.setSSLScope($0) },
+            setRecording: { await engine.setRecording($0) }
+        )
+    }()
+
+    public static let testValue = ProxyClient()
+}
+
+public extension DependencyValues {
+    var proxyClient: ProxyClient {
+        get { self[ProxyClient.self] }
+        set { self[ProxyClient.self] = newValue }
+    }
+}

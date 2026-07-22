@@ -1,0 +1,86 @@
+import AppFeature
+import ComposableArchitecture
+import MCPServer
+import PrivilegedHelperClient
+import ProxyCore
+import SwiftUI
+
+@main
+struct LoomApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    private let store = Store(initialState: AppFeature.State()) {
+        AppFeature()
+    }
+    private let mcp = MCPServer(engine: ProxyEngine.shared, appVersion: appVersion)
+
+    init() {
+        let mcp = self.mcp
+        Task {
+            // Start capture immediately so traffic is collected even before any
+            // window is opened.
+            try? await ProxyEngine.shared.start(port: 9090)
+            do {
+                let port = try await mcp.start()
+                NSLog("Loom MCP server listening on 127.0.0.1:\(port)")
+            } catch {
+                NSLog("Loom MCP server failed to start: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    var body: some Scene {
+        // Status bar: compact config & control console.
+        MenuBarExtra {
+            PanelView(store: store)
+        } label: {
+            MenuBarLabel(store: store)
+        }
+        .menuBarExtraStyle(.window)
+
+        // Main window: the request list + detail (the working surface).
+        Window("Loom", id: "main") {
+            MainView(store: store)
+        }
+        .defaultSize(width: 1040, height: 640)
+    }
+}
+
+private let appVersion: String =
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+
+/// Quit-time cleanup: if the system proxy still routes through Loom, turn it
+/// off before the process dies — otherwise every app on the machine keeps
+/// sending traffic to a dead port. (A crash skips this; the boot-time state
+/// sync in `AppFeature` then shows the stale override so the human can act.)
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let helper = PrivilegedHelperClient.liveValue
+        Task.detached {
+            let port = await ProxyEngine.shared.status().port
+            if await helper.isSystemProxyActive(port) {
+                _ = await helper.setSystemProxy(false, port)
+            }
+            await MainActor.run {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+}
+
+/// Menu-bar icon with state variants:
+/// - stopped → dimmed
+/// - running, no map rules → two-way arrows
+/// - running, map/rewrite active → branch glyph
+/// Also the always-present surface that boots the capture subscription at launch.
+private struct MenuBarLabel: View {
+    let store: StoreOf<AppFeature>
+
+    var body: some View {
+        Image(systemName: store.rulesEnabled ? "arrow.triangle.branch" : "arrow.left.arrow.right")
+            .fontWeight(.semibold)
+            .foregroundStyle(store.isSystemProxy ? Color.yellow : Color.primary)
+            .opacity(store.status.isRunning ? 1 : 0.4)
+            .task { store.send(.task) }
+    }
+}
