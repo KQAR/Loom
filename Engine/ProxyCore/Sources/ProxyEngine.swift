@@ -38,6 +38,7 @@ public actor ProxyEngine: ProxyControlling {
         // launch. One-time migration preserves an already-trusted Keychain CA.
         self.caStore = Self.migratedCAStore()
         self.config = InterceptionConfig() // persisted across launches (UserDefaults)
+        self.caExportURL = Self.defaultCAExportURL
     }
 
     /// Return the file store, first migrating a legacy Keychain CA into it if the
@@ -62,6 +63,9 @@ public actor ProxyEngine: ProxyControlling {
         self.forwarder = RuleApplyingForwarder(base: forwarder, rules: rulesConfig)
         self.caStore = caStore
         self.config = InterceptionConfig(defaults: nil)
+        // Hermetic: never let a test clobber the user's real exported CA file.
+        self.caExportURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-ca-test-\(UUID()).pem")
     }
 
     // MARK: - Lifecycle
@@ -176,7 +180,7 @@ public actor ProxyEngine: ProxyControlling {
         guard let ca = ensureCA() else {
             throw ProxyControlError.certificateUnavailable("root CA could not be generated")
         }
-        let url = Self.defaultCAExportURL
+        let url = caExportURL
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try ca.exportCACertificate(to: url)
         exportedPEMPath = url
@@ -229,6 +233,10 @@ public actor ProxyEngine: ProxyControlling {
     }
 
     private var exportedPEMPath: URL?
+
+    /// Where `exportCACertificate()` writes. The test-seam init points this at a
+    /// temp file so tests can't overwrite the user's real exported CA.
+    private let caExportURL: URL
 
     private static var defaultCAExportURL: URL {
         // Mirrors `loomAppSupportDirectoryName` (defined in MCPServer, off ProxyCore's

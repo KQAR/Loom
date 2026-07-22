@@ -20,6 +20,9 @@ final class CertificateAuthority: @unchecked Sendable {
     private let leafKey: Certificate.PrivateKey
     private let nioLeafKey: NIOSSLPrivateKey
     private let nioCACert: NIOSSLCertificate
+    /// Key identifier of the CA, embedded as each leaf's AKI. Falls back to the
+    /// RFC 5280 public-key hash for a legacy CA persisted without an SKI.
+    private let issuerKeyIdentifier: ArraySlice<UInt8>
 
     private let lock = NSLock()
     private var contextCache: [String: NIOSSLContext] = [:]
@@ -50,6 +53,12 @@ final class CertificateAuthority: @unchecked Sendable {
         leafKey = leaf
         nioLeafKey = try NIOSSLPrivateKey(bytes: Array(leaf.serializeAsPEM().pemString.utf8), format: .pem)
         nioCACert = try NIOSSLCertificate(bytes: Array(material.certificatePEM.utf8), format: .pem)
+
+        if let ski = (try? cert.extensions.subjectKeyIdentifier) ?? nil {
+            issuerKeyIdentifier = ski.keyIdentifier
+        } else {
+            issuerKeyIdentifier = SubjectKeyIdentifier(hash: cert.publicKey).keyIdentifier
+        }
 
         var serializer = DER.Serializer()
         try serializer.serialize(cert)
@@ -126,6 +135,10 @@ final class CertificateAuthority: @unchecked Sendable {
                 KeyUsage(digitalSignature: true)
                 try ExtendedKeyUsage([.serverAuth])
                 SubjectAlternativeNames([Self.generalName(for: host)])
+                // SKI + AKI are required by strict verifiers (e.g. Python 3.13's
+                // default VERIFY_X509_STRICT rejects leaves without an AKI).
+                SubjectKeyIdentifier(hash: leafKey.publicKey)
+                AuthorityKeyIdentifier(keyIdentifier: issuerKeyIdentifier)
             },
             issuerPrivateKey: privateKey
         )

@@ -9,7 +9,7 @@ import SharedModels
 /// captures the response, and writes it back — all while the client believes it
 /// is talking straight to the server. Keep-alive is honored: many requests may
 /// share one intercepted connection.
-final class TLSInterceptHandler: ChannelInboundHandler, @unchecked Sendable {
+final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 

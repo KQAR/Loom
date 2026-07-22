@@ -78,8 +78,11 @@ enum WebSocketRelay {
         clientTap.partner = upstreamTap
         upstreamTap.partner = clientTap
 
+        // A failed removal must NOT be swallowed: a leftover HTTP-typed handler
+        // would force-unwrap the raw post-upgrade bytes and crash. Let the
+        // failure fall through to the close-both-channels branch below.
         let removals = removeHandlerNames.map { name in
-            client.pipeline.removeHandler(name: name).recover { _ in () }
+            client.pipeline.removeHandler(name: name)
         }
         EventLoopFuture.andAllSucceed(removals, on: client.eventLoop)
             .flatMap { client.pipeline.addHandler(clientTap) }
