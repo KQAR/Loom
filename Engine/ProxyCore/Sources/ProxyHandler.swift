@@ -84,9 +84,12 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         let forwarder = self.forwarder
         let keepAlive = head.isKeepAlive
         let method = head.method.rawValue
+        let sourcePort = channel.remoteAddress?.port
+        let proxyPort = channel.localAddress?.port
 
         Task {
-            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt))
+            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
+            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))
             do {
                 let result = try await forwarder.forward(method: method, url: url, headers: headers, body: body)
                 await store.upsert(Flow(
@@ -94,7 +97,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                     request: capturedRequest,
                     response: CapturedResponse(statusCode: result.statusCode, headers: result.headers, body: result.body),
                     startedAt: startedAt,
-                    completedAt: Date()
+                    completedAt: Date(),
+                    sourceApp: sourceApp
                 ))
                 HTTPUtil.writeResponse(channel: channel, status: result.statusCode,
                                        headers: result.headers, body: result.body, keepAlive: keepAlive)
@@ -104,7 +108,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                     request: capturedRequest,
                     startedAt: startedAt,
                     completedAt: Date(),
-                    error: error.localizedDescription
+                    error: error.localizedDescription,
+                    sourceApp: sourceApp
                 ))
                 HTTPUtil.writeResponse(channel: channel, status: 502, headers: [],
                                        body: Data("Loom upstream error: \(error.localizedDescription)\n".utf8), keepAlive: false)

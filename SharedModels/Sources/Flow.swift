@@ -40,6 +40,29 @@ public struct CapturedResponse: Equatable, Codable, Sendable {
     }
 }
 
+/// The local process that originated a captured request, resolved from the
+/// proxy connection's source port. Icon is not stored here (a UI concern derived
+/// from `bundlePath`); the model stays AppKit-free so engine modules can build it.
+public struct SourceApp: Equatable, Codable, Sendable, Hashable {
+    /// Display name — bundle display/name if it's an app, else the executable's basename.
+    public var name: String
+    public var bundleID: String?
+    /// Path to the `.app` bundle when the origin is a bundled app; the UI resolves
+    /// the icon from this. Nil for CLI tools / daemons.
+    public var bundlePath: String?
+    public var pid: Int32
+
+    public init(name: String, bundleID: String? = nil, bundlePath: String? = nil, pid: Int32) {
+        self.name = name
+        self.bundleID = bundleID
+        self.bundlePath = bundlePath
+        self.pid = pid
+    }
+
+    /// Stable grouping key: bundle id when available, else the display name.
+    public var groupingKey: String { bundleID ?? name }
+}
+
 /// A single captured (or replayed) request/response exchange.
 public struct Flow: Identifiable, Equatable, Codable, Sendable {
     public var id: UUID
@@ -50,6 +73,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     public var error: String?
     /// Non-nil when this flow was produced by replaying another flow.
     public var replayedFrom: UUID?
+    /// The local app/process that made the request, when it could be resolved.
+    public var sourceApp: SourceApp?
 
     public init(
         id: UUID = UUID(),
@@ -58,7 +83,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         startedAt: Date,
         completedAt: Date? = nil,
         error: String? = nil,
-        replayedFrom: UUID? = nil
+        replayedFrom: UUID? = nil,
+        sourceApp: SourceApp? = nil
     ) {
         self.id = id
         self.request = request
@@ -67,6 +93,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.completedAt = completedAt
         self.error = error
         self.replayedFrom = replayedFrom
+        self.sourceApp = sourceApp
     }
 
     public var statusCode: Int? { response?.statusCode }

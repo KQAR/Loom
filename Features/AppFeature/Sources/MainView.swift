@@ -36,6 +36,20 @@ public struct MainView: View {
                 .badge(store.replayedCount)
                 .tag(FlowCategory.replayed)
 
+            if !store.apps.isEmpty {
+                Section("Apps") {
+                    ForEach(store.apps, id: \.app.groupingKey) { entry in
+                        Label {
+                            Text(entry.app.name)
+                        } icon: {
+                            AppIconView(app: entry.app)
+                        }
+                        .badge(entry.count)
+                        .tag(FlowCategory.app(entry.app.groupingKey))
+                    }
+                }
+            }
+
             Section("Hosts") {
                 ForEach(store.hosts, id: \.host) { entry in
                     Label {
@@ -68,6 +82,12 @@ public struct MainView: View {
                 StatusPill(flow: flow)
             }
             .width(54)
+
+            TableColumn("App") { flow in
+                AppIconView(app: flow.sourceApp)
+                    .help(flow.sourceApp?.name ?? "Unknown app")
+            }
+            .width(36)
 
             TableColumn("Method") { flow in
                 Text(flow.request.method).font(.callout.monospaced())

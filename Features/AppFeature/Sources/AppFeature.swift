@@ -4,12 +4,14 @@ import PrivilegedHelperClient
 import ProxyClient
 import SharedModels
 
-/// Left-sidebar categories in the main window. `.host` groups by domain.
+/// Left-sidebar categories in the main window. `.host` groups by domain,
+/// `.app` by the originating local app (its bundle id or name).
 public enum FlowCategory: Hashable, Sendable {
     case all
     case errors
     case replayed
     case host(String)
+    case app(String)
 }
 
 @Reducer
@@ -54,6 +56,8 @@ public struct AppFeature: Sendable {
                 result = result.filter { $0.replayedFrom != nil }
             case let .host(host):
                 result = result.filter { $0.host == host }
+            case let .app(key):
+                result = result.filter { $0.sourceApp?.groupingKey == key }
             }
             if !filterText.isEmpty {
                 let query = filterText.lowercased()
@@ -73,6 +77,23 @@ public struct AppFeature: Sendable {
                 if let host = flow.host { counts[host, default: 0] += 1 }
             }
             return counts.sorted { $0.key < $1.key }.map { (host: $0.key, count: $0.value) }
+        }
+
+        /// Distinct source apps with counts, most-active first — the Apps section.
+        /// Keyed by `groupingKey` (bundle id or name); a representative `SourceApp`
+        /// carries the display name + icon path.
+        public var apps: [(app: SourceApp, count: Int)] {
+            var reps: [String: SourceApp] = [:]
+            var counts: [String: Int] = [:]
+            for flow in flows {
+                guard let app = flow.sourceApp else { continue }
+                let key = app.groupingKey
+                reps[key] = app
+                counts[key, default: 0] += 1
+            }
+            return counts
+                .sorted { $0.value != $1.value ? $0.value > $1.value : ($0.key < $1.key) }
+                .compactMap { key, count in reps[key].map { (app: $0, count: count) } }
         }
 
         public var allCount: Int { flows.count }

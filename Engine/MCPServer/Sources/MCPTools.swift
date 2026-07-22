@@ -192,6 +192,11 @@ struct MCPToolExecutor {
         if let ms = flow.durationMS { out["durationMS"] = ms }
         if let error = flow.error { out["error"] = error }
         if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
+        if let app = flow.sourceApp {
+            var appOut: [String: Any] = ["name": app.name, "pid": Int(app.pid)]
+            if let bundleID = app.bundleID { appOut["bundleID"] = bundleID }
+            out["sourceApp"] = appOut
+        }
         return out
     }
 
