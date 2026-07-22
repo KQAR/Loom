@@ -25,7 +25,6 @@ public struct AppFeature: Sendable {
         public var flows: IdentifiedArrayOf<Flow> = []
         public var selectedCategory: FlowCategory? = .all
         public var selectedFlowID: Flow.ID?
-        public var filterText: String = ""
 
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
@@ -47,7 +46,6 @@ public struct AppFeature: Sendable {
         /// tells save whether to add or update it.
         public var editingRule: TrafficRule?
         public var editingRuleIsNew = false
-        public var isIntercepting = false        // M3: breakpoint interception (no UI yet)
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
@@ -74,14 +72,6 @@ public struct AppFeature: Sendable {
                 result = result.filter { $0.host == host }
             case let .app(key):
                 result = result.filter { $0.sourceApp?.groupingKey == key }
-            }
-            if !filterText.isEmpty {
-                let query = filterText.lowercased()
-                result = result.filter { flow in
-                    flow.request.url.lowercased().contains(query)
-                        || flow.request.method.lowercased().contains(query)
-                        || (flow.statusCode.map(String.init)?.contains(query) ?? false)
-                }
             }
             return result
         }
@@ -156,7 +146,6 @@ public struct AppFeature: Sendable {
         case replayTapped(Flow.ID)
         case replayFinished(Flow?)
         case clearTapped
-        case toggleInterceptTapped
         case toggleRecordingTapped
         case pinHostToggled(String)
         case pinAppToggled(String)
@@ -398,11 +387,6 @@ public struct AppFeature: Sendable {
                 state.selectedFlowID = nil
                 state.status.capturedCount = 0
                 return .run { _ in await proxyClient.clearFlows() }
-
-            case .toggleInterceptTapped:
-                // Placeholder until M3 breakpoint interception; no UI sends this yet.
-                state.isIntercepting.toggle()
-                return .none
 
             case .toggleRecordingTapped:
                 state.isRecording.toggle()

@@ -29,8 +29,6 @@ public struct WebSocketMessage: Equatable, Codable, Sendable, Identifiable {
             default: self = .binary
             }
         }
-
-        public var isControl: Bool { self == .ping || self == .pong || self == .close }
     }
 
     public var id: UUID

@@ -70,13 +70,6 @@ enum ProxyConfigurator {
         try applyBypass(state.bypassDomains, to: s)
     }
 
-    static func setBypassDomains(_ domains: [String]) throws {
-        let clean = SystemProxyParsing.sanitizeBypassDomains(domains)
-        for service in enabledServices() {
-            try applyBypass(clean, to: service)
-        }
-    }
-
     /// `(isOverriddenByLoom, port)` — true when any enabled service points at Loom.
     static func status(loomPort: Int) -> (Bool, Int) {
         for service in enabledServices() where captureState(of: service).pointsAtLoom(port: loomPort) {

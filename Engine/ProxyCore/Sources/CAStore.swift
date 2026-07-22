@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import SharedModels
 
 /// The persisted root-CA material: certificate + private key, both PEM-encoded.
 struct CAMaterial: Sendable, Equatable {
@@ -80,10 +81,7 @@ final class FileCAStore: CAStore {
     }
 
     private static var defaultURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base
-            .appendingPathComponent("com.loom", isDirectory: true)
-            .appendingPathComponent("ca-store.pem")
+        LoomPaths.appSupportFile("ca-store.pem")
     }
 
     func load() throws -> CAMaterial? {

@@ -1,4 +1,5 @@
 import AppKit
+import SharedModels
 import SwiftUI
 
 /// Loads and caches per-host favicons for the sidebar / host column — the
@@ -30,10 +31,7 @@ final class FaviconLoader: ObservableObject {
     }()
 
     private init() {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-        diskDir = base?
-            .appendingPathComponent("com.loom", isDirectory: true)
-            .appendingPathComponent("favicons", isDirectory: true)
+        diskDir = LoomPaths.cachesDirectory?.appendingPathComponent("favicons", isDirectory: true)
         if let diskDir { try? FileManager.default.createDirectory(at: diskDir, withIntermediateDirectories: true) }
     }
 

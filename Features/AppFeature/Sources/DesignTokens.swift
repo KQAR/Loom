@@ -3,10 +3,6 @@ import SwiftUI
 /// Code mirror of DESIGN.md tokens. Never inline raw values in views — reference
 /// these so the design system stays single-sourced.
 public enum LoomTheme {
-    public static let panelWidth: CGFloat = 380
-    public static let feedMaxHeight: CGFloat = 440
-    public static let feedRowHeight: CGFloat = 30
-
     public enum Space {
         public static let xxs: CGFloat = 4
         public static let xs: CGFloat = 8

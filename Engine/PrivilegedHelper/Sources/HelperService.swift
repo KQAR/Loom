@@ -58,16 +58,6 @@ final class HelperService: NSObject, LoomPrivilegedHelperProtocol {
         reply(status.0, status.1)
     }
 
-    func setBypassDomains(_ domains: [String], withReply reply: @escaping (Bool, String?) -> Void) {
-        IdleExitMonitor.noteActivity()
-        do {
-            try ProxyConfigurator.setBypassDomains(domains)
-            reply(true, nil)
-        } catch {
-            reply(false, error.localizedDescription)
-        }
-    }
-
     // MARK: Certificate trust
 
     func installTrustedCertificate(_ der: Data, withReply reply: @escaping (Bool, String?) -> Void) {

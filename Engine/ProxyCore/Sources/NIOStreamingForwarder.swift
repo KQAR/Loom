@@ -151,10 +151,9 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     private static func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
-        let context = try NIOSSLContext(configuration: .makeClientConfiguration())
         // IP-literal peers can't take an SNI/validation hostname.
         let serverName = isIPLiteral(host) ? nil : host
-        return try NIOSSLClientHandler(context: context, serverHostname: serverName)
+        return try NIOSSLClientHandler(context: SharedTLS.clientContext, serverHostname: serverName)
     }
 
     private static func isIPLiteral(_ host: String) -> Bool {
