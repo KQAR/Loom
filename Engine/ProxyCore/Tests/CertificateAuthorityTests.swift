@@ -63,6 +63,46 @@ final class CertificateAuthorityTests: XCTestCase {
     }
 }
 
+final class FileCAStoreTests: XCTestCase {
+    private func tempURL() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-ca-test-\(UUID())", isDirectory: true)
+            .appendingPathComponent("ca-store.pem")
+    }
+
+    func test_roundTrip() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = FileCAStore(fileURL: url)
+
+        XCTAssertNil(try store.load(), "empty store returns nil, no prompt")
+
+        let material = CAMaterial(certificatePEM: "-----CERT-----", privateKeyPEM: "-----KEY-----")
+        try store.save(material)
+        XCTAssertEqual(try store.load(), material)
+    }
+
+    func test_savedFileIsOwnerOnly() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = FileCAStore(fileURL: url)
+        try store.save(CAMaterial(certificatePEM: "c", privateKeyPEM: "k"))
+
+        let perms = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+        XCTAssertEqual(perms, 0o600, "CA private key file must be owner-read/write only")
+    }
+
+    func test_loadableByCertificateAuthority() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let store = FileCAStore(fileURL: url)
+        let first = try CertificateAuthority.loadOrGenerate(store: store)
+        // Reload from the same file must reuse the persisted CA, not mint a new one.
+        let second = try CertificateAuthority.loadOrGenerate(store: FileCAStore(fileURL: url))
+        XCTAssertEqual(first.sha256Fingerprint, second.sha256Fingerprint)
+    }
+}
+
 final class InterceptionConfigPersistenceTests: XCTestCase {
     private func makeDefaults() -> UserDefaults {
         let suite = "com.loom.tests.\(UUID().uuidString)"

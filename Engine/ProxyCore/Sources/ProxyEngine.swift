@@ -24,8 +24,23 @@ public actor ProxyEngine: ProxyControlling {
 
     public init() {
         self.forwarder = URLSessionForwarder()
-        self.caStore = KeychainCAStore()
+        // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
+        // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
+        // launch. One-time migration preserves an already-trusted Keychain CA.
+        self.caStore = Self.migratedCAStore()
         self.config = InterceptionConfig() // persisted across launches (UserDefaults)
+    }
+
+    /// Return the file store, first migrating a legacy Keychain CA into it if the
+    /// file is empty (so users who already trusted a Keychain-stored CA keep it).
+    /// The Keychain is only touched when the file is empty AND an item exists —
+    /// missing items return `errSecItemNotFound` without a prompt.
+    private static func migratedCAStore() -> CAStore {
+        let fileStore = FileCAStore()
+        if (try? fileStore.load()) == nil, let legacy = try? KeychainCAStore().load() {
+            try? fileStore.save(legacy)
+        }
+        return fileStore
     }
 
     /// Test seam: inject a deterministic forwarder and an in-memory CA store so
