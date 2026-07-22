@@ -540,6 +540,12 @@ struct MCPToolExecutor {
                 "body": response.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
             ]
         }
+        if let graphQL = GraphQLParser.parse(flow.request) {
+            var gql: [String: Any] = ["kind": graphQL.kind.rawValue, "query": graphQL.query]
+            if let name = graphQL.operationName { gql["operationName"] = name }
+            if let variables = graphQL.variablesJSON { gql["variables"] = variables }
+            out["graphQL"] = gql
+        }
         if let messages = flow.webSocketMessages {
             out["webSocket"] = [
                 "messageCount": messages.count,

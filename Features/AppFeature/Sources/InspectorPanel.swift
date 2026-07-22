@@ -28,17 +28,17 @@ private struct RequestPane: View {
     let original: Flow?
     let onReplay: () -> Void
 
-    enum Tab: Hashable { case summary, raw, headers, cookies, body, diff }
+    enum Tab: Hashable { case summary, graphQL, raw, headers, cookies, body, diff }
     @State private var tab: Tab = .summary
 
     private var cookies: [CookieItem] { CookieParsing.requestCookies(flow.request.headers) }
+    private var graphQL: GraphQLOperation? { GraphQLParser.parse(flow.request) }
 
     private var tabs: [(String, Tab)] {
-        var t: [(String, Tab)] = [
-            ("Summary", .summary),
-            ("Raw", .raw),
-            ("Headers(\(flow.request.headers.count))", .headers),
-        ]
+        var t: [(String, Tab)] = [("Summary", .summary)]
+        if graphQL != nil { t.append(("GraphQL", .graphQL)) }
+        t.append(("Raw", .raw))
+        t.append(("Headers(\(flow.request.headers.count))", .headers))
         if !cookies.isEmpty { t.append(("Cookies(\(cookies.count))", .cookies)) }
         t.append(("Body", .body))
         if original != nil { t.append(("Diff", .diff)) }
@@ -69,6 +69,7 @@ private struct RequestPane: View {
                 Group {
                     switch tab {
                     case .summary: SummaryTable(flow: flow)
+                    case .graphQL: GraphQLView(operation: graphQL)
                     case .raw: RawView(text: Self.rawText(flow))
                     case .headers: HeadersList(headers: flow.request.headers)
                     case .cookies: CookiesView(cookies: cookies)
@@ -89,6 +90,7 @@ private struct RequestPane: View {
             // Reset if the selected tab no longer applies to the new flow.
             if tab == .diff, original == nil { tab = .summary }
             if tab == .cookies, cookies.isEmpty { tab = .summary }
+            if tab == .graphQL, graphQL == nil { tab = .summary }
         }
     }
 
@@ -444,6 +446,43 @@ private struct CookiesView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// GraphQL view: operation label, the query (monospaced), and pretty variables.
+private struct GraphQLView: View {
+    let operation: GraphQLOperation?
+
+    var body: some View {
+        if let operation {
+            VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
+                HStack(spacing: LoomTheme.Space.xs) {
+                    Text(operation.kind.rawValue)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.quaternary, in: Capsule())
+                    if let name = operation.operationName, !name.isEmpty {
+                        Text(name).font(.callout.weight(.semibold))
+                    }
+                }
+                Text("Query").font(.caption).foregroundStyle(.secondary)
+                Text(operation.query)
+                    .font(.callout.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let variables = operation.variablesJSON {
+                    Text("Variables").font(.caption).foregroundStyle(.secondary)
+                    if let json = JSONValue.parse(Data(variables.utf8)), json.isContainer {
+                        JSONView(value: json)
+                    } else {
+                        Text(variables).font(.callout.monospaced()).textSelection(.enabled)
+                    }
+                }
+            }
+        } else {
+            Text("Not a GraphQL request").foregroundStyle(.secondary)
         }
     }
 }
