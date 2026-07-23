@@ -274,6 +274,7 @@ public struct PanelView: View {
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Spacer()
+            updateButton
             Button("Quit") { NSApplication.shared.terminate(nil) }
                 .buttonStyle(.borderless)
                 .font(.caption)
@@ -281,6 +282,36 @@ public struct PanelView: View {
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.xs + 2)
+    }
+
+    /// Shows the current version as a low-key tap-to-check control; the moment
+    /// Sparkle finds a newer release it promotes to a highlighted upgrade icon +
+    /// the new version number.
+    @ViewBuilder private var updateButton: some View {
+        switch store.updateAvailability {
+        case let .available(version):
+            Button {
+                store.send(.checkForUpdatesTapped)
+            } label: {
+                Label("v\(version)", systemImage: "arrow.up.circle.fill")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .help("New version \(version) available — click to install")
+        case .unknown, .upToDate:
+            Button("v\(currentVersion)") { store.send(.checkForUpdatesTapped) }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("Loom v\(currentVersion) — click to check for updates")
+        }
+    }
+
+    /// This build's marketing version (`CFBundleShortVersionString`), shown as
+    /// the default footer label.
+    private var currentVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
     }
 }
 
