@@ -22,13 +22,20 @@ enum Fixtures {
         let response = status.map { code in
             CapturedResponse(statusCode: code, headers: responseHeaders, body: responseBody)
         }
+        let completedAt = epoch.addingTimeInterval(0.12)
+        let outcome: FlowOutcome
+        if let error {
+            outcome = .failed(FlowError(error), at: completedAt, partialResponse: response)
+        } else if let response {
+            outcome = .completed(response, at: completedAt)
+        } else {
+            outcome = .pending
+        }
         return Flow(
             id: id,
             request: CapturedRequest(method: method, url: url, headers: requestHeaders, body: requestBody),
-            response: response,
             startedAt: epoch,
-            completedAt: epoch.addingTimeInterval(0.12),
-            error: error,
+            outcome: outcome,
             replayedFrom: replayedFrom,
             sourceApp: sourceApp
         )

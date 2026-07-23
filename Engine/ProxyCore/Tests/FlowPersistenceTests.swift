@@ -21,9 +21,11 @@ final class FlowPersistenceTests: XCTestCase {
         Flow(
             id: UUID(),
             request: CapturedRequest(method: method, url: "https://api.test/\(n)", headers: []),
-            response: CapturedResponse(statusCode: 200, headers: [], body: Data("body\(n)".utf8)),
             startedAt: Date(timeIntervalSince1970: TimeInterval(n)),
-            completedAt: Date(timeIntervalSince1970: TimeInterval(n) + 0.1)
+            outcome: .completed(
+                CapturedResponse(statusCode: 200, headers: [], body: Data("body\(n)".utf8)),
+                at: Date(timeIntervalSince1970: TimeInterval(n) + 0.1)
+            )
         )
     }
 

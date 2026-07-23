@@ -112,7 +112,7 @@ final class RuleEngineTests: XCTestCase {
         XCTAssertEqual(plan.headers.count, 1, "cookie removed; the two Authorization sets collapse to one")
         XCTAssertEqual(plan.headers.first?.value, "Bearer b", "the later rule wins")
         XCTAssertEqual(plan.body, Data("{}".utf8))
-        XCTAssertEqual(plan.appliedRuleNames, ["auth", "override"])
+        XCTAssertEqual(plan.appliedRules.map(\.name), ["auth", "override"])
     }
 
     func test_mapRemote_swapsOriginKeepsPathAndQuery() {
@@ -270,7 +270,7 @@ final class RuleApplyingForwarderTests: XCTestCase {
         XCTAssertEqual(result.statusCode, 200)
         XCTAssertEqual(result.body, Data(#"{"body":"MOCK"}"#.utf8))
         XCTAssertEqual(result.headers.first(where: { $0.name.lowercased() == "content-type" })?.value, "application/json")
-        XCTAssertEqual(result.appliedRules, ["home mock"])
+        XCTAssertEqual(result.appliedRules.map(\.name), ["home mock"])
     }
 
     func test_block_returns403() async throws {
@@ -296,7 +296,7 @@ final class RuleApplyingForwarderTests: XCTestCase {
 
         XCTAssertEqual(upstream.lastURL?.absoluteString, "http://127.0.0.1:3001/v1/home")
         XCTAssertEqual(upstream.lastHeaders.map(\.name), ["X-Debug"])
-        XCTAssertEqual(result.appliedRules, ["to local"])
+        XCTAssertEqual(result.appliedRules.map(\.name), ["to local"])
     }
 
     func test_responseRewrite_appliesToRealUpstreamResponse() async throws {

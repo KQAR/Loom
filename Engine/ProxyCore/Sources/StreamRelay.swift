@@ -45,8 +45,9 @@ enum StreamRelay {
         store: FlowStore
     ) async {
         var statusCode = 0
+        var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
-        var appliedRules: [String] = []
+        var appliedRules: [AppliedRule] = []
         var capturedBody = Data()
         var headWritten = false
         var bodyless = false
@@ -57,8 +58,9 @@ enum StreamRelay {
                 // upstream stream (onTermination → upstream close).
                 if Task.isCancelled || !channel.isActive { break }
                 switch event {
-                case let .head(code, headers, rules):
+                case let .head(code, version, headers, rules):
                     statusCode = code
+                    httpVersion = version
                     responseHeaders = headers
                     appliedRules = rules
                     headWritten = true
@@ -66,9 +68,9 @@ enum StreamRelay {
                     HTTPUtil.writeResponseHead(channel: channel, status: code, headers: headers, keepAlive: keepAlive, chunked: !bodyless)
                     // Surface the response status while the body is still streaming.
                     await store.upsert(Flow(
-                        id: flowID, request: request,
-                        response: CapturedResponse(statusCode: code, headers: headers, body: nil),
-                        startedAt: startedAt, sourceApp: sourceApp,
+                        id: flowID, request: request, startedAt: startedAt,
+                        outcome: .streaming(CapturedResponse(statusCode: code, httpVersion: version, headers: headers, body: nil)),
+                        sourceApp: sourceApp,
                         appliedRules: rules.isEmpty ? nil : rules
                     ))
                 case let .body(chunk):
@@ -84,9 +86,12 @@ enum StreamRelay {
                 }
             }
             await store.upsert(Flow(
-                id: flowID, request: request,
-                response: CapturedResponse(statusCode: statusCode, headers: responseHeaders, body: capturedBody),
-                startedAt: startedAt, completedAt: Date(), sourceApp: sourceApp,
+                id: flowID, request: request, startedAt: startedAt,
+                outcome: .completed(
+                    CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody),
+                    at: Date()
+                ),
+                sourceApp: sourceApp,
                 appliedRules: appliedRules.isEmpty ? nil : appliedRules
             ))
         } catch {
@@ -94,15 +99,18 @@ enum StreamRelay {
                 // Response already started; end it and record what we relayed + the error.
                 HTTPUtil.finishResponse(channel: channel, keepAlive: false)
                 await store.upsert(Flow(
-                    id: flowID, request: request,
-                    response: CapturedResponse(statusCode: statusCode, headers: responseHeaders, body: capturedBody),
-                    startedAt: startedAt, completedAt: Date(), error: error.localizedDescription,
+                    id: flowID, request: request, startedAt: startedAt,
+                    outcome: .failed(
+                        FlowError(error.localizedDescription), at: Date(),
+                        partialResponse: CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody)
+                    ),
                     sourceApp: sourceApp, appliedRules: appliedRules.isEmpty ? nil : appliedRules
                 ))
             } else {
                 await store.upsert(Flow(
-                    id: flowID, request: request, startedAt: startedAt, completedAt: Date(),
-                    error: error.localizedDescription, sourceApp: sourceApp
+                    id: flowID, request: request, startedAt: startedAt,
+                    outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
+                    sourceApp: sourceApp
                 ))
                 HTTPUtil.writeResponse(
                     channel: channel, status: 502, headers: [],

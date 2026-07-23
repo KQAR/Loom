@@ -6,19 +6,21 @@ import SharedModels
 /// tests can inject a deterministic stub instead of hitting the network.
 struct ForwardResult: Sendable {
     var statusCode: Int
+    /// Upstream's HTTP version (nil for a synthesized mock/block/local response).
+    var httpVersion: String?
     var headers: [HeaderPair]
     var body: Data
-    /// Names of traffic rules that acted on this exchange (set by
-    /// `RuleApplyingForwarder`); copied onto the captured flow for audit.
-    var appliedRules: [String] = []
+    /// Traffic rules that acted on this exchange (set by `RuleApplyingForwarder`);
+    /// copied onto the captured flow for audit.
+    var appliedRules: [AppliedRule] = []
 }
 
 /// A response as it arrives from upstream, so the proxy can relay it to the client
 /// chunk-by-chunk (SSE / long-poll / large downloads) instead of buffering the
-/// whole body first. `appliedRules` rides on `.head` since rules are known before
-/// the response.
+/// whole body first. `httpVersion` + `appliedRules` ride on `.head` since both are
+/// known before the response body.
 enum UpstreamResponseEvent: Sendable {
-    case head(statusCode: Int, headers: [HeaderPair], appliedRules: [String])
+    case head(statusCode: Int, httpVersion: String?, headers: [HeaderPair], appliedRules: [AppliedRule])
     case body(Data)
     case end
 }
@@ -37,7 +39,7 @@ extension UpstreamForwarding {
             let task = Task {
                 do {
                     let result = try await forward(method: method, url: url, headers: headers, body: body)
-                    continuation.yield(.head(statusCode: result.statusCode, headers: result.headers, appliedRules: result.appliedRules))
+                    continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
                     if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                     continuation.yield(.end)
                     continuation.finish()

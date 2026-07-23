@@ -9,9 +9,10 @@ final class FlowStoreRecordingTests: XCTestCase {
         Flow(
             id: id,
             request: CapturedRequest(method: "GET", url: "http://example.test/", headers: []),
-            response: completed ? CapturedResponse(statusCode: 200, headers: []) : nil,
             startedAt: Date(timeIntervalSince1970: 0),
-            completedAt: completed ? Date(timeIntervalSince1970: 1) : nil
+            outcome: completed
+                ? .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 1))
+                : .pending
         )
     }
 

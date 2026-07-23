@@ -29,7 +29,8 @@ enum RuleEngine {
         /// and the flow's `appliedRules` audit trail).
         var matched: [TrafficRule]
 
-        var appliedRuleNames: [String] { matched.map(\.name) }
+        /// Structured audit trail (rule id + name) copied onto the captured flow.
+        var appliedRules: [AppliedRule] { matched.map { AppliedRule(id: $0.id, name: $0.name) } }
     }
 
     static func planRequest(
@@ -134,13 +135,8 @@ enum RuleEngine {
     /// True when the URL matches the mapRemote exclude pattern (regex if it parses
     /// as one, else the same whole-string glob the matcher uses).
     private static func isExcluded(_ url: URL, by pattern: String?) -> Bool {
-        guard let pattern, !pattern.isEmpty else { return false }
-        let s = url.absoluteString
-        if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-           regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil {
-            return true
-        }
-        return SSLScope.matches(pattern: pattern, host: s)
+        guard let pattern else { return false }
+        return Pattern.matchesLoosely(pattern, url.absoluteString)
     }
 
     /// Removals first, then sets (a set of the same name replaces, not duplicates) —

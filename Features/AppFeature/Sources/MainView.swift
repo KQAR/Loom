@@ -162,7 +162,7 @@ public struct MainView: View {
                         Image(systemName: "wand.and.stars")
                             .font(.caption2)
                             .foregroundStyle(Color.accentColor)
-                            .help("Modified by rules: \(applied.joined(separator: ", "))")
+                            .help("Modified by rules: \(applied.map(\.name).joined(separator: ", "))")
                     }
                     if flow.isWebSocket {
                         Image(systemName: "bolt.horizontal.circle")

@@ -524,7 +524,7 @@ struct MCPToolExecutor {
         if let ms = flow.durationMS { out["durationMS"] = ms }
         if let error = flow.error { out["error"] = error }
         if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
-        if let applied = flow.appliedRules { out["appliedRules"] = applied }
+        if let applied = flow.appliedRules { out["appliedRules"] = applied.map(\.name) }
         if let messages = flow.webSocketMessages {
             out["webSocket"] = true
             out["wsMessageCount"] = messages.count
@@ -546,11 +546,13 @@ struct MCPToolExecutor {
             "body": flow.request.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
         ]
         if let response = flow.response {
-            out["response"] = [
+            var responseOut: [String: Any] = [
                 "status": response.statusCode,
                 "headers": response.headers.map { ["name": $0.name, "value": $0.value] },
                 "body": response.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
             ]
+            if let version = response.httpVersion { responseOut["httpVersion"] = version }
+            out["response"] = responseOut
         }
         if let graphQL = GraphQLParser.parse(flow.request) {
             var gql: [String: Any] = ["kind": graphQL.kind.rawValue, "query": graphQL.query]

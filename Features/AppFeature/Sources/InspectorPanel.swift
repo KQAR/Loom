@@ -170,7 +170,7 @@ private struct ResponsePane: View {
                 HStack(spacing: LoomTheme.Space.xs) {
                     Image(systemName: "wand.and.stars")
                         .font(.caption)
-                    Text("Modified by \(applied.count == 1 ? "rule" : "rules"): \(applied.joined(separator: ", "))")
+                    Text("Modified by \(applied.count == 1 ? "rule" : "rules"): \(applied.map(\.name).joined(separator: ", "))")
                         .font(.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -319,7 +319,7 @@ private struct SummaryTable: View {
             row("Started", flow.startedAt.formatted(date: .abbreviated, time: .standard))
             if flow.replayedFrom != nil { row("Origin", "Replayed") }
             if let applied = flow.appliedRules, !applied.isEmpty {
-                row("Rules", applied.joined(separator: ", "), color: .accentColor)
+                row("Rules", applied.map(\.name).joined(separator: ", "), color: .accentColor)
             }
             if let error = flow.error { row("Error", error, color: .red) }
         }
