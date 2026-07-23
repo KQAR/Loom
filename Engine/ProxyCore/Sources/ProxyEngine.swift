@@ -41,6 +41,24 @@ public actor ProxyEngine: ProxyControlling {
         self.caExportURL = Self.defaultCAExportURL
     }
 
+    /// Host-embeddable init for any Swift consumer that drives the engine as a
+    /// library and keeps captured flows in its own store. Pass `persistFlows:
+    /// false` to keep flows only in the in-memory ring and the live
+    /// `flowStream()`, so there is no second on-disk copy in Loom's SQLite store.
+    /// Forwarder, CA, and rules match `init()`.
+    /// Kept as a sibling designated init (not a delegating convenience init) so
+    /// `FlowPersistence` stays internal to the module. Mirror any change to the
+    /// forwarder/CA/config wiring in `init()` above.
+    public init(persistFlows: Bool) {
+        self.store = FlowStore(persistence: persistFlows ? FlowPersistence.makeDefault() : nil)
+        let rulesConfig = RulesConfig()
+        self.rulesConfig = rulesConfig
+        self.forwarder = RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig)
+        self.caStore = Self.migratedCAStore()
+        self.config = InterceptionConfig()
+        self.caExportURL = Self.defaultCAExportURL
+    }
+
     /// Return the file store, first migrating a legacy Keychain CA into it if the
     /// file is empty (so users who already trusted a Keychain-stored CA keep it).
     /// The Keychain is only touched when the file is empty AND an item exists —

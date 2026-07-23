@@ -8,6 +8,8 @@ Derived/
 # Xcode / SwiftPM
 DerivedData/
 .build/
+# Root SPM manifest is a library-reuse surface; Tuist owns the app's dep lock.
+/Package.resolved
 xcuserdata/
 *.xcuserstate
 
