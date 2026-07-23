@@ -89,7 +89,7 @@ public actor ProxyEngine: ProxyControlling {
     // MARK: - Lifecycle
 
     @discardableResult
-    public func start(port: Int = 9090, host: String = "127.0.0.1") async throws -> Int {
+    public func start(port: Int = 9090, host: String = "127.0.0.1", observeTunnels: Bool = false) async throws -> Int {
         guard !running else { return boundPort }
         // Claim `running` synchronously, before the first await, so a reentrant
         // start() (actor reentrancy during the awaits below) bails at the guard
@@ -105,7 +105,8 @@ public actor ProxyEngine: ProxyControlling {
                 store: store,
                 forwarder: forwarder,
                 ca: ca,
-                config: config
+                config: config,
+                observeTunnels: observeTunnels
             )
             return boundPort
         } catch {
