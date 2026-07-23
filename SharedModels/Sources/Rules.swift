@@ -15,11 +15,43 @@ public struct RuleMatch: Equatable, Codable, Sendable {
     public var isRegex: Bool
     /// HTTP methods to match (case-insensitive); empty means all methods.
     public var methods: [String]
+    /// When true (and not a regex), `urlPattern` must equal the URL exactly rather
+    /// than prefix/glob-match — lets a consumer express exact-URL semantics without
+    /// hand-anchoring a regex.
+    public var isExact: Bool
+    /// Optional host predicate as a glob (`*.example.com`), matched against the
+    /// URL's host. nil/empty = any host.
+    public var hostPattern: String?
+    /// Optional query predicates: each key must be present in the URL query and
+    /// equal its value, unless the value is `*` (presence-only). nil/empty = no
+    /// query constraint. Order-independent, unlike encoding query into `urlPattern`.
+    public var query: [String: String]?
 
-    public init(urlPattern: String, isRegex: Bool = false, methods: [String] = []) {
+    public init(
+        urlPattern: String,
+        isRegex: Bool = false,
+        methods: [String] = [],
+        isExact: Bool = false,
+        hostPattern: String? = nil,
+        query: [String: String]? = nil
+    ) {
         self.urlPattern = urlPattern
         self.isRegex = isRegex
         self.methods = methods
+        self.isExact = isExact
+        self.hostPattern = hostPattern
+        self.query = query
+    }
+
+    // Tolerant decode: rules saved before these fields existed still load.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        urlPattern = try c.decode(String.self, forKey: .urlPattern)
+        isRegex = try c.decodeIfPresent(Bool.self, forKey: .isRegex) ?? false
+        methods = try c.decodeIfPresent([String].self, forKey: .methods) ?? []
+        isExact = try c.decodeIfPresent(Bool.self, forKey: .isExact) ?? false
+        hostPattern = try c.decodeIfPresent(String.self, forKey: .hostPattern)
+        query = try c.decodeIfPresent([String: String].self, forKey: .query)
     }
 
     public func matches(method: String, url: String) -> Bool {
@@ -27,17 +59,47 @@ public struct RuleMatch: Equatable, Codable, Sendable {
            !methods.contains(where: { $0.caseInsensitiveCompare(method) == .orderedSame }) {
             return false
         }
+        // Host / query predicates run off the parsed URL, so they compose with any
+        // urlPattern style without the caller hand-anchoring a regex.
+        if (hostPattern.map { !$0.isEmpty } ?? false) || (query?.isEmpty == false) {
+            let components = URLComponents(string: url)
+            if let hostPattern, !hostPattern.isEmpty,
+               !SSLScope.matches(pattern: hostPattern, host: components?.host ?? "") {
+                return false
+            }
+            if let query, !query.isEmpty {
+                let actual = Self.queryItems(components)
+                for (key, value) in query {
+                    if value == "*" {
+                        if actual[key] == nil { return false }
+                    } else if actual[key] != value {
+                        return false
+                    }
+                }
+            }
+        }
         if isRegex {
             guard let regex = RegexCache.regex(urlPattern, caseInsensitive: true) else {
                 return false
             }
             return regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
         }
+        if isExact {
+            return url.caseInsensitiveCompare(urlPattern) == .orderedSame
+        }
         if urlPattern.contains("*") {
             // Same whole-string glob the SSL scope uses; it globs any string, not just hosts.
             return SSLScope.matches(pattern: urlPattern, host: url)
         }
         return url.lowercased().hasPrefix(urlPattern.lowercased())
+    }
+
+    private static func queryItems(_ components: URLComponents?) -> [String: String] {
+        var result: [String: String] = [:]
+        for item in components?.queryItems ?? [] {
+            result[item.name] = item.value ?? ""
+        }
+        return result
     }
 }
 
@@ -47,16 +109,44 @@ public struct RuleMatch: Equatable, Codable, Sendable {
 public struct MockResponseAction: Equatable, Codable, Sendable {
     public var statusCode: Int
     public var headers: [HeaderPair]
-    /// UTF-8 response body.
+    /// UTF-8 response body. Used when `bodyBase64` is nil.
     public var bodyText: String?
+    /// Base64-encoded response body, for binary payloads that aren't valid UTF-8
+    /// (images, protobuf, gzip). Takes precedence over `bodyText` when both are set.
+    public var bodyBase64: String?
     /// Convenience Content-Type (e.g. `application/json`); merged into `headers`.
     public var contentType: String?
 
-    public init(statusCode: Int = 200, headers: [HeaderPair] = [], bodyText: String? = nil, contentType: String? = nil) {
+    public init(
+        statusCode: Int = 200,
+        headers: [HeaderPair] = [],
+        bodyText: String? = nil,
+        bodyBase64: String? = nil,
+        contentType: String? = nil
+    ) {
         self.statusCode = statusCode
         self.headers = headers
         self.bodyText = bodyText
+        self.bodyBase64 = bodyBase64
         self.contentType = contentType
+    }
+
+    // Tolerant decode: rules saved before `bodyBase64` existed still load.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        statusCode = try c.decodeIfPresent(Int.self, forKey: .statusCode) ?? 200
+        headers = try c.decodeIfPresent([HeaderPair].self, forKey: .headers) ?? []
+        bodyText = try c.decodeIfPresent(String.self, forKey: .bodyText)
+        bodyBase64 = try c.decodeIfPresent(String.self, forKey: .bodyBase64)
+        contentType = try c.decodeIfPresent(String.self, forKey: .contentType)
+    }
+
+    /// The response body bytes: `bodyBase64` when present (invalid base64 decodes
+    /// to empty), otherwise UTF-8 `bodyText`, otherwise empty.
+    public func resolvedBody() -> Data {
+        if let bodyBase64 { return Data(base64Encoded: bodyBase64) ?? Data() }
+        if let bodyText { return Data(bodyText.utf8) }
+        return Data()
     }
 }
 
@@ -359,6 +449,9 @@ public struct TrafficRule: Equatable, Codable, Sendable, Identifiable {
             if !local.path.hasPrefix("/") { return "mapLocal.path must be an absolute file path" }
         case let .mock(mock):
             if !(100...599).contains(mock.statusCode) { return "mockResponse.statusCode must be a valid HTTP status" }
+            if let base64 = mock.bodyBase64, Data(base64Encoded: base64) == nil {
+                return "mockResponse.bodyBase64 is not valid base64"
+            }
         }
         if let delay = actions.delayMilliseconds, delay < 0 {
             return "delayMilliseconds must be >= 0"

@@ -66,5 +66,13 @@ let package = Package(
             // predates Swift 6 Sendable enforcement) — matches Project.swift.
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        // Pure-model tests runnable via `swift test` (no Tuist/NIO needed), so the
+        // reusable library surface is verifiable standalone. App/engine tests stay
+        // in the Tuist test targets.
+        .testTarget(
+            name: "SharedModelsTests",
+            dependencies: ["SharedModels"],
+            path: "SharedModels/Tests"
+        ),
     ]
 )
