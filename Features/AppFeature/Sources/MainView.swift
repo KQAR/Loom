@@ -314,6 +314,8 @@ public struct MainView: View {
             store.send(.phoneButtonTapped)
         } label: {
             Image(systemName: "iphone")
+                // Highlighted while LAN device connection is allowed (default on).
+                .foregroundStyle(store.lanEnabled ? Color.accentColor : .secondary)
         }
         .buttonStyle(.borderless)
         .help("Set up a phone to capture its traffic")

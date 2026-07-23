@@ -36,9 +36,12 @@ public struct AppFeature: Sendable {
         /// The traffic-rules surface (rule set, editor, writes) — split into its
         /// own feature. Flow capture/selection/pins stay in the parent.
         public var rules = RulesFeature.State()
-        /// Phone-onboarding popover (QR + proxy address). Non-nil while shown; the
-        /// engine makes the proxy LAN-reachable on present, loopback-only on dismiss.
+        /// Phone-onboarding popover (QR + proxy address + the LAN switch). Non-nil
+        /// while shown. Presenting no longer toggles LAN — that's `lanEnabled`.
         @Presents public var phone: PhoneOnboardingFeature.State?
+        /// Whether LAN device connection runs (proxy on `0.0.0.0` + provisioning
+        /// server). Persisted, default on; drives the phone icon's highlight.
+        public var lanEnabled = true
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
@@ -149,10 +152,13 @@ public struct AppFeature: Sendable {
         case setup(SetupFeature.Action)
         /// The traffic-rules child feature (rule CRUD, editor, master switch).
         case rules(RulesFeature.Action)
-        /// Open the phone-onboarding popover (QR + proxy address).
+        /// Open the phone-onboarding popover (QR + proxy address). Does not change
+        /// LAN connection — that's the popover's own switch.
         case phoneButtonTapped
-        /// The phone-onboarding popover child; `.dismiss` stops onboarding.
+        /// The phone-onboarding popover child; its `.delegate` reports LAN changes.
         case phone(PresentationAction<PhoneOnboardingFeature.Action>)
+        /// Persisted LAN-connection setting loaded at boot.
+        case lanEnabledLoaded(Bool)
         /// One-shot boot: start the proxy + subscribe to the flow stream. Sent only
         /// from the always-present menu-bar label so opening a window can't re-run
         /// it (which would cancel the live subscription and restart the proxy).
@@ -208,14 +214,22 @@ public struct AppFeature: Sendable {
                 return .none
 
             case .phoneButtonTapped:
-                state.phone = PhoneOnboardingFeature.State()
+                // Just open the popover, seeded with the current LAN setting.
+                // Dismissing it leaves LAN connection untouched.
+                state.phone = PhoneOnboardingFeature.State(lanEnabled: state.lanEnabled)
                 return .none
 
-            case .phone(.dismiss):
-                // Popover closed — return the proxy to loopback-only.
-                return .run { _ in await proxyClient.stopPhoneOnboarding() }
+            case let .phone(.presented(.delegate(.lanEnabledChanged(enabled)))):
+                // The popover's switch flipped — mirror it into the always-visible
+                // icon state and persist. The child already ran/stopped the engine.
+                state.lanEnabled = enabled
+                return .run { _ in LANCaptureStore.save(enabled) }
 
             case .phone:
+                return .none
+
+            case let .lanEnabledLoaded(enabled):
+                state.lanEnabled = enabled
                 return .none
 
             case .task:
@@ -237,6 +251,12 @@ public struct AppFeature: Sendable {
                             // effect — still load config + subscribe so the UI is live.
                             await send(.proxyStartFailed(error.localizedDescription))
                         }
+                        // LAN device connection is allowed by default: make the proxy
+                        // LAN-reachable at boot so phones can connect without opening
+                        // the popover first. The switch in the popover flips this.
+                        let lan = LANCaptureStore.load()
+                        await send(.lanEnabledLoaded(lan))
+                        if lan { _ = try? await proxyClient.startPhoneOnboarding() }
                         await send(.viewAppeared)
                         for flow in await proxyClient.recentFlows(200).reversed() {
                             await send(.flowReceived(flow))
