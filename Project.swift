@@ -161,6 +161,25 @@ let project = Project(
             settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),
 
+        // MARK: AppFeature reducer + pure-logic unit tests (TCA TestStore).
+        // AppFeature is Swift 6, so NO SWIFT_VERSION override here.
+        .target(
+            name: "AppFeatureTests",
+            destinations: .macOS,
+            product: .unitTests,
+            bundleId: "com.loom.appfeaturetests",
+            deploymentTargets: loomDeploymentTargets,
+            infoPlist: .default,
+            sources: ["Features/AppFeature/Tests/**"],
+            dependencies: [
+                .target(name: "AppFeature"),
+                .target(name: "ProxyClient"),
+                .target(name: "PrivilegedHelperClient"),
+                .target(name: "SharedModels"),
+                .external(name: "ComposableArchitecture"),
+            ]
+        ),
+
         // MARK: Privileged-client unit tests (pure logic: QUIC-block scripting)
         .target(
             name: "PrivilegedHelperClientTests",
