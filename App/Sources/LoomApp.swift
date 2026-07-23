@@ -20,7 +20,9 @@ struct LoomApp: App {
         let mcp = self.mcp
         Task {
             do {
-                let port = try await mcp.start()
+                // Fixed loopback port so the Claude Code plugin's HTTP MCP config
+                // (http://127.0.0.1:9092/mcp) can reach it without discovery.
+                let port = try await mcp.start(port: MCPServer.defaultPort)
                 NSLog("Loom MCP server listening on 127.0.0.1:\(port)")
             } catch {
                 NSLog("Loom MCP server failed to start: \(error.localizedDescription)")
