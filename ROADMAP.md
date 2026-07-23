@@ -71,12 +71,10 @@ MCP over loopback HTTP is the transport, effective M1:
 
 A second, non-GUI operator has appeared alongside MCP: Loom's capture engine now ships as SPM library products (`LoomProxyCore` + `LoomSharedModels`), and an external host drives `ProxyEngine` directly instead of running its own proxy. The first consumer is [Reticle](https://github.com/KQAR/Reticle), which runs the engine loopback, subscribes to `flowStream()`, and republishes exchanges into its own evidence stream — so "Loom as a backend for another tool" is now a real shape, not the deferred "mitmproxy/whistle backends" one.
 
-**Already shipped for this track:** the `LoomProxyCore` / `LoomSharedModels` products (root `Package.swift` coexisting with Tuist), `ProxyEngine(persistFlows:)` for embedders that own their storage, and mock-model parity (base64/binary mock bodies + host/query/exact match predicates, with tolerant decode).
+**Already shipped for this track:** the `LoomProxyCore` / `LoomSharedModels` products (root `Package.swift` coexisting with Tuist), `ProxyEngine(persistFlows:)` for embedders that own their storage, mock-model parity (base64/binary mock bodies + host/query/exact match predicates, with tolerant decode), a **configurable bind host** (`ProxyEngine.start(port:host:)`, loopback default) for real-device Wi-Fi/LAN capture, and **atomic `setRules([TrafficRule])`** for one-shot external rule-set sync.
 
 **Gaps to close (surfaced by the Reticle integration):**
 
-- **Configurable bind host.** `ProxyEngine.start` binds `127.0.0.1` only, so an embedder can't capture a real device over Wi-Fi/LAN. Add a bind-host parameter (default loopback) — an explicit opt-in, since a non-loopback bind exposes the MITM proxy on the network.
-- **Bulk rule replace.** Add `setRules([TrafficRule])` to `RulesControlling`, so a host syncing an external rule set does one atomic replace instead of delete-all-then-add-all through the per-rule CRUD.
 - **Optional blind-tunnel observation.** The engine emits a flow only for traffic it decrypts; a consumer that wants a record of un-decrypted `CONNECT` tunnels has nothing to surface. Offer an opt-in "tunnel observed" event so embedders can show HTTPS activity they didn't MITM.
 - **CA export ergonomics.** Expose the root CA as both DER and PEM to a caller-chosen directory. Today `exportCACertificate()` writes PEM to a fixed default path and `caCertificateDER()` returns bytes; an embedder installing the CA on a device needs both forms where its trust flow looks.
 - **Distinct module names.** The targets are `ProxyCore` / `SharedModels`, so a consumer `import`s those generic names. Rename to `LoomProxyCore` / `LoomSharedModels` (or add module aliases) to avoid collisions in a larger dependency graph.
