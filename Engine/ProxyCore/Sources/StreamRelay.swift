@@ -20,7 +20,8 @@ enum StreamRelay {
         startedAt: Date,
         sourceApp: SourceApp?,
         sourceDevice: SourceDevice?,
-        store: FlowStore
+        store: FlowStore,
+        bodyCapture: RequestBodyCapture? = nil
     ) async {
         // If the client disconnects mid-stream (closed SSE tab, aborted download),
         // cancel consumption so the stream's onTermination cancels the upstream
@@ -29,7 +30,8 @@ enum StreamRelay {
         // client's closeFuture can cancel.
         let work = Task { await relayInner(
             stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
-            request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
+            request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
+            store: store, bodyCapture: bodyCapture
         ) }
         channel.closeFuture.whenComplete { _ in work.cancel() }
         await work.value
@@ -40,12 +42,22 @@ enum StreamRelay {
         channel: Channel,
         keepAlive: Bool,
         flowID: UUID,
-        request: CapturedRequest,
+        request baseRequest: CapturedRequest,
         startedAt: Date,
         sourceApp: SourceApp?,
         sourceDevice: SourceDevice?,
-        store: FlowStore
+        store: FlowStore,
+        bodyCapture: RequestBodyCapture?
     ) async {
+        // For a streamed request body, fold the (by-now complete) captured copy into
+        // the request recorded on the flow. `baseRequest.body` is nil while streaming;
+        // this backfills it once the body has flowed.
+        func request() -> CapturedRequest {
+            guard let bodyCapture else { return baseRequest }
+            var request = baseRequest
+            request.body = bodyCapture.snapshot()
+            return request
+        }
         var statusCode = 0
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
@@ -66,11 +78,11 @@ enum StreamRelay {
                     responseHeaders = headers
                     appliedRules = rules
                     headWritten = true
-                    bodyless = HTTPUtil.responseHasNoBody(requestMethod: request.method, status: code)
+                    bodyless = HTTPUtil.responseHasNoBody(requestMethod: baseRequest.method, status: code)
                     HTTPUtil.writeResponseHead(channel: channel, status: code, headers: headers, keepAlive: keepAlive, chunked: !bodyless)
                     // Surface the response status while the body is still streaming.
                     await store.upsert(Flow(
-                        id: flowID, request: request, startedAt: startedAt,
+                        id: flowID, request: request(), startedAt: startedAt,
                         outcome: .streaming(CapturedResponse(statusCode: code, httpVersion: version, headers: headers, body: nil)),
                         sourceApp: sourceApp, sourceDevice: sourceDevice,
                         appliedRules: rules.isEmpty ? nil : rules
@@ -88,7 +100,7 @@ enum StreamRelay {
                 }
             }
             await store.upsert(Flow(
-                id: flowID, request: request, startedAt: startedAt,
+                id: flowID, request: request(), startedAt: startedAt,
                 outcome: .completed(
                     CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody),
                     at: Date()
@@ -101,7 +113,7 @@ enum StreamRelay {
                 // Response already started; end it and record what we relayed + the error.
                 HTTPUtil.finishResponse(channel: channel, keepAlive: false)
                 await store.upsert(Flow(
-                    id: flowID, request: request, startedAt: startedAt,
+                    id: flowID, request: request(), startedAt: startedAt,
                     outcome: .failed(
                         FlowError(error.localizedDescription), at: Date(),
                         partialResponse: CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody)
@@ -110,7 +122,7 @@ enum StreamRelay {
                 ))
             } else {
                 await store.upsert(Flow(
-                    id: flowID, request: request, startedAt: startedAt,
+                    id: flowID, request: request(), startedAt: startedAt,
                     outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
                     sourceApp: sourceApp, sourceDevice: sourceDevice
                 ))

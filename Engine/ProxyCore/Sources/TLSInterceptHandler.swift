@@ -19,7 +19,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     private let forwarder: UpstreamForwarding
 
     private var requestHead: HTTPRequestHead?
-    private var bodyBuffer: ByteBuffer?
+    private var bodyBridge: RequestBodyBridge?
+    private var droppingRequest = false
 
     init(host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding) {
         self.host = host
@@ -31,33 +32,50 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         switch unwrapInboundIn(data) {
         case let .head(head):
-            requestHead = head
-            bodyBuffer = context.channel.allocator.buffer(capacity: 0)
-        case var .body(chunk):
-            bodyBuffer?.writeBuffer(&chunk)
-        case .end:
-            guard let head = requestHead else { return }
-            let body = bodyBuffer.flatMap { buf in
-                buf.getBytes(at: buf.readerIndex, length: buf.readableBytes).map { Data($0) }
+            let absolute = absoluteURLString(for: head)
+            guard let url = URL(string: absolute) else {
+                HTTPUtil.writeResponse(channel: context.channel, status: 400, headers: [],
+                                       body: Data("Loom: bad intercepted URI\n".utf8), keepAlive: false)
+                droppingRequest = true
+                return
             }
-            handle(channel: context.channel, head: head, body: body)
+            requestHead = head
+            if RequestBodyStreaming.hasBody(head) {
+                let bridge = RequestBodyBridge(capture: RequestBodyCapture())
+                bridge.attach(channel: context.channel)
+                bodyBridge = bridge
+                _ = context.channel.setOption(ChannelOptions.autoRead, value: false)
+                startExchange(channel: context.channel, head: head, url: url, absolute: absolute,
+                              body: .stream(bridge.chunks, contentLength: RequestBodyStreaming.contentLength(head)),
+                              capture: bridge.capture)
+            }
+        case var .body(chunk):
+            if let bodyBridge, let bytes = chunk.readBytes(length: chunk.readableBytes) {
+                bodyBridge.yield(Data(bytes))
+            }
+        case .end:
+            if let bodyBridge {
+                bodyBridge.finish()
+                self.bodyBridge = nil
+                _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
+                requestHead = nil
+                return
+            }
+            if droppingRequest { droppingRequest = false; requestHead = nil; return }
+            guard let head = requestHead else { return }
+            let absolute = absoluteURLString(for: head)
+            guard let url = URL(string: absolute) else { requestHead = nil; return }
+            startExchange(channel: context.channel, head: head, url: url, absolute: absolute, body: .bytes(nil), capture: nil)
             requestHead = nil
-            bodyBuffer = nil
         }
     }
 
-    private func handle(channel: Channel, head: HTTPRequestHead, body: Data?) {
-        let absolute = absoluteURLString(for: head)
-        guard let url = URL(string: absolute) else {
-            HTTPUtil.writeResponse(channel: channel, status: 400, headers: [],
-                                   body: Data("Loom: bad intercepted URI\n".utf8), keepAlive: false)
-            return
-        }
+    private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, absolute: String, body: RequestBody, capture: RequestBodyCapture?) {
         // wss: keep the client's TLS handler in place, strip only the HTTP framing
         // + this handler; the upstream leg re-originates TLS.
         let requestPath = head.uri.hasPrefix("/") ? head.uri : "/\(head.uri)"
         CapturedExchange.handle(
-            channel: channel, head: head, body: body,
+            channel: channel, head: head, body: body, bodyCapture: capture,
             routing: CapturedExchange.Routing(
                 url: url,
                 urlString: absolute,

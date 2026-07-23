@@ -55,23 +55,36 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         return result
     }
 
-    /// Stream the response through when no matched rule touches it; otherwise fall
-    /// back to the buffered path (a body rewrite / mock / block needs the whole
-    /// body). Request-side rules and delay still apply either way.
-    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
-        let plan = RuleEngine.planRequest(
-            state: rules.snapshot(), method: method, url: url, headers: headers, body: body
-        )
-        let touchesResponse = plan.shortCircuit != nil || plan.matched.contains { rule in
-            (rule.actions.rewriteResponse?.isEmpty == false) || !rule.actions.activeResponseSubstitutions.isEmpty
+    /// Stream the request body straight through when no matched rule needs the whole
+    /// body (or the whole response); otherwise buffer it. Buffering is required for a
+    /// short-circuit (block/mock/mapLocal — the body is discarded but still drained +
+    /// captured), a request-body rewrite/substitution, or a response rewrite/
+    /// substitution (needs the full response). Non-body request edits (method / URL /
+    /// headers / mapRemote / URL substitutions) and delay apply on the streaming path
+    /// too.
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        let state = rules.snapshot()
+        let matched = state.activeRules.filter { $0.match.matches(method: method, url: url.absoluteString) }
+        let needsBuffering = matched.contains { rule in
+            let a = rule.actions
+            switch a.route {
+            case .passthrough, .mapRemote: break // retarget is a non-body edit
+            case .block, .mock, .mapLocal: return true // short-circuit: drain + capture the body
+            }
+            if a.rewriteRequest?.bodyText != nil { return true }
+            if a.activeRequestSubstitutions.contains(where: { $0.field == .body }) { return true }
+            if a.rewriteResponse?.isEmpty == false { return true }
+            if !a.activeResponseSubstitutions.isEmpty { return true }
+            return false
         }
 
-        if touchesResponse {
-            // Buffered: run the SAME plan (a body rewrite / mock / block needs the
-            // whole body). Executing the precomputed plan avoids a second snapshot.
+        if needsBuffering {
+            // Materialize the body, then run the SAME plan against it.
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
+                        let collected = try await body.collect()
+                        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: collected)
                         let result = try await self.execute(plan: plan)
                         continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
                         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
@@ -85,22 +98,22 @@ final class RuleApplyingForwarder: UpstreamForwarding {
             }
         }
 
-        // Streaming: the request is already rewritten in the plan; the response is
-        // relayed chunk-by-chunk with the applied-rule names stamped on the head.
+        // Streaming: plan with no body so only the non-body request edits apply
+        // (URL/host/headers/method); the real body streams through untouched.
+        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: nil)
         let base = self.base
         let appliedRules = plan.appliedRules
         let delayMs = plan.delayMilliseconds
         let planMethod = plan.method
         let planURL = plan.url
         let planHeaders = plan.headers
-        let planBody = plan.body
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     // Cancellation (client gone) aborts the delay instead of
                     // sleeping then forwarding anyway.
                     if delayMs > 0 { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
-                    for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: planBody) {
+                    for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: body) {
                         switch event {
                         case let .head(code, version, headers, _):
                             continuation.yield(.head(statusCode: code, httpVersion: version, headers: headers, appliedRules: appliedRules))

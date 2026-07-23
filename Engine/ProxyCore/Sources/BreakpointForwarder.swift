@@ -64,22 +64,24 @@ final class BreakpointForwarder: UpstreamForwarding {
         return result
     }
 
-    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         let urlString = url.absoluteString
         let matchesRequest = store.firstMatch(method: method, url: urlString, phase: .request) != nil
         let matchesResponse = store.firstMatch(method: method, url: urlString, phase: .response) != nil
 
-        // Fast path: no breakpoint touches this exchange — delegate untouched so
-        // streaming responses keep streaming chunk-by-chunk.
+        // Fast path: no breakpoint touches this exchange — delegate untouched so the
+        // request body (and streaming responses) keep streaming chunk-by-chunk.
         guard matchesRequest || matchesResponse else {
             return base.forwardStream(method: method, url: url, headers: headers, body: body)
         }
 
-        // A held exchange must be buffered (we may edit request or whole response).
+        // A held exchange must be buffered (we may edit the request or the whole
+        // response), so materialize the body first, then run the buffered path.
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let result = try await self.forward(method: method, url: url, headers: headers, body: body)
+                    let collected = try await body.collect()
+                    let result = try await self.forward(method: method, url: url, headers: headers, body: collected)
                     continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
                     if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                     continuation.yield(.end)

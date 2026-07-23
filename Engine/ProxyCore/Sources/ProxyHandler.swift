@@ -26,8 +26,13 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     private let observeTunnels: Bool
 
     private var requestHead: HTTPRequestHead?
-    private var bodyBuffer: ByteBuffer?
     private var connectHead: HTTPRequestHead?
+    /// Live bridge for the current request's streamed body; nil for a bodyless
+    /// request. Body chunks are pumped into it and pulled by the forwarder under
+    /// back-pressure.
+    private var bodyBridge: RequestBodyBridge?
+    /// Set when the request head was malformed so the trailing body/end are ignored.
+    private var droppingRequest = false
 
     init(
         store: FlowStore,
@@ -52,40 +57,58 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 // Defer the pipeline surgery until `.end`, so the decoder has
                 // finished emitting the CONNECT's HTTP parts before we swap it out.
                 connectHead = head
-            } else {
-                requestHead = head
-                bodyBuffer = context.channel.allocator.buffer(capacity: 0)
+                return
+            }
+            // Proxied requests carry an absolute URI in the request line.
+            guard let url = URL(string: head.uri), url.scheme != nil else {
+                HTTPUtil.writeResponse(channel: context.channel, status: 400, headers: [],
+                                       body: Data("Loom: expected absolute request URI\n".utf8), keepAlive: false)
+                droppingRequest = true
+                return
+            }
+            requestHead = head
+            if RequestBodyStreaming.hasBody(head) {
+                // Stream the body: pause auto-read (mirrors the TLS-swap pause) so the
+                // only reads are the ones the bridge asks for as the forwarder drains,
+                // then start forwarding immediately instead of waiting for `.end`.
+                let bridge = RequestBodyBridge(capture: RequestBodyCapture())
+                bridge.attach(channel: context.channel)
+                bodyBridge = bridge
+                _ = context.channel.setOption(ChannelOptions.autoRead, value: false)
+                startExchange(channel: context.channel, head: head, url: url,
+                              body: .stream(bridge.chunks, contentLength: RequestBodyStreaming.contentLength(head)),
+                              capture: bridge.capture)
             }
         case var .body(chunk):
-            bodyBuffer?.writeBuffer(&chunk)
+            if let bodyBridge, let bytes = chunk.readBytes(length: chunk.readableBytes) {
+                bodyBridge.yield(Data(bytes))
+            }
         case .end:
             if let connectHead {
                 self.connectHead = nil
                 handleConnect(context: context, head: connectHead)
                 return
             }
-            guard let head = requestHead else { return }
-            let body = bodyBuffer.flatMap { buf in
-                buf.getBytes(at: buf.readerIndex, length: buf.readableBytes).map { Data($0) }
+            if let bodyBridge {
+                bodyBridge.finish()
+                self.bodyBridge = nil
+                _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
+                requestHead = nil
+                return
             }
-            forward(channel: context.channel, head: head, body: body)
+            if droppingRequest { droppingRequest = false; requestHead = nil; return }
+            guard let head = requestHead, let url = URL(string: head.uri), url.scheme != nil else { return }
+            startExchange(channel: context.channel, head: head, url: url, body: .bytes(nil), capture: nil)
             requestHead = nil
-            bodyBuffer = nil
         }
     }
 
     // MARK: - Plain HTTP forwarding
 
-    private func forward(channel: Channel, head: HTTPRequestHead, body: Data?) {
-        // Proxied requests carry an absolute URI in the request line.
-        guard let url = URL(string: head.uri), url.scheme != nil else {
-            HTTPUtil.writeResponse(channel: channel, status: 400, headers: [],
-                                   body: Data("Loom: expected absolute request URI\n".utf8), keepAlive: false)
-            return
-        }
+    private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, body: RequestBody, capture: RequestBodyCapture?) {
         let wsPort = url.port ?? (url.scheme?.lowercased() == "wss" ? 443 : 80)
         CapturedExchange.handle(
-            channel: channel, head: head, body: body,
+            channel: channel, head: head, body: body, bodyCapture: capture,
             routing: CapturedExchange.Routing(
                 url: url,
                 urlString: head.uri,

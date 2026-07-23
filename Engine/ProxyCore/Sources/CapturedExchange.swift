@@ -28,14 +28,23 @@ enum CapturedExchange {
     static func handle(
         channel: Channel,
         head: HTTPRequestHead,
-        body: Data?,
+        body: RequestBody,
+        bodyCapture: RequestBodyCapture?,
         routing: Routing,
         store: FlowStore,
         forwarder: UpstreamForwarding
     ) {
         let headers = HTTPUtil.headerPairs(head.headers)
+        // For a streamed body the bytes aren't known yet; `bodyCapture` fills them in
+        // as they flow, and `StreamRelay` reads the complete copy on the response
+        // upserts (the request finishes before the response head by HTTP ordering).
+        let initialBody: Data?
+        switch body {
+        case let .bytes(data): initialBody = data
+        case .stream: initialBody = nil
+        }
         let capturedRequest = CapturedRequest(
-            method: head.method.rawValue, url: routing.urlString, headers: headers, body: body
+            method: head.method.rawValue, url: routing.urlString, headers: headers, body: initialBody
         )
         let flowID = UUID()
         let startedAt = Date()
@@ -77,7 +86,8 @@ enum CapturedExchange {
             await StreamRelay.relay(
                 stream: forwarder.forwardStream(method: method, url: routing.url, headers: headers, body: body),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
-                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
+                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
+                store: store, bodyCapture: bodyCapture
             )
         }
     }
