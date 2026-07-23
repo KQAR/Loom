@@ -61,7 +61,10 @@ Loom is built for one cycle — do this, don't just read:
 3. **Automate** — when a change should apply to *future* traffic, express it as a
    rule (`create_rule`): mock, map-remote, map-local, rewrite, find/replace,
    block, or delay. Toggle sets of them with groups for scenario switching.
-4. **Diff** — compare the original vs the replayed/ruled flow via their details.
+4. **Diff** — `diff_flows` gives a structured comparison of the original vs the
+   replayed/ruled flow (method/url, header add/remove/change, status, line-level
+   body diff). Pass just `base` = the replayed flow's id to diff it against its
+   `replayedFrom` original in one call. Repeat 2–4 until the response is right.
 
 ## Tool reference
 
@@ -74,10 +77,12 @@ Loom is built for one cycle — do this, don't just read:
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
 | `get_recent_flows` | newest-first flow summaries (method, url, status, host, flags) |
 | `get_flow_detail` | full headers + body for one flow id; adds `webSocket.messages` / `graphQL` blocks when present |
+| `diff_flows` | structured diff of two flows by id (`base` + `compared`, or `base` alone to diff a replay vs its original); reports method/url, header add/remove/change, status, line-level body diff |
 | `get_certificate_status` | root-CA state: generated? trusted? fingerprint, expiry, exported path |
 | `get_ssl_scope` | HTTPS interception on/off + include/exclude host globs |
 | `list_rules` | master switch + all rules (long bodies truncated) |
 | `get_rule` | one rule by id, full bodies |
+| `list_pending` | armed breakpoints + exchanges held right now awaiting a `resume` (poll this — there is no server push) |
 
 ### Write (the reason Loom exists — these change behavior; there is NO approval gate, they act directly)
 
@@ -89,6 +94,9 @@ Loom is built for one cycle — do this, don't just read:
 | `delete_rule` | remove a rule by id |
 | `set_rules_enabled` | master switch for the whole rule engine |
 | `set_group_enabled` | enable/disable every rule in a group — scenario switching |
+| `arm_breakpoint` | hold matching traffic mid-flight (request and/or response phase) for inspection/editing; match reuses the rule `match` schema |
+| `disarm_breakpoint` | remove an armed breakpoint by id |
+| `resume` | release a held exchange by its `pending_id`: apply edits (method / url / status_code / set+remove headers / body) and continue, or `abort` with a 502 |
 | `set_ssl_scope` | turn HTTPS interception on/off + set include/exclude host globs |
 | `export_ca_certificate` | write the root CA (PEM) to disk for trusting; returns the path |
 | `export_har` | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
@@ -113,11 +121,18 @@ glob-or-regex + HTTP methods; then one action:
   on the interesting id. Group/attribute with `list_devices` when multiple
   clients are involved.
 - **"Replay without the auth header / with a different body."** → `replay_flow`
-  with `overrides` removing `Authorization` (or setting a new body). Compare the
-  new flow's `get_flow_detail` against the original.
+  with `overrides` removing `Authorization` (or setting a new body). Then call
+  `diff_flows` with `base` = the new flow's id to see exactly what changed vs the
+  original it was replayed from.
 - **"Make this endpoint return 500 / a fixed payload."** → `create_rule` with a
   mock action matching the URL. Verify by re-triggering the client and reading
   the newest flow (it will carry the rule in `appliedRules`).
+- **"Pause this request so I can tamper with it before it goes out."** →
+  `arm_breakpoint` with `on_request` (and/or `on_response`) matching the URL. Then
+  **poll `list_pending`** until the exchange shows up, inspect it, and `resume`
+  with edits (or `abort`). There is no push — you must poll. An unattended hold
+  auto-continues after a timeout, so don't arm one and walk away. `disarm_breakpoint`
+  when done.
 - **"Point this API at staging."** → `create_rule` map-remote (set
   `keepHostHeader` only if the upstream needs the original Host). Group related
   redirects so `set_group_enabled` flips the whole scenario at once.

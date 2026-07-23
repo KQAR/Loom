@@ -51,8 +51,8 @@ Tuist is pinned to **4.202.5** in `mise.toml` — do not downgrade (see Known Is
 ## Scope
 
 **In scope now (M1 + M2 interception, done)**: HTTP capture proxy, HTTPS MITM interception (on-demand P-256 CA + per-host leaf certs, TLS termination, SSL-proxying scope), in-app MCP server + `loom-mcp` bridge, read tools + write tools (`replay_flow`, `set_ssl_scope`, `export_ca_certificate`), menu-bar shell + Inspector window.
-**In scope now also (M3, partial)**: traffic rules — structured `TrafficRule` model (no text DSL; whistle-inspired semantics only) with optional **groups** (batch enable/disable, scenario switching), applied for all paths in one choke point (`RuleApplyingForwarder` decorating `UpstreamForwarding`), persisted in UserDefaults (`com.loom.rules`), exposed as 7 MCP tools + UI (sidebar Rules panel, row context-menu rule templates, rule-hit indicators, `appliedRules` audit on flows). **Owner decision: no approval mode** — all MCP write tools act directly; INTERACTION.md's approval-card gating is not implemented for rules by design.
-**Next (ordered — see [`ROADMAP.md`](ROADMAP.md))**: finish M2 (privileged helper for system-trust install + system-proxy — currently an unverified scaffold), rest of M3 (breakpoints, `diff_flows`), M4 protocol breadth (HTTP/2, WebSocket, GraphQL) + persistence.
+**In scope now also (M3, done)**: traffic rules — structured `TrafficRule` model (no text DSL; whistle-inspired semantics only) with optional **groups** (batch enable/disable, scenario switching), applied for all paths in one choke point (`RuleApplyingForwarder` decorating `UpstreamForwarding`), persisted in UserDefaults (`com.loom.rules`), exposed as 7 MCP tools + UI (sidebar Rules panel, row context-menu rule templates, rule-hit indicators, `appliedRules` audit on flows). Plus **`diff_flows`** (structured request/response diff, closing the capture→modify→replay→diff loop) and **breakpoints** — a `Breakpoint` (reusing `RuleMatch`) holds matching traffic mid-flight via `BreakpointForwarder` (outermost `UpstreamForwarding` decorator) + a lock-based `BreakpointStore` that parks the exchange on a continuation; poll model (`list_pending`) since MCP has no server push, released with `resume` (edit or abort). Breakpoints are **not persisted** (a held exchange holds a live connection). **Owner decision: no approval mode** — all MCP write tools act directly; INTERACTION.md's approval-card gating is not implemented for rules/breakpoints by design.
+**Next (ordered — see [`ROADMAP.md`](ROADMAP.md))**: finish M2 (privileged helper for system-trust install + system-proxy — currently an unverified scaffold), M4 protocol breadth (HTTP/2, WebSocket, GraphQL) + persistence.
 **Deferred**: Windows/Linux, iOS device capture, team sessions, in-app LLM assistant.
 
 ## Core Concepts
@@ -96,7 +96,12 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 | `list_devices` | read | devices that sent traffic through the proxy (this Mac + LAN devices), typed from User-Agent, with per-device flow counts + last-seen |
 | `get_recent_flows` | read | newest-first flow summaries |
 | `get_flow_detail` | read | full headers + body for one flow id |
+| `diff_flows` | read | structured diff of two flows (method/url, request+response headers add/remove/change, status, line-level body diff); `base` alone diffs a replay against its `replayedFrom` original |
 | `replay_flow` | **write** | re-send a flow with overrides → new flow, linked via `replayedFrom` |
+| `arm_breakpoint` | **write** | hold matching traffic mid-flight (request and/or response phase) for inspection/editing; match reuses `RuleMatch` |
+| `disarm_breakpoint` | **write** | remove an armed breakpoint by id |
+| `list_pending` | read | armed breakpoints + exchanges currently held awaiting a resume decision (poll model — MCP has no server push) |
+| `resume` | **write** | release a held exchange by pending id: apply edits (method/url/status/headers/body) and continue, or `abort` with a 502 |
 | `get_certificate_status` | read | MITM root-CA state: generated? trusted? fingerprint, expiry, exported path |
 | `get_ssl_scope` | read | current interception scope (enabled + include/exclude host globs) |
 | `export_ca_certificate` | **write** | write the root CA (PEM) to disk for trusting; returns the path |
@@ -112,7 +117,7 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 
 WebSocket flows (ws:// and wss:// via MITM) are captured as a single flow whose frames appear in `get_flow_detail` under `webSocket.messages` (direction/kind/text-or-bytes) and are flagged in `get_recent_flows`. GraphQL POSTs are recognized (`GraphQLParser`); `get_flow_detail` adds a `graphQL` block (kind/operationName/query/variables) and the Inspector shows a GraphQL tab. HTTP/2 is intercepted when the client negotiates ALPN `h2`: the MITM leaf advertises `h2`+`http/1.1`, and each h2 stream is demuxed through the h2↔h1 codec into the same `TLSInterceptHandler` capture path (falls back to http/1.1 otherwise). Completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` and reload on launch.
 
-Write tools are the reason Loom exists. When adding one (M3: `create_rule`, breakpoints, `diff_flows`), it must be scoped and — if destructive — gated per [`INTERACTION.md`](INTERACTION.md).
+Write tools are the reason Loom exists. When adding one, it must be scoped and — if destructive — gated per [`INTERACTION.md`](INTERACTION.md).
 
 ### Key Modules
 

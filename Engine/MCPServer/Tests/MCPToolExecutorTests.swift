@@ -125,6 +125,132 @@ final class MCPToolExecutorTests: XCTestCase {
         } catch { XCTFail("wrong error type: \(error)") }
     }
 
+    func test_diffFlows_explicitPair_rendersDiff() async throws {
+        let engine = StubEngine()
+        let base = Fixtures.completedFlow(url: "https://a/1")
+        var compared = Fixtures.completedFlow(url: "https://a/1")
+        compared.outcome = .completed(
+            CapturedResponse(statusCode: 500, httpVersion: "HTTP/1.1", headers: [], body: Data("{}".utf8)),
+            at: Date(timeIntervalSince1970: 1_000.1)
+        )
+        engine.flows = [base, compared]
+        let out = try json(try await makeExecutor(engine).call(name: "diff_flows", arguments: [
+            "base": base.id.uuidString, "compared": compared.id.uuidString,
+        ]))
+        XCTAssertEqual(out["identical"] as? Bool, false)
+        let status = try XCTUnwrap((out["response"] as? [String: Any])?["status"] as? [String: Any])
+        XCTAssertEqual(status["base"] as? Int, 200)
+        XCTAssertEqual(status["compared"] as? Int, 500)
+    }
+
+    func test_diffFlows_baseOnly_usesReplayedFrom() async throws {
+        let engine = StubEngine()
+        let original = Fixtures.completedFlow(url: "https://a/1")
+        var replay = Fixtures.completedFlow(url: "https://a/1")
+        replay.replayedFrom = original.id
+        replay.request.method = "POST"
+        engine.flows = [original, replay]
+        let out = try json(try await makeExecutor(engine).call(name: "diff_flows", arguments: [
+            "base": replay.id.uuidString,
+        ]))
+        XCTAssertEqual(out["baseId"] as? String, original.id.uuidString)
+        XCTAssertEqual(out["comparedId"] as? String, replay.id.uuidString)
+        let method = try XCTUnwrap((out["request"] as? [String: Any])?["method"] as? [String: Any])
+        XCTAssertEqual(method["compared"] as? String, "POST")
+    }
+
+    func test_diffFlows_baseOnly_noReplayLink_isToolFailure() async {
+        let engine = StubEngine()
+        let lone = Fixtures.completedFlow(url: "https://a/1")
+        engine.flows = [lone]
+        do {
+            _ = try await makeExecutor(engine).call(name: "diff_flows", arguments: ["base": lone.id.uuidString])
+            XCTFail("expected tool failure")
+        } catch is MCPToolFailure {
+        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+    }
+
+    func test_diffFlows_missingBase_isInvalidParams() async {
+        do {
+            _ = try await makeExecutor().call(name: "diff_flows", arguments: [:])
+            XCTFail("expected invalidParams")
+        } catch let error as MCPError {
+            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
+        } catch { XCTFail("wrong error type: \(error)") }
+    }
+
+    // MARK: Breakpoints
+
+    func test_armBreakpoint_forwardsToEngine() async throws {
+        let engine = StubEngine()
+        let out = try json(try await makeExecutor(engine).call(name: "arm_breakpoint", arguments: [
+            "match": ["url_pattern": "https://api.example.com/*"],
+            "on_response": true,
+        ]))
+        XCTAssertNotNil(UUID(uuidString: out["id"] as? String ?? ""))
+        XCTAssertEqual(out["onRequest"] as? Bool, true)
+        XCTAssertEqual(out["onResponse"] as? Bool, true)
+        XCTAssertEqual(engine.armed.count, 1)
+    }
+
+    func test_armBreakpoint_missingMatch_isInvalidParams() async {
+        do {
+            _ = try await makeExecutor().call(name: "arm_breakpoint", arguments: ["on_request": true])
+            XCTFail("expected invalidParams")
+        } catch let error as MCPError {
+            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
+        } catch { XCTFail("wrong error type: \(error)") }
+    }
+
+    func test_listPending_rendersArmedAndPending() async throws {
+        let engine = StubEngine()
+        engine.armed = [Breakpoint(match: RuleMatch(urlPattern: "*"))]
+        engine.pending = [PendingBreakpoint(
+            breakpointID: UUID(), phase: .request,
+            method: "GET", url: "https://a/1", requestHeaders: [], requestBody: Data("hi".utf8)
+        )]
+        let out = try json(try await makeExecutor(engine).call(name: "list_pending", arguments: [:]))
+        XCTAssertEqual((out["armed"] as? [[String: Any]])?.count, 1)
+        let pending = try XCTUnwrap(out["pending"] as? [[String: Any]])
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual((pending.first?["request"] as? [String: Any])?["method"] as? String, "GET")
+    }
+
+    func test_resume_forwardsEditsToEngine() async throws {
+        let engine = StubEngine()
+        let held = PendingBreakpoint(
+            breakpointID: UUID(), phase: .response,
+            method: "GET", url: "https://a/1", requestHeaders: []
+        )
+        engine.pending = [held]
+        _ = try await makeExecutor(engine).call(name: "resume", arguments: [
+            "pending_id": held.id.uuidString,
+            "status_code": 503,
+            "body": "down",
+        ])
+        let call = try XCTUnwrap(engine.resumeCalls.first)
+        XCTAssertEqual(call.id, held.id)
+        XCTAssertFalse(call.abort)
+        XCTAssertEqual(call.edit.statusCode, 503)
+        XCTAssertEqual(call.edit.body, .replace(Data("down".utf8)))
+    }
+
+    func test_resume_unknownPendingID_isToolFailure() async {
+        do {
+            _ = try await makeExecutor().call(name: "resume", arguments: ["pending_id": UUID().uuidString])
+            XCTFail("expected tool failure")
+        } catch is MCPToolFailure {
+        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+    }
+
+    func test_disarmBreakpoint_unknownID_isToolFailure() async {
+        do {
+            _ = try await makeExecutor().call(name: "disarm_breakpoint", arguments: ["id": UUID().uuidString])
+            XCTFail("expected tool failure")
+        } catch is MCPToolFailure {
+        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+    }
+
     // MARK: Write tools forward to the engine
 
     func test_replayFlow_forwardsAndRendersFailureInBand() async throws {

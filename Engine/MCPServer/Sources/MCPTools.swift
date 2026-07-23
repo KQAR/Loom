@@ -75,6 +75,65 @@ struct MCPToolExecutor {
                 ],
             ],
             [
+                "name": "diff_flows",
+                "description": "Diff two captured flows and report exactly what differs: request method/url, request+response headers (added/removed/changed), status code, and a line-level body diff for text payloads. Pass `base` alone to diff a replayed flow against the flow it was replayed from. This closes the capture → modify → replay → diff loop.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "base": ["type": "string", "description": "Baseline flow UUID. If `compared` is omitted, this must be a replayed flow and it is diffed against its original (replayedFrom)."],
+                        "compared": ["type": "string", "description": "The changed flow UUID to compare against `base`. Optional when `base` is a replay."],
+                    ],
+                    "required": ["base"],
+                ],
+            ],
+            [
+                "name": "arm_breakpoint",
+                "description": "Arm a breakpoint: matching traffic is HELD mid-flight so you can inspect and edit it before it continues. Match by URL pattern (+ optional methods/host/query), same as a rule. Pause the request (before it's forwarded upstream), the response (before it reaches the client), or both. Held exchanges surface in list_pending; release them with resume. This is a write action.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "match": Self.matchSchema,
+                        "on_request": ["type": "boolean", "description": "Pause the request before forwarding upstream (default true)."],
+                        "on_response": ["type": "boolean", "description": "Pause the response before it reaches the client (default false)."],
+                        "comment": ["type": "string", "description": "Optional note on why the breakpoint exists."],
+                    ],
+                    "required": ["match"],
+                ],
+            ],
+            [
+                "name": "disarm_breakpoint",
+                "description": "Remove an armed breakpoint by id. Exchanges it is already holding still need a resume. This is a write action.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": ["id": ["type": "string", "description": "Breakpoint UUID (from arm_breakpoint / list_pending)."]],
+                    "required": ["id"],
+                ],
+            ],
+            [
+                "name": "list_pending",
+                "description": "List currently armed breakpoints and every exchange held right now awaiting a resume decision. Each pending item carries its id (pass to resume), phase (request/response), full request, and — for a response pause — the response the client would receive. Poll this to discover held traffic (MCP has no server push).",
+                "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
+            ],
+            [
+                "name": "resume",
+                "description": "Release a held exchange by its pending id. Continue it (optionally editing method/url/status/headers/body first) or `abort` to fail it with a 502. Request-phase edits honor method/url; response-phase edits honor status_code; both honor header + body edits. This is a write action.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "pending_id": ["type": "string", "description": "The held exchange's id from list_pending."],
+                        "abort": ["type": "boolean", "description": "Fail the exchange with a 502 instead of continuing (default false)."],
+                        "method": ["type": "string", "description": "Request-phase only: replace the HTTP method."],
+                        "url": ["type": "string", "description": "Request-phase only: replace the full URL."],
+                        "status_code": ["type": "integer", "description": "Response-phase only: replace the status code."],
+                        "set_headers": ["type": "object", "description": "Header name/value pairs to add or overwrite."],
+                        "remove_headers": ["type": "array", "items": ["type": "string"], "description": "Header names to remove."],
+                        "body": ["type": "string", "description": "Replacement body (UTF-8)."],
+                        "clear_body": ["type": "boolean", "description": "Send an empty body (ignored if `body` is set)."],
+                    ],
+                    "required": ["pending_id"],
+                ],
+            ],
+            [
                 "name": "get_certificate_status",
                 "description": "Get the HTTPS-interception root CA status: whether it exists, whether it's trusted on this machine, its SHA-256 fingerprint, expiry, and exported PEM path.",
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
@@ -321,6 +380,11 @@ struct MCPToolExecutor {
         "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
+        "diff_flows": { ex, args in try await ex.handleDiffFlows(args) },
+        "arm_breakpoint": { ex, args in try await ex.handleArmBreakpoint(args) },
+        "disarm_breakpoint": { ex, args in try await ex.handleDisarmBreakpoint(args) },
+        "list_pending": { ex, args in try await ex.handleListPending(args) },
+        "resume": { ex, args in try await ex.handleResume(args) },
         "replay_flow": { ex, args in try await ex.handleReplayFlow(args) },
         "get_certificate_status": { ex, args in try await ex.handleGetCertificateStatus(args) },
         "export_ca_certificate": { ex, args in try await ex.handleExportCACertificate(args) },
@@ -382,6 +446,117 @@ struct MCPToolExecutor {
             throw MCPToolFailure("no flow with id \(idString)")
         }
         return prettyJSON(Self.flowDetail(flow))
+    }
+
+    private func handleDiffFlows(_ arguments: [String: Any]) async throws -> String {
+        guard let baseString = arguments["base"] as? String, let baseID = UUID(uuidString: baseString) else {
+            throw MCPError.invalidParams("`base` must be a flow UUID string")
+        }
+        guard let baseFlow = await engine.flow(id: baseID) else {
+            throw MCPToolFailure("no flow with id \(baseString)")
+        }
+
+        // Resolve the two sides. Explicit `compared` wins; otherwise diff a replay
+        // against the flow it was replayed from (base = original, compared = replay),
+        // which is the natural one-argument "how did my replay change things" call.
+        let base: Flow
+        let compared: Flow
+        if let comparedString = arguments["compared"] as? String {
+            guard let comparedID = UUID(uuidString: comparedString) else {
+                throw MCPError.invalidParams("`compared` must be a flow UUID string")
+            }
+            guard let comparedFlow = await engine.flow(id: comparedID) else {
+                throw MCPToolFailure("no flow with id \(comparedString)")
+            }
+            base = baseFlow
+            compared = comparedFlow
+        } else {
+            guard let originalID = baseFlow.replayedFrom else {
+                throw MCPToolFailure("flow \(baseString) was not replayed from another flow — pass `compared` explicitly")
+            }
+            guard let original = await engine.flow(id: originalID) else {
+                throw MCPToolFailure("original flow \(originalID.uuidString) (replayedFrom) is no longer in the store — pass `compared` explicitly")
+            }
+            base = original
+            compared = baseFlow
+        }
+
+        return prettyJSON(FlowDiff.diff(base: base, compared: compared))
+    }
+
+    // MARK: Breakpoints
+
+    private func handleArmBreakpoint(_ arguments: [String: Any]) async throws -> String {
+        guard let matchRaw = arguments["match"] as? [String: Any],
+              let match = Self.ruleMatch(from: matchRaw) else {
+            throw MCPError.invalidParams("`match` with `url_pattern` is required")
+        }
+        let breakpoint = Breakpoint(
+            match: match,
+            onRequest: (arguments["on_request"] as? Bool) ?? true,
+            onResponse: (arguments["on_response"] as? Bool) ?? false,
+            comment: arguments["comment"] as? String
+        )
+        do {
+            try await engine.armBreakpoint(breakpoint)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(Self.breakpoint(breakpoint))
+    }
+
+    private func handleDisarmBreakpoint(_ arguments: [String: Any]) async throws -> String {
+        guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
+            throw MCPError.invalidParams("`id` must be a breakpoint UUID string")
+        }
+        do {
+            try await engine.disarmBreakpoint(id: id)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(["disarmed": idString])
+    }
+
+    private func handleListPending(_ arguments: [String: Any]) async throws -> String {
+        let armed = await engine.armedBreakpoints()
+        let pending = await engine.pendingBreakpoints()
+        return prettyJSON([
+            "armed": armed.map(Self.breakpoint),
+            "pending": pending.map(Self.pendingBreakpoint),
+        ])
+    }
+
+    private func handleResume(_ arguments: [String: Any]) async throws -> String {
+        guard let idString = arguments["pending_id"] as? String, let id = UUID(uuidString: idString) else {
+            throw MCPError.invalidParams("`pending_id` must be a held-breakpoint UUID string")
+        }
+        let abort = (arguments["abort"] as? Bool) ?? false
+        var setHeaders: [HeaderPair]?
+        if let raw = arguments["set_headers"] as? [String: Any] {
+            setHeaders = raw.map { HeaderPair(name: $0.key, value: String(describing: $0.value)) }
+        }
+        let body: BodyOverride
+        if let bodyString = arguments["body"] as? String {
+            body = .replace(Data(bodyString.utf8))
+        } else if (arguments["clear_body"] as? Bool) == true {
+            body = .clear
+        } else {
+            body = .keep
+        }
+        let edit = BreakpointEdit(
+            method: arguments["method"] as? String,
+            url: arguments["url"] as? String,
+            statusCode: arguments["status_code"] as? Int,
+            setHeaders: setHeaders,
+            removeHeaders: arguments["remove_headers"] as? [String],
+            body: body
+        )
+        do {
+            try await engine.resumeBreakpoint(pendingID: id, abort: abort, edit: edit)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(["resumed": idString, "aborted": abort])
     }
 
     private func handleReplayFlow(_ arguments: [String: Any]) async throws -> String {
@@ -876,6 +1051,68 @@ struct MCPToolExecutor {
         if sub.isRegex { out["isRegex"] = true }
         if sub.caseSensitive { out["caseSensitive"] = true }
         return out
+    }
+
+    // MARK: - Breakpoint rendering
+
+    private static func matchDict(_ match: RuleMatch) -> [String: Any] {
+        var out: [String: Any] = ["urlPattern": match.urlPattern]
+        if match.isRegex { out["isRegex"] = true }
+        if match.isExact { out["isExact"] = true }
+        if let hostPattern = match.hostPattern, !hostPattern.isEmpty { out["hostPattern"] = hostPattern }
+        if let query = match.query, !query.isEmpty { out["query"] = query }
+        if !match.methods.isEmpty { out["methods"] = match.methods }
+        return out
+    }
+
+    private static func breakpoint(_ bp: Breakpoint) -> [String: Any] {
+        var out: [String: Any] = [
+            "id": bp.id.uuidString,
+            "match": matchDict(bp.match),
+            "onRequest": bp.onRequest,
+            "onResponse": bp.onResponse,
+            "createdAt": iso8601.string(from: bp.createdAt),
+        ]
+        if let comment = bp.comment { out["comment"] = comment }
+        return out
+    }
+
+    private static func pendingBreakpoint(_ pending: PendingBreakpoint) -> [String: Any] {
+        var out: [String: Any] = [
+            "id": pending.id.uuidString,
+            "breakpointId": pending.breakpointID.uuidString,
+            "phase": pending.phase.rawValue,
+            "heldAt": iso8601.string(from: pending.heldAt),
+            "request": [
+                "method": pending.method,
+                "url": pending.url,
+                "headers": pending.requestHeaders.map { ["name": $0.name, "value": $0.value] },
+                "body": bodyField(pending.requestBody),
+            ],
+        ]
+        if pending.phase == .response {
+            var response: [String: Any] = [
+                "headers": (pending.responseHeaders ?? []).map { ["name": $0.name, "value": $0.value] },
+                "body": bodyField(pending.responseBody),
+            ]
+            if let statusCode = pending.statusCode { response["status"] = statusCode }
+            out["response"] = response
+        }
+        return out
+    }
+
+    /// Render a body as UTF-8 text, or note that it is binary + how many bytes,
+    /// capped so a large held body can't flood the agent's context.
+    private static func bodyField(_ data: Data?) -> Any {
+        guard let data, !data.isEmpty else { return "" }
+        let cap = 16_384
+        if let text = String(data: data, encoding: .utf8) {
+            if text.count > cap {
+                return ["truncated": true, "preview": String(text.prefix(cap)), "bytes": data.count]
+            }
+            return text
+        }
+        return ["binary": true, "bytes": data.count]
     }
 
     private static func headerDict(_ headers: [HeaderPair]) -> [String: String] {

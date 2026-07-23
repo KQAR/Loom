@@ -48,8 +48,8 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 
 ### M3 — Write actions, closed loop
 
-- `create_rule` (map local / map remote / block / rewrite header / throttle), `diff_flows`.
-- Breakpoints: `arm_breakpoint` → held request surfaces in `list_pending` → `resume` with edits (poll model; MCP has no server push).
+- `create_rule` (map local / map remote / block / rewrite header / throttle) — done. `diff_flows` — **done**: structured request/response diff (method/url, header add/remove/change, status, line-level body diff for text); `base` alone diffs a replay against its `replayedFrom` original, closing the capture → modify → replay → diff loop over MCP.
+- Breakpoints — **done**: `arm_breakpoint` (match reuses `RuleMatch`; pause request and/or response) → held exchange surfaces in `list_pending` → `resume` with edits (method/url/status/headers/body) or `abort`. Poll model (MCP has no server push). Implemented as `BreakpointForwarder`, the outermost `UpstreamForwarding` decorator, backed by a lock-based `BreakpointStore` that parks the exchange on a continuation; non-matching traffic (incl. streaming) is delegated untouched, and an unattended hold auto-proceeds after a timeout so a client can't hang forever. Not persisted (a held exchange holds a live connection open).
 - **Scoped-write guardrail**: every write tool is bounded by an allow-list of hosts; destructive actions require human confirmation (see [`INTERACTION.md`](INTERACTION.md)).
 - **Rule-model authoring surfaces.** The model has exact-match, host/query predicates, and base64 (binary) mock bodies. The `create_rule`/`update_rule` MCP schema now exposes `is_exact`/`host_pattern`/`query`/`body_base64`, so agents can author them (round-tripped in `get_rule`/`list_rules`). Remaining: the SwiftUI Rule editor still only offers `urlPattern`/`isRegex`/`methods` + a text body — wire the new fields there too.
 

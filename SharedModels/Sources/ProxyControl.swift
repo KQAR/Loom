@@ -64,6 +64,9 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     case ruleNotFound(UUID)
     case invalidRule(String)
     case phoneOnboardingUnavailable(String)
+    case breakpointNotFound(UUID)
+    case pendingBreakpointNotFound(UUID)
+    case invalidBreakpoint(String)
 
     /// Human-readable text for surfacing to the operator (UI or AI), instead of a
     /// `String(describing:)` enum dump.
@@ -76,6 +79,9 @@ public enum ProxyControlError: Error, Equatable, Sendable {
         case let .ruleNotFound(id): return "no rule with id \(id.uuidString)"
         case let .invalidRule(reason): return "invalid rule: \(reason)"
         case let .phoneOnboardingUnavailable(reason): return "phone onboarding unavailable: \(reason)"
+        case let .breakpointNotFound(id): return "no breakpoint with id \(id.uuidString)"
+        case let .pendingBreakpointNotFound(id): return "no held (pending) breakpoint with id \(id.uuidString) — it may have already resumed or timed out"
+        case let .invalidBreakpoint(reason): return "invalid breakpoint: \(reason)"
         }
     }
 }
@@ -105,4 +111,24 @@ public protocol CaptureControlling: Sendable {
     func setRecording(_ recording: Bool) async
 }
 
-public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling
+/// Breakpoints: hold matching traffic mid-flight so an operator (AI over MCP or
+/// the UI) can inspect and edit it, then release it. A poll model — MCP has no
+/// server push — so held exchanges surface via `pendingBreakpoints()` and are
+/// released with `resumeBreakpoint`.
+public protocol BreakpointControlling: Sendable {
+    /// Arm a breakpoint. Throws `ProxyControlError.invalidBreakpoint` if malformed.
+    func armBreakpoint(_ breakpoint: Breakpoint) async throws
+    /// Remove an armed breakpoint. Does not affect exchanges already held by it —
+    /// those still need a `resumeBreakpoint`. Throws if no such breakpoint.
+    func disarmBreakpoint(id: UUID) async throws
+    /// Currently armed breakpoints.
+    func armedBreakpoints() async -> [Breakpoint]
+    /// Exchanges held right now, awaiting a resume decision.
+    func pendingBreakpoints() async -> [PendingBreakpoint]
+    /// Release a held exchange: apply `edit` and continue, or `abort` to fail it
+    /// with a 502. Throws `ProxyControlError.pendingBreakpointNotFound` if the id
+    /// isn't held (already resumed or timed out).
+    func resumeBreakpoint(pendingID: UUID, abort: Bool, edit: BreakpointEdit) async throws
+}
+
+public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling

@@ -16,6 +16,10 @@ public actor ProxyEngine: ProxyControlling {
     private let caStore: CAStore
     private let config: InterceptionConfig
     private let rulesConfig: RulesConfig
+    /// Holds armed breakpoints and currently-paused exchanges. Shared with the
+    /// `BreakpointForwarder` wrapping `forwarder`, off the actor so forwarding can
+    /// check for a breakpoint without hopping here.
+    private let breakpointStore: BreakpointStore
 
     /// Lazily generated on first `start()` (or first cert query) and cached.
     private var ca: CertificateAuthority?
@@ -41,7 +45,12 @@ public actor ProxyEngine: ProxyControlling {
         // this one forwarder, so decorating it applies traffic rules everywhere.
         // M4: a hand-rolled SwiftNIO client (owns the Host header, originates its
         // own TLS) replaces URLSession as the upstream leg.
-        self.forwarder = RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig)
+        let breakpointStore = BreakpointStore()
+        self.breakpointStore = breakpointStore
+        self.forwarder = BreakpointForwarder(
+            base: RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig),
+            store: breakpointStore
+        )
         // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
         // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
         // launch. One-time migration preserves an already-trusted Keychain CA.
@@ -62,7 +71,12 @@ public actor ProxyEngine: ProxyControlling {
         self.store = FlowStore(persistence: persistFlows ? FlowPersistence.makeDefault() : nil)
         let rulesConfig = RulesConfig()
         self.rulesConfig = rulesConfig
-        self.forwarder = RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig)
+        let breakpointStore = BreakpointStore()
+        self.breakpointStore = breakpointStore
+        self.forwarder = BreakpointForwarder(
+            base: RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig),
+            store: breakpointStore
+        )
         self.caStore = Self.migratedCAStore()
         self.config = InterceptionConfig()
         self.caExportURL = Self.defaultCAExportURL
@@ -87,7 +101,12 @@ public actor ProxyEngine: ProxyControlling {
         self.store = FlowStore(persistence: nil) // no disk in tests
         let rulesConfig = RulesConfig(fileURL: nil)
         self.rulesConfig = rulesConfig
-        self.forwarder = RuleApplyingForwarder(base: forwarder, rules: rulesConfig)
+        let breakpointStore = BreakpointStore()
+        self.breakpointStore = breakpointStore
+        self.forwarder = BreakpointForwarder(
+            base: RuleApplyingForwarder(base: forwarder, rules: rulesConfig),
+            store: breakpointStore
+        )
         self.caStore = caStore
         self.config = InterceptionConfig(defaults: nil)
         // Hermetic: never let a test clobber the user's real exported CA file.
@@ -432,6 +451,36 @@ public actor ProxyEngine: ProxyControlling {
 
     public func setGroupEnabled(group: String?, enabled: Bool) async {
         rulesConfig.setGroupEnabled(group: group, enabled: enabled)
+    }
+
+    // MARK: - BreakpointControlling
+
+    public func armBreakpoint(_ breakpoint: Breakpoint) async throws {
+        if let reason = breakpoint.validationError {
+            throw ProxyControlError.invalidBreakpoint(reason)
+        }
+        breakpointStore.arm(breakpoint)
+    }
+
+    public func disarmBreakpoint(id: UUID) async throws {
+        guard breakpointStore.disarm(id: id) else {
+            throw ProxyControlError.breakpointNotFound(id)
+        }
+    }
+
+    public func armedBreakpoints() async -> [Breakpoint] {
+        breakpointStore.armed()
+    }
+
+    public func pendingBreakpoints() async -> [PendingBreakpoint] {
+        breakpointStore.pending()
+    }
+
+    public func resumeBreakpoint(pendingID: UUID, abort: Bool, edit: BreakpointEdit) async throws {
+        let resolution: BreakpointResolution = abort ? .abort : .proceed(edit)
+        guard breakpointStore.resume(pendingID: pendingID, resolution: resolution) else {
+            throw ProxyControlError.pendingBreakpointNotFound(pendingID)
+        }
     }
 
     private var exportedPEMPath: URL?
