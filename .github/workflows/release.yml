@@ -61,6 +61,14 @@ jobs:
           cp -R "${{ runner.temp }}/Loom.xcarchive/Products/Applications/Loom.app" \
             "${{ runner.temp }}/Loom.app"
 
+      # The archive is built unsigned (no Developer ID in CI), which leaves the
+      # bundle's seal inconsistent — Sparkle's generate_appcast then rejects it
+      # ("failed Apple Code Signing checks", OSStatus -67056). A deep ad-hoc sign
+      # gives it a valid, self-consistent signature that passes SecStaticCode
+      # validation. (Not Gatekeeper-clean — that needs Developer ID + notarize.)
+      - name: Ad-hoc code-sign the app
+        run: codesign --force --deep --sign - "${{ runner.temp }}/Loom.app"
+
       - name: Create DMG
         run: scripts/create-dmg.sh "${{ runner.temp }}/Loom.app" "${{ runner.temp }}"
 
