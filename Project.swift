@@ -25,6 +25,15 @@ let project = Project(
                 "CFBundleDisplayName": "Loom",
                 "CFBundleShortVersionString": "0.0.1", // marketing version
                 "CFBundleVersion": "1",                // build number
+                // Sparkle auto-update. The feed is the signed appcast attached to
+                // each GitHub release. We drive the once-a-day check ourselves
+                // (silent probe → panel "Update" button), so leave Sparkle's own
+                // scheduling off. SUPublicEDKey is the EdDSA public key from
+                // `generate_keys`; the matching private key signs the appcast in CI
+                // (secret SPARKLE_EDDSA_KEY). See "Release & Auto-Update" in AGENTS.md.
+                "SUFeedURL": "https://github.com/KQAR/Loom/releases/latest/download/appcast.xml",
+                "SUPublicEDKey": "HOQ0tDtw/nV9GXRIMUtzImgNssckFEj5fFLe2Lp0LDY=",
+                "SUEnableAutomaticChecks": false,
                 // A proxy must reach arbitrary upstreams, including plain HTTP;
                 // without this, ATS blocks the app's own forwarding (502s).
                 "NSAppTransportSecurity": .dictionary([
@@ -41,6 +50,7 @@ let project = Project(
                 .target(name: "ProxyCore"),
                 .target(name: "MCPServer"),
                 .target(name: "PrivilegedHelperClient"),
+                .target(name: "UpdaterClient"),
                 .target(name: "SharedModels"),
             ]
         ),
@@ -53,6 +63,7 @@ let project = Project(
                 .external(name: "ComposableArchitecture"),
                 .target(name: "ProxyClient"),
                 .target(name: "PrivilegedHelperClient"),
+                .target(name: "UpdaterClient"),
                 .target(name: "SharedModels"),
             ]
         ),
@@ -66,6 +77,19 @@ let project = Project(
                 .target(name: "ProxyCore"),
                 .target(name: "SharedModels"),
             ]
+        ),
+
+        // MARK: Auto-update client (TCA wrapper over Sparkle). Swift 5 language
+        // mode for the same reason as the helper client: an Obj-C framework whose
+        // delegate callbacks fight Swift 6 strict-concurrency isolation.
+        .module(
+            name: "UpdaterClient",
+            sources: ["Clients/UpdaterClient/Sources/**"],
+            dependencies: [
+                .external(name: "ComposableArchitecture"),
+                .external(name: "Sparkle"),
+            ],
+            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),
 
         // MARK: Engine (plain Swift, zero TCA)
@@ -175,8 +199,12 @@ let project = Project(
                 .target(name: "AppFeature"),
                 .target(name: "ProxyClient"),
                 .target(name: "PrivilegedHelperClient"),
+                .target(name: "UpdaterClient"),
                 .target(name: "SharedModels"),
                 .external(name: "ComposableArchitecture"),
+                // Transitive through UpdaterClient; the test target must see the
+                // module directly to load AppFeature's interface (@testable import).
+                .external(name: "Sparkle"),
             ]
         ),
 

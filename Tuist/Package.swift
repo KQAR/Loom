@@ -45,5 +45,7 @@ let package = Package(
         // X.509 CA/leaf generation. swift-certificates pulls swift-crypto + swift-asn1.
         .package(url: "https://github.com/apple/swift-nio-ssl", from: "2.26.0"),
         .package(url: "https://github.com/apple/swift-certificates", from: "1.4.0"),
+        // In-app auto-update (check + download + install), same engine as looper.
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0"),
     ]
 )

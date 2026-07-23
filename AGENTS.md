@@ -119,6 +119,7 @@ Write tools are the reason Loom exists. When adding one (M3: `create_rule`, brea
 | **MCPServer** | engine | loopback JSON-RPC server, tool registry, handshake writer |
 | **ProxyClient** | client | `@DependencyClient` wrapping `ProxyEngine.shared` for TCA |
 | **PrivilegedHelperClient** | client | app-side TCA surface over the helper: SMAppService register/approve + XPC (system proxy, CA trust) — **unverified scaffold** |
+| **UpdaterClient** | client | `@DependencyClient` over **Sparkle** (`UpdaterCoordinator` owns `SPUStandardUpdaterController`); silent once-a-day probe + user-initiated check, feeds the panel's footer "Update" button — Swift 5 mode |
 | **AppFeature** | feature | TCA reducer + status-bar panel (live feed) + optional Detail viewer |
 | **Loom** | app | MenuBarExtra entry (panel); boots proxy + MCP server |
 | **loom-mcp** | tool | stdio↔HTTP bridge binary |
@@ -180,6 +181,7 @@ App/Sources/                      # LoomApp (MenuBarExtra + boot)
 Features/AppFeature/Sources/      # reducer + MenuBarView + InspectorView
 Clients/ProxyClient/Sources/      # TCA dependency over the engine
 Clients/PrivilegedHelperClient/Sources/ # app-side surface over the helper (scaffold)
+Clients/UpdaterClient/Sources/    # TCA @DependencyClient over Sparkle (auto-update)
 Engine/ProxyCore/Sources/         # NIO proxy, ProxyEngine, FlowStore, MITM (CA, TLS intercept)
 Engine/ProxyCore/Tests/           # unit + HTTPS-interception integration tests
 Engine/MCPServer/Sources/         # MCP server, tools, handshake
@@ -188,8 +190,31 @@ SharedModels/Sources/             # Flow, ReplayOverrides, ProxyControlling, SSL
 Bridge/Sources/                   # loom-mcp stdio↔HTTP bridge
 ```
 
+## Release & Auto-Update (Sparkle)
+
+Loom self-updates via [Sparkle](https://sparkle-project.org) (same engine as the reference `looper`). The human sees a footer **"Update"** button in the status-bar panel; the app probes silently once a day and shows Sparkle's install UI on tap.
+
+**In-app pieces**: `UpdaterClient` (TCA dependency) → `UpdaterCoordinator` (owns `SPUStandardUpdaterController`). `AppFeature` subscribes to availability and drives the panel button. Config lives in `Project.swift` infoPlist: `SUFeedURL`, `SUPublicEDKey`, `SUEnableAutomaticChecks: false` (we drive cadence ourselves).
+
+**Keys**: the EdDSA key pair is managed by Sparkle's `generate_keys` (private key in the login Keychain, public key committed as `SUPublicEDKey`). Regenerate only when rotating:
+```
+Tuist/.build/artifacts/sparkle/Sparkle/bin/generate_keys        # show/create the key
+Tuist/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x key # export private key → CI secret
+```
+
+**Release flow** — fully automated by `.github/workflows/release.yml` (triggers on a `v*` tag):
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+The workflow: `tuist install/generate` → `xcodebuild archive` (ad-hoc signed) → `scripts/create-dmg.sh` → `sign_update` + `generate_appcast` → `gh release create` with `Loom.dmg` + `appcast.xml`.
+
+**One-time setup**: add repo secret **`SPARKLE_EDDSA_KEY`** (the exported private key). Without it the workflow still publishes the DMG but omits the appcast, so auto-update stays dormant. For Gatekeeper-clean installs, additionally sign + notarize with a Developer ID (the CI archive is currently ad-hoc, `CODE_SIGN_IDENTITY="-"`).
+
+**Sparkle tools** (fetched by `tuist install` into `Tuist/.build/artifacts/sparkle/Sparkle/bin`): `generate_keys`, `sign_update`, `generate_appcast`.
+
 ## Known Issues
 
+- **Auto-update (Sparkle): in-app + release plumbing done; the CI secret is the one manual step.** `UpdaterClient`/`UpdaterCoordinator` + the panel footer "Update" button work in-app: a silent probe runs at most once a day (self-gated on `com.loom.lastUpdateCheck` in UserDefaults; `SUEnableAutomaticChecks` is deliberately off so the probe stays UI-less), and a user-initiated tap shows Sparkle's install UI. `SUPublicEDKey` in `Project.swift` is a real EdDSA public key (the matching private key is in this machine's login Keychain). The `Release` workflow builds → DMGs → signs + generates `appcast.xml` → publishes to the GitHub release. **To arm auto-update, set the `SPARKLE_EDDSA_KEY` repo secret** (export with `generate_keys -x`); without it the workflow still ships the DMG but skips the appcast, so nothing self-updates. Full-strength updates additionally want a Developer ID signed + notarized app (the CI archive is ad-hoc `CODE_SIGN_IDENTITY="-"`). Sparkle's transitive framework module must also be listed as an explicit `.external(name: "Sparkle")` dep on any test target that `@testable import`s AppFeature (see `AppFeatureTests`).
 - **Tuist ≥ 4.202.5 is required.** TCA 1.26 pulls swift-navigation 2.10, which uses SwiftPM *package traits* (`condition: .when(traits:)`). Tuist 4.176's graph loader ignores traits and drops the `CasePathsMacrosSupport` macro edge → `Unable to find module dependency`. 4.202.5's loader handles it. Pinned in `mise.toml`.
 - **NIO modules are Swift 5.** Do not flip `ProxyCore`/`MCPServer` to Swift 6 without reworking the channel handlers off `@unchecked Sendable`. `SystemProxyClient` is also Swift 5 (XPC + continuations).
 - **HTTPS leaf certs must use ≤20-octet serials.** `Certificate.SerialNumber()` can yield 21 octets (RFC 5280 violation) which Secure Transport rejects with `-1015 "cannot decode raw data"` — silently breaking interception for ~half of hosts while browsers (lenient BoringSSL) still work. `CertificateAuthority.makeSerialNumber()` clears the top bit; don't revert to the default initializer.

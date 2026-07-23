@@ -1,0 +1,78 @@
+name: Release
+
+# Tag a commit `vX.Y.Z` and push it to cut a release: this builds an (ad-hoc
+# signed) app, packages a DMG, signs it + regenerates the Sparkle appcast, and
+# publishes both as GitHub release assets. `SUFeedURL` points at
+# releases/latest/download/appcast.xml, so shipped apps pick the update up.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - name: Install dependencies
+        run: tuist install
+
+      - name: Generate project
+        run: tuist generate --no-open
+
+      - name: Build release archive
+        run: |
+          xcodebuild archive \
+            -workspace Loom.xcworkspace \
+            -scheme Loom \
+            -configuration Release \
+            -archivePath "${{ runner.temp }}/Loom.xcarchive" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Export app
+        run: |
+          cp -R "${{ runner.temp }}/Loom.xcarchive/Products/Applications/Loom.app" \
+            "${{ runner.temp }}/Loom.app"
+
+      - name: Create DMG
+        run: scripts/create-dmg.sh "${{ runner.temp }}/Loom.app" "${{ runner.temp }}"
+
+      # Only runs when the EdDSA private key secret is configured. Without it the
+      # release still publishes the DMG — just no appcast, so auto-update is skipped.
+      - name: Sign update & generate appcast
+        if: env.SPARKLE_KEY != ''
+        env:
+          SPARKLE_KEY: ${{ secrets.SPARKLE_EDDSA_KEY }}
+        run: |
+          SPARKLE_BIN="Tuist/.build/artifacts/sparkle/Sparkle/bin"
+          KEY_FILE="${{ runner.temp }}/sparkle_key"
+          echo "$SPARKLE_KEY" > "$KEY_FILE"
+
+          "$SPARKLE_BIN/sign_update" "${{ runner.temp }}/Loom.dmg" --ed-key-file "$KEY_FILE"
+
+          mkdir -p "${{ runner.temp }}/artifacts"
+          cp "${{ runner.temp }}/Loom.dmg" "${{ runner.temp }}/artifacts/"
+          "$SPARKLE_BIN/generate_appcast" "${{ runner.temp }}/artifacts/" --ed-key-file "$KEY_FILE"
+
+          rm -f "$KEY_FILE"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSETS=("${{ runner.temp }}/Loom.dmg")
+          if [ -f "${{ runner.temp }}/artifacts/appcast.xml" ]; then
+            ASSETS+=("${{ runner.temp }}/artifacts/appcast.xml")
+          fi
+          gh release create "${{ github.ref_name }}" \
+            "${ASSETS[@]}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes

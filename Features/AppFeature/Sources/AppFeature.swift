@@ -2,6 +2,7 @@ import ComposableArchitecture
 import Foundation
 import ProxyClient
 import SharedModels
+import UpdaterClient
 
 /// Left-sidebar categories in the main window. `.host` groups by domain,
 /// `.app` by the originating local app (its bundle id or name).
@@ -42,6 +43,9 @@ public struct AppFeature: Sendable {
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
+        /// Auto-update state (Sparkle). `.available` flips the footer button to
+        /// its prominent "Update" style; a silent daily probe keeps it fresh.
+        public var updateAvailability: UpdateAvailability = .unknown
         var didBoot = false                      // guards the one-shot boot effect
 
         public var displayHost: String { localIP ?? "127.0.0.1" }
@@ -176,11 +180,17 @@ public struct AppFeature: Sendable {
         case deviceAliasesLoaded([String: String])
         /// Set (or clear, with nil) a user alias for the device at `ip`.
         case setDeviceAlias(ip: String, alias: String?)
+        /// Footer "Check for Updates" / "Update" tap — runs a user-initiated
+        /// Sparkle check (shows its download/install UI).
+        case checkForUpdatesTapped
+        /// A new availability learned from the updater (silent probe or a check).
+        case updateAvailabilityChanged(UpdateAvailability)
     }
 
     @Dependency(\.proxyClient) var proxyClient
+    @Dependency(\.updaterClient) var updaterClient
 
-    private enum CancelID { case subscription }
+    private enum CancelID { case subscription, updates }
 
     public init() {}
 
@@ -213,35 +223,47 @@ public struct AppFeature: Sendable {
                 // once — re-running would cancel the live flow subscription.
                 guard !state.didBoot else { return .none }
                 state.didBoot = true
-                return .run { send in
-                    let pins = PinsStore.load()
-                    await send(.pinsLoaded(hosts: pins.hosts, apps: pins.apps))
-                    await send(.deviceAliasesLoaded(DeviceAliasStore.load()))
-                    await send(.localIPResolved(LocalIP.primaryIPv4()))
-                    do {
-                        let port = try await proxyClient.start(9090)
-                        await send(.proxyStarted(port: port))
-                    } catch {
-                        // A bind failure (port in use) must not abort the whole
-                        // effect — still load config + subscribe so the UI is live.
-                        await send(.proxyStartFailed(error.localizedDescription))
+                return .merge(
+                    .run { send in
+                        let pins = PinsStore.load()
+                        await send(.pinsLoaded(hosts: pins.hosts, apps: pins.apps))
+                        await send(.deviceAliasesLoaded(DeviceAliasStore.load()))
+                        await send(.localIPResolved(LocalIP.primaryIPv4()))
+                        do {
+                            let port = try await proxyClient.start(9090)
+                            await send(.proxyStarted(port: port))
+                        } catch {
+                            // A bind failure (port in use) must not abort the whole
+                            // effect — still load config + subscribe so the UI is live.
+                            await send(.proxyStartFailed(error.localizedDescription))
+                        }
+                        await send(.viewAppeared)
+                        for flow in await proxyClient.recentFlows(200).reversed() {
+                            await send(.flowReceived(flow))
+                        }
+                        for await flow in await proxyClient.flowStream() {
+                            await send(.flowReceived(flow))
+                        }
                     }
-                    await send(.viewAppeared)
-                    for flow in await proxyClient.recentFlows(200).reversed() {
-                        await send(.flowReceived(flow))
+                    .cancellable(id: CancelID.subscription, cancelInFlight: true),
+                    // Keep the footer button in sync with Sparkle. `.viewAppeared`
+                    // (fired below and on each panel open) drives the daily probe.
+                    .run { send in
+                        for await availability in await updaterClient.availabilityStream() {
+                            await send(.updateAvailabilityChanged(availability))
+                        }
                     }
-                    for await flow in await proxyClient.flowStream() {
-                        await send(.flowReceived(flow))
-                    }
-                }
-                .cancellable(id: CancelID.subscription, cancelInFlight: true)
+                    .cancellable(id: CancelID.updates, cancelInFlight: true)
+                )
 
             case .viewAppeared:
                 // Cheap re-sync of config state on window/panel open — each child
                 // self-loads; never restarts the proxy or the flow subscription.
                 return .merge(
                     .send(.setup(.refresh)),
-                    .send(.rules(.refreshRules))
+                    .send(.rules(.refreshRules)),
+                    // Silent, self-gated to once a day — cheap to call on every open.
+                    .run { _ in await updaterClient.checkInBackgroundIfDue() }
                 )
 
             case let .proxyStartFailed(message):
@@ -348,6 +370,13 @@ public struct AppFeature: Sendable {
                 else { state.deviceAliases[ip] = nil }
                 let aliases = state.deviceAliases
                 return .run { _ in DeviceAliasStore.save(aliases) }
+
+            case .checkForUpdatesTapped:
+                return .run { _ in await updaterClient.checkForUpdates() }
+
+            case let .updateAvailabilityChanged(availability):
+                state.updateAvailability = availability
+                return .none
             }
         }
         .ifLet(\.$phone, action: \.phone) {
