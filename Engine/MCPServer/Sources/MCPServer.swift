@@ -4,6 +4,17 @@ import NIOPosix
 import NIOHTTP1
 import SharedModels
 
+/// A tool ran but failed for a domain reason (flow/rule not found, replay or file
+/// write failed). Per the MCP spec this is returned as a tool result with
+/// `isError: true` — in-band so the model sees it — NOT as a JSON-RPC protocol
+/// error (which several clients swallow or treat as a turn-ending fault). JSON-RPC
+/// errors (`MCPError`) are reserved for "couldn't dispatch": unknown tool,
+/// unparseable/invalid params.
+public struct MCPToolFailure: Error {
+    public let message: String
+    public init(_ message: String) { self.message = message }
+}
+
 public enum MCPError: Error {
     case parseError(String)
     case invalidRequest(String)
@@ -134,11 +145,14 @@ final class MCPDispatcher: @unchecked Sendable {
                 throw MCPError.invalidParams("missing tool name")
             }
             let arguments = params["arguments"] as? [String: Any] ?? [:]
-            let text = try await executor.call(name: name, arguments: arguments)
-            return [
-                "content": [["type": "text", "text": text]],
-                "isError": false,
-            ]
+            do {
+                let text = try await executor.call(name: name, arguments: arguments)
+                return ["content": [["type": "text", "text": text]], "isError": false]
+            } catch let failure as MCPToolFailure {
+                // Tool ran, failed for a domain reason → in-band error result.
+                return ["content": [["type": "text", "text": failure.message]], "isError": true]
+            }
+            // MCPError (bad params / unknown tool) propagates → JSON-RPC error.
 
         case "ping":
             return [:]
