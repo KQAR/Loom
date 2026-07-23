@@ -51,11 +51,13 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 - `create_rule` (map local / map remote / block / rewrite header / throttle), `diff_flows`.
 - Breakpoints: `arm_breakpoint` → held request surfaces in `list_pending` → `resume` with edits (poll model; MCP has no server push).
 - **Scoped-write guardrail**: every write tool is bounded by an allow-list of hosts; destructive actions require human confirmation (see [`INTERACTION.md`](INTERACTION.md)).
+- **Rule-model authoring surfaces.** The model gained exact-match, host/query predicates, and base64 (binary) mock bodies (added for embedders — see below), but `create_rule`/`update_rule`'s `matchSchema` and the Rule editor UI still only offer `urlPattern`/`isRegex`/`methods` and a text mock body. Wire `isExact`, `hostPattern`, `query`, and `bodyBase64` through the MCP schema and the editor so humans and agents can author them too.
 
 ### M4 — Protocol breadth
 
 - HTTP/2 (`swift-nio-http2`), WebSocket frame capture, GraphQL-aware inspector.
 - Persistent store (GRDB) with HAR import/export and redacted evidence bundles.
+- Stream request bodies — responses already stream chunk-by-chunk; large request uploads still buffer in memory (capped, 413 on overflow).
 
 ## Structured Channel — decided
 
@@ -64,6 +66,22 @@ MCP over loopback HTTP is the transport, effective M1:
 - The app hosts a JSON-RPC endpoint at `127.0.0.1:<port>/mcp`; the `loom-mcp` bridge forwards stdio JSON-RPC from AI clients (Claude Desktop, Cursor) to it.
 - Auth is a per-launch bearer token written to `~/Library/Application Support/com.loom/mcp-handshake.json` (mode `0600`).
 - The domain model (`Flow`, `ReplayOverrides`, rules) is transport-independent; a Streamable-HTTP/SSE upgrade can replace the bridge without touching it.
+
+## Embeddable engine (library reuse)
+
+A second, non-GUI operator has appeared alongside MCP: Loom's capture engine now ships as SPM library products (`LoomProxyCore` + `LoomSharedModels`), and an external host drives `ProxyEngine` directly instead of running its own proxy. The first consumer is [Reticle](https://github.com/KQAR/Reticle), which runs the engine loopback, subscribes to `flowStream()`, and republishes exchanges into its own evidence stream — so "Loom as a backend for another tool" is now a real shape, not the deferred "mitmproxy/whistle backends" one.
+
+**Already shipped for this track:** the `LoomProxyCore` / `LoomSharedModels` products (root `Package.swift` coexisting with Tuist), `ProxyEngine(persistFlows:)` for embedders that own their storage, and mock-model parity (base64/binary mock bodies + host/query/exact match predicates, with tolerant decode).
+
+**Gaps to close (surfaced by the Reticle integration):**
+
+- **Configurable bind host.** `ProxyEngine.start` binds `127.0.0.1` only, so an embedder can't capture a real device over Wi-Fi/LAN. Add a bind-host parameter (default loopback) — an explicit opt-in, since a non-loopback bind exposes the MITM proxy on the network.
+- **Bulk rule replace.** Add `setRules([TrafficRule])` to `RulesControlling`, so a host syncing an external rule set does one atomic replace instead of delete-all-then-add-all through the per-rule CRUD.
+- **Optional blind-tunnel observation.** The engine emits a flow only for traffic it decrypts; a consumer that wants a record of un-decrypted `CONNECT` tunnels has nothing to surface. Offer an opt-in "tunnel observed" event so embedders can show HTTPS activity they didn't MITM.
+- **CA export ergonomics.** Expose the root CA as both DER and PEM to a caller-chosen directory. Today `exportCACertificate()` writes PEM to a fixed default path and `caCertificateDER()` returns bytes; an embedder installing the CA on a device needs both forms where its trust flow looks.
+- **Distinct module names.** The targets are `ProxyCore` / `SharedModels`, so a consumer `import`s those generic names. Rename to `LoomProxyCore` / `LoomSharedModels` (or add module aliases) to avoid collisions in a larger dependency graph.
+- **Versioned releases.** Publish SemVer git tags so consumers can pin `exact:` / `from:` instead of a path or branch dependency, and document the `Package.resolved` policy for the library.
+- **Flow-observer hook (nice-to-have).** Embedders consume `flowStream()` and re-persist into their own store; a lightweight observer/sink protocol could spare hosts that own storage the double bookkeeping.
 
 ## Still Deferred
 
