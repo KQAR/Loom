@@ -51,7 +51,7 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 - `create_rule` (map local / map remote / block / rewrite header / throttle), `diff_flows`.
 - Breakpoints: `arm_breakpoint` → held request surfaces in `list_pending` → `resume` with edits (poll model; MCP has no server push).
 - **Scoped-write guardrail**: every write tool is bounded by an allow-list of hosts; destructive actions require human confirmation (see [`INTERACTION.md`](INTERACTION.md)).
-- **Rule-model authoring surfaces.** The model gained exact-match, host/query predicates, and base64 (binary) mock bodies (added for embedders — see below), but `create_rule`/`update_rule`'s `matchSchema` and the Rule editor UI still only offer `urlPattern`/`isRegex`/`methods` and a text mock body. Wire `isExact`, `hostPattern`, `query`, and `bodyBase64` through the MCP schema and the editor so humans and agents can author them too.
+- **Rule-model authoring surfaces.** The model has exact-match, host/query predicates, and base64 (binary) mock bodies. The `create_rule`/`update_rule` MCP schema now exposes `is_exact`/`host_pattern`/`query`/`body_base64`, so agents can author them (round-tripped in `get_rule`/`list_rules`). Remaining: the SwiftUI Rule editor still only offers `urlPattern`/`isRegex`/`methods` + a text body — wire the new fields there too.
 
 ### M4 — Protocol breadth
 
