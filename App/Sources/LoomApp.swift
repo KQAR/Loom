@@ -79,7 +79,7 @@ private struct MenuBarLabel: View {
     var body: some View {
         Image(systemName: store.rules.rulesEnabled ? "arrow.triangle.branch" : "arrow.left.arrow.right")
             .fontWeight(.semibold)
-            .foregroundStyle(store.isSystemProxy ? Color.yellow : Color.primary)
+            .foregroundStyle(store.setup.isSystemProxy ? Color.yellow : Color.primary)
             .opacity(store.status.isRunning ? 1 : 0.4)
             .task { store.send(.task) }
     }
