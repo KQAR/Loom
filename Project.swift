@@ -20,9 +20,11 @@ let project = Project(
             product: .app,
             bundleIdSuffix: "app",
             sources: ["App/Sources/**"],
+            resources: ["App/Resources/**"], // Assets.xcassets → AppIcon
             infoPlist: .extendingDefault(with: [
                 "LSUIElement": true, // agent app: no Dock icon, status bar only
                 "CFBundleDisplayName": "Loom",
+                "CFBundleIconName": "AppIcon", // resolves to the asset-catalog icon set
                 "CFBundleShortVersionString": "0.0.1", // marketing version
                 "CFBundleVersion": "1",                // build number
                 // Sparkle auto-update. The feed is the signed appcast attached to
@@ -52,7 +54,8 @@ let project = Project(
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "UpdaterClient"),
                 .target(name: "SharedModels"),
-            ]
+            ],
+            settings: .settings(base: ["ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon"])
         ),
 
         // MARK: Features (TCA) — M1 keeps a single AppFeature; split later.
