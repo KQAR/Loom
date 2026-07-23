@@ -45,6 +45,33 @@ public struct MainView: View {
                 .badge(store.rules.rulesState.rules.count)
                 .tag(FlowCategory.rules)
 
+            if !store.devices.isEmpty {
+                Section("Devices") {
+                    ForEach(store.devices, id: \.device.groupingKey) { entry in
+                        let ip = entry.device.groupingKey
+                        let alias = store.deviceAliases[ip]
+                        Label {
+                            Text(alias ?? entry.device.displayName)
+                        } icon: {
+                            Image(systemName: entry.device.kind == .lan ? "iphone" : "desktopcomputer")
+                        }
+                        .badge(entry.count)
+                        .tag(FlowCategory.device(ip))
+                        .help(entry.device.typeSummary.map { "\($0) · \(entry.device.ip)" } ?? entry.device.ip)
+                        .contextMenu {
+                            Button(alias == nil ? "Set Alias…" : "Rename…", systemImage: "pencil") {
+                                promptDeviceAlias(ip: ip, current: alias ?? "")
+                            }
+                            if alias != nil {
+                                Button("Clear Alias", systemImage: "xmark.circle") {
+                                    store.send(.setDeviceAlias(ip: ip, alias: nil))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             if !store.apps.isEmpty {
                 Section("Apps") {
                     ForEach(store.apps, id: \.app.groupingKey) { entry in
@@ -262,6 +289,39 @@ public struct MainView: View {
 
     // MARK: Toolbar
 
+    /// Prompt for a device alias (a plain AppKit sheet — iOS won't give us the
+    /// real name, so the human names it). Empty input clears the alias.
+    private func promptDeviceAlias(ip: String, current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Device alias"
+        alert.informativeText = ip
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = current
+        field.placeholderString = "e.g. Jarvis-iPhone"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        if alert.runModal() == .alertFirstButtonReturn {
+            let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            store.send(.setDeviceAlias(ip: ip, alias: value.isEmpty ? nil : value))
+        }
+    }
+
+    /// Phone/QR onboarding entry, right of the toolbar's ip:port chip.
+    private var phoneButton: some View {
+        Button {
+            store.send(.phoneButtonTapped)
+        } label: {
+            Image(systemName: "iphone")
+        }
+        .buttonStyle(.borderless)
+        .help("Set up a phone to capture its traffic")
+        .popover(item: $store.scope(state: \.phone, action: \.phone), arrowEdge: .bottom) { phoneStore in
+            PhoneOnboardingView(store: phoneStore)
+        }
+    }
+
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             HStack(spacing: LoomTheme.Space.xs) {
@@ -273,6 +333,8 @@ public struct MainView: View {
                     : "Proxy stopped")
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
+
+                if store.status.isRunning { phoneButton }
 
                 Divider().frame(height: 14)
 

@@ -77,9 +77,26 @@ public struct PanelView: View {
             kind: .state(on: store.status.isRunning),
             icon: "network",
             title: "Proxy",
-            detail: store.status.isRunning ? "127.0.0.1:\(store.status.port)" : "off"
+            detail: store.status.isRunning ? "127.0.0.1:\(store.status.port)" : "off",
+            accessory: store.status.isRunning ? AnyView(phoneButton) : nil
         ) {
             store.send(.toggleProxyTapped)
+        }
+    }
+
+    /// Sits to the right of the proxy address: opens the phone-onboarding QR.
+    private var phoneButton: some View {
+        Button {
+            store.send(.phoneButtonTapped)
+        } label: {
+            Image(systemName: "iphone")
+                .font(LoomTheme.Icon.card)
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.borderless)
+        .help("Set up a phone to capture its traffic")
+        .popover(item: $store.scope(state: \.phone, action: \.phone), arrowEdge: .trailing) { phoneStore in
+            PhoneOnboardingView(store: phoneStore)
         }
     }
 
@@ -282,6 +299,9 @@ private struct PanelRow: View {
     var detail: String?
     var disabled: Bool = false
     var help: String?
+    /// Optional trailing control that sits outside the row's tap target (e.g. the
+    /// proxy row's phone/QR button), so tapping it doesn't also toggle the row.
+    var accessory: AnyView? = nil
     let action: () -> Void
 
     /// Leading inset of the title = checkmark slot + icon slot + their spacings.
@@ -296,46 +316,52 @@ private struct PanelRow: View {
     }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 0) {
-                // Checkmark slot — visible only when a state row is on.
-                Image(systemName: "checkmark")
-                    .font(LoomTheme.Icon.badge)
-                    .foregroundStyle(Color.accentColor)
-                    .opacity(isOn ? 1 : 0)
-                    .frame(width: 16, alignment: .center)
-                    .padding(.trailing, LoomTheme.Space.xs)
+        HStack(spacing: 0) {
+            Button(action: action) {
+                HStack(spacing: 0) {
+                    // Checkmark slot — visible only when a state row is on.
+                    Image(systemName: "checkmark")
+                        .font(LoomTheme.Icon.badge)
+                        .foregroundStyle(Color.accentColor)
+                        .opacity(isOn ? 1 : 0)
+                        .frame(width: 16, alignment: .center)
+                        .padding(.trailing, LoomTheme.Space.xs)
 
-                Image(systemName: icon)
-                    .font(LoomTheme.Icon.card)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 20)
-                    .padding(.trailing, LoomTheme.Space.sm)
+                    Image(systemName: icon)
+                        .font(LoomTheme.Icon.card)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20)
+                        .padding(.trailing, LoomTheme.Space.sm)
 
-                Text(title).font(.body)
-                Spacer(minLength: LoomTheme.Space.xs)
+                    Text(title).font(.body)
+                    Spacer(minLength: LoomTheme.Space.xs)
 
-                if let detail {
-                    Text(detail).font(.callout).foregroundStyle(.tertiary)
+                    if let detail {
+                        Text(detail).font(.callout).foregroundStyle(.tertiary)
+                    }
+                    if kind == .action {
+                        Image(systemName: "chevron.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading, LoomTheme.Space.xxs)
+                    }
                 }
-                if kind == .action {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .padding(.leading, LoomTheme.Space.xxs)
-                }
+                .padding(.horizontal, LoomTheme.Space.md)
+                .padding(.vertical, LoomTheme.Space.xs)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, LoomTheme.Space.md)
-            .padding(.vertical, LoomTheme.Space.xs)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
-                    .fill(Color.accentColor.opacity(hovering && !disabled ? 0.12 : 0))
-                    .padding(.horizontal, LoomTheme.Space.xs)
-            )
+            .buttonStyle(.plain)
+            .disabled(disabled)
+
+            if let accessory {
+                accessory.padding(.trailing, LoomTheme.Space.md)
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
+        .background(
+            RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
+                .fill(Color.accentColor.opacity(hovering && !disabled ? 0.12 : 0))
+                .padding(.horizontal, LoomTheme.Space.xs)
+        )
         .onHover { hovering = $0 }
         .help(help ?? "")
         .accessibilityLabel(title)

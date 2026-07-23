@@ -58,6 +58,30 @@ final class MCPToolExecutorTests: XCTestCase {
         } catch { XCTFail("wrong error type: \(error)") }
     }
 
+    func test_listDevices_rendersEngineDevices() async throws {
+        let engine = StubEngine()
+        engine.devices = [
+            DeviceSummary(
+                device: SourceDevice(ip: "192.168.1.37", kind: .lan, platform: "iOS", client: "Safari"),
+                flowCount: 3, lastActive: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            DeviceSummary(
+                device: SourceDevice(ip: "127.0.0.1", kind: .local, platform: "macOS", client: "Chrome"),
+                flowCount: 10, lastActive: Date(timeIntervalSince1970: 1_700_000_100)
+            ),
+        ]
+        let out = try await makeExecutor(engine).call(name: "list_devices", arguments: [:])
+        let devices = try jsonArray(out)
+        XCTAssertEqual(devices.count, 2)
+
+        let lan = try XCTUnwrap(devices.first { $0["ip"] as? String == "192.168.1.37" })
+        XCTAssertEqual(lan["kind"] as? String, "lan")
+        XCTAssertEqual(lan["platform"] as? String, "iOS")
+        XCTAssertEqual(lan["client"] as? String, "Safari")
+        XCTAssertEqual(lan["type"] as? String, "Safari (iOS)")
+        XCTAssertEqual(lan["flowCount"] as? Int, 3)
+    }
+
     // MARK: Read tools
 
     func test_getVersion() async throws {

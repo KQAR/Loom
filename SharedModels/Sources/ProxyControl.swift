@@ -63,6 +63,7 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     case certificateUnavailable(String)
     case ruleNotFound(UUID)
     case invalidRule(String)
+    case phoneOnboardingUnavailable(String)
 
     /// Human-readable text for surfacing to the operator (UI or AI), instead of a
     /// `String(describing:)` enum dump.
@@ -74,6 +75,7 @@ public enum ProxyControlError: Error, Equatable, Sendable {
         case let .certificateUnavailable(reason): return "certificate unavailable: \(reason)"
         case let .ruleNotFound(id): return "no rule with id \(id.uuidString)"
         case let .invalidRule(reason): return "invalid rule: \(reason)"
+        case let .phoneOnboardingUnavailable(reason): return "phone onboarding unavailable: \(reason)"
         }
     }
 }
@@ -85,6 +87,9 @@ public protocol FlowProviding: Sendable {
     func flow(id: UUID) async -> Flow?
     /// A live stream of flows as they are captured or updated.
     func flowStream() async -> AsyncStream<Flow>
+    /// Distinct devices that have sent traffic through the proxy (this Mac + LAN
+    /// devices), with per-device flow counts and last-seen time.
+    func connectedDevices() async -> [DeviceSummary]
 }
 
 /// Write side of the engine — the differentiator: AI (or the UI) can act.

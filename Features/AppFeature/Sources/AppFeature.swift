@@ -13,6 +13,8 @@ public enum FlowCategory: Hashable, Sendable {
     case rules
     case host(String)
     case app(String)
+    /// Group by originating device (keyed on remote IP): this Mac or a LAN device.
+    case device(String)
 }
 
 @Reducer
@@ -33,9 +35,13 @@ public struct AppFeature: Sendable {
         /// The traffic-rules surface (rule set, editor, writes) — split into its
         /// own feature. Flow capture/selection/pins stay in the parent.
         public var rules = RulesFeature.State()
+        /// Phone-onboarding popover (QR + proxy address). Non-nil while shown; the
+        /// engine makes the proxy LAN-reachable on present, loopback-only on dismiss.
+        @Presents public var phone: PhoneOnboardingFeature.State?
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
+        public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
         var didBoot = false                      // guards the one-shot boot effect
 
         public var displayHost: String { localIP ?? "127.0.0.1" }
@@ -60,8 +66,36 @@ public struct AppFeature: Sendable {
                 result = result.filter { $0.host == host }
             case let .app(key):
                 result = result.filter { $0.sourceApp?.groupingKey == key }
+            case let .device(ip):
+                result = result.filter { $0.sourceDevice?.groupingKey == ip }
             }
             return result
+        }
+
+        /// Distinct devices with counts — LAN devices first (the phone you just
+        /// connected), then by most flows. Mirrors `hosts`/`apps`.
+        public var devices: [(device: SourceDevice, count: Int)] {
+            var reps: [String: SourceDevice] = [:]
+            var counts: [String: Int] = [:]
+            for flow in flows {
+                guard let device = flow.sourceDevice else { continue }
+                let key = device.groupingKey
+                counts[key, default: 0] += 1
+                if var existing = reps[key] {
+                    // Keep the richest typing seen across the device's flows.
+                    if existing.platform == nil { existing.platform = device.platform }
+                    if existing.client == nil { existing.client = device.client }
+                    reps[key] = existing
+                } else {
+                    reps[key] = device
+                }
+            }
+            return counts.sorted { a, b in
+                let da = reps[a.key], db = reps[b.key]
+                let la = da?.kind == .lan, lb = db?.kind == .lan
+                if la != lb { return la }        // LAN devices float to the top
+                return a.value != b.value ? a.value > b.value : a.key < b.key
+            }.compactMap { key, count in reps[key].map { (device: $0, count: count) } }
         }
 
         /// Distinct hosts with counts — pinned first, then alphabetical.
@@ -111,6 +145,10 @@ public struct AppFeature: Sendable {
         case setup(SetupFeature.Action)
         /// The traffic-rules child feature (rule CRUD, editor, master switch).
         case rules(RulesFeature.Action)
+        /// Open the phone-onboarding popover (QR + proxy address).
+        case phoneButtonTapped
+        /// The phone-onboarding popover child; `.dismiss` stops onboarding.
+        case phone(PresentationAction<PhoneOnboardingFeature.Action>)
         /// One-shot boot: start the proxy + subscribe to the flow stream. Sent only
         /// from the always-present menu-bar label so opening a window can't re-run
         /// it (which would cancel the live subscription and restart the proxy).
@@ -135,6 +173,9 @@ public struct AppFeature: Sendable {
         case pinHostToggled(String)
         case pinAppToggled(String)
         case pinsLoaded(hosts: Set<String>, apps: Set<String>)
+        case deviceAliasesLoaded([String: String])
+        /// Set (or clear, with nil) a user alias for the device at `ip`.
+        case setDeviceAlias(ip: String, alias: String?)
     }
 
     @Dependency(\.proxyClient) var proxyClient
@@ -156,6 +197,17 @@ public struct AppFeature: Sendable {
             case .binding, .setup, .rules:
                 return .none
 
+            case .phoneButtonTapped:
+                state.phone = PhoneOnboardingFeature.State()
+                return .none
+
+            case .phone(.dismiss):
+                // Popover closed — return the proxy to loopback-only.
+                return .run { _ in await proxyClient.stopPhoneOnboarding() }
+
+            case .phone:
+                return .none
+
             case .task:
                 // Idempotent: the menu-bar label can re-render, but boot must run
                 // once — re-running would cancel the live flow subscription.
@@ -164,6 +216,7 @@ public struct AppFeature: Sendable {
                 return .run { send in
                     let pins = PinsStore.load()
                     await send(.pinsLoaded(hosts: pins.hosts, apps: pins.apps))
+                    await send(.deviceAliasesLoaded(DeviceAliasStore.load()))
                     await send(.localIPResolved(LocalIP.primaryIPv4()))
                     do {
                         let port = try await proxyClient.start(9090)
@@ -285,7 +338,20 @@ public struct AppFeature: Sendable {
                 state.pinnedHosts = hosts
                 state.pinnedApps = apps
                 return .none
+
+            case let .deviceAliasesLoaded(aliases):
+                state.deviceAliases = aliases
+                return .none
+
+            case let .setDeviceAlias(ip, alias):
+                if let alias, !alias.isEmpty { state.deviceAliases[ip] = alias }
+                else { state.deviceAliases[ip] = nil }
+                let aliases = state.deviceAliases
+                return .run { _ in DeviceAliasStore.save(aliases) }
             }
+        }
+        .ifLet(\.$phone, action: \.phone) {
+            PhoneOnboardingFeature()
         }
     }
 }

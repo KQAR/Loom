@@ -19,6 +19,7 @@ enum StreamRelay {
         request: CapturedRequest,
         startedAt: Date,
         sourceApp: SourceApp?,
+        sourceDevice: SourceDevice?,
         store: FlowStore
     ) async {
         // If the client disconnects mid-stream (closed SSE tab, aborted download),
@@ -28,7 +29,7 @@ enum StreamRelay {
         // client's closeFuture can cancel.
         let work = Task { await relayInner(
             stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
-            request: request, startedAt: startedAt, sourceApp: sourceApp, store: store
+            request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
         ) }
         channel.closeFuture.whenComplete { _ in work.cancel() }
         await work.value
@@ -42,6 +43,7 @@ enum StreamRelay {
         request: CapturedRequest,
         startedAt: Date,
         sourceApp: SourceApp?,
+        sourceDevice: SourceDevice?,
         store: FlowStore
     ) async {
         var statusCode = 0
@@ -70,7 +72,7 @@ enum StreamRelay {
                     await store.upsert(Flow(
                         id: flowID, request: request, startedAt: startedAt,
                         outcome: .streaming(CapturedResponse(statusCode: code, httpVersion: version, headers: headers, body: nil)),
-                        sourceApp: sourceApp,
+                        sourceApp: sourceApp, sourceDevice: sourceDevice,
                         appliedRules: rules.isEmpty ? nil : rules
                     ))
                 case let .body(chunk):
@@ -91,7 +93,7 @@ enum StreamRelay {
                     CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody),
                     at: Date()
                 ),
-                sourceApp: sourceApp,
+                sourceApp: sourceApp, sourceDevice: sourceDevice,
                 appliedRules: appliedRules.isEmpty ? nil : appliedRules
             ))
         } catch {
@@ -104,13 +106,13 @@ enum StreamRelay {
                         FlowError(error.localizedDescription), at: Date(),
                         partialResponse: CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody)
                     ),
-                    sourceApp: sourceApp, appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                    sourceApp: sourceApp, sourceDevice: sourceDevice, appliedRules: appliedRules.isEmpty ? nil : appliedRules
                 ))
             } else {
                 await store.upsert(Flow(
                     id: flowID, request: request, startedAt: startedAt,
                     outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
-                    sourceApp: sourceApp
+                    sourceApp: sourceApp, sourceDevice: sourceDevice
                 ))
                 HTTPUtil.writeResponse(
                     channel: channel, status: 502, headers: [],
