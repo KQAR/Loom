@@ -43,6 +43,9 @@ enum CapturedExchange {
         let method = head.method.rawValue
         let sourcePort = channel.remoteAddress?.port
         let proxyPort = channel.localAddress?.port
+        // Device attribution (remote IP + UA type) is pure and loop-safe, unlike
+        // the libproc `sourceApp` scan below — compute it here and capture it.
+        let sourceDevice = device(channel: channel, headers: headers)
 
         // A WebSocket upgrade is spliced (frames captured) rather than fetched.
         if WebSocketRelay.isUpgrade(head) {
@@ -60,7 +63,8 @@ enum CapturedExchange {
                         host: routing.webSocketHost, port: routing.webSocketPort,
                         upstreamTLS: routing.webSocketUpstreamTLS,
                         removeHandlerNames: routing.webSocketRemoveHandlerNames,
-                        flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
+                        flowID: flowID, request: capturedRequest, startedAt: startedAt,
+                        sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
                     )
                 }
             }
@@ -69,12 +73,21 @@ enum CapturedExchange {
 
         Task {
             let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))
+            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
             await StreamRelay.relay(
                 stream: forwarder.forwardStream(method: method, url: routing.url, headers: headers, body: body),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
-                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
+                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
             )
         }
+    }
+
+    /// Identify the originating device from the connection's remote IP, typed by
+    /// its `User-Agent`. Pure — safe to call on the event loop.
+    private static func device(channel: Channel, headers: [HeaderPair]) -> SourceDevice? {
+        guard let ip = channel.remoteAddress?.ipAddress else { return nil }
+        let userAgent = headers.first { $0.name.lowercased() == "user-agent" }?.value
+        let parsed = UserAgentParser.parse(userAgent)
+        return SourceDevice(ip: ip, kind: SourceDevice.kind(forIP: ip), platform: parsed.platform, client: parsed.client)
     }
 }

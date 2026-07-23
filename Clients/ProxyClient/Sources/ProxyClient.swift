@@ -32,6 +32,13 @@ public struct ProxyClient: Sendable {
     public var updateRule: @Sendable (_ rule: TrafficRule) async throws -> Void
     public var deleteRule: @Sendable (_ id: UUID) async throws -> Void
     public var setGroupEnabled: @Sendable (_ group: String?, _ enabled: Bool) async -> Void
+    /// Make the proxy LAN-reachable and publish the phone onboarding material
+    /// (proxy address, CA download URL, QR code). Rebinds the proxy to `0.0.0.0`.
+    public var startPhoneOnboarding: @Sendable () async throws -> PhoneOnboardingInfo
+    /// Stop serving onboarding material and return the proxy to loopback-only.
+    public var stopPhoneOnboarding: @Sendable () async -> Void
+    /// Current onboarding info, or `nil` when inactive.
+    public var phoneOnboardingInfo: @Sendable () async -> PhoneOnboardingInfo? = { nil }
 }
 
 extension ProxyClient: DependencyKey {
@@ -58,7 +65,10 @@ extension ProxyClient: DependencyKey {
             addRule: { try await engine.addRule($0) },
             updateRule: { try await engine.updateRule($0) },
             deleteRule: { try await engine.deleteRule(id: $0) },
-            setGroupEnabled: { await engine.setGroupEnabled(group: $0, enabled: $1) }
+            setGroupEnabled: { await engine.setGroupEnabled(group: $0, enabled: $1) },
+            startPhoneOnboarding: { try await engine.startPhoneOnboarding() },
+            stopPhoneOnboarding: { await engine.stopPhoneOnboarding() },
+            phoneOnboardingInfo: { await engine.phoneOnboardingInfo() }
         )
     }()
 

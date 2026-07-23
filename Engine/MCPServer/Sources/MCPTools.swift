@@ -27,6 +27,11 @@ struct MCPToolExecutor {
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
             ],
             [
+                "name": "list_devices",
+                "description": "List devices that have sent traffic through the proxy — this Mac plus any LAN devices (e.g. phones), each with detected platform/client (from User-Agent), flow count, and last-seen time.",
+                "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
+            ],
+            [
                 "name": "get_recent_flows",
                 "description": "List recently captured HTTP flows, newest first, with method, url, status and timing.",
                 "inputSchema": [
@@ -313,6 +318,7 @@ struct MCPToolExecutor {
     static let handlers: [String: (MCPToolExecutor, [String: Any]) async throws -> String] = [
         "get_version": { ex, args in try await ex.handleGetVersion(args) },
         "get_proxy_status": { ex, args in try await ex.handleGetProxyStatus(args) },
+        "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
         "replay_flow": { ex, args in try await ex.handleReplayFlow(args) },
@@ -355,6 +361,11 @@ struct MCPToolExecutor {
             "capturedCount": status.capturedCount,
             "isRecording": status.isRecording,
         ])
+    }
+
+    private func handleListDevices(_ arguments: [String: Any]) async throws -> String {
+        let devices = await engine.connectedDevices()
+        return prettyJSON(devices.map(Self.deviceSummary))
     }
 
     private func handleGetRecentFlows(_ arguments: [String: Any]) async throws -> String {
@@ -580,6 +591,28 @@ struct MCPToolExecutor {
             if let bundleID = app.bundleID { appOut["bundleID"] = bundleID }
             out["sourceApp"] = appOut
         }
+        if let device = flow.sourceDevice {
+            var deviceOut: [String: Any] = ["ip": device.ip, "kind": device.kind.rawValue]
+            if let platform = device.platform { deviceOut["platform"] = platform }
+            if let client = device.client { deviceOut["client"] = client }
+            out["sourceDevice"] = deviceOut
+        }
+        return out
+    }
+
+    /// One entry for `list_devices`. Dates as ISO-8601 so the model can order them.
+    private static func deviceSummary(_ summary: DeviceSummary) -> [String: Any] {
+        let device = summary.device
+        var out: [String: Any] = [
+            "ip": device.ip,
+            "kind": device.kind.rawValue,
+            "displayName": device.displayName,
+            "flowCount": summary.flowCount,
+            "lastActive": ISO8601DateFormatter().string(from: summary.lastActive),
+        ]
+        if let platform = device.platform { out["platform"] = platform }
+        if let client = device.client { out["client"] = client }
+        if let type = device.typeSummary { out["type"] = type }
         return out
     }
 

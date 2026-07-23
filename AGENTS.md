@@ -59,7 +59,7 @@ Tuist is pinned to **4.202.5** in `mise.toml` — do not downgrade (see Known Is
 
 ### Domain Model (`SharedModels`)
 
-- **Flow**: one captured or replayed request/response exchange. Carries `CapturedRequest`, optional `CapturedResponse`, timing, `error`, and `replayedFrom` (set when produced by a replay).
+- **Flow**: one captured or replayed request/response exchange. Carries `CapturedRequest`, optional `CapturedResponse`, timing, `error`, `replayedFrom` (set when produced by a replay), `sourceApp` (local process, libproc — loopback only) and `sourceDevice` (originating device: this Mac or a LAN device, keyed on remote IP, typed from User-Agent via `UserAgentParser`).
 - **HeaderPair**: headers are an *ordered list*, not a dictionary — order and duplicates are preserved as seen on the wire.
 - **ReplayOverrides**: how a flow is mutated before re-send (method / url / set+remove headers / body).
 - **ProxyControlling** = `FlowProviding` (read) + `FlowReplaying` (write): the protocol the engine implements and both the TCA client and MCP server consume.
@@ -89,6 +89,7 @@ Both the UI and the AI act through the **same** `ProxyEngine.shared` — "AI mod
 |------|------|---------|
 | `get_version` | read | app + protocol version |
 | `get_proxy_status` | read | running state, port, captured count |
+| `list_devices` | read | devices that sent traffic through the proxy (this Mac + LAN devices), typed from User-Agent, with per-device flow counts + last-seen |
 | `get_recent_flows` | read | newest-first flow summaries |
 | `get_flow_detail` | read | full headers + body for one flow id |
 | `replay_flow` | **write** | re-send a flow with overrides → new flow, linked via `replayedFrom` |

@@ -131,6 +131,9 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     public var replayedFrom: UUID?
     /// The local app/process that made the request, when it could be resolved.
     public var sourceApp: SourceApp?
+    /// The device the request came from (this Mac or a LAN device), identified by
+    /// the connection's remote IP and typed from its User-Agent.
+    public var sourceDevice: SourceDevice?
     /// Traffic rules that acted on this exchange (mocked, rewrote, re-mapped,
     /// blocked or delayed it), in the order they applied. Nil when the exchange
     /// passed through untouched.
@@ -146,6 +149,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         outcome: FlowOutcome = .pending,
         replayedFrom: UUID? = nil,
         sourceApp: SourceApp? = nil,
+        sourceDevice: SourceDevice? = nil,
         appliedRules: [AppliedRule]? = nil,
         webSocketMessages: [WebSocketMessage]? = nil
     ) {
@@ -155,6 +159,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.outcome = outcome
         self.replayedFrom = replayedFrom
         self.sourceApp = sourceApp
+        self.sourceDevice = sourceDevice
         self.appliedRules = appliedRules
         self.webSocketMessages = webSocketMessages
     }

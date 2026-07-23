@@ -33,7 +33,7 @@ enum WebSocketRelay {
         flowID: UUID,
         request: CapturedRequest,
         startedAt: Date,
-        sourceApp: SourceApp?,
+        sourceApp: SourceApp?, sourceDevice: SourceDevice?,
         store: FlowStore
     ) {
         // Pause client reads until both pipelines are reconfigured, so frames
@@ -55,7 +55,7 @@ enum WebSocketRelay {
                 case let .success(upstream):
                     setup(client: clientChannel, upstream: upstream, head: head, requestPath: requestPath,
                           removeHandlerNames: removeHandlerNames, flowID: flowID, request: request,
-                          startedAt: startedAt, sourceApp: sourceApp, store: store)
+                          startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store)
                 case .failure:
                     HTTPUtil.writeResponse(channel: clientChannel, status: 502, headers: [],
                                            body: Data("Loom: WebSocket upstream unreachable\n".utf8), keepAlive: false)
@@ -66,10 +66,10 @@ enum WebSocketRelay {
     private static func setup(
         client: Channel, upstream: Channel, head: HTTPRequestHead, requestPath: String,
         removeHandlerNames: [String], flowID: UUID, request: CapturedRequest,
-        startedAt: Date, sourceApp: SourceApp?, store: FlowStore
+        startedAt: Date, sourceApp: SourceApp?, sourceDevice: SourceDevice?, store: FlowStore
     ) {
         let sink = WebSocketCaptureSink(
-            flowID: flowID, request: request, startedAt: startedAt, sourceApp: sourceApp, store: store
+            flowID: flowID, request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
         )
         // Client→server bytes start with frames (the GET was already consumed);
         // server→client bytes start with the 101 handshake, which the tap skips.
@@ -99,7 +99,7 @@ enum WebSocketRelay {
                     let started = Flow(
                         id: flowID, request: request, startedAt: startedAt,
                         outcome: .streaming(CapturedResponse(statusCode: 101, headers: [], body: nil)),
-                        sourceApp: sourceApp, webSocketMessages: []
+                        sourceApp: sourceApp, sourceDevice: sourceDevice, webSocketMessages: []
                     )
                     Task { await store.upsert(started, force: true) }
 
@@ -150,17 +150,19 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     private let request: CapturedRequest
     private let startedAt: Date
     private let sourceApp: SourceApp?
+    private let sourceDevice: SourceDevice?
     private var messages: [WebSocketMessage] = []
     private var capturedBytes = 0
     private var capped = false
     private var finished = false
     private let continuation: AsyncStream<Flow>.Continuation
 
-    init(flowID: UUID, request: CapturedRequest, startedAt: Date, sourceApp: SourceApp?, store: FlowStore) {
+    init(flowID: UUID, request: CapturedRequest, startedAt: Date, sourceApp: SourceApp?, sourceDevice: SourceDevice?, store: FlowStore) {
         self.flowID = flowID
         self.request = request
         self.startedAt = startedAt
         self.sourceApp = sourceApp
+        self.sourceDevice = sourceDevice
 
         let (stream, continuation) = AsyncStream.makeStream(of: Flow.self)
         self.continuation = continuation
@@ -197,7 +199,7 @@ final class WebSocketCaptureSink: @unchecked Sendable {
         continuation.yield(Flow(
             id: flowID, request: request, startedAt: startedAt,
             outcome: completed ? .completed(response, at: Date()) : .streaming(response),
-            sourceApp: sourceApp, webSocketMessages: messages
+            sourceApp: sourceApp, sourceDevice: sourceDevice, webSocketMessages: messages
         ))
     }
 }

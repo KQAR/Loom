@@ -11,6 +11,7 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
     var cert = CertificateStatus.notGenerated
     var proxyStatus = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
     var recording = true
+    var devices: [DeviceSummary] = []
 
     // Spies
     private(set) var lastReplay: (id: UUID, overrides: ReplayOverrides)?
@@ -26,6 +27,7 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
     func recentFlows(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
     func flow(id: UUID) async -> Flow? { flows.first { $0.id == id } }
     func flowStream() async -> AsyncStream<Flow> { AsyncStream { $0.finish() } }
+    func connectedDevices() async -> [DeviceSummary] { devices }
 
     // FlowReplaying
     func replay(id: UUID, overrides: ReplayOverrides) async throws -> Flow {
