@@ -30,7 +30,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var bodyData = Data()
-        for try await event in forwardStream(method: method, url: url, headers: headers, body: body) {
+        for try await event in forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
             switch event {
             case let .head(code, version, headers, _): statusCode = code; httpVersion = version; responseHeaders = headers
             case let .body(chunk): bodyData.append(chunk)
@@ -40,7 +40,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         return ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: bodyData)
     }
 
-    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             guard let host = url.host else {
                 continuation.finish(throwing: ForwarderError.invalidURL(url.absoluteString))
@@ -78,7 +78,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 do {
                     let channel = try await bootstrap.connect(host: host, port: port).get()
                     box.set(channel)
-                    Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
+                    try await Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -92,14 +92,15 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
 
     private static func writeRequest(
         channel: Channel, method: String, url: URL, host: String, port: Int,
-        headers: [HeaderPair], body: Data?
-    ) {
+        headers: [HeaderPair], body: RequestBody
+    ) async throws {
         var httpHeaders = HTTPHeaders()
         var sawHost = false
         for header in headers {
             let lower = header.name.lowercased()
-            // We set Content-Length ourselves; drop hop-by-hop and any framing the
-            // client stack must own. Host is kept if present (so keepHostHeader works).
+            // We set the framing (Content-Length / Transfer-Encoding) ourselves; drop
+            // hop-by-hop and any framing the client stack must own. Host is kept if
+            // present (so keepHostHeader works).
             if HTTPUtil.isHopByHop(lower) || lower == "content-length" || lower == "transfer-encoding" { continue }
             if lower == "host" { sawHost = true }
             httpHeaders.add(name: header.name, value: header.value)
@@ -108,20 +109,42 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             let defaultPort = url.scheme?.lowercased() == "https" ? 443 : 80
             httpHeaders.add(name: "Host", value: port == defaultPort ? host : "\(host):\(port)")
         }
-        httpHeaders.replaceOrAdd(name: "Content-Length", value: String(body?.count ?? 0))
+
+        // Frame the body: a known length (buffered body, or a streamed body whose
+        // client sent Content-Length) uses Content-Length; an unknown-length stream
+        // (client used chunked) re-frames as chunked upstream.
+        let knownLength: Int?
+        switch body {
+        case let .bytes(data): knownLength = data?.count ?? 0
+        case let .stream(_, contentLength): knownLength = contentLength
+        }
+        if let knownLength {
+            httpHeaders.replaceOrAdd(name: "Content-Length", value: String(knownLength))
+        } else {
+            httpHeaders.replaceOrAdd(name: "Transfer-Encoding", value: "chunked")
+        }
 
         let head = HTTPRequestHead(
-            version: .http1_1,
-            method: httpMethod(method),
-            uri: requestURI(url),
-            headers: httpHeaders
+            version: .http1_1, method: httpMethod(method), uri: requestURI(url), headers: httpHeaders
         )
-
         channel.write(NIOAny(HTTPClientRequestPart.head(head)), promise: nil)
-        if let body, !body.isEmpty {
-            var buffer = channel.allocator.buffer(capacity: body.count)
-            buffer.writeBytes(body)
-            channel.write(NIOAny(HTTPClientRequestPart.body(.byteBuffer(buffer))), promise: nil)
+
+        switch body {
+        case let .bytes(data):
+            if let data, !data.isEmpty {
+                var buffer = channel.allocator.buffer(capacity: data.count)
+                buffer.writeBytes(data)
+                channel.write(NIOAny(HTTPClientRequestPart.body(.byteBuffer(buffer))), promise: nil)
+            }
+        case let .stream(chunks, _):
+            // Await each flush so a slow upstream back-pressures the pull from the
+            // client stream (which is itself back-pressured to the client socket) —
+            // in-flight bytes stay bounded end to end.
+            for try await chunk in chunks where !chunk.isEmpty {
+                var buffer = channel.allocator.buffer(capacity: chunk.count)
+                buffer.writeBytes(chunk)
+                try await channel.writeAndFlush(NIOAny(HTTPClientRequestPart.body(.byteBuffer(buffer)))).get()
+            }
         }
         channel.writeAndFlush(NIOAny(HTTPClientRequestPart.end(nil)), promise: nil)
     }

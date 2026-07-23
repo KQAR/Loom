@@ -104,6 +104,45 @@ final class HTTPSInterceptionTests: XCTestCase {
         XCTAssertTrue(flows.contains { $0.request.url.contains("plain.test/create") })
     }
 
+    func test_largeRequestBodyStreamsThroughProxyIntactAndIsCaptured() throws {
+        // A large POST body must reach the upstream byte-for-byte via the streaming
+        // request path, and be captured (under the cap) on the flow. Exercises the
+        // full chain: handler bridge → RuleApplyingForwarder streaming passthrough →
+        // the stub's default forwardStream (which collects the streamed body).
+        let forwarder = StubForwarder(status: 200, body: Data("ok".utf8))
+        let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
+        let port = try runBlocking { try await engine.start(port: 0) }
+        defer { runBlockingVoid { await engine.stop() } }
+
+        // ~2 MB with a non-repeating pattern so a truncation/reorder bug can't hide.
+        var payload = Data(count: 2_000_000)
+        for i in payload.indices { payload[i] = UInt8(i & 0xFF) }
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 30
+        config.connectionProxyDictionary = [
+            kCFNetworkProxiesHTTPEnable as String: 1,
+            kCFNetworkProxiesHTTPProxy as String: "127.0.0.1",
+            kCFNetworkProxiesHTTPPort as String: port,
+        ]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: URL(string: "http://plain.test/upload")!)
+        request.httpMethod = "POST"
+        request.httpBody = payload
+        let (data, response) = try runBlocking { try await session.data(for: request) }
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(data, Data("ok".utf8))
+
+        XCTAssertEqual(forwarder.lastBody, payload, "upstream must receive the full body byte-for-byte")
+
+        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
+        let flow = try XCTUnwrap(flows.first { $0.request.url.contains("plain.test/upload") })
+        XCTAssertEqual(flow.request.method, "POST")
+        XCTAssertEqual(flow.request.body, payload, "the captured request body should match (2MB < cap)")
+    }
+
     // MARK: - async → sync bridges (XCTest sync methods driving the actor)
 
     private func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
@@ -141,7 +180,9 @@ final class StubForwarder: UpstreamForwarding, @unchecked Sendable {
     let body: Data
     private let lock = NSLock()
     private var _lastURL: URL?
+    private var _lastBody: Data?
     var lastURL: URL? { lock.lock(); defer { lock.unlock() }; return _lastURL }
+    var lastBody: Data? { lock.lock(); defer { lock.unlock() }; return _lastBody }
 
     init(status: Int, body: Data) {
         self.status = status
@@ -149,7 +190,7 @@ final class StubForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        lock.lock(); _lastURL = url; lock.unlock()
+        lock.lock(); _lastURL = url; _lastBody = body; lock.unlock()
         return ForwardResult(
             statusCode: status,
             headers: [HeaderPair(name: "Content-Type", value: "application/json")],

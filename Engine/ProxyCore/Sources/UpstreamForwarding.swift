@@ -26,19 +26,24 @@ enum UpstreamResponseEvent: Sendable {
 }
 
 protocol UpstreamForwarding: Sendable {
+    /// Buffered send — the whole request body is already in hand (replay, or a body
+    /// a rule/breakpoint had to materialize). Also the buffered fallback the
+    /// decorators use when they must see the full body.
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult
-    /// Streaming variant. The default adapter below turns any buffered `forward`
-    /// into a single-shot stream, so only the NIO client and the rule decorator
-    /// need to override it with real streaming.
-    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
+    /// Streaming send: the request body is a back-pressured `RequestBody` and the
+    /// response is relayed chunk-by-chunk. The default adapter below drains the body
+    /// and calls buffered `forward`, so test stubs only need `forward`; the NIO
+    /// client and the decorators override this with real streaming.
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
 }
 
 extension UpstreamForwarding {
-    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let result = try await forward(method: method, url: url, headers: headers, body: body)
+                    let collected = try await body.collect()
+                    let result = try await forward(method: method, url: url, headers: headers, body: collected)
                     continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
                     if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                     continuation.yield(.end)

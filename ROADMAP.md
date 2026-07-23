@@ -57,7 +57,7 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 
 - HTTP/2 (`swift-nio-http2`), WebSocket frame capture, GraphQL-aware inspector.
 - Persistent store (GRDB) with HAR import/export and redacted evidence bundles.
-- Stream request bodies — responses already stream chunk-by-chunk; large request uploads still buffer in memory (capped, 413 on overflow).
+- Stream request bodies — **done**: uploads no longer buffer whole in memory. The request handlers bridge inbound body chunks into a back-pressured async stream (`RequestBodyBridge`, built on `NIOThrowingAsyncSequenceProducer` + a high/low-watermark strategy driving `channel.read()` with `autoRead` paused), and `NIOStreamingForwarder` relays chunks awaiting each flush so a slow upstream back-pressures the client — in-flight bytes stay bounded to the watermark, not the body size. Forwarding starts on the request head (lower latency) instead of after the last byte. A capped `RequestBodyCapture` tees the body for the inspector. Pure passthrough streams; a request-body-mutating rule / short-circuit / matching breakpoint buffers (`RequestBody.collect()`). (There was never a real 413 cap — this replaces unbounded buffering with bounded streaming.)
 
 ## Structured Channel — decided
 

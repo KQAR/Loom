@@ -95,7 +95,7 @@ final class BreakpointTests: XCTestCase {
         let forwarder = BreakpointForwarder(base: upstream, store: store)
         // No breakpoints armed: stream should pass straight through.
         var bodies: [Data] = []
-        for try await event in forwarder.forwardStream(method: "GET", url: url, headers: [], body: nil) {
+        for try await event in forwarder.forwardStream(method: "GET", url: url, headers: [], body: .bytes(nil)) {
             if case let .body(data) = event { bodies.append(data) }
         }
         XCTAssertEqual(bodies, [Data("upstream".utf8)])
