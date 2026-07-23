@@ -276,13 +276,13 @@ public struct MainView: View {
 
                 Divider().frame(height: 14)
 
-                statusIcon("globe", on: store.isSystemProxy,
-                           help: store.isSystemProxy ? "System proxy: on" : "System proxy: off") {
-                    store.send(.toggleSystemProxyTapped)
+                statusIcon("globe", on: store.setup.isSystemProxy,
+                           help: store.setup.isSystemProxy ? "System proxy: on" : "System proxy: off") {
+                    store.send(.setup(.toggleSystemProxyTapped))
                 }
-                statusIcon("lock.shield", on: store.sslEnabled,
-                           help: store.sslEnabled ? "SSL proxying: on" : "SSL proxying: off") {
-                    store.send(.toggleSSLTapped)
+                statusIcon("lock.shield", on: store.setup.sslEnabled,
+                           help: store.setup.sslEnabled ? "SSL proxying: on" : "SSL proxying: off") {
+                    store.send(.setup(.toggleSSLTapped))
                 }
                 statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
                            help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
