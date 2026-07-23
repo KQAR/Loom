@@ -4,6 +4,9 @@ name: Release
 # signed) app, packages a DMG, signs it + regenerates the Sparkle appcast, and
 # publishes both as GitHub release assets. `SUFeedURL` points at
 # releases/latest/download/appcast.xml, so shipped apps pick the update up.
+#
+# Build is Apple-silicon only (`ARCHS=arm64`) — roughly halves compile time vs a
+# universal build. Drop that flag in "Build release archive" to ship Intel too.
 on:
   push:
     tags:
@@ -20,6 +23,20 @@ jobs:
 
       - uses: jdx/mise-action@v2
 
+      # Reuse resolved SPM checkouts/artifacts (Sparkle binary, NIO, …) and the
+      # compiled dependency frameworks (BoringSSL/NIO/certs are the slow ones)
+      # across runs. Keyed on the resolved graph, so it only misses when a
+      # dependency version actually changes.
+      - name: Cache SPM & DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            Tuist/.build
+            ${{ runner.temp }}/DerivedData
+          key: ${{ runner.os }}-loom-build-${{ hashFiles('Tuist/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-loom-build-
+
       - name: Install dependencies
         run: tuist install
 
@@ -33,6 +50,8 @@ jobs:
             -scheme Loom \
             -configuration Release \
             -archivePath "${{ runner.temp }}/Loom.xcarchive" \
+            -derivedDataPath "${{ runner.temp }}/DerivedData" \
+            ARCHS=arm64 \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO

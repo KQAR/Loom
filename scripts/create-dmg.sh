@@ -2,29 +2,27 @@
 set -euo pipefail
 
 # Usage: scripts/create-dmg.sh <path-to-Loom.app> <output-dir>
-# Packages the exported app into "<output-dir>/Loom.dmg" (unsigned in CI).
+# Builds "<output-dir>/Loom.dmg" with hdiutil — macOS built-in, no third-party
+# or native deps. (The npm `create-dmg` pulls node-gyp addons like macos-alias
+# that don't prebuild on CI's Node, failing with MODULE_NOT_FOUND.)
 APP_PATH="${1:?Usage: create-dmg.sh <Loom.app> <output-dir>}"
 OUTPUT_DIR="${2:-.}"
+DMG="$OUTPUT_DIR/Loom.dmg"
 
-rm -f "$OUTPUT_DIR"/Loom*.dmg
+rm -f "$DMG"
 
-# create-dmg exits 2 when no code-signing identity is found; the DMG is still
-# produced, just unsigned — so tolerate exit 2 and fail only on anything else.
-set +e
-mise exec -- create-dmg "$APP_PATH" "$OUTPUT_DIR" \
-  --overwrite \
-  --dmg-title="Loom"
-EXIT_CODE=$?
-set -e
+# Stage the app plus a drag-to-install /Applications symlink.
+STAGING="$(mktemp -d)"
+trap 'rm -rf "$STAGING"' EXIT
+cp -R "$APP_PATH" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
 
-if [ $EXIT_CODE -ne 0 ] && [ $EXIT_CODE -ne 2 ]; then
-  exit $EXIT_CODE
-fi
+hdiutil create \
+  -volname "Loom" \
+  -srcfolder "$STAGING" \
+  -fs HFS+ \
+  -format UDZO \
+  -ov \
+  "$DMG"
 
-# create-dmg names the file "Loom X.Y.Z.dmg"; normalize to "Loom.dmg" so the
-# release workflow and appcast reference a stable name.
-for f in "$OUTPUT_DIR"/Loom*.dmg; do
-  if [ "$f" != "$OUTPUT_DIR/Loom.dmg" ]; then
-    mv "$f" "$OUTPUT_DIR/Loom.dmg"
-  fi
-done
+echo "Created $DMG"
