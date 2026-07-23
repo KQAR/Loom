@@ -207,6 +207,9 @@ struct MCPToolExecutor {
                     "description": "Matched against the full URL. Glob by default: `*` matches any characters and the pattern must cover the whole URL; without any `*` it is a prefix match (query strings still match). With is_regex it is an unanchored, case-insensitive regular expression.",
                 ],
                 "is_regex": ["type": "boolean", "description": "Treat url_pattern as a regular expression (default false)."],
+                "is_exact": ["type": "boolean", "description": "Require url_pattern to equal the full URL exactly, instead of the default prefix/glob match (ignored when is_regex). Default false."],
+                "host_pattern": ["type": "string", "description": "Optional host glob (e.g. *.example.com) matched against the URL host; combines with url_pattern."],
+                "query": ["type": "object", "description": "Optional query predicates: each key must be present and equal its value, or \"*\" to require the key with any value. Order-independent."],
                 "methods": [
                     "type": "array",
                     "items": ["type": "string"],
@@ -231,6 +234,7 @@ struct MCPToolExecutor {
                         "status_code": ["type": "integer", "description": "Default 200."],
                         "headers": ["type": "object", "description": "Response header name/value pairs."],
                         "body": ["type": "string", "description": "UTF-8 response body (e.g. a JSON document)."],
+                        "body_base64": ["type": "string", "description": "Base64-encoded response body for binary payloads (images, protobuf, gzip). Takes precedence over body."],
                         "content_type": ["type": "string", "description": "Convenience Content-Type, e.g. application/json."],
                     ],
                 ],
@@ -657,7 +661,10 @@ struct MCPToolExecutor {
         return RuleMatch(
             urlPattern: pattern,
             isRegex: (raw["is_regex"] as? Bool) ?? false,
-            methods: (raw["methods"] as? [String]) ?? []
+            methods: (raw["methods"] as? [String]) ?? [],
+            isExact: (raw["is_exact"] as? Bool) ?? false,
+            hostPattern: (raw["host_pattern"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            query: (raw["query"] as? [String: String]).flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -673,6 +680,7 @@ struct MCPToolExecutor {
                 statusCode: (mock["status_code"] as? Int) ?? 200,
                 headers: headerPairs(mock["headers"]),
                 bodyText: mock["body"] as? String,
+                bodyBase64: mock["body_base64"] as? String,
                 contentType: mock["content_type"] as? String
             )))
         }
@@ -764,6 +772,9 @@ struct MCPToolExecutor {
             "match": {
                 var match: [String: Any] = ["urlPattern": rule.match.urlPattern]
                 if rule.match.isRegex { match["isRegex"] = true }
+                if rule.match.isExact { match["isExact"] = true }
+                if let hostPattern = rule.match.hostPattern, !hostPattern.isEmpty { match["hostPattern"] = hostPattern }
+                if let query = rule.match.query, !query.isEmpty { match["query"] = query }
                 if !rule.match.methods.isEmpty { match["methods"] = rule.match.methods }
                 return match
             }(),
@@ -784,6 +795,11 @@ struct MCPToolExecutor {
             if !mock.headers.isEmpty { mockOut["headers"] = headerDict(mock.headers) }
             if let contentType = mock.contentType { mockOut["contentType"] = contentType }
             addBody(mock.bodyText, to: &mockOut, truncate: truncateBodies)
+            if let base64 = mock.bodyBase64 {
+                mockOut["bodyBase64"] = truncateBodies && base64.count > 256
+                    ? String(base64.prefix(256)) + "…(\(base64.count) base64 chars)"
+                    : base64
+            }
             actions["mockResponse"] = mockOut
         case let .mapRemote(map):
             var mapOut: [String: Any] = ["destination": map.destination]
