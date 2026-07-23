@@ -26,9 +26,11 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     private let observeTunnels: Bool
 
     private var requestHead: HTTPRequestHead?
+    private var requestURL: URL?
     private var connectHead: HTTPRequestHead?
-    /// Live bridge for the current request's streamed body; nil for a bodyless
-    /// request. Body chunks are pumped into it and pulled by the forwarder under
+    /// Live bridge for the current request's streamed body — created lazily on the
+    /// first body chunk (so h2 bodies with no Content-Length still stream); nil for a
+    /// bodyless request. Chunks are pumped in and pulled by the forwarder under
     /// back-pressure.
     private var bodyBridge: RequestBodyBridge?
     /// Set when the request head was malformed so the trailing body/end are ignored.
@@ -67,10 +69,14 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 return
             }
             requestHead = head
-            if RequestBodyStreaming.hasBody(head) {
-                // Stream the body: pause auto-read (mirrors the TLS-swap pause) so the
-                // only reads are the ones the bridge asks for as the forwarder drains,
-                // then start forwarding immediately instead of waiting for `.end`.
+            requestURL = url
+        case var .body(chunk):
+            if droppingRequest { return }
+            // First body chunk: begin streaming. Pausing auto-read (mirrors the
+            // TLS-swap pause) means the only reads are the ones the bridge asks for as
+            // the forwarder drains, so a fast uploader can't outrun a slow upstream.
+            if bodyBridge == nil {
+                guard let head = requestHead, let url = requestURL else { return }
                 let bridge = RequestBodyBridge(capture: RequestBodyCapture())
                 bridge.attach(channel: context.channel)
                 bodyBridge = bridge
@@ -79,10 +85,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                               body: .stream(bridge.chunks, contentLength: RequestBodyStreaming.contentLength(head)),
                               capture: bridge.capture)
             }
-        case var .body(chunk):
-            if let bodyBridge, let bytes = chunk.readBytes(length: chunk.readableBytes) {
-                bodyBridge.yield(Data(bytes))
-            }
+            if let bytes = chunk.readBytes(length: chunk.readableBytes) { bodyBridge?.yield(Data(bytes)) }
         case .end:
             if let connectHead {
                 self.connectHead = nil
@@ -93,13 +96,13 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 bodyBridge.finish()
                 self.bodyBridge = nil
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
-                requestHead = nil
+                requestHead = nil; requestURL = nil
                 return
             }
-            if droppingRequest { droppingRequest = false; requestHead = nil; return }
-            guard let head = requestHead, let url = URL(string: head.uri), url.scheme != nil else { return }
+            if droppingRequest { droppingRequest = false; requestHead = nil; requestURL = nil; return }
+            guard let head = requestHead, let url = requestURL else { return }
             startExchange(channel: context.channel, head: head, url: url, body: .bytes(nil), capture: nil)
-            requestHead = nil
+            requestHead = nil; requestURL = nil
         }
     }
 

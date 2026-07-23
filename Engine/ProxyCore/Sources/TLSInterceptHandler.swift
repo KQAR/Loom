@@ -19,6 +19,11 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     private let forwarder: UpstreamForwarding
 
     private var requestHead: HTTPRequestHead?
+    private var requestURL: URL?
+    private var requestAbsolute: String?
+    /// Live bridge for the current request's streamed body — created lazily on the
+    /// first body chunk, so an h2 DATA body with no Content-Length still streams
+    /// (h2 frames the body without h1 framing headers).
     private var bodyBridge: RequestBodyBridge?
     private var droppingRequest = false
 
@@ -40,7 +45,12 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                 return
             }
             requestHead = head
-            if RequestBodyStreaming.hasBody(head) {
+            requestURL = url
+            requestAbsolute = absolute
+        case var .body(chunk):
+            if droppingRequest { return }
+            if bodyBridge == nil {
+                guard let head = requestHead, let url = requestURL, let absolute = requestAbsolute else { return }
                 let bridge = RequestBodyBridge(capture: RequestBodyCapture())
                 bridge.attach(channel: context.channel)
                 bodyBridge = bridge
@@ -49,25 +59,24 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                               body: .stream(bridge.chunks, contentLength: RequestBodyStreaming.contentLength(head)),
                               capture: bridge.capture)
             }
-        case var .body(chunk):
-            if let bodyBridge, let bytes = chunk.readBytes(length: chunk.readableBytes) {
-                bodyBridge.yield(Data(bytes))
-            }
+            if let bytes = chunk.readBytes(length: chunk.readableBytes) { bodyBridge?.yield(Data(bytes)) }
         case .end:
             if let bodyBridge {
                 bodyBridge.finish()
                 self.bodyBridge = nil
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
-                requestHead = nil
+                resetRequest()
                 return
             }
-            if droppingRequest { droppingRequest = false; requestHead = nil; return }
-            guard let head = requestHead else { return }
-            let absolute = absoluteURLString(for: head)
-            guard let url = URL(string: absolute) else { requestHead = nil; return }
+            if droppingRequest { droppingRequest = false; resetRequest(); return }
+            guard let head = requestHead, let url = requestURL, let absolute = requestAbsolute else { return }
             startExchange(channel: context.channel, head: head, url: url, absolute: absolute, body: .bytes(nil), capture: nil)
-            requestHead = nil
+            resetRequest()
         }
+    }
+
+    private func resetRequest() {
+        requestHead = nil; requestURL = nil; requestAbsolute = nil
     }
 
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, absolute: String, body: RequestBody, capture: RequestBodyCapture?) {
