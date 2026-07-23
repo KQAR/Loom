@@ -53,42 +53,22 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                                    body: Data("Loom: bad intercepted URI\n".utf8), keepAlive: false)
             return
         }
-
-        let headers = HTTPUtil.headerPairs(head.headers)
-        let capturedRequest = CapturedRequest(method: head.method.rawValue, url: absolute, headers: headers, body: body)
-        let flowID = UUID()
-        let startedAt = Date()
-        let store = self.store
-        let forwarder = self.forwarder
-        let keepAlive = head.isKeepAlive
-        let method = head.method.rawValue
-        let sourcePort = channel.remoteAddress?.port
-        let proxyPort = channel.localAddress?.port
-
-        // WebSocket over TLS (wss): splice the decrypted stream and originate a
-        // fresh TLS connection upstream, capturing frames. Keep the client's TLS
-        // handler in place; strip only the HTTP framing + this handler.
-        if WebSocketRelay.isUpgrade(head) {
-            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            let requestPath = head.uri.hasPrefix("/") ? head.uri : "/\(head.uri)"
-            WebSocketRelay.start(
-                clientChannel: channel, head: head, requestPath: requestPath, host: host,
-                port: port, upstreamTLS: true,
-                removeHandlerNames: ["loom.mitm.encoder", "loom.mitm.decoder", "loom.mitm.intercept"],
-                flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
-            )
-            return
-        }
-
-        Task {
-            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))
-            await StreamRelay.relay(
-                stream: forwarder.forwardStream(method: method, url: url, headers: headers, body: body),
-                channel: channel, keepAlive: keepAlive, flowID: flowID,
-                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
-            )
-        }
+        // wss: keep the client's TLS handler in place, strip only the HTTP framing
+        // + this handler; the upstream leg re-originates TLS.
+        let requestPath = head.uri.hasPrefix("/") ? head.uri : "/\(head.uri)"
+        CapturedExchange.handle(
+            channel: channel, head: head, body: body,
+            routing: CapturedExchange.Routing(
+                url: url,
+                urlString: absolute,
+                webSocketHost: host,
+                webSocketPort: port,
+                webSocketUpstreamTLS: true,
+                webSocketRequestPath: requestPath,
+                webSocketRemoveHandlerNames: ["loom.mitm.encoder", "loom.mitm.decoder", "loom.mitm.intercept"]
+            ),
+            store: store, forwarder: forwarder
+        )
     }
 
     /// Intercepted requests arrive in origin form (`/path`); rebuild the absolute

@@ -77,41 +77,20 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                                    body: Data("Loom: expected absolute request URI\n".utf8), keepAlive: false)
             return
         }
-
-        let headers = HTTPUtil.headerPairs(head.headers)
-        let capturedRequest = CapturedRequest(method: head.method.rawValue, url: head.uri, headers: headers, body: body)
-        let flowID = UUID()
-        let startedAt = Date()
-        let store = self.store
-        let forwarder = self.forwarder
-        let keepAlive = head.isKeepAlive
-        let method = head.method.rawValue
-        let sourcePort = channel.remoteAddress?.port
-        let proxyPort = channel.localAddress?.port
-
-        // WebSocket upgrade (ws://): splice the connection and capture frames
-        // instead of doing a request/response fetch.
-        if WebSocketRelay.isUpgrade(head) {
-            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            let port = url.port ?? (url.scheme?.lowercased() == "wss" ? 443 : 80)
-            WebSocketRelay.start(
-                clientChannel: channel, head: head, requestPath: Self.originForm(url), host: url.host ?? "",
-                port: port, upstreamTLS: url.scheme?.lowercased() == "wss",
-                removeHandlerNames: ["loom.http.encoder", "loom.http.decoder", "loom.proxy"],
-                flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
-            )
-            return
-        }
-
-        Task {
-            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp))
-            await StreamRelay.relay(
-                stream: forwarder.forwardStream(method: method, url: url, headers: headers, body: body),
-                channel: channel, keepAlive: keepAlive, flowID: flowID,
-                request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
-            )
-        }
+        let wsPort = url.port ?? (url.scheme?.lowercased() == "wss" ? 443 : 80)
+        CapturedExchange.handle(
+            channel: channel, head: head, body: body,
+            routing: CapturedExchange.Routing(
+                url: url,
+                urlString: head.uri,
+                webSocketHost: url.host ?? "",
+                webSocketPort: wsPort,
+                webSocketUpstreamTLS: url.scheme?.lowercased() == "wss",
+                webSocketRequestPath: Self.originForm(url),
+                webSocketRemoveHandlerNames: ["loom.http.encoder", "loom.http.decoder", "loom.proxy"]
+            ),
+            store: store, forwarder: forwarder
+        )
     }
 
     /// Origin-form request target (path + query) for an absolute proxied URL.
