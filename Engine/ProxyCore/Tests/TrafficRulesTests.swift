@@ -49,19 +49,19 @@ final class TrafficRuleValidationTests: XCTestCase {
     }
 
     func test_valid() {
-        XCTAssertNil(rule(RuleActions(block: true)).validationError())
+        XCTAssertNil(rule(RuleActions(route: .block)).validationError())
     }
 
     func test_rejectsEmptyNameEmptyPatternBadRegexNoActions() {
-        XCTAssertNotNil(rule(RuleActions(block: true), name: "  ").validationError())
-        XCTAssertNotNil(rule(RuleActions(block: true), pattern: "").validationError())
-        XCTAssertNotNil(rule(RuleActions(block: true), pattern: "([", isRegex: true).validationError())
+        XCTAssertNotNil(rule(RuleActions(route: .block), name: "  ").validationError())
+        XCTAssertNotNil(rule(RuleActions(route: .block), pattern: "").validationError())
+        XCTAssertNotNil(rule(RuleActions(route: .block), pattern: "([", isRegex: true).validationError())
         XCTAssertNotNil(rule(RuleActions()).validationError(), "a rule with no actions must be refused")
     }
 
     func test_rejectsBadMapRemoteAndNegativeDelay() {
-        XCTAssertNotNil(rule(RuleActions(mapRemote: MapRemoteAction(destination: "not a url"))).validationError())
-        XCTAssertNil(rule(RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001"))).validationError())
+        XCTAssertNotNil(rule(RuleActions(route: .mapRemote(MapRemoteAction(destination: "not a url")))).validationError())
+        XCTAssertNil(rule(RuleActions(route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001")))).validationError())
         XCTAssertNotNil(rule(RuleActions(delayMilliseconds: -1)).validationError())
     }
 }
@@ -80,14 +80,14 @@ final class RuleEngineTests: XCTestCase {
     }
 
     func test_masterSwitchOff_appliesNothing() {
-        let rule = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+        let rule = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
         let plan = plan(state(rule, enabled: false))
         XCTAssertNil(plan.shortCircuit)
         XCTAssertTrue(plan.matched.isEmpty)
     }
 
     func test_disabledRule_isSkipped() {
-        var rule = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+        var rule = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
         rule.isEnabled = false
         XCTAssertNil(plan(state(rule)).shortCircuit)
     }
@@ -118,17 +118,17 @@ final class RuleEngineTests: XCTestCase {
     func test_mapRemote_swapsOriginKeepsPathAndQuery() {
         let rule = TrafficRule(
             name: "map", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001"))
+            actions: RuleActions(route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001")))
         )
         XCTAssertEqual(plan(state(rule)).url.absoluteString, "http://127.0.0.1:3001/v1/home?x=1")
     }
 
     func test_shortCircuitPrecedence_blockBeatsMockBeatsLocalFile() {
         let local = TrafficRule(name: "file", match: RuleMatch(urlPattern: "*"),
-                                actions: RuleActions(mapLocal: MapLocalAction(path: "/tmp/x.json")))
+                                actions: RuleActions(route: .mapLocal(MapLocalAction(path: "/tmp/x.json"))))
         let mock = TrafficRule(name: "mock", match: RuleMatch(urlPattern: "*"),
-                               actions: RuleActions(mockResponse: MockResponseAction(statusCode: 200)))
-        let block = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+                               actions: RuleActions(route: .mock(MockResponseAction(statusCode: 200))))
+        let block = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
 
         // localFile first, mock later: mock outranks the file.
         if case .mock = plan(state(local, mock)).shortCircuit {} else { XCTFail("mock should outrank mapLocal") }
@@ -169,7 +169,7 @@ final class RuleEngineTests: XCTestCase {
         let host = HeaderPair(name: "Host", value: "api.example.test")
         let drop = TrafficRule(
             name: "map", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001"))
+            actions: RuleActions(route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001")))
         )
         let dropped = plan(state(drop), headers: [host])
         XCTAssertFalse(dropped.headers.contains { $0.name.lowercased() == "host" },
@@ -177,7 +177,7 @@ final class RuleEngineTests: XCTestCase {
 
         let keep = TrafficRule(
             name: "map", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001", keepHostHeader: true))
+            actions: RuleActions(route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001", keepHostHeader: true)))
         )
         let kept = plan(state(keep), headers: [host])
         XCTAssertEqual(kept.headers.first { $0.name.lowercased() == "host" }?.value, "api.example.test")
@@ -186,7 +186,7 @@ final class RuleEngineTests: XCTestCase {
     func test_mapRemote_excludeSkipsRedirect() {
         let rule = TrafficRule(
             name: "map", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001", excludePattern: "*/v1/home*"))
+            actions: RuleActions(route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001", excludePattern: "*/v1/home*")))
         )
         // url is https://api.example.test/v1/home?x=1 → excluded, stays put.
         XCTAssertEqual(plan(state(rule)).url.absoluteString, url.absoluteString)
@@ -259,9 +259,9 @@ final class RuleApplyingForwarderTests: XCTestCase {
     func test_mock_shortCircuits_neverContactsUpstream() async throws {
         let rule = TrafficRule(
             name: "home mock", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mockResponse: MockResponseAction(
+            actions: RuleActions(route: .mock(MockResponseAction(
                 statusCode: 200, bodyText: #"{"body":"MOCK"}"#, contentType: "application/json"
-            ))
+            )))
         )
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
@@ -274,7 +274,7 @@ final class RuleApplyingForwarderTests: XCTestCase {
     }
 
     func test_block_returns403() async throws {
-        let rule = TrafficRule(name: "no analytics", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+        let rule = TrafficRule(name: "no analytics", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
 
@@ -287,7 +287,7 @@ final class RuleApplyingForwarderTests: XCTestCase {
         let rule = TrafficRule(
             name: "to local", match: RuleMatch(urlPattern: "*"),
             actions: RuleActions(
-                mapRemote: MapRemoteAction(destination: "http://127.0.0.1:3001"),
+                route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001")),
                 rewriteRequest: RequestRewriteAction(setHeaders: [HeaderPair(name: "X-Debug", value: "1")])
             )
         )
@@ -319,7 +319,7 @@ final class RuleApplyingForwarderTests: XCTestCase {
 
         let rule = TrafficRule(
             name: "local file", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mapLocal: MapLocalAction(path: file.path))
+            actions: RuleActions(route: .mapLocal(MapLocalAction(path: file.path)))
         )
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
@@ -332,7 +332,7 @@ final class RuleApplyingForwarderTests: XCTestCase {
     func test_mapLocal_missingFile_honest404() async throws {
         let rule = TrafficRule(
             name: "gone", match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(mapLocal: MapLocalAction(path: "/nonexistent/loom-\(UUID()).json"))
+            actions: RuleActions(route: .mapLocal(MapLocalAction(path: "/nonexistent/loom-\(UUID()).json")))
         )
         let (forwarder, _) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
@@ -358,7 +358,7 @@ final class RulesConfigTests: XCTestCase {
     }
 
     func test_roundTrip_survivesRelaunch() {
-        let rule = TrafficRule(name: "persisted", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+        let rule = TrafficRule(name: "persisted", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
 
         let first = RulesConfig(fileURL: fileURL)
         first.add(rule)
@@ -379,9 +379,9 @@ final class RulesConfigTests: XCTestCase {
 
     func test_setGroupEnabled_togglesOnlyMembers() {
         let config = RulesConfig(fileURL: nil)
-        let scenarioA = TrafficRule(name: "a", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
-        let scenarioA2 = TrafficRule(name: "a2", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
-        let ungrouped = TrafficRule(name: "solo", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+        let scenarioA = TrafficRule(name: "a", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
+        let scenarioA2 = TrafficRule(name: "a2", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
+        let ungrouped = TrafficRule(name: "solo", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
         config.add(scenarioA)
         config.add(scenarioA2)
         config.add(ungrouped)
@@ -397,7 +397,7 @@ final class RulesConfigTests: XCTestCase {
 
     func test_updateAndDelete_reportMisses() {
         let config = RulesConfig(state: RulesState(), fileURL: nil)
-        let rule = TrafficRule(name: "r", match: RuleMatch(urlPattern: "*"), actions: RuleActions(block: true))
+        let rule = TrafficRule(name: "r", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
         config.add(rule)
 
         var renamed = rule

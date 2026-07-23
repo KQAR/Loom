@@ -24,18 +24,18 @@ enum RuleFactory {
                 name: "Mock \(shortPath(flow.request.url))",
                 comment: "Pinned from a captured \(flow.request.method) exchange",
                 match: RuleMatch(urlPattern: base, methods: [flow.request.method]),
-                actions: RuleActions(mockResponse: MockResponseAction(
+                actions: RuleActions(route: .mock(MockResponseAction(
                     statusCode: response?.statusCode ?? 200,
                     bodyText: response?.body.flatMap { String(data: $0, encoding: .utf8) },
                     contentType: contentType ?? "application/json"
-                ))
+                )))
             )
 
         case .blockURL:
             return TrafficRule(
                 name: "Block \(shortPath(flow.request.url))",
                 match: RuleMatch(urlPattern: base, methods: []),
-                actions: RuleActions(block: true)
+                actions: RuleActions(route: .block)
             )
 
         case .blockHost:
@@ -46,7 +46,7 @@ enum RuleFactory {
             return TrafficRule(
                 name: "Block \(host)",
                 match: RuleMatch(urlPattern: pattern, isRegex: true),
-                actions: RuleActions(block: true)
+                actions: RuleActions(route: .block)
             )
         }
     }

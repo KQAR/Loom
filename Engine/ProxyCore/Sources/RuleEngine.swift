@@ -56,27 +56,30 @@ enum RuleEngine {
                 if let bodyText = rewrite.bodyText { plan.body = Data(bodyText.utf8) }
             }
             applyRequestSubstitutions(actions.activeRequestSubstitutions, to: &plan)
-            if let map = actions.mapRemote, !isExcluded(plan.url, by: map.excludePattern),
-               let mapped = retarget(plan.url, at: map.destination) {
-                plan.url = mapped
-                // By default the Host header should follow the new origin; drop it so
-                // the forwarder derives it from the mapped URL. keepHostHeader leaves
-                // the original Host in place.
-                if !map.keepHostHeader {
-                    plan.headers.removeAll { $0.name.lowercased() == "host" }
+            switch actions.route {
+            case .passthrough:
+                break
+            case let .mapRemote(map):
+                if !isExcluded(plan.url, by: map.excludePattern), let mapped = retarget(plan.url, at: map.destination) {
+                    plan.url = mapped
+                    // By default the Host header should follow the new origin; drop it so
+                    // the forwarder derives it from the mapped URL. keepHostHeader leaves
+                    // the original Host in place.
+                    if !map.keepHostHeader {
+                        plan.headers.removeAll { $0.name.lowercased() == "host" }
+                    }
                 }
+            case .block:
+                plan.shortCircuit = .block(ruleName: rule.name) // block always wins
+            case let .mock(mock):
+                // First mock wins; a mock also outranks an earlier localFile.
+                if plan.shortCircuit == nil { plan.shortCircuit = .mock(mock) }
+                else if case .localFile = plan.shortCircuit { plan.shortCircuit = .mock(mock) }
+            case let .mapLocal(local):
+                if plan.shortCircuit == nil { plan.shortCircuit = .localFile(local) }
             }
             if let delay = actions.delayMilliseconds {
                 plan.delayMilliseconds = max(plan.delayMilliseconds, delay)
-            }
-            if actions.block {
-                plan.shortCircuit = .block(ruleName: rule.name) // block always wins
-            } else if plan.shortCircuit == nil, let mock = actions.mockResponse {
-                plan.shortCircuit = .mock(mock)
-            } else if plan.shortCircuit == nil, let local = actions.mapLocal {
-                plan.shortCircuit = .localFile(local)
-            } else if case .localFile = plan.shortCircuit, let mock = actions.mockResponse {
-                plan.shortCircuit = .mock(mock) // mock outranks a local file
             }
         }
         return plan
