@@ -49,7 +49,7 @@ public struct PanelView: View {
             Divider()
             footer
         }
-        .frame(width: 300)
+        .frame(width: LoomTheme.consoleWidth)
         .task { store.send(.viewAppeared) }
     }
 
@@ -170,7 +170,7 @@ public struct PanelView: View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
             HStack(spacing: LoomTheme.Space.sm) {
                 Image(systemName: state.systemImageName)
-                    .font(.system(size: 13))
+                    .font(LoomTheme.Icon.card)
                     .foregroundStyle(.orange)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
@@ -300,14 +300,14 @@ private struct PanelRow: View {
             HStack(spacing: 0) {
                 // Checkmark slot — visible only when a state row is on.
                 Image(systemName: "checkmark")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(LoomTheme.Icon.badge)
                     .foregroundStyle(Color.accentColor)
                     .opacity(isOn ? 1 : 0)
                     .frame(width: 16, alignment: .center)
                     .padding(.trailing, LoomTheme.Space.xs)
 
                 Image(systemName: icon)
-                    .font(.system(size: 13))
+                    .font(LoomTheme.Icon.card)
                     .foregroundStyle(.secondary)
                     .frame(width: 20)
                     .padding(.trailing, LoomTheme.Space.sm)
