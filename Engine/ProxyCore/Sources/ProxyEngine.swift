@@ -219,6 +219,29 @@ public actor ProxyEngine: ProxyControlling {
         return url
     }
 
+    /// Export the root CA into `directory` in both PEM and DER form, for an
+    /// embedder whose device-trust flow needs the files at a known location (a
+    /// device profile wants DER; `curl --cacert` and most desktop trust stores
+    /// want PEM). One call instead of stitching `caCertificateDER()` +
+    /// `exportCACertificate()` + a copy. Returns the written URLs.
+    @discardableResult
+    public func exportCA(
+        toDirectory directory: URL,
+        pemName: String = "loom-ca.pem",
+        derName: String = "loom-ca.cer"
+    ) async throws -> (pem: URL, der: URL) {
+        guard let ca = ensureCA() else {
+            throw ProxyControlError.certificateUnavailable("root CA could not be generated")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let pemURL = directory.appendingPathComponent(pemName)
+        let derURL = directory.appendingPathComponent(derName)
+        try ca.exportCACertificate(to: pemURL)
+        try ca.caCertificateDER().write(to: derURL, options: .atomic)
+        exportedPEMPath = pemURL
+        return (pem: pemURL, der: derURL)
+    }
+
     public func sslScope() async -> SSLScope {
         config.snapshot()
     }
