@@ -16,6 +16,9 @@ struct RuleEditorView: View {
     @State private var draft: RuleDraft
     @State private var segment: ActionSegment
     @State private var error: String?
+    /// Match-conditions group starts expanded only when host/query are already set,
+    /// so the common URL-only rule stays uncluttered.
+    @State private var showMatchConditions: Bool
 
     private var isNew: Bool { store.isNew }
     private var existingGroups: [String] { store.existingGroups }
@@ -25,6 +28,7 @@ struct RuleEditorView: View {
         let initial = RuleDraft(rule: store.rule)
         _draft = State(initialValue: initial)
         _segment = State(initialValue: Self.firstActive(in: initial) ?? .replaceResponse)
+        _showMatchConditions = State(initialValue: !initial.hostPattern.isEmpty || !initial.queryItems.isEmpty)
     }
 
     var body: some View {
@@ -128,6 +132,8 @@ struct RuleEditorView: View {
                 Spacer()
                 if draft.isRegex {
                     Text("Regex enabled").font(.caption).foregroundStyle(.green)
+                } else if draft.isExact {
+                    Text("Exact match").font(.caption).foregroundStyle(.green)
                 } else if draft.urlPattern.contains("*") {
                     Text("Wildcards enabled").font(.caption).foregroundStyle(.green)
                 }
@@ -156,17 +162,85 @@ struct RuleEditorView: View {
                     .padding(.vertical, 6)
                     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
                     .overlay(alignment: .trailing) {
-                        Button { draft.isRegex.toggle() } label: {
-                            Text(".*")
-                                .font(.callout.monospaced().weight(.bold))
-                                .foregroundStyle(draft.isRegex ? Color.accentColor : Color.secondary)
-                                .padding(.horizontal, 6)
+                        HStack(spacing: 2) {
+                            // Regex and exact are mutually exclusive; enabling one
+                            // clears the other so the model never carries both.
+                            Button {
+                                draft.isExact.toggle()
+                                if draft.isExact { draft.isRegex = false }
+                            } label: {
+                                Text("=")
+                                    .font(.callout.monospaced().weight(.bold))
+                                    .foregroundStyle(draft.isExact ? Color.accentColor : Color.secondary)
+                                    .padding(.horizontal, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .help(draft.isExact ? "Exact on — the URL must equal this pattern exactly" : "Exact off")
+                            Button {
+                                draft.isRegex.toggle()
+                                if draft.isRegex { draft.isExact = false }
+                            } label: {
+                                Text(".*")
+                                    .font(.callout.monospaced().weight(.bold))
+                                    .foregroundStyle(draft.isRegex ? Color.accentColor : Color.secondary)
+                                    .padding(.horizontal, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .help(draft.isRegex ? "Regex on — matching the URL as a regular expression" : "Regex off — glob/prefix matching")
                         }
-                        .buttonStyle(.plain)
-                        .help(draft.isRegex ? "Regex on — matching the URL as a regular expression" : "Regex off — glob/prefix matching")
                     }
             }
+            matchConditions
         }
+    }
+
+    // MARK: Match conditions (host + query predicates)
+
+    @ViewBuilder private var matchConditions: some View {
+        DisclosureGroup(isExpanded: $showMatchConditions) {
+            VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
+                LabeledField("Host") {
+                    TextField("", text: $draft.hostPattern, prompt: Text("*.example.com — optional host glob"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Query predicates — value * means any value").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            draft.queryItems.append(QueryItem(key: "", value: ""))
+                        } label: { Label("Add", systemImage: "plus") }
+                        .controlSize(.small)
+                    }
+                    ForEach($draft.queryItems) { $item in
+                        HStack(spacing: LoomTheme.Space.xs) {
+                            TextField("", text: $item.key, prompt: Text("key"))
+                                .textFieldStyle(.roundedBorder).font(.callout.monospaced())
+                            Text("=").foregroundStyle(.secondary)
+                            TextField("", text: $item.value, prompt: Text("value or *"))
+                                .textFieldStyle(.roundedBorder).font(.callout.monospaced())
+                            Button(role: .destructive) {
+                                draft.queryItems.removeAll { $0.id == item.id }
+                            } label: { Image(systemName: "trash") }
+                            .buttonStyle(.borderless).controlSize(.small)
+                        }
+                    }
+                }
+            }
+            .padding(.top, LoomTheme.Space.xs)
+        } label: {
+            Text("Match conditions\(matchConditionsSummary)").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Compact " · host, 2 query" summary so a collapsed group still shows it's set.
+    private var matchConditionsSummary: String {
+        var parts: [String] = []
+        if !draft.hostPattern.trimmingCharacters(in: .whitespaces).isEmpty { parts.append("host") }
+        let queries = draft.queryItems.filter { !$0.key.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        if queries > 0 { parts.append("\(queries) query") }
+        return parts.isEmpty ? "" : " · " + parts.joined(separator: ", ")
     }
 
     // MARK: Actions — segmented, additive
@@ -251,7 +325,26 @@ struct RuleEditorView: View {
                 LabeledField("Status") { TextField("", text: $draft.mockStatus).frame(width: 80) }
                 LabeledField("Content-Type") { TextField("", text: $draft.mockContentType) }
             }
-            JSONBodyEditor(title: "Body", text: $draft.mockBody)
+            HStack {
+                Spacer()
+                Toggle("Binary (base64)", isOn: $draft.mockBodyIsBinary)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Provide the body as base64 for binary payloads (images, protobuf, gzip) that aren't valid UTF-8 text.")
+            }
+            if draft.mockBodyIsBinary {
+                LabeledField("Body (base64)") {
+                    TextEditor(text: $draft.mockBodyBase64)
+                        .font(.callout.monospaced())
+                        .frame(minHeight: 96)
+                        .scrollContentBackground(.hidden)
+                        .padding(4)
+                        .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+                        .overlay(RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary))
+                }
+            } else {
+                JSONBodyEditor(title: "Body", text: $draft.mockBody)
+            }
         }
     }
 
@@ -543,6 +636,14 @@ private struct JSONBodyEditor: View {
 
 enum ReplaceRespMode: Hashable { case none, mock, block }
 
+/// One editable query predicate row. `value` of `*` means presence-only (any
+/// value), matching `RuleMatch.query` semantics.
+struct QueryItem: Identifiable, Equatable {
+    let id = UUID()
+    var key: String
+    var value: String
+}
+
 /// A human-readable validation failure from rebuilding a draft.
 struct RuleDraftError: Error { let message: String }
 
@@ -559,6 +660,9 @@ struct RuleDraft {
     var method: String
     var urlPattern: String
     var isRegex: Bool
+    var isExact: Bool
+    var hostPattern: String
+    var queryItems: [QueryItem]
 
     var requestSubs: [SubstitutionRule]
     var responseSubs: [SubstitutionRule]
@@ -573,6 +677,10 @@ struct RuleDraft {
     var mockStatus: String
     var mockContentType: String
     var mockBody: String
+    /// When true the mock body is binary, edited as base64 (`mockBodyBase64`)
+    /// rather than UTF-8 text (`mockBody`).
+    var mockBodyIsBinary: Bool
+    var mockBodyBase64: String
 
     var redirectOn: Bool
     var redirectDest: String
@@ -599,6 +707,12 @@ struct RuleDraft {
         method = rule.match.methods.first ?? "ANY"
         urlPattern = rule.match.urlPattern
         isRegex = rule.match.isRegex
+        isExact = rule.match.isExact
+        hostPattern = rule.match.hostPattern ?? ""
+        // Sort by key so the list has a stable order across edits (query is a dict).
+        queryItems = (rule.match.query ?? [:])
+            .sorted { $0.key < $1.key }
+            .map { QueryItem(key: $0.key, value: $0.value) }
 
         let a = rule.actions
         requestSubs = a.requestSubstitutions
@@ -621,6 +735,10 @@ struct RuleDraft {
         }
         mockStatus = mock.map { String($0.statusCode) } ?? "200"
         mockContentType = mock?.contentType ?? "application/json"
+        // A base64 body (set via MCP for binary payloads) is edited in binary mode;
+        // otherwise the UTF-8 text body.
+        mockBodyIsBinary = mock?.bodyBase64 != nil
+        mockBodyBase64 = mock?.bodyBase64 ?? ""
         mockBody = mock?.bodyText ?? ""
 
         redirectOn = remote != nil
@@ -660,10 +778,18 @@ struct RuleDraft {
         case .block: actions.route = .block
         case .mock:
             guard let code = Int(mockStatus) else { return .failure(RuleDraftError(message: "Mock status code must be a number.")) }
+            // A binary body is base64; validate it up front rather than let
+            // `resolvedBody()` silently decode garbage to an empty response.
+            if mockBodyIsBinary, !mockBodyBase64.isEmpty,
+               Data(base64Encoded: mockBodyBase64.trimmingCharacters(in: .whitespacesAndNewlines)) == nil {
+                return .failure(RuleDraftError(message: "Mock body is not valid base64."))
+            }
             actions.route = .mock(MockResponseAction(
                 statusCode: code,
                 headers: carriedMockHeaders, // preserve MCP-set response headers the UI doesn't edit
-                bodyText: mockBody.isEmpty ? nil : mockBody,
+                bodyText: mockBodyIsBinary || mockBody.isEmpty ? nil : mockBody,
+                bodyBase64: mockBodyIsBinary && !mockBodyBase64.isEmpty
+                    ? mockBodyBase64.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
                 contentType: mockContentType.isEmpty ? nil : mockContentType
             ))
         }
@@ -697,13 +823,30 @@ struct RuleDraft {
         } else {
             methods = [method]
         }
+        // Collapse the query rows into the model's dict (blank keys dropped; last
+        // wins on a dup key). Order doesn't matter — the matcher is set-based.
+        var queryDict: [String: String] = [:]
+        for item in queryItems {
+            let key = item.key.trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { continue }
+            queryDict[key] = item.value
+        }
+        let trimmedHost = hostPattern.trimmingCharacters(in: .whitespaces)
         let rule = TrafficRule(
             id: id,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             comment: carriedComment, // preserved; the editor no longer shows a comment field
             group: trimmedGroup.isEmpty ? nil : trimmedGroup,
             isEnabled: isEnabled,
-            match: RuleMatch(urlPattern: urlPattern, isRegex: isRegex, methods: methods),
+            match: RuleMatch(
+                urlPattern: urlPattern,
+                isRegex: isRegex,
+                methods: methods,
+                // Regex wins over exact in the matcher; keep the model honest.
+                isExact: isRegex ? false : isExact,
+                hostPattern: trimmedHost.isEmpty ? nil : trimmedHost,
+                query: queryDict.isEmpty ? nil : queryDict
+            ),
             actions: actions,
             createdAt: createdAt
         )
