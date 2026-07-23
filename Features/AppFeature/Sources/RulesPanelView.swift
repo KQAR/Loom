@@ -7,7 +7,7 @@ import SwiftUI
 /// enable/disable, delete. Grouping is display + batch-toggle only — evaluation
 /// order stays the flat list order.
 struct RulesPanelView: View {
-    @Bindable var store: StoreOf<AppFeature>
+    @Bindable var store: StoreOf<RulesFeature>
     /// Collapsed groups, keyed by `groupKey` (nil group has its own sentinel).
     @State private var collapsed: Set<String> = []
 

@@ -23,30 +23,9 @@ public struct MainView: View {
                 .toolbar { toolbarContent }
         }
         .task { store.send(.viewAppeared) }
-        .sheet(item: editorBinding) { rule in
-            RuleEditorView(
-                rule: rule,
-                isNew: store.editingRuleIsNew,
-                existingGroups: existingGroups,
-                onSave: { store.send(.ruleEditorSaved($0, isNew: store.editingRuleIsNew)) },
-                onCancel: { store.send(.ruleEditorCancelled) }
-            )
+        .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
+            RuleEditorView(store: editorStore)
         }
-    }
-
-    /// Distinct group names already in use, for the editor's group dropdown.
-    private var existingGroups: [String] {
-        var seen = Set<String>()
-        return store.rulesState.rules.compactMap(\.group).filter { seen.insert($0).inserted }
-    }
-
-    /// Drives the rule-editor sheet. Dismissal (Esc / outside click) maps to cancel;
-    /// Save/Cancel buttons send their own actions.
-    private var editorBinding: Binding<TrafficRule?> {
-        Binding(
-            get: { store.editingRule },
-            set: { if $0 == nil { store.send(.ruleEditorCancelled) } }
-        )
     }
 
     // MARK: Sidebar — categories
@@ -63,7 +42,7 @@ public struct MainView: View {
                 .badge(store.replayedCount)
                 .tag(FlowCategory.replayed)
             Label("Rules", systemImage: "wand.and.stars")
-                .badge(store.rulesState.rules.count)
+                .badge(store.rules.rulesState.rules.count)
                 .tag(FlowCategory.rules)
 
             if !store.apps.isEmpty {
@@ -262,7 +241,7 @@ public struct MainView: View {
 
     @ViewBuilder private var content: some View {
         if store.selectedCategory == .rules {
-            RulesPanelView(store: store)
+            RulesPanelView(store: store.scope(state: \.rules, action: \.rules))
         } else if let flow = store.selectedFlow {
             VSplitView {
                 requestArea
@@ -305,9 +284,9 @@ public struct MainView: View {
                            help: store.sslEnabled ? "SSL proxying: on" : "SSL proxying: off") {
                     store.send(.toggleSSLTapped)
                 }
-                statusIcon("wand.and.stars", on: store.rulesEnabled,
-                           help: store.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
-                    store.send(.toggleRulesTapped)
+                statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
+                           help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
+                    store.send(.rules(.toggleRulesTapped))
                 }
             }
             .padding(.horizontal, LoomTheme.Space.sm)

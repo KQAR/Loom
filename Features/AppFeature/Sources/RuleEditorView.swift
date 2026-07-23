@@ -1,3 +1,4 @@
+import ComposableArchitecture
 import SharedModels
 import SwiftUI
 
@@ -6,28 +7,22 @@ import SwiftUI
 /// Request / Replace Request / Modify Response / Replace Response / Redirect —
 /// with Delay pulled out as its own row. Segments compose (any number active);
 /// the dots on the bar show which are configured.
+///
+/// Presented by `RulesFeature` via `@Presents`. Field editing stays local SwiftUI
+/// `@State` over a `RuleDraft`; Save/Cancel relay back as delegate actions.
 struct RuleEditorView: View {
-    let isNew: Bool
-    let existingGroups: [String]
-    let onSave: (TrafficRule) -> Void
-    let onCancel: () -> Void
+    let store: StoreOf<RuleEditorFeature>
 
     @State private var draft: RuleDraft
     @State private var segment: ActionSegment
     @State private var error: String?
 
-    init(
-        rule: TrafficRule,
-        isNew: Bool,
-        existingGroups: [String],
-        onSave: @escaping (TrafficRule) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self.isNew = isNew
-        self.existingGroups = existingGroups
-        self.onSave = onSave
-        self.onCancel = onCancel
-        let initial = RuleDraft(rule: rule)
+    private var isNew: Bool { store.isNew }
+    private var existingGroups: [String] { store.existingGroups }
+
+    init(store: StoreOf<RuleEditorFeature>) {
+        self.store = store
+        let initial = RuleDraft(rule: store.rule)
         _draft = State(initialValue: initial)
         _segment = State(initialValue: Self.firstActive(in: initial) ?? .replaceResponse)
     }
@@ -72,7 +67,7 @@ struct RuleEditorView: View {
     private var footer: some View {
         HStack {
             Spacer()
-            Button("Cancel", role: .cancel, action: onCancel)
+            Button("Cancel", role: .cancel) { store.send(.delegate(.cancel)) }
                 .keyboardShortcut(.cancelAction)
             Button("Save") { save() }
                 .keyboardShortcut(.defaultAction)
@@ -83,7 +78,7 @@ struct RuleEditorView: View {
 
     private func save() {
         switch draft.build() {
-        case let .success(rule): onSave(rule)
+        case let .success(rule): store.send(.delegate(.save(rule, isNew: store.isNew)))
         case let .failure(failure): error = failure.message
         }
     }
