@@ -41,6 +41,9 @@ tuist edit                    # Edit Tuist manifests in Xcode
 # Direct xcodebuild (CI / scripted):
 xcodebuild -workspace Loom.xcworkspace -scheme Loom -configuration Debug -destination 'platform=macOS' build
 xcodebuild -workspace Loom.xcworkspace -scheme loom-mcp -destination 'platform=macOS' build
+
+# Consume the engine as a plain SPM library (no Tuist / Xcode needed):
+swift build                   # builds LoomSharedModels + LoomProxyCore from the root Package.swift
 ```
 
 Tuist is pinned to **4.202.5** in `mise.toml` — do not downgrade (see Known Issues).
@@ -138,6 +141,18 @@ App → AppFeature → ProxyClient → ProxyCore → SharedModels
 
 Features never depend on each other (M1 keeps a single `AppFeature`; split later). Engine modules never depend on TCA.
 
+### Library reuse (SPM)
+
+The capture engine is reusable by **any** Swift host (a CLI, another macOS app, a test harness) — not just this app. A root `Package.swift` exposes the two lowest layers as SPM library products; everything above them (App / Features / Clients / Bridge / MCPServer / PrivilegedHelper) stays out of the package on purpose.
+
+| Product | Target | For a consumer that wants… |
+|---------|--------|----------------------------|
+| `LoomSharedModels` | `SharedModels` | just the value types (`Flow`, `CapturedRequest/Response`, `HeaderPair`, rules, HAR) — Foundation-only, no NIO |
+| `LoomProxyCore` | `ProxyCore` | the full engine: NIO proxy, HTTPS MITM, on-demand CA, traffic rules, replay (pulls in `LoomSharedModels`) |
+
+- **Coexists with Tuist**: `tuist generate` still builds the app from `Project.swift`; `swift build` and external SPM consumers use the root `Package.swift`. The root manifest re-declares `ProxyCore` in **Swift 5 language mode** (same reason as `Project.swift`) and pins the NIO/certificates deps to ranges that include what a typical NIO consumer already resolves, so both graphs share one solution. Consuming it adds `swift-nio-http2` + `swift-nio-extras` to the consumer's tree.
+- **Embed the engine**: construct `ProxyEngine(persistFlows: false)` when the host keeps captured flows in its own store — flows then live only in the in-memory ring and the live `flowStream()`, with no second copy in Loom's SQLite (`ProxyEngine()` keeps the durable store). Then `try await engine.start(port:)`, consume `for await flow in await engine.flowStream()`, and drive HTTPS/rules via `caCertificateDER()` / `exportCACertificate()` / `addRule(_:)`. The host installs the CA into whatever trust store its target needs; Loom's own macOS-keychain trust path is optional and not required to embed.
+
 ### Concurrency
 
 - **App / Features / Clients**: Swift 6 language mode, strict concurrency.
@@ -155,6 +170,7 @@ Features never depend on each other (M1 keeps a single `AppFeature`; split later
 ### Project Structure
 
 ```
+Package.swift                     # Root SPM manifest: LoomSharedModels + LoomProxyCore library products (see "Library reuse")
 Project.swift                     # Tuist project manifest (all targets)
 Tuist.swift                       # Tuist config
 Tuist/Package.swift               # SPM dependencies (TCA, swift-nio, swift-nio-ssl, swift-certificates)
