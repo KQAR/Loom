@@ -43,7 +43,13 @@ public enum MCPError: Error {
 
 /// A local HTTP JSON-RPC endpoint (`POST /mcp`) implementing the slice of MCP
 /// that the stdio bridge forwards: initialize, tools/list, tools/call.
-public final class MCPServer {
+///
+/// `@unchecked Sendable` so the app (Swift 6) can hand the boot-time instance to
+/// its `start()` task without a data-race diagnostic (Xcode 26.5 promotes that to
+/// an error). Safe in practice: `engine`/`appVersion`/`token` are immutable, the
+/// `EventLoopGroup` is thread-safe, and `channel` is written once at boot. Matches
+/// the `@unchecked Sendable` treatment of `MCPDispatcher`/`MCPHTTPHandler`.
+public final class MCPServer: @unchecked Sendable {
     public static let protocolVersion = "2025-06-18"
 
     private let engine: ProxyControlling
