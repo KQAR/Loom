@@ -46,14 +46,24 @@ enum CapturedExchange {
 
         // A WebSocket upgrade is spliced (frames captured) rather than fetched.
         if WebSocketRelay.isUpgrade(head) {
-            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            WebSocketRelay.start(
-                clientChannel: channel, head: head, requestPath: routing.webSocketRequestPath,
-                host: routing.webSocketHost, port: routing.webSocketPort,
-                upstreamTLS: routing.webSocketUpstreamTLS,
-                removeHandlerNames: routing.webSocketRemoveHandlerNames,
-                flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
-            )
+            // Pause client reads *now* (we're on the event loop) so frames can't
+            // reach a half-removed pipeline while we resolve the source app — that
+            // resolution is a blocking libproc scan that must run off the loop, so
+            // it happens in a Task before hopping back to start the splice.
+            _ = channel.setOption(ChannelOptions.autoRead, value: false)
+            let eventLoop = channel.eventLoop
+            Task {
+                let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
+                eventLoop.execute {
+                    WebSocketRelay.start(
+                        clientChannel: channel, head: head, requestPath: routing.webSocketRequestPath,
+                        host: routing.webSocketHost, port: routing.webSocketPort,
+                        upstreamTLS: routing.webSocketUpstreamTLS,
+                        removeHandlerNames: routing.webSocketRemoveHandlerNames,
+                        flowID: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, store: store
+                    )
+                }
+            }
             return
         }
 
