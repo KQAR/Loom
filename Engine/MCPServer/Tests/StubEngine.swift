@@ -76,4 +76,26 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
     func setGroupEnabled(group: String?, enabled: Bool) async {
         for i in rules.rules.indices where rules.rules[i].group == group { rules.rules[i].isEnabled = enabled }
     }
+
+    // BreakpointControlling
+    var armed: [Breakpoint] = []
+    var pending: [PendingBreakpoint] = []
+    private(set) var resumeCalls: [(id: UUID, abort: Bool, edit: BreakpointEdit)] = []
+    func armBreakpoint(_ breakpoint: Breakpoint) async throws {
+        if let reason = breakpoint.validationError { throw ProxyControlError.invalidBreakpoint(reason) }
+        armed.append(breakpoint)
+    }
+    func disarmBreakpoint(id: UUID) async throws {
+        guard armed.contains(where: { $0.id == id }) else { throw ProxyControlError.breakpointNotFound(id) }
+        armed.removeAll { $0.id == id }
+    }
+    func armedBreakpoints() async -> [Breakpoint] { armed }
+    func pendingBreakpoints() async -> [PendingBreakpoint] { pending }
+    func resumeBreakpoint(pendingID: UUID, abort: Bool, edit: BreakpointEdit) async throws {
+        guard pending.contains(where: { $0.id == pendingID }) else {
+            throw ProxyControlError.pendingBreakpointNotFound(pendingID)
+        }
+        resumeCalls.append((pendingID, abort, edit))
+        pending.removeAll { $0.id == pendingID }
+    }
 }
