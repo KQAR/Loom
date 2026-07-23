@@ -1,3 +1,3 @@
 [tools]
 tuist = "4.202.5"
-"npm:create-dmg" = "latest" # packages the release .app into a .dmg (see scripts/create-dmg.sh)
+# DMG packaging uses macOS's built-in hdiutil (scripts/create-dmg.sh) — no extra tool.
