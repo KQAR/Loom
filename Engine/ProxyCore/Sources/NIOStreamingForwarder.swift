@@ -27,16 +27,17 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         // Collect the streaming events back into a buffered result.
         var statusCode = 200
+        var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var bodyData = Data()
         for try await event in forwardStream(method: method, url: url, headers: headers, body: body) {
             switch event {
-            case let .head(code, headers, _): statusCode = code; responseHeaders = headers
+            case let .head(code, version, headers, _): statusCode = code; httpVersion = version; responseHeaders = headers
             case let .body(chunk): bodyData.append(chunk)
             case .end: break
             }
         }
-        return ForwardResult(statusCode: statusCode, headers: responseHeaders, body: bodyData)
+        return ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: bodyData)
     }
 
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: Data?) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
@@ -206,7 +207,8 @@ private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked 
             // Body is decompressed by the decompressor, so Content-Encoding/Length
             // no longer describe the bytes — strip them (the client writer re-frames).
             let headers = HTTPUtil.sanitizeDecodedResponseHeaders(HTTPUtil.headerPairs(head.headers))
-            continuation.yield(.head(statusCode: Int(head.status.code), headers: headers, appliedRules: []))
+            let version = "HTTP/\(head.version.major).\(head.version.minor)"
+            continuation.yield(.head(statusCode: Int(head.status.code), httpVersion: version, headers: headers, appliedRules: []))
         case var .body(chunk):
             if let bytes = chunk.readBytes(length: chunk.readableBytes) {
                 continuation.yield(.body(Data(bytes)))

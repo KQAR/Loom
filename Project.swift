@@ -180,6 +180,23 @@ let project = Project(
             ]
         ),
 
+        // MARK: MCP tool-executor tests (registry consistency + parse/dispatch,
+        // via a stub engine). Swift 5 to match the MCPServer module.
+        .target(
+            name: "MCPServerTests",
+            destinations: .macOS,
+            product: .unitTests,
+            bundleId: "com.loom.mcpservertests",
+            deploymentTargets: loomDeploymentTargets,
+            infoPlist: .default,
+            sources: ["Engine/MCPServer/Tests/**"],
+            dependencies: [
+                .target(name: "MCPServer"),
+                .target(name: "SharedModels"),
+            ],
+            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
+        ),
+
         // MARK: Privileged-client unit tests (pure logic: QUIC-block scripting)
         .target(
             name: "PrivilegedHelperClientTests",

@@ -97,9 +97,9 @@ enum WebSocketRelay {
                     upstream.writeAndFlush(NIOAny(buffer), promise: nil)
 
                     let started = Flow(
-                        id: flowID, request: request,
-                        response: CapturedResponse(statusCode: 101, headers: [], body: nil),
-                        startedAt: startedAt, sourceApp: sourceApp, webSocketMessages: []
+                        id: flowID, request: request, startedAt: startedAt,
+                        outcome: .streaming(CapturedResponse(statusCode: 101, headers: [], body: nil)),
+                        sourceApp: sourceApp, webSocketMessages: []
                     )
                     Task { await store.upsert(started, force: true) }
 
@@ -193,10 +193,10 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     }
 
     private func enqueue(completed: Bool) {
+        let response = CapturedResponse(statusCode: 101, headers: [], body: nil)
         continuation.yield(Flow(
-            id: flowID, request: request,
-            response: CapturedResponse(statusCode: 101, headers: [], body: nil),
-            startedAt: startedAt, completedAt: completed ? Date() : nil,
+            id: flowID, request: request, startedAt: startedAt,
+            outcome: completed ? .completed(response, at: Date()) : .streaming(response),
             sourceApp: sourceApp, webSocketMessages: messages
         ))
     }

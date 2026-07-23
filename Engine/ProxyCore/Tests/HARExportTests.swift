@@ -15,14 +15,16 @@ final class HARExportTests: XCTestCase {
                 headers: [HeaderPair(name: "Content-Type", value: "application/json")],
                 body: Data(#"{"a":1}"#.utf8)
             ),
-            response: CapturedResponse(
-                statusCode: 200,
-                headers: [HeaderPair(name: "Content-Type", value: "application/json")],
-                body: Data(#"{"ok":true}"#.utf8)
-            ),
             startedAt: Date(timeIntervalSince1970: 1_000),
-            completedAt: Date(timeIntervalSince1970: 1_000.25),
-            appliedRules: ["mock home"]
+            outcome: .completed(
+                CapturedResponse(
+                    statusCode: 200,
+                    headers: [HeaderPair(name: "Content-Type", value: "application/json")],
+                    body: Data(#"{"ok":true}"#.utf8)
+                ),
+                at: Date(timeIntervalSince1970: 1_000.25)
+            ),
+            appliedRules: [AppliedRule(id: UUID(), name: "mock home")]
         )
 
         let json = try decode(HARExport.encode([flow], appVersion: "9.9"))
@@ -53,13 +55,15 @@ final class HARExportTests: XCTestCase {
         let flow = Flow(
             id: UUID(),
             request: CapturedRequest(method: "GET", url: "http://x.test/img", headers: []),
-            response: CapturedResponse(
-                statusCode: 200,
-                headers: [HeaderPair(name: "Content-Type", value: "image/jpeg")],
-                body: binary
-            ),
             startedAt: Date(timeIntervalSince1970: 0),
-            completedAt: Date(timeIntervalSince1970: 0)
+            outcome: .completed(
+                CapturedResponse(
+                    statusCode: 200,
+                    headers: [HeaderPair(name: "Content-Type", value: "image/jpeg")],
+                    body: binary
+                ),
+                at: Date(timeIntervalSince1970: 0)
+            )
         )
         let json = try decode(HARExport.encode([flow], appVersion: "1"))
         let entry = try XCTUnwrap((json["log"] as? [String: Any])?["entries"] as? [[String: Any]]).first

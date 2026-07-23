@@ -303,202 +303,244 @@ struct MCPToolExecutor {
 
     /// Returns the MCP tool-result content array (a single text block) or throws
     /// a `MCPError` describing why the call failed.
+    /// Name → handler registry. Paired with the same-named entries in
+    /// `toolDefinitions`; `MCPServerTests` asserts the two never drift (every
+    /// advertised tool has a handler). Dispatch is a lookup, not a growing switch.
+    static let handlers: [String: (MCPToolExecutor, [String: Any]) async throws -> String] = [
+        "get_version": { ex, args in try await ex.handleGetVersion(args) },
+        "get_proxy_status": { ex, args in try await ex.handleGetProxyStatus(args) },
+        "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
+        "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
+        "replay_flow": { ex, args in try await ex.handleReplayFlow(args) },
+        "get_certificate_status": { ex, args in try await ex.handleGetCertificateStatus(args) },
+        "export_ca_certificate": { ex, args in try await ex.handleExportCACertificate(args) },
+        "get_ssl_scope": { ex, args in try await ex.handleGetSSLScope(args) },
+        "set_ssl_scope": { ex, args in try await ex.handleSetSSLScope(args) },
+        "export_har": { ex, args in try await ex.handleExportHAR(args) },
+        "list_rules": { ex, args in try await ex.handleListRules(args) },
+        "get_rule": { ex, args in try await ex.handleGetRule(args) },
+        "create_rule": { ex, args in try await ex.handleCreateRule(args) },
+        "update_rule": { ex, args in try await ex.handleUpdateRule(args) },
+        "delete_rule": { ex, args in try await ex.handleDeleteRule(args) },
+        "set_rules_enabled": { ex, args in try await ex.handleSetRulesEnabled(args) },
+        "set_group_enabled": { ex, args in try await ex.handleSetGroupEnabled(args) },
+    ]
+
     func call(name: String, arguments: [String: Any]) async throws -> String {
-        switch name {
-        case "get_version":
-            return prettyJSON([
-                "app": "Loom",
-                "appVersion": appVersion,
-                "protocolVersion": protocolVersion,
-            ])
-
-        case "get_proxy_status":
-            let status = await engine.status()
-            return prettyJSON([
-                "isRunning": status.isRunning,
-                "port": status.port,
-                "capturedCount": status.capturedCount,
-                "isRecording": status.isRecording,
-            ])
-
-        case "get_recent_flows":
-            let limit = (arguments["limit"] as? Int) ?? 20
-            let flows = await engine.recentFlows(limit: limit)
-            return prettyJSON(flows.map(Self.flowSummary))
-
-        case "get_flow_detail":
-            guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
-                throw MCPError.invalidParams("`id` must be a flow UUID string")
-            }
-            guard let flow = await engine.flow(id: id) else {
-                throw MCPToolFailure("no flow with id \(idString)")
-            }
-            return prettyJSON(Self.flowDetail(flow))
-
-        case "replay_flow":
-            guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
-                throw MCPError.invalidParams("`id` must be a flow UUID string")
-            }
-            let overrides = Self.overrides(from: arguments)
-            do {
-                let flow = try await engine.replay(id: id, overrides: overrides)
-                return prettyJSON(Self.flowDetail(flow))
-            } catch let error as ProxyControlError {
-                throw MCPToolFailure(error.message)
-            }
-
-        case "get_certificate_status":
-            return prettyJSON(Self.certificateStatus(await engine.certificateStatus()))
-
-        case "export_ca_certificate":
-            do {
-                let url = try await engine.exportCACertificate()
-                return prettyJSON([
-                    "path": url.path,
-                    "hint": "Trust it with: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \(url.path)",
-                ])
-            } catch let error as ProxyControlError {
-                throw MCPToolFailure(error.message)
-            }
-
-        case "get_ssl_scope":
-            return prettyJSON(Self.scope(await engine.sslScope()))
-
-        case "set_ssl_scope":
-            let current = await engine.sslScope()
-            let scope = SSLScope(
-                enabled: (arguments["enabled"] as? Bool) ?? current.enabled,
-                include: (arguments["include"] as? [String]) ?? current.include,
-                exclude: (arguments["exclude"] as? [String]) ?? current.exclude
-            )
-            await engine.setSSLScope(scope)
-            return prettyJSON(Self.scope(scope))
-
-        case "export_har":
-            let limit = (arguments["limit"] as? Int) ?? 1000
-            var flows = await engine.recentFlows(limit: limit)
-            if let host = (arguments["host"] as? String), !host.isEmpty {
-                let needle = host.lowercased()
-                flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
-            }
-            let data = HARExport.encode(flows, appVersion: appVersion)
-            // Confine exports to the exports/ directory and take only a basename,
-            // so the AI can't overwrite arbitrary user files (~/.zshrc, plists) via
-            // a path argument. Any directory component in `filename` is stripped.
-            let exportsDir = HandshakeStore.directory.appendingPathComponent("exports", isDirectory: true)
-            let filename: String
-            if let raw = arguments["filename"] as? String, !raw.isEmpty {
-                let base = (raw as NSString).lastPathComponent
-                guard !base.isEmpty, base != ".", base != "..", !base.hasPrefix(".") else {
-                    throw MCPError.invalidParams("invalid filename: \(raw)")
-                }
-                filename = base.hasSuffix(".har") ? base : base + ".har"
-            } else {
-                filename = "loom-export.har"
-            }
-            let url = exportsDir.appendingPathComponent(filename)
-            do {
-                try FileManager.default.createDirectory(at: exportsDir, withIntermediateDirectories: true)
-                try data.write(to: url, options: .atomic)
-            } catch {
-                throw MCPToolFailure("could not write HAR to \(url.path): \(error.localizedDescription)")
-            }
-            return prettyJSON(["path": url.path, "entries": flows.count])
-
-        case "list_rules":
-            let state = await engine.rulesState()
-            return prettyJSON([
-                "enabled": state.enabled,
-                "count": state.rules.count,
-                "rules": state.rules.map { Self.rule($0, truncateBodies: true) },
-            ])
-
-        case "get_rule":
-            let rule = try await existingRule(arguments)
-            return prettyJSON(Self.rule(rule, truncateBodies: false))
-
-        case "create_rule":
-            guard let ruleName = arguments["name"] as? String else {
-                throw MCPError.invalidParams("`name` is required")
-            }
-            guard let matchRaw = arguments["match"] as? [String: Any],
-                  let match = Self.ruleMatch(from: matchRaw) else {
-                throw MCPError.invalidParams("`match` with `url_pattern` is required")
-            }
-            guard let actionsRaw = arguments["actions"] as? [String: Any] else {
-                throw MCPError.invalidParams("`actions` is required")
-            }
-            let rule = TrafficRule(
-                name: ruleName,
-                comment: arguments["comment"] as? String,
-                group: Self.groupName(arguments["group"]),
-                isEnabled: (arguments["enabled"] as? Bool) ?? true,
-                match: match,
-                actions: try Self.ruleActions(from: actionsRaw)
-            )
-            do {
-                try await engine.addRule(rule)
-            } catch let error as ProxyControlError {
-                throw MCPToolFailure(error.message)
-            }
-            return prettyJSON(Self.rule(rule, truncateBodies: false))
-
-        case "update_rule":
-            var rule = try await existingRule(arguments)
-            if let newName = arguments["name"] as? String { rule.name = newName }
-            if let comment = arguments["comment"] as? String { rule.comment = comment }
-            if arguments["group"] is String { rule.group = Self.groupName(arguments["group"]) }
-            if let enabled = arguments["enabled"] as? Bool { rule.isEnabled = enabled }
-            if let matchRaw = arguments["match"] as? [String: Any] {
-                guard let match = Self.ruleMatch(from: matchRaw) else {
-                    throw MCPError.invalidParams("`match` must contain `url_pattern`")
-                }
-                rule.match = match
-            }
-            if let actionsRaw = arguments["actions"] as? [String: Any] {
-                rule.actions = try Self.ruleActions(from: actionsRaw)
-            }
-            do {
-                try await engine.updateRule(rule)
-            } catch let error as ProxyControlError {
-                throw MCPToolFailure(error.message)
-            }
-            return prettyJSON(Self.rule(rule, truncateBodies: false))
-
-        case "delete_rule":
-            let rule = try await existingRule(arguments)
-            do {
-                try await engine.deleteRule(id: rule.id)
-            } catch let error as ProxyControlError {
-                throw MCPToolFailure(error.message)
-            }
-            return prettyJSON(["deleted": rule.id.uuidString, "name": rule.name])
-
-        case "set_rules_enabled":
-            guard let enabled = arguments["enabled"] as? Bool else {
-                throw MCPError.invalidParams("`enabled` (boolean) is required")
-            }
-            await engine.setRulesEnabled(enabled)
-            let state = await engine.rulesState()
-            return prettyJSON(["enabled": state.enabled, "count": state.rules.count])
-
-        case "set_group_enabled":
-            guard let group = Self.groupName(arguments["group"]) else {
-                throw MCPError.invalidParams("`group` (non-empty string) is required")
-            }
-            guard let enabled = arguments["enabled"] as? Bool else {
-                throw MCPError.invalidParams("`enabled` (boolean) is required")
-            }
-            let members = await engine.rulesState().rules.filter { $0.group == group }
-            guard !members.isEmpty else {
-                throw MCPToolFailure("no rules in group \"\(group)\" — see list_rules")
-            }
-            await engine.setGroupEnabled(group: group, enabled: enabled)
-            return prettyJSON(["group": group, "enabled": enabled, "affected": members.count])
-
-        default:
+        guard let handler = Self.handlers[name] else {
             throw MCPError.methodNotFound("unknown tool: \(name)")
         }
+        return try await handler(self, arguments)
+    }
+
+    // MARK: - Handlers (one per tool)
+
+    private func handleGetVersion(_ arguments: [String: Any]) async throws -> String {
+        prettyJSON([
+            "app": "Loom",
+            "appVersion": appVersion,
+            "protocolVersion": protocolVersion,
+        ])
+    }
+
+    private func handleGetProxyStatus(_ arguments: [String: Any]) async throws -> String {
+        let status = await engine.status()
+        return prettyJSON([
+            "isRunning": status.isRunning,
+            "port": status.port,
+            "capturedCount": status.capturedCount,
+            "isRecording": status.isRecording,
+        ])
+    }
+
+    private func handleGetRecentFlows(_ arguments: [String: Any]) async throws -> String {
+        let limit = (arguments["limit"] as? Int) ?? 20
+        let flows = await engine.recentFlows(limit: limit)
+        return prettyJSON(flows.map(Self.flowSummary))
+    }
+
+    private func handleGetFlowDetail(_ arguments: [String: Any]) async throws -> String {
+        guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
+            throw MCPError.invalidParams("`id` must be a flow UUID string")
+        }
+        guard let flow = await engine.flow(id: id) else {
+            throw MCPToolFailure("no flow with id \(idString)")
+        }
+        return prettyJSON(Self.flowDetail(flow))
+    }
+
+    private func handleReplayFlow(_ arguments: [String: Any]) async throws -> String {
+        guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
+            throw MCPError.invalidParams("`id` must be a flow UUID string")
+        }
+        let overrides = Self.overrides(from: arguments)
+        do {
+            let flow = try await engine.replay(id: id, overrides: overrides)
+            return prettyJSON(Self.flowDetail(flow))
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+    }
+
+    private func handleGetCertificateStatus(_ arguments: [String: Any]) async throws -> String {
+        prettyJSON(Self.certificateStatus(await engine.certificateStatus()))
+    }
+
+    private func handleExportCACertificate(_ arguments: [String: Any]) async throws -> String {
+        do {
+            let url = try await engine.exportCACertificate()
+            return prettyJSON([
+                "path": url.path,
+                "hint": "Trust it with: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \(url.path)",
+            ])
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+    }
+
+    private func handleGetSSLScope(_ arguments: [String: Any]) async throws -> String {
+        prettyJSON(Self.scope(await engine.sslScope()))
+    }
+
+    private func handleSetSSLScope(_ arguments: [String: Any]) async throws -> String {
+        let current = await engine.sslScope()
+        let scope = SSLScope(
+            enabled: (arguments["enabled"] as? Bool) ?? current.enabled,
+            include: (arguments["include"] as? [String]) ?? current.include,
+            exclude: (arguments["exclude"] as? [String]) ?? current.exclude
+        )
+        await engine.setSSLScope(scope)
+        return prettyJSON(Self.scope(scope))
+    }
+
+    private func handleExportHAR(_ arguments: [String: Any]) async throws -> String {
+        let limit = (arguments["limit"] as? Int) ?? 1000
+        var flows = await engine.recentFlows(limit: limit)
+        if let host = (arguments["host"] as? String), !host.isEmpty {
+            let needle = host.lowercased()
+            flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
+        }
+        let data = HARExport.encode(flows, appVersion: appVersion)
+        // Confine exports to the exports/ directory and take only a basename,
+        // so the AI can't overwrite arbitrary user files (~/.zshrc, plists) via
+        // a path argument. Any directory component in `filename` is stripped.
+        let exportsDir = HandshakeStore.directory.appendingPathComponent("exports", isDirectory: true)
+        let filename: String
+        if let raw = arguments["filename"] as? String, !raw.isEmpty {
+            let base = (raw as NSString).lastPathComponent
+            guard !base.isEmpty, base != ".", base != "..", !base.hasPrefix(".") else {
+                throw MCPError.invalidParams("invalid filename: \(raw)")
+            }
+            filename = base.hasSuffix(".har") ? base : base + ".har"
+        } else {
+            filename = "loom-export.har"
+        }
+        let url = exportsDir.appendingPathComponent(filename)
+        do {
+            try FileManager.default.createDirectory(at: exportsDir, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw MCPToolFailure("could not write HAR to \(url.path): \(error.localizedDescription)")
+        }
+        return prettyJSON(["path": url.path, "entries": flows.count])
+    }
+
+    private func handleListRules(_ arguments: [String: Any]) async throws -> String {
+        let state = await engine.rulesState()
+        return prettyJSON([
+            "enabled": state.enabled,
+            "count": state.rules.count,
+            "rules": state.rules.map { Self.rule($0, truncateBodies: true) },
+        ])
+    }
+
+    private func handleGetRule(_ arguments: [String: Any]) async throws -> String {
+        let rule = try await existingRule(arguments)
+        return prettyJSON(Self.rule(rule, truncateBodies: false))
+    }
+
+    private func handleCreateRule(_ arguments: [String: Any]) async throws -> String {
+        guard let ruleName = arguments["name"] as? String else {
+            throw MCPError.invalidParams("`name` is required")
+        }
+        guard let matchRaw = arguments["match"] as? [String: Any],
+              let match = Self.ruleMatch(from: matchRaw) else {
+            throw MCPError.invalidParams("`match` with `url_pattern` is required")
+        }
+        guard let actionsRaw = arguments["actions"] as? [String: Any] else {
+            throw MCPError.invalidParams("`actions` is required")
+        }
+        let rule = TrafficRule(
+            name: ruleName,
+            comment: arguments["comment"] as? String,
+            group: Self.groupName(arguments["group"]),
+            isEnabled: (arguments["enabled"] as? Bool) ?? true,
+            match: match,
+            actions: try Self.ruleActions(from: actionsRaw)
+        )
+        do {
+            try await engine.addRule(rule)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(Self.rule(rule, truncateBodies: false))
+    }
+
+    private func handleUpdateRule(_ arguments: [String: Any]) async throws -> String {
+        var rule = try await existingRule(arguments)
+        if let newName = arguments["name"] as? String { rule.name = newName }
+        if let comment = arguments["comment"] as? String { rule.comment = comment }
+        if arguments["group"] is String { rule.group = Self.groupName(arguments["group"]) }
+        if let enabled = arguments["enabled"] as? Bool { rule.isEnabled = enabled }
+        if let matchRaw = arguments["match"] as? [String: Any] {
+            guard let match = Self.ruleMatch(from: matchRaw) else {
+                throw MCPError.invalidParams("`match` must contain `url_pattern`")
+            }
+            rule.match = match
+        }
+        if let actionsRaw = arguments["actions"] as? [String: Any] {
+            rule.actions = try Self.ruleActions(from: actionsRaw)
+        }
+        do {
+            try await engine.updateRule(rule)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(Self.rule(rule, truncateBodies: false))
+    }
+
+    private func handleDeleteRule(_ arguments: [String: Any]) async throws -> String {
+        let rule = try await existingRule(arguments)
+        do {
+            try await engine.deleteRule(id: rule.id)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(["deleted": rule.id.uuidString, "name": rule.name])
+    }
+
+    private func handleSetRulesEnabled(_ arguments: [String: Any]) async throws -> String {
+        guard let enabled = arguments["enabled"] as? Bool else {
+            throw MCPError.invalidParams("`enabled` (boolean) is required")
+        }
+        await engine.setRulesEnabled(enabled)
+        let state = await engine.rulesState()
+        return prettyJSON(["enabled": state.enabled, "count": state.rules.count])
+    }
+
+    private func handleSetGroupEnabled(_ arguments: [String: Any]) async throws -> String {
+        guard let group = Self.groupName(arguments["group"]) else {
+            throw MCPError.invalidParams("`group` (non-empty string) is required")
+        }
+        guard let enabled = arguments["enabled"] as? Bool else {
+            throw MCPError.invalidParams("`enabled` (boolean) is required")
+        }
+        let members = await engine.rulesState().rules.filter { $0.group == group }
+        guard !members.isEmpty else {
+            throw MCPToolFailure("no rules in group \"\(group)\" — see list_rules")
+        }
+        await engine.setGroupEnabled(group: group, enabled: enabled)
+        return prettyJSON(["group": group, "enabled": enabled, "affected": members.count])
     }
 
     /// Resolve the `id` argument to a stored rule or throw a structured error.
@@ -524,7 +566,7 @@ struct MCPToolExecutor {
         if let ms = flow.durationMS { out["durationMS"] = ms }
         if let error = flow.error { out["error"] = error }
         if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
-        if let applied = flow.appliedRules { out["appliedRules"] = applied }
+        if let applied = flow.appliedRules { out["appliedRules"] = applied.map(\.name) }
         if let messages = flow.webSocketMessages {
             out["webSocket"] = true
             out["wsMessageCount"] = messages.count
@@ -546,11 +588,13 @@ struct MCPToolExecutor {
             "body": flow.request.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
         ]
         if let response = flow.response {
-            out["response"] = [
+            var responseOut: [String: Any] = [
                 "status": response.statusCode,
                 "headers": response.headers.map { ["name": $0.name, "value": $0.value] },
                 "body": response.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
             ]
+            if let version = response.httpVersion { responseOut["httpVersion"] = version }
+            out["response"] = responseOut
         }
         if let graphQL = GraphQLParser.parse(flow.request) {
             var gql: [String: Any] = ["kind": graphQL.kind.rawValue, "query": graphQL.query]

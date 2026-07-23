@@ -3,6 +3,11 @@ import Foundation
 /// Serializes captured flows to HAR 1.2 (HTTP Archive) — the interchange format
 /// Charles / Chrome DevTools / Proxyman read, so an agent can hand off a shareable
 /// evidence bundle. Pure `[Flow] -> Data`; callers decide where to write it.
+///
+/// The document is modeled as typed `Encodable` structs (rather than untyped
+/// `[String: Any]`) so the shape is checked at compile time and nil fields drop
+/// out via synthesized `encodeIfPresent`. Loom's own context rides on the HAR
+/// `_`-prefixed extension keys.
 public enum HARExport {
     public static let creatorName = "Loom"
 
@@ -10,98 +15,188 @@ public enum HARExport {
     public static func encode(_ flows: [Flow], appVersion: String) -> Data {
         let entries = flows
             .sorted { $0.startedAt < $1.startedAt }
-            .map { entry(for: $0) }
-        let log: [String: Any] = [
-            "log": [
-                "version": "1.2",
-                "creator": ["name": creatorName, "version": appVersion],
-                "entries": entries,
-            ],
-        ]
-        let options: JSONSerialization.WritingOptions = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        return (try? JSONSerialization.data(withJSONObject: log, options: options)) ?? Data("{}".utf8)
+            .map(Entry.init(flow:))
+        let document = Document(log: Log(
+            version: "1.2",
+            creator: Creator(name: creatorName, version: appVersion),
+            entries: entries
+        ))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return (try? encoder.encode(document)) ?? Data("{}".utf8)
     }
 
-    private static func entry(for flow: Flow) -> [String: Any] {
-        var out: [String: Any] = [
-            "startedDateTime": iso8601String(flow.startedAt),
-            "time": flow.durationMS ?? 0,
-            "request": request(flow.request),
-            "response": response(flow),
-            "cache": [String: Any](),
-            "timings": ["send": 0, "wait": flow.durationMS ?? 0, "receive": 0],
-        ]
-        // Custom fields carry Loom context; HAR permits `_`-prefixed extensions.
-        if let app = flow.sourceApp { out["_sourceApp"] = app.name }
-        if let rules = flow.appliedRules, !rules.isEmpty { out["_appliedRules"] = rules }
-        if let error = flow.error { out["_error"] = error }
-        return out
+    // MARK: - HAR document model
+
+    private struct Document: Encodable { let log: Log }
+
+    private struct Log: Encodable {
+        let version: String
+        let creator: Creator
+        let entries: [Entry]
     }
 
-    private static func request(_ request: CapturedRequest) -> [String: Any] {
-        var out: [String: Any] = [
-            "method": request.method,
-            "url": request.url,
-            "httpVersion": "HTTP/1.1",
-            "headers": headers(request.headers),
-            "queryString": queryString(request.url),
-            "cookies": [Any](),
-            "headersSize": -1,
-            "bodySize": request.body?.count ?? 0,
-        ]
-        if let body = request.body, !body.isEmpty {
-            let rendered = renderBody(body)
-            var postData: [String: Any] = [
-                "mimeType": contentType(request.headers) ?? "application/octet-stream",
-                "text": rendered.text,
-            ]
-            // postData has no spec `encoding` field, so flag base64 as an extension.
-            if rendered.base64 { postData["_encoding"] = "base64" }
-            out["postData"] = postData
+    private struct Creator: Encodable {
+        let name: String
+        let version: String
+    }
+
+    private struct Entry: Encodable {
+        let startedDateTime: String
+        let time: Int
+        let request: Request
+        let response: Response
+        let cache: Cache
+        let timings: Timings
+        let sourceApp: String?
+        let appliedRules: [String]?
+        let error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case startedDateTime, time, request, response, cache, timings
+            // HAR permits `_`-prefixed vendor extensions.
+            case sourceApp = "_sourceApp"
+            case appliedRules = "_appliedRules"
+            case error = "_error"
         }
-        return out
-    }
 
-    private static func response(_ flow: Flow) -> [String: Any] {
-        guard let response = flow.response else {
-            // No response captured (in-flight or errored) — a valid empty HAR response.
-            return [
-                "status": 0, "statusText": "", "httpVersion": "HTTP/1.1",
-                "headers": [Any](), "cookies": [Any](),
-                "content": ["size": 0, "mimeType": ""] as [String: Any],
-                "redirectURL": "", "headersSize": -1, "bodySize": 0,
-            ]
+        init(flow: Flow) {
+            startedDateTime = HARExport.iso8601String(flow.startedAt)
+            time = flow.durationMS ?? 0
+            request = Request(flow.request)
+            response = Response(flow)
+            cache = Cache()
+            timings = Timings(send: 0, wait: flow.durationMS ?? 0, receive: 0)
+            sourceApp = flow.sourceApp?.name
+            let rules = flow.appliedRules?.map(\.name)
+            appliedRules = (rules?.isEmpty ?? true) ? nil : rules
+            error = flow.error
         }
-        var content: [String: Any] = [
-            "size": response.body?.count ?? 0,
-            "mimeType": contentType(response.headers) ?? "",
-        ]
-        if let body = response.body, !body.isEmpty {
-            let rendered = renderBody(body)
-            content["text"] = rendered.text
-            // Standard HAR content field — DevTools decodes this automatically.
-            if rendered.base64 { content["encoding"] = "base64" }
+    }
+
+    private struct Cache: Encodable {} // HAR requires the key; we don't model cache.
+
+    private struct Timings: Encodable {
+        let send: Int
+        let wait: Int
+        let receive: Int
+    }
+
+    private struct NameValue: Encodable {
+        let name: String
+        let value: String
+    }
+
+    private struct Request: Encodable {
+        let method: String
+        let url: String
+        let httpVersion: String
+        let headers: [NameValue]
+        let queryString: [NameValue]
+        let cookies: [NameValue]
+        let headersSize: Int
+        let bodySize: Int
+        let postData: PostData?
+
+        init(_ request: CapturedRequest) {
+            method = request.method
+            url = request.url
+            httpVersion = "HTTP/1.1"
+            headers = HARExport.nameValues(request.headers)
+            queryString = HARExport.queryString(request.url)
+            cookies = []
+            headersSize = -1
+            bodySize = request.body?.count ?? 0
+            if let body = request.body, !body.isEmpty {
+                let rendered = HARExport.renderBody(body)
+                postData = PostData(
+                    mimeType: HARExport.contentType(request.headers) ?? "application/octet-stream",
+                    text: rendered.text,
+                    encoding: rendered.base64 ? "base64" : nil
+                )
+            } else {
+                postData = nil
+            }
         }
-        return [
-            "status": response.statusCode,
-            "statusText": reasonPhrase(response.statusCode),
-            "httpVersion": "HTTP/1.1",
-            "headers": headers(response.headers),
-            "cookies": [Any](),
-            "content": content,
-            "redirectURL": location(response.headers) ?? "",
-            "headersSize": -1,
-            "bodySize": response.body?.count ?? 0,
-        ]
     }
 
-    private static func headers(_ pairs: [HeaderPair]) -> [[String: String]] {
-        pairs.map { ["name": $0.name, "value": $0.value] }
+    private struct PostData: Encodable {
+        let mimeType: String
+        let text: String
+        let encoding: String?
+        // postData has no spec `encoding` field, so flag base64 as an extension.
+        enum CodingKeys: String, CodingKey {
+            case mimeType, text
+            case encoding = "_encoding"
+        }
     }
 
-    private static func queryString(_ url: String) -> [[String: String]] {
+    private struct Response: Encodable {
+        let status: Int
+        let statusText: String
+        let httpVersion: String
+        let headers: [NameValue]
+        let cookies: [NameValue]
+        let content: Content
+        let redirectURL: String
+        let headersSize: Int
+        let bodySize: Int
+
+        init(_ flow: Flow) {
+            guard let response = flow.response else {
+                // No response captured (in-flight or errored) — a valid empty HAR response.
+                status = 0
+                statusText = ""
+                httpVersion = "HTTP/1.1"
+                headers = []
+                cookies = []
+                content = Content(size: 0, mimeType: "", text: nil, encoding: nil)
+                redirectURL = ""
+                headersSize = -1
+                bodySize = 0
+                return
+            }
+            status = response.statusCode
+            statusText = HARExport.reasonPhrase(response.statusCode)
+            httpVersion = response.httpVersion ?? "HTTP/1.1"
+            headers = HARExport.nameValues(response.headers)
+            cookies = []
+            var text: String?
+            var encoding: String?
+            if let body = response.body, !body.isEmpty {
+                let rendered = HARExport.renderBody(body)
+                text = rendered.text
+                // Standard HAR content field — DevTools decodes this automatically.
+                encoding = rendered.base64 ? "base64" : nil
+            }
+            content = Content(
+                size: response.body?.count ?? 0,
+                mimeType: HARExport.contentType(response.headers) ?? "",
+                text: text,
+                encoding: encoding
+            )
+            redirectURL = HARExport.location(response.headers) ?? ""
+            headersSize = -1
+            bodySize = response.body?.count ?? 0
+        }
+    }
+
+    private struct Content: Encodable {
+        let size: Int
+        let mimeType: String
+        let text: String?
+        let encoding: String?
+    }
+
+    // MARK: - Helpers
+
+    private static func nameValues(_ pairs: [HeaderPair]) -> [NameValue] {
+        pairs.map { NameValue(name: $0.name, value: $0.value) }
+    }
+
+    private static func queryString(_ url: String) -> [NameValue] {
         guard let items = URLComponents(string: url)?.queryItems else { return [] }
-        return items.map { ["name": $0.name, "value": $0.value ?? ""] }
+        return items.map { NameValue(name: $0.name, value: $0.value ?? "") }
     }
 
     /// Render a body for HAR: UTF-8 text when decodable, else base64 (so binary

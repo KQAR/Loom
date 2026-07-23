@@ -162,7 +162,7 @@ public struct MainView: View {
                         Image(systemName: "wand.and.stars")
                             .font(.caption2)
                             .foregroundStyle(Color.accentColor)
-                            .help("Modified by rules: \(applied.joined(separator: ", "))")
+                            .help("Modified by rules: \(applied.map(\.name).joined(separator: ", "))")
                     }
                     if flow.isWebSocket {
                         Image(systemName: "bolt.horizontal.circle")
@@ -305,7 +305,7 @@ public struct MainView: View {
         Button { store.send(.toggleRecordingTapped) } label: {
             HStack(spacing: 5) {
                 Image(systemName: store.isRecording ? "stop.fill" : "play.fill")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(LoomTheme.Icon.toolbar)
                 Text(store.isRecording ? "Stop" : "Record")
                     .font(.callout)
             }
@@ -335,7 +335,7 @@ public struct MainView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .semibold))
+                .font(LoomTheme.Icon.toolbar)
                 .foregroundStyle(color)
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
@@ -348,7 +348,7 @@ public struct MainView: View {
     private func statusIcon(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 16, weight: .semibold))
+                .font(LoomTheme.Icon.toolbar)
                 .foregroundStyle(on ? Color.green : Color.secondary)
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())

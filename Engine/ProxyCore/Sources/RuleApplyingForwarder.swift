@@ -51,7 +51,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         }
 
         result = RuleEngine.applyResponseRewrites(plan.matched, to: result)
-        result.appliedRules = plan.appliedRuleNames
+        result.appliedRules = plan.appliedRules
         return result
     }
 
@@ -73,7 +73,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                 let task = Task {
                     do {
                         let result = try await self.execute(plan: plan)
-                        continuation.yield(.head(statusCode: result.statusCode, headers: result.headers, appliedRules: result.appliedRules))
+                        continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
                         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                         continuation.yield(.end)
                         continuation.finish()
@@ -88,7 +88,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         // Streaming: the request is already rewritten in the plan; the response is
         // relayed chunk-by-chunk with the applied-rule names stamped on the head.
         let base = self.base
-        let appliedRules = plan.appliedRuleNames
+        let appliedRules = plan.appliedRules
         let delayMs = plan.delayMilliseconds
         let planMethod = plan.method
         let planURL = plan.url
@@ -102,8 +102,8 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                     if delayMs > 0 { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
                     for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: planBody) {
                         switch event {
-                        case let .head(code, headers, _):
-                            continuation.yield(.head(statusCode: code, headers: headers, appliedRules: appliedRules))
+                        case let .head(code, version, headers, _):
+                            continuation.yield(.head(statusCode: code, httpVersion: version, headers: headers, appliedRules: appliedRules))
                         case .body, .end:
                             continuation.yield(event)
                         }

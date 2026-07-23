@@ -170,7 +170,7 @@ private struct ResponsePane: View {
                 HStack(spacing: LoomTheme.Space.xs) {
                     Image(systemName: "wand.and.stars")
                         .font(.caption)
-                    Text("Modified by \(applied.count == 1 ? "rule" : "rules"): \(applied.joined(separator: ", "))")
+                    Text("Modified by \(applied.count == 1 ? "rule" : "rules"): \(applied.map(\.name).joined(separator: ", "))")
                         .font(.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -262,11 +262,7 @@ private struct InspectorTabStrip<Tab: Hashable>: View {
 private struct MethodBadge: View {
     let method: String
     var body: some View {
-        Text(method)
-            .font(.caption.monospaced().weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
+        CapsuleBadge(text: method, font: .caption.monospaced().weight(.semibold), hPadding: 7)
     }
 }
 
@@ -274,11 +270,11 @@ private struct StatusBadge: View {
     let code: Int?
     var body: some View {
         let color = code.map { LoomTheme.statusColor(status: $0, isError: false) } ?? .red
-        Text(code.map(String.init) ?? "ERR")
-            .font(.caption.monospacedDigit().weight(.semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(color.opacity(0.15), in: Capsule())
+        CapsuleBadge(
+            text: code.map(String.init) ?? "ERR",
+            font: .caption.monospacedDigit().weight(.semibold),
+            tint: color, hPadding: 7
+        )
     }
 }
 
@@ -319,7 +315,7 @@ private struct SummaryTable: View {
             row("Started", flow.startedAt.formatted(date: .abbreviated, time: .standard))
             if flow.replayedFrom != nil { row("Origin", "Replayed") }
             if let applied = flow.appliedRules, !applied.isEmpty {
-                row("Rules", applied.joined(separator: ", "), color: .accentColor)
+                row("Rules", applied.map(\.name).joined(separator: ", "), color: .accentColor)
             }
             if let error = flow.error { row("Error", error, color: .red) }
         }
@@ -458,11 +454,7 @@ private struct GraphQLView: View {
         if let operation {
             VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
                 HStack(spacing: LoomTheme.Space.xs) {
-                    Text(operation.kind.rawValue)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
+                    CapsuleBadge(text: operation.kind.rawValue)
                     if let name = operation.operationName, !name.isEmpty {
                         Text(name).font(.callout.weight(.semibold))
                     }
@@ -503,11 +495,7 @@ private struct WebSocketMessagesView: View {
                             .font(.caption.weight(.bold))
                             .foregroundStyle(message.direction == .clientToServer ? Color.orange : Color.accentColor)
                             .frame(width: 14)
-                        Text(message.kind.rawValue)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(.quaternary, in: Capsule())
+                        CapsuleBadge(text: message.kind.rawValue, hPadding: 5, vPadding: 1)
                         if let text = message.textPayload {
                             Text(text)
                                 .font(.callout.monospaced())

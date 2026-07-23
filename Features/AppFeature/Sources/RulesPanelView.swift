@@ -174,11 +174,7 @@ private struct RuleRow: View {
                             .font(.callout.weight(.medium))
                             .foregroundStyle(dimmed ? .secondary : .primary)
                         ForEach(actionBadges, id: \.self) { badge in
-                            Text(badge)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(.quaternary, in: Capsule())
+                            CapsuleBadge(text: badge, hPadding: 5, vPadding: 1)
                         }
                     }
                     Text(patternText)

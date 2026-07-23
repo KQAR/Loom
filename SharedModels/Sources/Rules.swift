@@ -28,7 +28,7 @@ public struct RuleMatch: Equatable, Codable, Sendable {
             return false
         }
         if isRegex {
-            guard let regex = try? NSRegularExpression(pattern: urlPattern, options: [.caseInsensitive]) else {
+            guard let regex = RegexCache.regex(urlPattern, caseInsensitive: true) else {
                 return false
             }
             return regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
@@ -128,8 +128,7 @@ public struct SubstitutionRule: Equatable, Codable, Sendable, Identifiable {
     public func apply(to input: String) -> String {
         guard !match.isEmpty else { return input }
         if isRegex {
-            let options: NSRegularExpression.Options = caseSensitive ? [] : [.caseInsensitive]
-            guard let regex = try? NSRegularExpression(pattern: match, options: options) else { return input }
+            guard let regex = RegexCache.regex(match, caseInsensitive: !caseSensitive) else { return input }
             let range = NSRange(input.startIndex..., in: input)
             return regex.stringByReplacingMatches(in: input, range: range, withTemplate: replacement)
         }
@@ -405,4 +404,44 @@ public protocol RulesControlling: Sendable {
     func deleteRule(id: UUID) async throws
     /// Enable/disable every rule in a group at once (`nil` = the ungrouped rules).
     func setGroupEnabled(group: String?, enabled: Bool) async
+}
+
+// MARK: - Pattern matching
+
+/// Memoized `NSRegularExpression` compilation. The rule matcher and substitutions
+/// run on every request; compiling the same pattern each time is wasteful, so
+/// cache by (pattern, case-sensitivity). Thread-safe: matching happens on NIO
+/// event loops and async tasks alike.
+public enum RegexCache {
+    private struct Key: Hashable { let pattern: String; let caseInsensitive: Bool }
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cache: [Key: NSRegularExpression] = [:]
+
+    /// The compiled regex for `pattern`, or nil if it doesn't compile (invalid
+    /// patterns are rejected at rule-creation time, so this is rare).
+    public static func regex(_ pattern: String, caseInsensitive: Bool = true) -> NSRegularExpression? {
+        let key = Key(pattern: pattern, caseInsensitive: caseInsensitive)
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = cache[key] { return cached }
+        let options: NSRegularExpression.Options = caseInsensitive ? [.caseInsensitive] : []
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+        cache[key] = regex
+        return regex
+    }
+}
+
+/// One definition of a loose (flag-free) URL match: treat the pattern as a regex
+/// when it compiles and hits, else fall back to the whole-string glob/prefix the
+/// SSL scope uses. Shared by mapRemote's `excludePattern` so the "is this URL
+/// excluded" heuristic lives in exactly one place.
+public enum Pattern {
+    public static func matchesLoosely(_ pattern: String, _ string: String) -> Bool {
+        guard !pattern.isEmpty else { return false }
+        if let regex = RegexCache.regex(pattern, caseInsensitive: true),
+           regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)) != nil {
+            return true
+        }
+        return SSLScope.matches(pattern: pattern, host: string)
+    }
 }

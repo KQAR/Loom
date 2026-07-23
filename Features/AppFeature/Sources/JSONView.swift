@@ -274,7 +274,7 @@ private struct JSONNode: View {
         ZStack {
             if let expanded {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9))
+                    .font(LoomTheme.Icon.tiny)
                     .foregroundStyle(.secondary)
             }
         }

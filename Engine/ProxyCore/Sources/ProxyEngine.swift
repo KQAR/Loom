@@ -313,9 +313,11 @@ public actor ProxyEngine: ProxyControlling {
             let flow = Flow(
                 id: newID,
                 request: capturedRequest,
-                response: CapturedResponse(statusCode: result.statusCode, headers: result.headers, body: result.body),
                 startedAt: startedAt,
-                completedAt: Date(),
+                outcome: .completed(
+                    CapturedResponse(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, body: result.body),
+                    at: Date()
+                ),
                 replayedFrom: id,
                 appliedRules: result.appliedRules.isEmpty ? nil : result.appliedRules
             )
@@ -326,8 +328,7 @@ public actor ProxyEngine: ProxyControlling {
                 id: newID,
                 request: capturedRequest,
                 startedAt: startedAt,
-                completedAt: Date(),
-                error: error.localizedDescription,
+                outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
                 replayedFrom: id
             )
             await store.upsert(flow, force: true)
