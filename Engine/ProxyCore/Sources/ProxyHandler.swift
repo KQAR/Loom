@@ -20,6 +20,10 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     private let forwarder: UpstreamForwarding
     private let ca: CertificateAuthority?
     private let config: InterceptionConfig
+    /// When true, an un-decrypted (blind) CONNECT tunnel is recorded as a flow so
+    /// a consumer can see the HTTPS activity even though it wasn't MITM-decrypted.
+    /// Off by default — the app UI doesn't want CONNECT noise; embedders opt in.
+    private let observeTunnels: Bool
 
     private var requestHead: HTTPRequestHead?
     private var bodyBuffer: ByteBuffer?
@@ -30,13 +34,15 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         group: EventLoopGroup,
         forwarder: UpstreamForwarding,
         ca: CertificateAuthority?,
-        config: InterceptionConfig
+        config: InterceptionConfig,
+        observeTunnels: Bool = false
     ) {
         self.store = store
         self.group = group
         self.forwarder = forwarder
         self.ca = ca
         self.config = config
+        self.observeTunnels = observeTunnels
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -212,6 +218,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     private func openTunnel(context: ChannelHandlerContext, host: String, port: Int) {
         let clientChannel = context.channel
+        let startedAt = Date()
 
         // Pin the upstream connection to the client channel's event loop so both
         // ends of the glued tunnel share one loop — `GlueHandler` relays by writing
@@ -221,11 +228,26 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             .whenComplete { result in
                 switch result {
                 case let .success(upstream):
+                    if self.observeTunnels {
+                        self.recordTunnel(host: host, port: port, startedAt: startedAt)
+                    }
                     self.spliceRawBytes(client: clientChannel, upstream: upstream)
                 case .failure:
                     clientChannel.close(promise: nil)
                 }
             }
+    }
+
+    /// Record an established blind tunnel as a flow. Marked by the `CONNECT`
+    /// method (a real captured request never carries it) so a consumer can flag
+    /// it as un-decrypted HTTPS. No body is available — the bytes are opaque.
+    private func recordTunnel(host: String, port: Int, startedAt: Date) {
+        let flow = Flow(
+            request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
+            startedAt: startedAt,
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date())
+        )
+        Task { await store.upsert(flow) }
     }
 
     private func spliceRawBytes(client: Channel, upstream: Channel) {

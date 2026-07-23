@@ -19,7 +19,8 @@ final class ProxyServer {
         store: FlowStore,
         forwarder: UpstreamForwarding,
         ca: CertificateAuthority?,
-        config: InterceptionConfig
+        config: InterceptionConfig,
+        observeTunnels: Bool = false
     ) async throws -> Int {
         let group = self.group
         let bootstrap = ServerBootstrap(group: group)
@@ -29,7 +30,7 @@ final class ProxyServer {
             .childChannelInitializer { channel in
                 let encoder = HTTPResponseEncoder()
                 let decoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
-                let proxy = ProxyHandler(store: store, group: group, forwarder: forwarder, ca: ca, config: config)
+                let proxy = ProxyHandler(store: store, group: group, forwarder: forwarder, ca: ca, config: config, observeTunnels: observeTunnels)
                 return channel.pipeline.addHandler(encoder, name: "loom.http.encoder")
                     .flatMap { channel.pipeline.addHandler(decoder, name: "loom.http.decoder") }
                     .flatMap { channel.pipeline.addHandler(proxy, name: "loom.proxy") }
