@@ -50,6 +50,12 @@ final class RulesConfig: @unchecked Sendable {
         mutate { $0.rules.append(rule) }
     }
 
+    /// Atomically replace the entire rule list — the external-sync path used by
+    /// an embedding host that owns the rule set elsewhere.
+    func replaceAll(_ rules: [TrafficRule]) {
+        mutate { $0.rules = rules }
+    }
+
     /// Replaces the rule with the same id. Returns false when no such rule exists.
     func update(_ rule: TrafficRule) -> Bool {
         var found = false

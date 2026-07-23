@@ -89,7 +89,7 @@ public actor ProxyEngine: ProxyControlling {
     // MARK: - Lifecycle
 
     @discardableResult
-    public func start(port: Int = 9090) async throws -> Int {
+    public func start(port: Int = 9090, host: String = "127.0.0.1") async throws -> Int {
         guard !running else { return boundPort }
         // Claim `running` synchronously, before the first await, so a reentrant
         // start() (actor reentrancy during the awaits below) bails at the guard
@@ -100,7 +100,7 @@ public actor ProxyEngine: ProxyControlling {
             await store.loadPersisted(limit: 2000) // restore prior captures once
             let ca = ensureCA()
             boundPort = try await server.start(
-                host: "127.0.0.1",
+                host: host,
                 port: port,
                 store: store,
                 forwarder: forwarder,
@@ -257,6 +257,17 @@ public actor ProxyEngine: ProxyControlling {
         guard rulesConfig.delete(id: id) else {
             throw ProxyControlError.ruleNotFound(id)
         }
+    }
+
+    public func setRules(_ rules: [TrafficRule]) async throws {
+        // Validate every rule before touching state so one bad rule can't leave a
+        // half-applied set.
+        for rule in rules {
+            if let reason = rule.validationError() {
+                throw ProxyControlError.invalidRule(reason)
+            }
+        }
+        rulesConfig.replaceAll(rules)
     }
 
     public func setGroupEnabled(group: String?, enabled: Bool) async {
