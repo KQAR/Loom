@@ -84,6 +84,63 @@ final class RuleDraftTests: XCTestCase {
         XCTAssertEqual(out.first?.match, "foo")
     }
 
+    // MARK: New match fields (isExact / hostPattern / query) round-trip
+
+    func test_matchFields_roundTrip() {
+        let rule = TrafficRule(
+            name: "exact + host + query",
+            match: RuleMatch(
+                urlPattern: "https://api.example.com/v1/home",
+                isExact: true,
+                hostPattern: "*.example.com",
+                query: ["ab_test": "on", "debug": "*"]
+            ),
+            actions: RuleActions(route: .block)
+        )
+        let out = built(rule).match
+        XCTAssertTrue(out.isExact)
+        XCTAssertEqual(out.hostPattern, "*.example.com")
+        XCTAssertEqual(out.query, ["ab_test": "on", "debug": "*"])
+    }
+
+    func test_enablingRegex_clearsExact() {
+        var draft = RuleDraft(rule: TrafficRule(
+            name: "r",
+            match: RuleMatch(urlPattern: "https://api.example.com/home", isExact: true),
+            actions: RuleActions(route: .block)
+        ))
+        draft.isRegex = true // user flips regex on; exact must not survive into the model
+        guard case let .success(rule) = draft.build() else { return XCTFail("build failed") }
+        XCTAssertTrue(rule.match.isRegex)
+        XCTAssertFalse(rule.match.isExact)
+    }
+
+    func test_blankQueryRows_droppedOnBuild() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .block))
+        draft.queryItems = [QueryItem(key: "keep", value: "1"), QueryItem(key: "  ", value: "ignored")]
+        guard case let .success(rule) = draft.build() else { return XCTFail("build failed") }
+        XCTAssertEqual(rule.match.query, ["keep": "1"])
+    }
+
+    // MARK: Binary (base64) mock body
+
+    func test_mockBodyBase64_roundTrips() {
+        let mock = MockResponseAction(statusCode: 200, bodyBase64: "aGVsbG8=", contentType: "application/octet-stream")
+        let rule = Fixtures.rule(route: .mock(mock))
+        guard case let .mock(out) = built(rule).actions.route else { return XCTFail("expected mock route") }
+        XCTAssertEqual(out.bodyBase64, "aGVsbG8=")
+        XCTAssertNil(out.bodyText, "a binary body must not also carry text")
+    }
+
+    func test_mockBody_invalidBase64_fails() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .mock(MockResponseAction())))
+        draft.mockBodyIsBinary = true
+        draft.mockBodyBase64 = "not valid base64!!!"
+        guard case .failure = draft.build() else {
+            return XCTFail("expected a build failure for invalid base64")
+        }
+    }
+
     // MARK: Validation failures surface as a message, not a crash
 
     func test_build_nonNumericMockStatus_fails() {
