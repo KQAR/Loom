@@ -85,31 +85,31 @@ public struct PanelView: View {
 
     @ViewBuilder private var systemProxyRow: some View {
         PanelRow(
-            kind: .state(on: store.isSystemProxy),
+            kind: .state(on: store.setup.isSystemProxy),
             icon: "globe",
             title: "System proxy",
-            detail: store.isSystemProxy ? "on" : "off",
-            disabled: store.systemProxyBusy,
+            detail: store.setup.isSystemProxy ? "on" : "off",
+            disabled: store.setup.systemProxyBusy,
             help: "Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password)"
         ) {
-            store.send(.toggleSystemProxyTapped)
+            store.send(.setup(.toggleSystemProxyTapped))
         }
-        if store.systemProxyBusy || store.systemProxyMessage != nil {
-            inlineNote(store.systemProxyMessage ?? "", busy: store.systemProxyBusy)
+        if store.setup.systemProxyBusy || store.setup.systemProxyMessage != nil {
+            inlineNote(store.setup.systemProxyMessage ?? "", busy: store.setup.systemProxyBusy)
         }
     }
 
     @ViewBuilder private var sslRow: some View {
         PanelRow(
-            kind: .state(on: store.sslEnabled),
+            kind: .state(on: store.setup.sslEnabled),
             icon: "lock.shield",
             title: "HTTPS (SSL)",
             detail: sslDetail
         ) {
-            store.send(.toggleSSLTapped)
+            store.send(.setup(.toggleSSLTapped))
         }
         // Cert setup card: only while SSL is on and the CA isn't trusted yet.
-        if store.sslEnabled, !store.certificateStatus.trustState.isReady {
+        if store.setup.sslEnabled, !store.setup.certificateStatus.trustState.isReady {
             certificateCard
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.top, LoomTheme.Space.xxs)
@@ -117,8 +117,8 @@ public struct PanelView: View {
     }
 
     private var sslDetail: String {
-        guard store.sslEnabled else { return "off" }
-        if store.certificateStatus.isTrusted { return "decrypting" }
+        guard store.setup.sslEnabled else { return "off" }
+        if store.setup.certificateStatus.isTrusted { return "decrypting" }
         return "CA not trusted"
     }
 
@@ -166,7 +166,7 @@ public struct PanelView: View {
     // MARK: Certificate setup card
 
     @ViewBuilder private var certificateCard: some View {
-        let state = store.certificateStatus.trustState
+        let state = store.setup.certificateStatus.trustState
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
             HStack(spacing: LoomTheme.Space.sm) {
                 Image(systemName: state.systemImageName)
@@ -179,7 +179,7 @@ public struct PanelView: View {
                 }
             }
 
-            if let fingerprint = store.certificateStatus.sha256Fingerprint {
+            if let fingerprint = store.setup.certificateStatus.sha256Fingerprint {
                 Text(fingerprint)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
@@ -190,35 +190,35 @@ public struct PanelView: View {
 
             HStack(spacing: LoomTheme.Space.sm) {
                 Button {
-                    store.send(.installAndTrustCATapped)
+                    store.send(.setup(.installAndTrustCATapped))
                 } label: {
                     Label("Install & Trust", systemImage: "checkmark.shield")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(store.certBusy)
+                .disabled(store.setup.certBusy)
 
-                Button("Recheck") { store.send(.recheckCertTapped) }
+                Button("Recheck") { store.send(.setup(.recheckCertTapped)) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(store.certBusy)
+                    .disabled(store.setup.certBusy)
 
-                Button("Export…") { store.send(.exportCATapped) }
+                Button("Export…") { store.send(.setup(.exportCATapped)) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
-                    .disabled(store.certBusy)
+                    .disabled(store.setup.certBusy)
             }
 
-            if store.certBusy {
+            if store.setup.certBusy {
                 HStack(spacing: LoomTheme.Space.xs) {
                     ProgressView().controlSize(.small)
-                    Text(store.certActionMessage ?? "Working…").font(.caption2).foregroundStyle(.secondary)
+                    Text(store.setup.certActionMessage ?? "Working…").font(.caption2).foregroundStyle(.secondary)
                 }
-            } else if let message = store.certActionMessage {
+            } else if let message = store.setup.certActionMessage {
                 Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
-            if let path = store.certificateStatus.exportedPEMPath {
+            if let path = store.setup.certificateStatus.exportedPEMPath {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Manual trust:").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     manualCommand(path: path)
