@@ -63,6 +63,19 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     case certificateUnavailable(String)
     case ruleNotFound(UUID)
     case invalidRule(String)
+
+    /// Human-readable text for surfacing to the operator (UI or AI), instead of a
+    /// `String(describing:)` enum dump.
+    public var message: String {
+        switch self {
+        case let .flowNotFound(id): return "no flow with id \(id.uuidString)"
+        case let .invalidURL(url): return "invalid URL: \(url)"
+        case let .replayFailed(reason): return "replay failed: \(reason)"
+        case let .certificateUnavailable(reason): return "certificate unavailable: \(reason)"
+        case let .ruleNotFound(id): return "no rule with id \(id.uuidString)"
+        case let .invalidRule(reason): return "invalid rule: \(reason)"
+        }
+    }
 }
 
 /// Read side of the engine — what the MCP server and TCA client both query.

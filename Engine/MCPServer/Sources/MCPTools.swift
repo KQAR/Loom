@@ -331,7 +331,7 @@ struct MCPToolExecutor {
                 throw MCPError.invalidParams("`id` must be a flow UUID string")
             }
             guard let flow = await engine.flow(id: id) else {
-                throw MCPError.invalidParams("no flow with id \(idString)")
+                throw MCPToolFailure("no flow with id \(idString)")
             }
             return prettyJSON(Self.flowDetail(flow))
 
@@ -344,7 +344,7 @@ struct MCPToolExecutor {
                 let flow = try await engine.replay(id: id, overrides: overrides)
                 return prettyJSON(Self.flowDetail(flow))
             } catch let error as ProxyControlError {
-                throw MCPError.internalError(String(describing: error))
+                throw MCPToolFailure(error.message)
             }
 
         case "get_certificate_status":
@@ -358,7 +358,7 @@ struct MCPToolExecutor {
                     "hint": "Trust it with: sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \(url.path)",
                 ])
             } catch let error as ProxyControlError {
-                throw MCPError.internalError(String(describing: error))
+                throw MCPToolFailure(error.message)
             }
 
         case "get_ssl_scope":
@@ -401,7 +401,7 @@ struct MCPToolExecutor {
                 try FileManager.default.createDirectory(at: exportsDir, withIntermediateDirectories: true)
                 try data.write(to: url, options: .atomic)
             } catch {
-                throw MCPError.internalError("could not write HAR to \(url.path): \(error.localizedDescription)")
+                throw MCPToolFailure("could not write HAR to \(url.path): \(error.localizedDescription)")
             }
             return prettyJSON(["path": url.path, "entries": flows.count])
 
@@ -439,7 +439,7 @@ struct MCPToolExecutor {
             do {
                 try await engine.addRule(rule)
             } catch let error as ProxyControlError {
-                throw MCPError.invalidParams(String(describing: error))
+                throw MCPToolFailure(error.message)
             }
             return prettyJSON(Self.rule(rule, truncateBodies: false))
 
@@ -461,7 +461,7 @@ struct MCPToolExecutor {
             do {
                 try await engine.updateRule(rule)
             } catch let error as ProxyControlError {
-                throw MCPError.invalidParams(String(describing: error))
+                throw MCPToolFailure(error.message)
             }
             return prettyJSON(Self.rule(rule, truncateBodies: false))
 
@@ -470,7 +470,7 @@ struct MCPToolExecutor {
             do {
                 try await engine.deleteRule(id: rule.id)
             } catch let error as ProxyControlError {
-                throw MCPError.invalidParams(String(describing: error))
+                throw MCPToolFailure(error.message)
             }
             return prettyJSON(["deleted": rule.id.uuidString, "name": rule.name])
 
@@ -491,7 +491,7 @@ struct MCPToolExecutor {
             }
             let members = await engine.rulesState().rules.filter { $0.group == group }
             guard !members.isEmpty else {
-                throw MCPError.invalidParams("no rules in group \"\(group)\" — see list_rules")
+                throw MCPToolFailure("no rules in group \"\(group)\" — see list_rules")
             }
             await engine.setGroupEnabled(group: group, enabled: enabled)
             return prettyJSON(["group": group, "enabled": enabled, "affected": members.count])
@@ -507,7 +507,7 @@ struct MCPToolExecutor {
             throw MCPError.invalidParams("`id` must be a rule UUID string")
         }
         guard let rule = await engine.rulesState().rules.first(where: { $0.id == id }) else {
-            throw MCPError.invalidParams("no rule with id \(idString)")
+            throw MCPToolFailure("no rule with id \(idString)")
         }
         return rule
     }
