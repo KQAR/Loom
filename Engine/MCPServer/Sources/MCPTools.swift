@@ -434,7 +434,7 @@ struct MCPToolExecutor {
                 group: Self.groupName(arguments["group"]),
                 isEnabled: (arguments["enabled"] as? Bool) ?? true,
                 match: match,
-                actions: Self.ruleActions(from: actionsRaw)
+                actions: try Self.ruleActions(from: actionsRaw)
             )
             do {
                 try await engine.addRule(rule)
@@ -456,7 +456,7 @@ struct MCPToolExecutor {
                 rule.match = match
             }
             if let actionsRaw = arguments["actions"] as? [String: Any] {
-                rule.actions = Self.ruleActions(from: actionsRaw)
+                rule.actions = try Self.ruleActions(from: actionsRaw)
             }
             do {
                 try await engine.updateRule(rule)
@@ -617,31 +617,46 @@ struct MCPToolExecutor {
         )
     }
 
-    private static func ruleActions(from raw: [String: Any]) -> RuleActions {
+    private static func ruleActions(from raw: [String: Any]) throws -> RuleActions {
         var actions = RuleActions()
-        actions.block = (raw["block"] as? Bool) ?? false
+
+        // The route is exactly one of block/mock/map_remote/map_local. Reject more
+        // than one rather than silently picking — the AI must see the conflict.
+        var routes: [Route] = []
+        if (raw["block"] as? Bool) == true { routes.append(.block) }
         if let mock = raw["mock_response"] as? [String: Any] {
-            actions.mockResponse = MockResponseAction(
+            routes.append(.mock(MockResponseAction(
                 statusCode: (mock["status_code"] as? Int) ?? 200,
                 headers: headerPairs(mock["headers"]),
                 bodyText: mock["body"] as? String,
                 contentType: mock["content_type"] as? String
-            )
+            )))
         }
-        if let map = raw["map_remote"] as? [String: Any], let destination = map["destination"] as? String {
-            actions.mapRemote = MapRemoteAction(
+        if let map = raw["map_remote"] as? [String: Any] {
+            guard let destination = map["destination"] as? String, !destination.isEmpty else {
+                throw MCPError.invalidParams("map_remote requires a non-empty `destination`")
+            }
+            routes.append(.mapRemote(MapRemoteAction(
                 destination: destination,
                 excludePattern: (map["exclude"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                 keepHostHeader: (map["keep_host_header"] as? Bool) ?? false
-            )
+            )))
         }
-        if let map = raw["map_local"] as? [String: Any], let path = map["path"] as? String {
-            actions.mapLocal = MapLocalAction(
+        if let map = raw["map_local"] as? [String: Any] {
+            guard let path = map["path"] as? String, !path.isEmpty else {
+                throw MCPError.invalidParams("map_local requires a non-empty `path`")
+            }
+            routes.append(.mapLocal(MapLocalAction(
                 path: path,
                 statusCode: (map["status_code"] as? Int) ?? 200,
                 contentType: map["content_type"] as? String
-            )
+            )))
         }
+        guard routes.count <= 1 else {
+            throw MCPError.invalidParams("set at most one of block/mock_response/map_remote/map_local")
+        }
+        actions.route = routes.first ?? .passthrough
+
         if let rewrite = raw["rewrite_request"] as? [String: Any] {
             actions.rewriteRequest = RequestRewriteAction(
                 method: rewrite["method"] as? String,
@@ -658,18 +673,30 @@ struct MCPToolExecutor {
                 bodyText: rewrite["body"] as? String
             )
         }
-        actions.requestSubstitutions = substitutions(raw["request_substitutions"])
-        actions.responseSubstitutions = substitutions(raw["response_substitutions"])
+        actions.requestSubstitutions = try substitutions(raw["request_substitutions"], key: "request_substitutions")
+        actions.responseSubstitutions = try substitutions(raw["response_substitutions"], key: "response_substitutions")
         actions.delayMilliseconds = raw["delay_ms"] as? Int
         return actions
     }
 
-    private static func substitutions(_ raw: Any?) -> [SubstitutionRule] {
-        guard let array = raw as? [[String: Any]] else { return [] }
-        return array.compactMap { item in
-            guard let fieldRaw = item["field"] as? String,
-                  let field = SubstitutionRule.Field(rawValue: fieldRaw),
-                  let match = item["match"] as? String else { return nil }
+    /// Parse substitutions strictly: a malformed item (bad `field` enum, missing
+    /// `match`) is an error, not a silently-dropped row — otherwise the AI is told
+    /// the rule was created while the store holds less than it sent.
+    private static func substitutions(_ raw: Any?, key: String) throws -> [SubstitutionRule] {
+        guard let raw else { return [] }
+        guard let array = raw as? [[String: Any]] else {
+            throw MCPError.invalidParams("\(key) must be an array of {field, match, ...} objects")
+        }
+        return try array.map { item in
+            guard let fieldRaw = item["field"] as? String else {
+                throw MCPError.invalidParams("\(key): each item needs a `field`")
+            }
+            guard let field = SubstitutionRule.Field(rawValue: fieldRaw) else {
+                throw MCPError.invalidParams("\(key): invalid field \"\(fieldRaw)\" (url/header/body)")
+            }
+            guard let match = item["match"] as? String else {
+                throw MCPError.invalidParams("\(key): each item needs a `match` string")
+            }
             return SubstitutionRule(
                 field: field,
                 match: match,
@@ -703,21 +730,23 @@ struct MCPToolExecutor {
 
         var actions: [String: Any] = [:]
         let a = rule.actions
-        if a.block { actions["block"] = true }
-        if let mock = a.mockResponse {
+        switch a.route {
+        case .passthrough:
+            break
+        case .block:
+            actions["block"] = true
+        case let .mock(mock):
             var mockOut: [String: Any] = ["statusCode": mock.statusCode]
             if !mock.headers.isEmpty { mockOut["headers"] = headerDict(mock.headers) }
             if let contentType = mock.contentType { mockOut["contentType"] = contentType }
             addBody(mock.bodyText, to: &mockOut, truncate: truncateBodies)
             actions["mockResponse"] = mockOut
-        }
-        if let map = a.mapRemote {
+        case let .mapRemote(map):
             var mapOut: [String: Any] = ["destination": map.destination]
             if let exclude = map.excludePattern { mapOut["exclude"] = exclude }
             if map.keepHostHeader { mapOut["keepHostHeader"] = true }
             actions["mapRemote"] = mapOut
-        }
-        if let map = a.mapLocal {
+        case let .mapLocal(map):
             var mapOut: [String: Any] = ["path": map.path, "statusCode": map.statusCode]
             if let contentType = map.contentType { mapOut["contentType"] = contentType }
             actions["mapLocal"] = mapOut

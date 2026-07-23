@@ -231,10 +231,13 @@ private struct RuleRow: View {
     private var actionBadges: [String] {
         let a = rule.actions
         var badges: [String] = []
-        if a.block { badges.append("BLOCK") }
-        if a.mockResponse != nil { badges.append("MOCK") }
-        if a.mapRemote != nil { badges.append("MAP REMOTE") }
-        if a.mapLocal != nil { badges.append("MAP LOCAL") }
+        switch a.route {
+        case .passthrough: break
+        case .block: badges.append("BLOCK")
+        case .mock: badges.append("MOCK")
+        case .mapRemote: badges.append("MAP REMOTE")
+        case .mapLocal: badges.append("MAP LOCAL")
+        }
         if a.rewriteRequest?.isEmpty == false { badges.append("REQ") }
         if a.rewriteResponse?.isEmpty == false { badges.append("RES") }
         if let ms = a.delayMilliseconds { badges.append("DELAY \(ms)ms") }

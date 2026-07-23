@@ -195,17 +195,57 @@ public struct ResponseRewriteAction: Equatable, Codable, Sendable {
     }
 }
 
-/// What a rule does to matching traffic. Any combination may be set; the engine
-/// applies them as: request rewrites and re-mapping first, then — if any matched
-/// rule blocks or mocks — a synthesized response instead of an upstream fetch,
-/// then response rewrites, with `delayMilliseconds` holding the response back.
-/// `block` beats `mockResponse` beats `mapLocal` when several short-circuits match.
+/// How a matched rule sources its response — the one mutually-exclusive routing
+/// decision. Modeling it as a sum type (rather than four independently-settable
+/// optionals + a `block` bool) makes illegal combinations like "block AND mock AND
+/// mapRemote" unrepresentable, so there's no precedence rule to document or
+/// validate for a single rule.
+///
+/// - `passthrough`: fetch the original upstream (the default).
+/// - `mapRemote`: fetch a *different* origin — still an upstream fetch, so it
+///   composes with the response modifiers below.
+/// - `block` / `mock` / `mapLocal`: short-circuit; the upstream is never contacted.
+public enum Route: Equatable, Codable, Sendable {
+    case passthrough
+    case block
+    case mock(MockResponseAction)
+    case mapLocal(MapLocalAction)
+    case mapRemote(MapRemoteAction)
+
+    private enum CodingKeys: String, CodingKey { case type, mock, mapLocal, mapRemote }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .passthrough: try c.encode("passthrough", forKey: .type)
+        case .block: try c.encode("block", forKey: .type)
+        case let .mock(m): try c.encode("mock", forKey: .type); try c.encode(m, forKey: .mock)
+        case let .mapLocal(l): try c.encode("mapLocal", forKey: .type); try c.encode(l, forKey: .mapLocal)
+        case let .mapRemote(r): try c.encode("mapRemote", forKey: .type); try c.encode(r, forKey: .mapRemote)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        switch try c.decode(String.self, forKey: .type) {
+        case "passthrough": self = .passthrough
+        case "block": self = .block
+        case "mock": self = .mock(try c.decode(MockResponseAction.self, forKey: .mock))
+        case "mapLocal": self = .mapLocal(try c.decode(MapLocalAction.self, forKey: .mapLocal))
+        case "mapRemote": self = .mapRemote(try c.decode(MapRemoteAction.self, forKey: .mapRemote))
+        case let other:
+            throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown route \"\(other)\"")
+        }
+    }
+}
+
+/// What a rule does to matching traffic: one `route` (how the response is sourced)
+/// plus orthogonal modifiers that compose with it — request/response rewrites,
+/// find/replace substitutions, and a response delay. Across several matched rules
+/// the engine still resolves route precedence (block > mock > mapLocal), but a
+/// single rule can no longer hold conflicting routes.
 public struct RuleActions: Equatable, Codable, Sendable {
-    /// Refuse the request: the client gets 403 and the upstream is never contacted.
-    public var block: Bool
-    public var mockResponse: MockResponseAction?
-    public var mapRemote: MapRemoteAction?
-    public var mapLocal: MapLocalAction?
+    public var route: Route
     public var rewriteRequest: RequestRewriteAction?
     public var rewriteResponse: ResponseRewriteAction?
     /// Find/replace substitutions on the outgoing request ("modify request").
@@ -216,20 +256,14 @@ public struct RuleActions: Equatable, Codable, Sendable {
     public var delayMilliseconds: Int?
 
     public init(
-        block: Bool = false,
-        mockResponse: MockResponseAction? = nil,
-        mapRemote: MapRemoteAction? = nil,
-        mapLocal: MapLocalAction? = nil,
+        route: Route = .passthrough,
         rewriteRequest: RequestRewriteAction? = nil,
         rewriteResponse: ResponseRewriteAction? = nil,
         requestSubstitutions: [SubstitutionRule] = [],
         responseSubstitutions: [SubstitutionRule] = [],
         delayMilliseconds: Int? = nil
     ) {
-        self.block = block
-        self.mockResponse = mockResponse
-        self.mapRemote = mapRemote
-        self.mapLocal = mapLocal
+        self.route = route
         self.rewriteRequest = rewriteRequest
         self.rewriteResponse = rewriteResponse
         self.requestSubstitutions = requestSubstitutions
@@ -237,13 +271,10 @@ public struct RuleActions: Equatable, Codable, Sendable {
         self.delayMilliseconds = delayMilliseconds
     }
 
-    // Tolerant decode: rules saved before substitutions/mapRemote fields existed still load.
+    // Tolerant decode: a missing route defaults to passthrough.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        block = try c.decodeIfPresent(Bool.self, forKey: .block) ?? false
-        mockResponse = try c.decodeIfPresent(MockResponseAction.self, forKey: .mockResponse)
-        mapRemote = try c.decodeIfPresent(MapRemoteAction.self, forKey: .mapRemote)
-        mapLocal = try c.decodeIfPresent(MapLocalAction.self, forKey: .mapLocal)
+        route = try c.decodeIfPresent(Route.self, forKey: .route) ?? .passthrough
         rewriteRequest = try c.decodeIfPresent(RequestRewriteAction.self, forKey: .rewriteRequest)
         rewriteResponse = try c.decodeIfPresent(ResponseRewriteAction.self, forKey: .rewriteResponse)
         requestSubstitutions = try c.decodeIfPresent([SubstitutionRule].self, forKey: .requestSubstitutions) ?? []
@@ -256,8 +287,8 @@ public struct RuleActions: Equatable, Codable, Sendable {
     public var activeResponseSubstitutions: [SubstitutionRule] { responseSubstitutions.filter { !$0.isEmpty } }
 
     public var isEmpty: Bool {
-        !block && mockResponse == nil && mapRemote == nil && mapLocal == nil
-            && (rewriteRequest?.isEmpty ?? true) && (rewriteResponse?.isEmpty ?? true)
+        guard case .passthrough = route else { return false }
+        return (rewriteRequest?.isEmpty ?? true) && (rewriteResponse?.isEmpty ?? true)
             && activeRequestSubstitutions.isEmpty && activeResponseSubstitutions.isEmpty
             && delayMilliseconds == nil
     }
@@ -314,21 +345,24 @@ public struct TrafficRule: Equatable, Codable, Sendable, Identifiable {
             return "match.urlPattern is not a valid regular expression"
         }
         if actions.isEmpty {
-            return "rule has no actions — set at least one of block/mockResponse/mapRemote/mapLocal/rewriteRequest/rewriteResponse/delayMilliseconds"
+            return "rule has no actions — set a route (block/mock/mapRemote/mapLocal) or a rewrite/substitution/delay"
         }
-        if let destination = actions.mapRemote?.destination {
-            guard let url = URL(string: destination), url.scheme != nil, url.host != nil else {
+        switch actions.route {
+        case .passthrough:
+            break
+        case .block:
+            break
+        case let .mapRemote(map):
+            guard let url = URL(string: map.destination), url.scheme != nil, url.host != nil else {
                 return "mapRemote.destination must be an origin like http://127.0.0.1:3001"
             }
-        }
-        if let path = actions.mapLocal?.path, !path.hasPrefix("/") {
-            return "mapLocal.path must be an absolute file path"
+        case let .mapLocal(local):
+            if !local.path.hasPrefix("/") { return "mapLocal.path must be an absolute file path" }
+        case let .mock(mock):
+            if !(100...599).contains(mock.statusCode) { return "mockResponse.statusCode must be a valid HTTP status" }
         }
         if let delay = actions.delayMilliseconds, delay < 0 {
             return "delayMilliseconds must be >= 0"
-        }
-        if let status = actions.mockResponse?.statusCode, !(100...599).contains(status) {
-            return "mockResponse.statusCode must be a valid HTTP status"
         }
         for sub in actions.activeRequestSubstitutions + actions.activeResponseSubstitutions where sub.isRegex {
             if (try? NSRegularExpression(pattern: sub.match)) == nil {

@@ -615,25 +615,31 @@ struct RuleDraft {
         reqRemoveHeaders = (a.rewriteRequest?.removeHeaders ?? []).joined(separator: ", ")
         reqBody = a.rewriteRequest?.bodyText ?? ""
 
-        if a.block { replaceRespMode = .block }
-        else if a.mockResponse != nil { replaceRespMode = .mock }
-        else { replaceRespMode = .none }
-        mockStatus = a.mockResponse.map { String($0.statusCode) } ?? "200"
-        mockContentType = a.mockResponse?.contentType ?? "application/json"
-        mockBody = a.mockResponse?.bodyText ?? ""
+        // Decompose the single `route` back into the editor's toggles.
+        let mock: MockResponseAction? = { if case let .mock(m) = a.route { return m } else { return nil } }()
+        let remote: MapRemoteAction? = { if case let .mapRemote(r) = a.route { return r } else { return nil } }()
 
-        redirectOn = a.mapRemote != nil
-        redirectDest = a.mapRemote?.destination ?? ""
-        redirectExclude = a.mapRemote?.excludePattern ?? ""
-        keepHostHeader = a.mapRemote?.keepHostHeader ?? false
+        switch a.route {
+        case .block: replaceRespMode = .block
+        case .mock: replaceRespMode = .mock
+        default: replaceRespMode = .none
+        }
+        mockStatus = mock.map { String($0.statusCode) } ?? "200"
+        mockContentType = mock?.contentType ?? "application/json"
+        mockBody = mock?.bodyText ?? ""
+
+        redirectOn = remote != nil
+        redirectDest = remote?.destination ?? ""
+        redirectExclude = remote?.excludePattern ?? ""
+        keepHostHeader = remote?.keepHostHeader ?? false
 
         delayOn = a.delayMilliseconds != nil
         delayMs = a.delayMilliseconds.map(String.init) ?? ""
 
         carriedComment = rule.comment
         carriedMethods = rule.match.methods
-        carriedMockHeaders = a.mockResponse?.headers ?? []
-        carriedMapLocal = a.mapLocal
+        carriedMockHeaders = mock?.headers ?? []
+        carriedMapLocal = { if case let .mapLocal(l) = a.route { return l } else { return nil } }()
         carriedRewriteResponse = a.rewriteResponse
     }
 
@@ -651,34 +657,39 @@ struct RuleDraft {
             )
         }
 
+        // Collapse the editor's separate response controls into the single `route`.
+        // Precedence — block > mock > mapRemote > carried mapLocal — so the model
+        // can never hold two conflicting routes at once.
         switch replaceRespMode {
         case .none: break
-        case .block: actions.block = true
+        case .block: actions.route = .block
         case .mock:
             guard let code = Int(mockStatus) else { return .failure(RuleDraftError(message: "Mock status code must be a number.")) }
-            actions.mockResponse = MockResponseAction(
+            actions.route = .mock(MockResponseAction(
                 statusCode: code,
                 headers: carriedMockHeaders, // preserve MCP-set response headers the UI doesn't edit
                 bodyText: mockBody.isEmpty ? nil : mockBody,
                 contentType: mockContentType.isEmpty ? nil : mockContentType
-            )
+            ))
         }
-
-        if redirectOn {
-            actions.mapRemote = MapRemoteAction(
+        if case .passthrough = actions.route, redirectOn {
+            actions.route = .mapRemote(MapRemoteAction(
                 destination: redirectDest,
                 excludePattern: redirectExclude.isEmpty ? nil : redirectExclude,
                 keepHostHeader: keepHostHeader
-            )
+            ))
         }
+        // Preserve a carried mapLocal (set via MCP; the editor doesn't surface it)
+        // only when nothing else claimed the route.
+        if case .passthrough = actions.route, let mapLocal = carriedMapLocal {
+            actions.route = .mapLocal(mapLocal)
+        }
+
         if delayOn {
             guard let ms = Int(delayMs) else { return .failure(RuleDraftError(message: "Delay must be a number of milliseconds.")) }
             actions.delayMilliseconds = ms
         }
-
-        // Preserve actions the editor doesn't surface.
-        actions.mapLocal = carriedMapLocal
-        actions.rewriteResponse = carriedRewriteResponse
+        actions.rewriteResponse = carriedRewriteResponse // editor doesn't surface it
 
         let trimmedGroup = group.trimmingCharacters(in: .whitespacesAndNewlines)
         // Single-select method dropdown, but keep a multi-method set from MCP intact
