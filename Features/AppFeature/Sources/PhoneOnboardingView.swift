@@ -13,7 +13,9 @@ struct PhoneOnboardingView: View {
         VStack(spacing: LoomTheme.Space.sm) {
             header
 
-            if let info = store.info {
+            if !store.lanEnabled {
+                lanOffState
+            } else if let info = store.info {
                 qr(info)
                 addressBlock(info)
                 fingerprint(info)
@@ -39,8 +41,36 @@ struct PhoneOnboardingView: View {
                 .font(LoomTheme.Icon.card)
                 .foregroundStyle(.secondary)
             Text("Set up a phone").font(.headline)
+            Spacer(minLength: LoomTheme.Space.sm)
+            // Top-right switch: whether LAN device connection runs. On by default.
+            Toggle("LAN device connection", isOn: Binding(
+                get: { store.lanEnabled },
+                set: { store.send(.setLANEnabled($0)) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("Allow phones and other devices on your Wi-Fi to connect")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Shown when the switch is off: no QR, just why it's blank.
+    private var lanOffState: some View {
+        VStack(spacing: LoomTheme.Space.xs) {
+            Image(systemName: "wifi.slash")
+                .font(LoomTheme.Icon.card)
+                .foregroundStyle(.secondary)
+            Text("LAN device connection is off")
+                .font(.callout.weight(.semibold))
+            Text("Turn on the switch above to let phones on your Wi-Fi route through Loom and show the QR.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(minHeight: 120)
+        .padding(.horizontal, LoomTheme.Space.sm)
     }
 
     @ViewBuilder private func qr(_ info: PhoneOnboardingInfo) -> some View {

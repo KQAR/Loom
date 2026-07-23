@@ -91,7 +91,8 @@ public struct PanelView: View {
         } label: {
             Image(systemName: "iphone")
                 .font(LoomTheme.Icon.card)
-                .foregroundStyle(.secondary)
+                // Highlighted while LAN device connection is allowed (default on).
+                .foregroundStyle(store.lanEnabled ? Color.accentColor : .secondary)
         }
         .buttonStyle(.borderless)
         .help("Set up a phone to capture its traffic")
