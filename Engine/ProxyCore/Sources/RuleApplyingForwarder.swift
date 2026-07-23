@@ -125,7 +125,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         return ForwardResult(
             statusCode: mock.statusCode,
             headers: headers,
-            body: mock.bodyText.map { Data($0.utf8) } ?? Data()
+            body: mock.resolvedBody()
         )
     }
 
