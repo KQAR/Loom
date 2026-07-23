@@ -65,6 +65,12 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
         deletedRuleIDs.append(id)
         rules.rules.removeAll { $0.id == id }
     }
+    func setRules(_ rules: [TrafficRule]) async throws {
+        for rule in rules where rule.validationError() != nil {
+            throw ProxyControlError.invalidRule(rule.validationError()!)
+        }
+        self.rules.rules = rules
+    }
     func setGroupEnabled(group: String?, enabled: Bool) async {
         for i in rules.rules.indices where rules.rules[i].group == group { rules.rules[i].isEnabled = enabled }
     }

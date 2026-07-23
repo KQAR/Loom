@@ -495,6 +495,10 @@ public protocol RulesControlling: Sendable {
     /// Replaces the rule with the same id; throws when unknown or invalid.
     func updateRule(_ rule: TrafficRule) async throws
     func deleteRule(id: UUID) async throws
+    /// Atomically replaces the whole rule list, validating each rule first — for a
+    /// caller (e.g. an embedding host) that owns the rule set elsewhere and syncs
+    /// it in one shot rather than through per-rule CRUD.
+    func setRules(_ rules: [TrafficRule]) async throws
     /// Enable/disable every rule in a group at once (`nil` = the ungrouped rules).
     func setGroupEnabled(group: String?, enabled: Bool) async
 }
