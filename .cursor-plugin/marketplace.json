@@ -1,0 +1,17 @@
+{
+  "name": "loom",
+  "owner": {
+    "name": "KQAR"
+  },
+  "metadata": {
+    "description": "Loom — an AI-operable HTTP/HTTPS debugging proxy for macOS, distributed as a Cursor plugin. The agent inspects and modifies live traffic over MCP; the human supervises from the menu-bar panel."
+  },
+  "plugins": [
+    {
+      "name": "loom",
+      "source": "./",
+      "version": "0.0.1",
+      "description": "Drive Loom's debugging proxy over MCP: inspect captured HTTP/HTTPS flows, replay requests with overrides, and mock / map-remote / map-local / rewrite / find-replace / block / delay traffic with rules (grouped for scenario switching). Toggle HTTPS interception per host, export the root CA, and export flows to HAR. Requires the Loom app to be running."
+    }
+  ]
+}

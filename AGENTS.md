@@ -78,10 +78,14 @@ Client (curl -x / system proxy)
 
 Both the UI and the AI act through the **same** `ProxyEngine.shared` — "AI modifies a request" and "human clicks Replay" run identical code. Never fork a second write path.
 
-### The AI link (M1 mechanism)
+### The AI link
 
-- `loom-mcp` is a tiny **stdio↔HTTP bridge** with no business logic. Claude Desktop/Cursor launch it; it reads `~/Library/Application Support/com.loom/mcp-handshake.json` (`{token, port}`, mode `0600`) and forwards each JSON-RPC line to `http://127.0.0.1:<port>/mcp` with `Authorization: Bearer <token>`.
-- The real MCP server and all tools live in-process in the app, sharing memory with the capture store.
+Two ways in, both hitting the **same** in-process MCP server (all tools + state live in the app, sharing memory with the capture store):
+
+- **HTTP direct (Claude Code / Cursor plugin)** — the app serves MCP over HTTP on a **fixed loopback port `127.0.0.1:9092`** (`MCPServer.defaultPort`). The `loom` plugin's root `.mcp.json` points a `type: http` server at `http://127.0.0.1:9092/mcp`; Claude/Cursor just connect — they do **not** launch or build anything, so a random-port bridge is unnecessary. Loopback requests need **no token** (`authorized()` allows a missing `Authorization` header on the loopback-only endpoint); a token, when sent, must still match. The app owning the server means: if the tools are unreachable, the app isn't running — the skill tells the agent to install/launch Loom rather than fabricate data.
+- **stdio bridge (Claude Desktop / other stdio-only clients)** — `loom-mcp` is a tiny **stdio↔HTTP bridge** with no business logic. The client launches it; it reads `~/Library/Application Support/com.loom/mcp-handshake.json` (`{token, port}`, mode `0600`) and forwards each JSON-RPC line to the app's HTTP endpoint with `Authorization: Bearer <token>`. Still works because the app writes the handshake with whatever port it bound (now the fixed `9092`).
+
+**Plugin packaging.** The repo root doubles as a Claude Code / Cursor plugin (modelled on KQAR/Reticle): `.claude-plugin/` + `.cursor-plugin/` (`plugin.json` + `marketplace.json`, `source: "./"`), a shared root `.mcp.json` (the HTTP server above), and `skills/loom/SKILL.md` documenting the tools + the debug loop. The MCP endpoint stays **loopback-only on its own port** — deliberately NOT the proxy's `9090`, which binds `0.0.0.0` when LAN device connection is on and would otherwise expose the write-capable, token-optional control plane to the whole Wi-Fi.
 
 ### MCP Tools
 
@@ -116,7 +120,7 @@ Write tools are the reason Loom exists. When adding one (M3: `create_rule`, brea
 |--------|-------|----------------|
 | **SharedModels** | base | `Flow`, `ReplayOverrides`, `ProxyControlling`, `SSLScope`, `CertificateStatus`, helper XPC protocol + `HelperIdentity`, `ProxyBackup`/`SystemProxyParsing` — no deps |
 | **ProxyCore** | engine | SwiftNIO proxy, `ProxyEngine` actor, `FlowStore`, CONNECT tunnel, **MITM** (`CertificateAuthority`, `TLSInterceptHandler`, `CAStore`, `InterceptionConfig`), `UpstreamForwarding` |
-| **MCPServer** | engine | loopback JSON-RPC server, tool registry, handshake writer |
+| **MCPServer** | engine | loopback JSON-RPC HTTP server (fixed port 9092, loopback token-optional), tool registry, handshake writer |
 | **ProxyClient** | client | `@DependencyClient` wrapping `ProxyEngine.shared` for TCA |
 | **PrivilegedHelperClient** | client | app-side TCA surface over the helper: SMAppService register/approve + XPC (system proxy, CA trust) — **unverified scaffold** |
 | **UpdaterClient** | client | `@DependencyClient` over **Sparkle** (`UpdaterCoordinator` owns `SPUStandardUpdaterController`); silent once-a-day probe + user-initiated check, feeds the panel's footer "Update" button — Swift 5 mode |
@@ -188,6 +192,10 @@ Engine/MCPServer/Sources/         # MCP server, tools, handshake
 Engine/PrivilegedHelper/Sources/  # LoomHelper root daemon (scaffold); com.loom.helper.plist alongside
 SharedModels/Sources/             # Flow, ReplayOverrides, ProxyControlling, SSLScope, CertificateStatus
 Bridge/Sources/                   # loom-mcp stdio↔HTTP bridge
+.mcp.json                         # plugin MCP config: http → 127.0.0.1:9092/mcp (Claude Code + Cursor)
+.claude-plugin/                   # Claude Code plugin manifest + marketplace
+.cursor-plugin/                   # Cursor plugin manifest + marketplace
+skills/loom/SKILL.md              # skill: how to drive Loom over MCP (tools + debug loop)
 ```
 
 ## Release & Auto-Update (Sparkle)

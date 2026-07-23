@@ -51,6 +51,11 @@ public enum MCPError: Error {
 /// the `@unchecked Sendable` treatment of `MCPDispatcher`/`MCPHTTPHandler`.
 public final class MCPServer: @unchecked Sendable {
     public static let protocolVersion = "2025-06-18"
+    /// Fixed loopback port for the HTTP MCP endpoint, so a static client config
+    /// (the Claude Code plugin's `.mcp.json`, `http://127.0.0.1:9092/mcp`) can
+    /// reach it without discovering a random port. The `loom-mcp` stdio bridge
+    /// still reads the handshake, so it keeps working if this ever falls back.
+    public static let defaultPort = 9092
 
     private let engine: ProxyControlling
     private let appVersion: String
@@ -269,7 +274,11 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     private func authorized(_ head: HTTPRequestHead) -> Bool {
-        guard let auth = head.headers.first(name: "Authorization") else { return false }
+        // The endpoint binds loopback only. A request with no Authorization header
+        // is allowed (local trust) so a fixed-URL HTTP client — the Claude Code
+        // plugin's MCP — can connect without the per-launch token. When a token IS
+        // sent (the loom-mcp stdio bridge), it must still match.
+        guard let auth = head.headers.first(name: "Authorization") else { return true }
         return Self.constantTimeEqual(auth, "Bearer \(token)")
     }
 
