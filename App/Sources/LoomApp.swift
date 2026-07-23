@@ -77,7 +77,7 @@ private struct MenuBarLabel: View {
     let store: StoreOf<AppFeature>
 
     var body: some View {
-        Image(systemName: store.rulesEnabled ? "arrow.triangle.branch" : "arrow.left.arrow.right")
+        Image(systemName: store.rules.rulesEnabled ? "arrow.triangle.branch" : "arrow.left.arrow.right")
             .fontWeight(.semibold)
             .foregroundStyle(store.isSystemProxy ? Color.yellow : Color.primary)
             .opacity(store.status.isRunning ? 1 : 0.4)

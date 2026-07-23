@@ -124,16 +124,16 @@ public struct PanelView: View {
 
     @ViewBuilder private var rulesRow: some View {
         PanelRow(
-            kind: .state(on: store.rulesEnabled),
+            kind: .state(on: store.rules.rulesEnabled),
             icon: "slider.horizontal.3",
             title: "Rules",
             detail: rulesDetail
         ) {
-            store.send(.toggleRulesTapped)
+            store.send(.rules(.toggleRulesTapped))
         }
-        if !store.enabledRules.isEmpty {
+        if !store.rules.enabledRules.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(store.enabledRules, id: \.self) { rule in
+                ForEach(store.rules.enabledRules, id: \.self) { rule in
                     Label(rule, systemImage: "checkmark.circle.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -146,8 +146,8 @@ public struct PanelView: View {
     }
 
     private var rulesDetail: String {
-        guard store.rulesEnabled else { return "off" }
-        return store.enabledRules.isEmpty ? "no rules yet" : "\(store.enabledRules.count) active"
+        guard store.rules.rulesEnabled else { return "off" }
+        return store.rules.enabledRules.isEmpty ? "no rules yet" : "\(store.rules.enabledRules.count) active"
     }
 
     private func inlineNote(_ text: String, busy: Bool) -> some View {

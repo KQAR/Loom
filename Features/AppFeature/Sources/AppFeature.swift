@@ -36,20 +36,9 @@ public struct AppFeature: Sendable {
         public var certActionMessage: String?    // M2: transient feedback under the cert card
         public var systemProxyBusy = false       // M2: system-proxy change in flight
         public var systemProxyMessage: String?   // M2: transient feedback under the row
-        /// Rule-engine config, mirrored from the engine (which persists it).
-        /// Loaded at boot and re-synced when the panel opens or the human toggles.
-        public var rulesState = RulesState()
-        public var rulesEnabled: Bool { rulesState.enabled }
-        /// Names of rules that currently apply — empty when the master switch is off.
-        public var enabledRules: [String] { rulesState.activeRules.map(\.name) }
-        /// The rule being edited in the sheet (nil = sheet closed); `editingRuleIsNew`
-        /// tells save whether to add or update it.
-        public var editingRule: TrafficRule?
-        public var editingRuleIsNew = false
-        /// Transient error shown in the Rules panel when a rule write (or replay)
-        /// fails, so a failure isn't silently swallowed. Cleared when the next
-        /// write starts.
-        public var rulesMessage: String?
+        /// The traffic-rules surface (rule set, editor, writes) — split into its
+        /// own feature. Flow capture/selection/pins stay in the parent.
+        public var rules = RulesFeature.State()
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
@@ -124,6 +113,8 @@ public struct AppFeature: Sendable {
 
     public enum Action: BindableAction, Sendable {
         case binding(BindingAction<State>)
+        /// The traffic-rules child feature (rule CRUD, editor, master switch).
+        case rules(RulesFeature.Action)
         /// One-shot boot: start the proxy + subscribe to the flow stream. Sent only
         /// from the always-present menu-bar label so opening a window can't re-run
         /// it (which would cancel the live subscription and restart the proxy).
@@ -137,22 +128,13 @@ public struct AppFeature: Sendable {
         case systemProxyResult(enabling: Bool, ok: Bool, message: String?)
         case systemProxyStateLoaded(Bool)
         case toggleSSLTapped
-        case toggleRulesTapped
         case proxyStarted(port: Int)
         case proxyStartFailed(String)
-        case ruleWriteFailed(String)
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
-        case rulesStateLoaded(RulesState)
-        case refreshRules
+        /// Stamp a rule out of a captured flow and open the editor (parent-owned
+        /// because it reads the flow store); forwarded to `RulesFeature`.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
-        case newRuleTapped
-        case editRuleTapped(TrafficRule.ID)
-        case ruleEditorSaved(TrafficRule, isNew: Bool)
-        case ruleEditorCancelled
-        case ruleToggled(TrafficRule.ID)
-        case ruleDeleted(TrafficRule.ID)
-        case ruleGroupToggled(group: String?, enabled: Bool)
         case flowReceived(Flow)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
@@ -180,9 +162,12 @@ public struct AppFeature: Sendable {
 
     public var body: some ReducerOf<Self> {
         BindingReducer()
+        Scope(state: \.rules, action: \.rules) {
+            RulesFeature()
+        }
         Reduce { state, action in
             switch action {
-            case .binding:
+            case .binding, .rules:
                 return .none
 
             case .task:
@@ -220,16 +205,12 @@ public struct AppFeature: Sendable {
                     await send(.systemProxyStateLoaded(privilegedHelperClient.isSystemProxyActive(port)))
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
+                    await send(.rules(.rulesStateLoaded(proxyClient.rulesState())))
                 }
 
             case let .proxyStartFailed(message):
                 state.status.isRunning = false
                 state.systemProxyMessage = "Proxy failed to start: \(message)"
-                return .none
-
-            case let .ruleWriteFailed(message):
-                state.rulesMessage = message
                 return .none
 
             case .toggleProxyTapped:
@@ -296,96 +277,13 @@ public struct AppFeature: Sendable {
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                 }
 
-            case .toggleRulesTapped:
-                let enabling = !state.rulesState.enabled
-                state.rulesState.enabled = enabling // optimistic; re-synced below
-                return .run { send in
-                    await proxyClient.setRulesEnabled(enabling)
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
-                }
-
-            case let .rulesStateLoaded(rulesState):
-                state.rulesState = rulesState
-                return .none
-
-            case .refreshRules:
-                return .run { send in
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
-                }
-
             case let .addRuleFromFlow(id, template):
                 guard let flow = state.flows[id: id],
                       let rule = RuleFactory.rule(from: flow, template: template)
                 else { return .none }
-                // Prefill the editor from the captured flow; nothing is persisted
-                // until the human hits Save.
-                state.editingRule = rule
-                state.editingRuleIsNew = true
-                return .none
-
-            case .newRuleTapped:
-                state.editingRule = TrafficRule(name: "", match: RuleMatch(urlPattern: ""), actions: RuleActions())
-                state.editingRuleIsNew = true
-                return .none
-
-            case let .editRuleTapped(id):
-                guard let rule = state.rulesState.rules.first(where: { $0.id == id }) else { return .none }
-                state.editingRule = rule
-                state.editingRuleIsNew = false
-                return .none
-
-            case let .ruleEditorSaved(rule, isNew):
-                state.editingRule = nil
-                state.rulesMessage = nil
-                if isNew {
-                    // Saving a new rule means "make it live now": flip the master
-                    // switch too so it isn't silently inert.
-                    state.rulesState.enabled = true
-                    state.rulesState.rules.append(rule) // optimistic; re-synced below
-                    return .run { send in
-                        await proxyClient.setRulesEnabled(true)
-                        do { try await proxyClient.addRule(rule) }
-                        catch { await send(.ruleWriteFailed("Couldn’t save rule: \(error.localizedDescription)")) }
-                        await send(.rulesStateLoaded(proxyClient.rulesState()))
-                    }
-                }
-                if let index = state.rulesState.rules.firstIndex(where: { $0.id == rule.id }) {
-                    state.rulesState.rules[index] = rule
-                }
-                return .run { send in
-                    do { try await proxyClient.updateRule(rule) }
-                    catch { await send(.ruleWriteFailed("Couldn’t update rule: \(error.localizedDescription)")) }
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
-                }
-
-            case .ruleEditorCancelled:
-                state.editingRule = nil
-                return .none
-
-            case let .ruleToggled(id):
-                guard var rule = state.rulesState.rules.first(where: { $0.id == id }) else { return .none }
-                rule.isEnabled.toggle()
-                let updated = rule
-                state.rulesMessage = nil
-                return .run { send in
-                    do { try await proxyClient.updateRule(updated) }
-                    catch { await send(.ruleWriteFailed("Couldn’t toggle rule: \(error.localizedDescription)")) }
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
-                }
-
-            case let .ruleDeleted(id):
-                state.rulesMessage = nil
-                return .run { send in
-                    do { try await proxyClient.deleteRule(id) }
-                    catch { await send(.ruleWriteFailed("Couldn’t delete rule: \(error.localizedDescription)")) }
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
-                }
-
-            case let .ruleGroupToggled(group, enabled):
-                return .run { send in
-                    await proxyClient.setGroupEnabled(group, enabled)
-                    await send(.rulesStateLoaded(proxyClient.rulesState()))
-                }
+                // Stamp a rule from the captured flow and hand it to the rules
+                // feature to open the editor; nothing is persisted until Save.
+                return .send(.rules(.presentEditor(rule: rule, isNew: true)))
 
             case let .proxyStarted(port):
                 state.status.isRunning = true
@@ -415,13 +313,13 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .replayTapped(id):
-                state.rulesMessage = nil
+                state.rules.rulesMessage = nil // shares the rules panel's error line
                 return .run { send in
                     do {
                         let flow = try await proxyClient.replay(id, .none)
                         await send(.replayFinished(flow))
                     } catch {
-                        await send(.ruleWriteFailed("Replay failed: \(error.localizedDescription)"))
+                        await send(.rules(.ruleWriteFailed("Replay failed: \(error.localizedDescription)")))
                     }
                 }
 
