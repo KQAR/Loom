@@ -4,16 +4,8 @@ import NIOHTTP1
 
 /// Request-body framing helpers shared by the plain and MITM request handlers.
 enum RequestBodyStreaming {
-    /// Whether the request head declares a body worth streaming (chunked, or a
-    /// non-zero Content-Length). A GET/upgrade with neither is bodyless.
-    static func hasBody(_ head: HTTPRequestHead) -> Bool {
-        if head.headers.first(name: "transfer-encoding")?.lowercased().contains("chunked") == true { return true }
-        if let length = contentLength(head) { return length > 0 }
-        return false
-    }
-
-    /// The client's declared Content-Length, or nil (chunked / absent) so the
-    /// forwarder re-frames as chunked upstream.
+    /// The client's declared Content-Length, or nil (chunked / h2 DATA / absent) so
+    /// the forwarder re-frames as chunked upstream.
     static func contentLength(_ head: HTTPRequestHead) -> Int? {
         head.headers.first(name: "content-length").flatMap { Int($0) }
     }
