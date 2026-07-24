@@ -20,7 +20,7 @@ public struct PanelView: View {
             Divider()
 
             VStack(spacing: 0) {
-                proxyRow
+                devicesRow
                 systemProxyRow
                 sslRow
                 rulesRow
@@ -31,7 +31,7 @@ public struct PanelView: View {
                     kind: .action,
                     icon: "list.bullet.rectangle",
                     title: "Open Main Window",
-                    detail: nil
+                    detail: "\(store.status.capturedCount) flows"
                 ) {
                     // Capture the popover (the key window at click time) so we can
                     // close it after the main window is up. `dismiss()` alone is
@@ -57,55 +57,74 @@ public struct PanelView: View {
 
     private var header: some View {
         HStack(spacing: LoomTheme.Space.xs) {
+            // Capture state (mirrors the main-window toolbar dot): green when the
+            // proxy is up and recording, yellow when up but recording is paused,
+            // grey when the proxy is off. Proxy on/off is the switch on the right.
             Circle()
-                .fill(store.status.isRunning ? Color.green : Color.secondary)
+                .fill(captureDotColor)
                 .frame(width: 7, height: 7)
-            Text("Loom").font(.headline)
-            Spacer()
-            Text(store.status.isRunning ? "Running" : "Stopped")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            Text(verbatim: "\(store.displayHost):\(store.status.port)")
+                .font(.headline.monospaced())
+            Spacer(minLength: LoomTheme.Space.xs)
+            // The proxy on/off control (replaces the old Proxy row + "Running" text).
+            Toggle("", isOn: Binding(
+                get: { store.status.isRunning },
+                set: { _ in store.send(.toggleProxyTapped) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .labelsHidden()
+            .help(store.status.isRunning ? "Proxy running — tap to stop" : "Proxy stopped — tap to start")
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.sm)
     }
 
+    /// green = proxy up & recording · yellow = up but recording paused · grey = off.
+    private var captureDotColor: Color {
+        guard store.status.isRunning else { return .secondary }
+        return store.isRecording ? .green : .yellow
+    }
+
     // MARK: State rows
 
-    private var proxyRow: some View {
+    /// Own row above System proxy: tap to open the phone-onboarding QR; the trailing
+    /// number is how many LAN devices (phones/other machines, not this Mac) have
+    /// routed traffic through Loom. Needs the proxy up to provision a device.
+    private var devicesRow: some View {
         PanelRow(
-            kind: .state(on: store.status.isRunning),
-            icon: "network",
-            title: "Proxy",
-            detail: store.status.isRunning ? "127.0.0.1:\(store.status.port)" : "off",
-            accessory: store.status.isRunning ? AnyView(phoneButton) : nil
+            kind: .action,
+            icon: "iphone",
+            // Highlighted (accent) while LAN device connection is allowed, matching
+            // the icon's former standalone look; dimmed when off.
+            iconTint: store.lanEnabled ? Color.accentColor : .secondary,
+            title: "Connect Device",
+            detail: "\(store.connectedDeviceCount)",
+            disabled: !store.status.isRunning,
+            help: "Set up a phone to capture its traffic"
         ) {
-            store.send(.toggleProxyTapped)
+            store.send(.phoneButtonTapped(.panel))
+        }
+        .popover(item: phonePopover, arrowEdge: .trailing) { phoneStore in
+            PhoneOnboardingView(store: phoneStore)
         }
     }
 
-    /// Sits to the right of the proxy address: opens the phone-onboarding QR.
-    private var phoneButton: some View {
-        Button {
-            store.send(.phoneButtonTapped)
-        } label: {
-            Image(systemName: "iphone")
-                .font(LoomTheme.Icon.card)
-                // Highlighted while LAN device connection is allowed (default on).
-                .foregroundStyle(store.lanEnabled ? Color.accentColor : .secondary)
-        }
-        .buttonStyle(.borderless)
-        .help("Set up a phone to capture its traffic")
-        .popover(item: $store.scope(state: \.phone, action: \.phone), arrowEdge: .trailing) { phoneStore in
-            PhoneOnboardingView(store: phoneStore)
-        }
+    /// The phone popover, gated to the panel: nil unless the panel opened it, so it
+    /// never presents in tandem with the main window's copy of the same state.
+    private var phonePopover: Binding<StoreOf<PhoneOnboardingFeature>?> {
+        let scoped = $store.scope(state: \.phone, action: \.phone)
+        return Binding(
+            get: { store.phoneOrigin == .panel ? scoped.wrappedValue : nil },
+            set: { scoped.wrappedValue = $0 }
+        )
     }
 
     @ViewBuilder private var systemProxyRow: some View {
         PanelRow(
             kind: .state(on: store.setup.isSystemProxy),
             icon: "globe",
-            title: "System proxy",
+            title: "System Proxy",
             detail: store.setup.isSystemProxy ? "on" : "off",
             disabled: store.setup.systemProxyBusy,
             help: "Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password)"
@@ -143,7 +162,7 @@ public struct PanelView: View {
     @ViewBuilder private var rulesRow: some View {
         PanelRow(
             kind: .state(on: store.rules.rulesEnabled),
-            icon: "slider.horizontal.3",
+            icon: "wand.and.stars",
             title: "Rules",
             detail: rulesDetail
         ) {
@@ -185,16 +204,19 @@ public struct PanelView: View {
     // MARK: Footer
 
     private var footer: some View {
-        HStack {
-            Text("\(store.status.capturedCount) flows captured")
+        ZStack {
+            // Centered wordmark, independent of the side controls' widths.
+            Text("Loom")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-            Spacer()
-            updateButton
-            Button("Quit") { NSApplication.shared.terminate(nil) }
-                .buttonStyle(.borderless)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack {
+                updateButton      // version / update, now at the left end
+                Spacer()
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.xs + 2)
@@ -242,6 +264,9 @@ private struct PanelRow: View {
 
     let kind: Kind
     let icon: String
+    /// Optional icon tint (e.g. the Connect Device row's accent highlight); the
+    /// default secondary is used when nil.
+    var iconTint: Color? = nil
     let title: String
     var detail: String?
     var disabled: Bool = false
@@ -276,7 +301,7 @@ private struct PanelRow: View {
 
                     Image(systemName: icon)
                         .font(LoomTheme.Icon.card)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(iconTint ?? .secondary)
                         .frame(width: 20)
                         .padding(.trailing, LoomTheme.Space.sm)
 
@@ -285,12 +310,6 @@ private struct PanelRow: View {
 
                     if let detail {
                         Text(detail).font(.callout).foregroundStyle(.tertiary)
-                    }
-                    if kind == .action {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                            .padding(.leading, LoomTheme.Space.xxs)
                     }
                 }
                 .padding(.horizontal, LoomTheme.Space.md)

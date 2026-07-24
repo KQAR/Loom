@@ -268,6 +268,13 @@ public actor ProxyEngine: ProxyControlling {
     /// Aggregate captured flows by originating device (keyed on remote IP). LAN
     /// devices sort ahead of this Mac, then by most-recently-seen — the phone you
     /// just pointed at Loom floats to the top.
+    /// Live count of LAN devices connected to the proxy this session (excludes this
+    /// Mac). Connection-derived, so it reflects a phone that has connected even
+    /// before/without any captured flow — unlike the flow-derived `connectedDevices`.
+    public func connectedDeviceCountStream() async -> AsyncStream<Int> {
+        await store.connectedDeviceCountStream()
+    }
+
     public func connectedDevices() async -> [DeviceSummary] {
         let flows = await store.recent(limit: await store.count)
         var byIP: [String: DeviceSummary] = [:]

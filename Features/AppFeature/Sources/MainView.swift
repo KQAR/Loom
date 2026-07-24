@@ -372,7 +372,7 @@ public struct MainView: View {
     /// Phone/QR onboarding entry, right of the toolbar's ip:port chip.
     private var phoneButton: some View {
         Button {
-            store.send(.phoneButtonTapped)
+            store.send(.phoneButtonTapped(.mainWindow))
         } label: {
             Image(systemName: "iphone")
                 // Highlighted while LAN device connection is allowed (default on).
@@ -380,16 +380,27 @@ public struct MainView: View {
         }
         .buttonStyle(.borderless)
         .help("Set up a phone to capture its traffic")
-        .popover(item: $store.scope(state: \.phone, action: \.phone), arrowEdge: .bottom) { phoneStore in
+        .popover(item: phonePopover, arrowEdge: .bottom) { phoneStore in
             PhoneOnboardingView(store: phoneStore)
         }
+    }
+
+    /// The phone popover, gated to the main window: nil unless the main window
+    /// opened it, so tapping the panel's Connect Device row doesn't also pop it here.
+    private var phonePopover: Binding<StoreOf<PhoneOnboardingFeature>?> {
+        let scoped = $store.scope(state: \.phone, action: \.phone)
+        return Binding(
+            get: { store.phoneOrigin == .mainWindow ? scoped.wrappedValue : nil },
+            set: { scoped.wrappedValue = $0 }
+        )
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
             HStack(spacing: LoomTheme.Space.xs) {
+                // green = proxy up & recording · yellow = up but paused · grey = off.
                 Circle()
-                    .fill(store.status.isRunning ? Color.green : Color.secondary)
+                    .fill(captureDotColor)
                     .frame(width: 7, height: 7)
                 Text(verbatim: store.status.isRunning
                     ? "\(store.displayHost):\(store.status.port)"
@@ -419,6 +430,12 @@ public struct MainView: View {
             }
             .padding(.horizontal, LoomTheme.Space.sm)
         }
+    }
+
+    /// green = proxy up & recording · yellow = up but recording paused · grey = off.
+    private var captureDotColor: Color {
+        guard store.status.isRunning else { return .secondary }
+        return store.isRecording ? .green : .yellow
     }
 
     /// Start/stop capture. Idle shows a circular record symbol; recording shows a

@@ -20,6 +20,13 @@ public enum FlowCategory: Hashable, Sendable {
     case device(String)
 }
 
+/// Which surface opened the phone-onboarding popover. The panel and the main
+/// window both bind a popover to the single `phone` state, so without this they'd
+/// both present at once — each view gates its popover on its own origin.
+public enum PhoneOnboardingOrigin: Equatable, Sendable {
+    case panel, mainWindow
+}
+
 @Reducer
 public struct AppFeature: Sendable {
     @ObservableState
@@ -55,10 +62,16 @@ public struct AppFeature: Sendable {
         /// Phone-onboarding popover (QR + proxy address + the LAN switch). Non-nil
         /// while shown. Presenting no longer toggles LAN — that's `lanEnabled`.
         @Presents public var phone: PhoneOnboardingFeature.State?
+        /// Which surface requested the phone popover, so only that one presents it.
+        public var phoneOrigin: PhoneOnboardingOrigin = .mainWindow
         /// Whether LAN device connection runs (proxy on `0.0.0.0` + provisioning
         /// server). Persisted, default on; drives the phone icon's highlight.
         public var lanEnabled = true
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
+        /// LAN devices connected to the proxy (excludes this Mac). Connection-derived
+        /// (fed by `connectedDeviceCountStream`), so a phone counts the moment it
+        /// connects — even if its HTTPS is blind-tunneled and never captured.
+        public var connectedDeviceCount = 0
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
@@ -195,7 +208,7 @@ public struct AppFeature: Sendable {
         case rules(RulesFeature.Action)
         /// Open the phone-onboarding popover (QR + proxy address). Does not change
         /// LAN connection — that's the popover's own switch.
-        case phoneButtonTapped
+        case phoneButtonTapped(PhoneOnboardingOrigin)
         /// The phone-onboarding popover child; its `.delegate` reports LAN changes.
         case phone(PresentationAction<PhoneOnboardingFeature.Action>)
         /// Persisted LAN-connection setting loaded at boot.
@@ -217,6 +230,7 @@ public struct AppFeature: Sendable {
         case flowReceived(Flow)
         /// A write action was recorded (seed at boot + live stream).
         case auditEntryReceived(AuditEntry)
+        case connectedDeviceCountChanged(Int)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
         /// Hydrated bodies for a selection landed (self + optional replay original);
@@ -244,7 +258,7 @@ public struct AppFeature: Sendable {
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.updaterClient) var updaterClient
 
-    private enum CancelID { case subscription, updates, audit }
+    private enum CancelID { case subscription, updates, audit, devices }
 
     public init() {}
 
@@ -261,9 +275,11 @@ public struct AppFeature: Sendable {
             case .binding, .setup, .rules:
                 return .none
 
-            case .phoneButtonTapped:
+            case let .phoneButtonTapped(origin):
                 // Just open the popover, seeded with the current LAN setting.
-                // Dismissing it leaves LAN connection untouched.
+                // Dismissing it leaves LAN connection untouched. `origin` records
+                // which surface asked, so only that one presents it.
+                state.phoneOrigin = origin
                 state.phone = PhoneOnboardingFeature.State(lanEnabled: state.lanEnabled)
                 return .none
 
@@ -333,8 +349,21 @@ public struct AppFeature: Sendable {
                             await send(.auditEntryReceived(entry))
                         }
                     }
-                    .cancellable(id: CancelID.audit, cancelInFlight: true)
+                    .cancellable(id: CancelID.audit, cancelInFlight: true),
+                    // Connected-device count: follow the proxy's live connection
+                    // signal (seeds current on subscribe), so the panel's "Connect
+                    // Device" row reflects phones the moment they connect.
+                    .run { send in
+                        for await count in await proxyClient.connectedDeviceCountStream() {
+                            await send(.connectedDeviceCountChanged(count))
+                        }
+                    }
+                    .cancellable(id: CancelID.devices, cancelInFlight: true)
                 )
+
+            case let .connectedDeviceCountChanged(count):
+                state.connectedDeviceCount = count
+                return .none
 
             case .viewAppeared:
                 // Cheap re-sync of config state on window/panel open — each child
@@ -480,7 +509,16 @@ public struct AppFeature: Sendable {
             case .toggleRecordingTapped:
                 state.isRecording.toggle()
                 let recording = state.isRecording
-                return .run { _ in await proxyClient.setRecording(recording) }
+                // Turning recording on also brings the proxy up if it's stopped —
+                // there's nothing to capture while the proxy isn't listening.
+                let needStart = recording && !state.status.isRunning
+                return .run { send in
+                    await proxyClient.setRecording(recording)
+                    if needStart {
+                        let port = try await proxyClient.start(9090)
+                        await send(.proxyStarted(port: port))
+                    }
+                }
 
             case let .pinHostToggled(host):
                 if state.pinnedHosts.contains(host) { state.pinnedHosts.remove(host) }
