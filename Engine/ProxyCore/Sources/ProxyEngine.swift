@@ -25,6 +25,9 @@ public actor ProxyEngine: ProxyControlling {
     private var ca: CertificateAuthority?
 
     private var running = false
+    /// Size of the in-memory flow ring, mirrored here so `start()` restores at
+    /// most a ring's worth of persisted flows.
+    private let flowCapacity: Int
     private var boundPort = 9090
     /// Interface the proxy is currently bound to. Phone onboarding flips this to
     /// `0.0.0.0` (LAN-reachable) and back to loopback when it ends.
@@ -38,6 +41,7 @@ public actor ProxyEngine: ProxyControlling {
 
     public init() {
         // Durable flow store (SQLite) so captures survive relaunch.
+        self.flowCapacity = 2000
         self.store = FlowStore(persistence: FlowPersistence.makeDefault())
         let rulesConfig = RulesConfig() // persisted across launches (JSON file in App Support)
         self.rulesConfig = rulesConfig
@@ -67,8 +71,14 @@ public actor ProxyEngine: ProxyControlling {
     /// Kept as a sibling designated init (not a delegating convenience init) so
     /// `FlowPersistence` stays internal to the module. Mirror any change to the
     /// forwarder/CA/config wiring in `init()` above.
-    public init(persistFlows: Bool) {
-        self.store = FlowStore(persistence: persistFlows ? FlowPersistence.makeDefault() : nil)
+    ///
+    /// - Parameter capacity: size of the in-memory flow ring. An embedder that
+    ///   owns its own storage and replays via `replay(flow:overrides:)` can shrink
+    ///   this to bound Loom's retention (`capacity: 0` keeps nothing between
+    ///   captures — flows live only on the live `flowStream()`).
+    public init(persistFlows: Bool, capacity: Int = 2000) {
+        self.flowCapacity = capacity
+        self.store = FlowStore(capacity: capacity, persistence: persistFlows ? FlowPersistence.makeDefault() : nil)
         let rulesConfig = RulesConfig()
         self.rulesConfig = rulesConfig
         let breakpointStore = BreakpointStore()
@@ -98,6 +108,7 @@ public actor ProxyEngine: ProxyControlling {
     /// interception can be exercised without the network or the Keychain. The
     /// config is non-persisting so tests never read or clobber the real scope.
     init(forwarder: UpstreamForwarding, caStore: CAStore) {
+        self.flowCapacity = 2000
         self.store = FlowStore(persistence: nil) // no disk in tests
         let rulesConfig = RulesConfig(fileURL: nil)
         self.rulesConfig = rulesConfig
@@ -125,7 +136,7 @@ public actor ProxyEngine: ProxyControlling {
         // so a bind error (port in use) can still be retried.
         running = true
         do {
-            await store.loadPersisted(limit: 2000) // restore prior captures once
+            await store.loadPersisted(limit: flowCapacity) // restore at most a ring's worth
             let ca = ensureCA()
             boundPort = try await server.start(
                 host: host,
@@ -523,7 +534,14 @@ public actor ProxyEngine: ProxyControlling {
         guard let source = await store.flow(id: id) else {
             throw ProxyControlError.flowNotFound(id)
         }
+        return try await replay(flow: source, overrides: overrides)
+    }
 
+    /// Replay a caller-supplied flow directly — no store lookup, so it works for
+    /// an embedder that owns its own retention (see the protocol doc). Shares the
+    /// override-application + forward + capture path with `replay(id:)`.
+    public func replay(flow source: Flow, overrides: ReplayOverrides) async throws -> Flow {
+        let id = source.id
         let method = overrides.method ?? source.request.method
         let urlString = overrides.url ?? source.request.url
         guard let url = URL(string: urlString) else {

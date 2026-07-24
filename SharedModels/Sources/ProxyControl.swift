@@ -105,8 +105,19 @@ public protocol FlowProviding: Sendable {
 /// Write side of the engine — the differentiator: AI (or the UI) can act.
 public protocol FlowReplaying: Sendable {
     /// Re-send an existing flow's request with the given overrides applied,
-    /// returning the newly captured flow for the replayed exchange.
+    /// returning the newly captured flow for the replayed exchange. The source
+    /// flow is resolved from the engine's in-memory ring, so this fails with
+    /// `flowNotFound` once the source has aged out of the ring (see
+    /// `replay(flow:overrides:)` for a retention-independent form).
     func replay(id: UUID, overrides: ReplayOverrides) async throws -> Flow
+
+    /// Re-send `flow`'s request with the given overrides applied, without looking
+    /// the source up in the engine's store. For an embedder that keeps captured
+    /// flows in its own store (e.g. `ProxyEngine(persistFlows: false)`): the
+    /// source can be replayed directly even after it has aged out of — or was
+    /// never kept in — Loom's in-memory ring. The returned flow's `replayedFrom`
+    /// is set to `flow.id`.
+    func replay(flow: Flow, overrides: ReplayOverrides) async throws -> Flow
 }
 
 /// Capture gating: pause/resume storing observed traffic as flows. Pausing
