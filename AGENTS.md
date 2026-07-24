@@ -21,7 +21,7 @@ Three docs govern the product; each wins over code in its domain:
 - [`DESIGN.md`](DESIGN.md) — visual system for the **status-bar panel** (the whole human surface) + the optional Detail viewer, derived from Apple's HIG, **not** from existing code
 - [`INTERACTION.md`](INTERACTION.md) — interaction architecture: the AI-operates / human-supervises inversion, the status-bar panel as the one surface, write-action guardrails
 
-**UI is status-bar-first (DESIGN/INTERACTION v2).** The human surface is a single menu-bar panel (faults → approvals → live feed → control footer); there is no main window. The M1 code still has the old control-only popover + two-column Inspector window — treat that as legacy to rebuild toward the specs, not a pattern to extend.
+**UI is status-bar-first (DESIGN/INTERACTION v2).** The human surface centers on the menu-bar panel — now a compact **config & control console** (`PanelView`): a header with the proxy address + on/off switch and a capture dot (green recording · yellow paused · grey off), state rows (Connect Device, System Proxy, HTTPS, Rules), and a footer (version · wordmark · Quit). The main window (`MainView`) is the working surface — a request table + tabbed inspector — opened at launch. Both are driven by the one `AppFeature` store. Any view that conflicts with the specs is the thing to fix; don't propagate old styling.
 
 When a current view conflicts with these specs, the view is wrong: refactor toward the spec, never propagate legacy styling. Read DESIGN.md and INTERACTION.md before writing or reviewing any view code.
 
