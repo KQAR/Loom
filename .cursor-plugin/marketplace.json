@@ -10,7 +10,7 @@
     {
       "name": "loom",
       "source": "./",
-      "version": "0.0.1",
+      "version": "0.0.3",
       "description": "Drive Loom's debugging proxy over MCP: inspect captured HTTP/HTTPS flows, replay requests with overrides, and mock / map-remote / map-local / rewrite / find-replace / block / delay traffic with rules (grouped for scenario switching). Toggle HTTPS interception per host, export the root CA, and export flows to HAR. Requires the Loom app to be running."
     }
   ]
