@@ -206,6 +206,13 @@ public actor ProxyEngine: ProxyControlling {
         await store.recent(limit: limit)
     }
 
+    /// Recent flows with bodies hydrated from disk — for HAR export and any other
+    /// consumer that needs the full payload, not just summaries. `recentFlows`
+    /// stays body-free so list/summary reads don't pay to load bodies.
+    public func recentFlowsForExport(limit: Int) async -> [Flow] {
+        await store.recentHydrated(limit: limit)
+    }
+
     public func flow(id: UUID) async -> Flow? {
         await store.flow(id: id)
     }

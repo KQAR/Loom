@@ -605,7 +605,9 @@ struct MCPToolExecutor {
 
     private func handleExportHAR(_ arguments: [String: Any]) async throws -> String {
         let limit = (arguments["limit"] as? Int) ?? 1000
-        var flows = await engine.recentFlows(limit: limit)
+        // HAR needs full request/response bodies, so hydrate (bodies live in
+        // separate storage now); the list/summary tools stay on the body-free path.
+        var flows = await engine.recentFlowsForExport(limit: limit)
         if let host = (arguments["host"] as? String), !host.isEmpty {
             let needle = host.lowercased()
             flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }

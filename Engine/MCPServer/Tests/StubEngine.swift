@@ -25,6 +25,7 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
     // FlowProviding
     func status() async -> ProxyStatus { proxyStatus }
     func recentFlows(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
+    func recentFlowsForExport(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
     func flow(id: UUID) async -> Flow? { flows.first { $0.id == id } }
     func flowStream() async -> AsyncStream<Flow> { AsyncStream { $0.finish() } }
     func connectedDevices() async -> [DeviceSummary] { devices }
