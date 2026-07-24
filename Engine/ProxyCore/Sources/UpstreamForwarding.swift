@@ -10,17 +10,20 @@ struct ForwardResult: Sendable {
     var httpVersion: String?
     var headers: [HeaderPair]
     var body: Data
-    /// Traffic rules that acted on this exchange (set by `RuleApplyingForwarder`);
-    /// copied onto the captured flow for audit.
-    var appliedRules: [AppliedRule] = []
 }
 
-/// A response as it arrives from upstream, so the proxy can relay it to the client
-/// chunk-by-chunk (SSE / long-poll / large downloads) instead of buffering the
-/// whole body first. `httpVersion` + `appliedRules` ride on `.head` since both are
-/// known before the response body.
+/// The lifecycle of one proxied exchange, so the proxy can relay a response to the
+/// client chunk-by-chunk (SSE / long-poll / large downloads) instead of buffering the
+/// whole body first. Ordering: `metadata?` → `head` → `body`* → `end` (a terminal
+/// `end`, or the stream finishes throwing on failure).
 enum UpstreamResponseEvent: Sendable {
-    case head(statusCode: Int, httpVersion: String?, headers: [HeaderPair], appliedRules: [AppliedRule])
+    /// Exchange-level metadata known *before* the response — currently the traffic
+    /// rules that acted on the request. Emitted once, first, by `RuleApplyingForwarder`,
+    /// and omitted entirely when no rule matched (so a no-rule passthrough yields no
+    /// extra event). Because it precedes the network call, it is the reason a failed
+    /// exchange can still record its rule hits: it arrives before any `head` or error.
+    case metadata(appliedRules: [AppliedRule])
+    case head(statusCode: Int, httpVersion: String?, headers: [HeaderPair])
     case body(Data)
     case end
 }
@@ -44,7 +47,7 @@ extension UpstreamForwarding {
                 do {
                     let collected = try await body.collect()
                     let result = try await forward(method: method, url: url, headers: headers, body: collected)
-                    continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
+                    continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
                     if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                     continuation.yield(.end)
                     continuation.finish()

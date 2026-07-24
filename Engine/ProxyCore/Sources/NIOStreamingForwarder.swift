@@ -32,7 +32,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         var bodyData = Data()
         for try await event in forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
             switch event {
-            case let .head(code, version, headers, _): statusCode = code; httpVersion = version; responseHeaders = headers
+            case .metadata: break // applied rules travel on the event stream, not the buffered result
+            case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
             case let .body(chunk): bodyData.append(chunk)
             case .end: break
             }
@@ -231,7 +232,7 @@ private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked 
             // no longer describe the bytes — strip them (the client writer re-frames).
             let headers = HTTPUtil.sanitizeDecodedResponseHeaders(HTTPUtil.headerPairs(head.headers))
             let version = "HTTP/\(head.version.major).\(head.version.minor)"
-            continuation.yield(.head(statusCode: Int(head.status.code), httpVersion: version, headers: headers, appliedRules: []))
+            continuation.yield(.head(statusCode: Int(head.status.code), httpVersion: version, headers: headers))
         case var .body(chunk):
             if let bytes = chunk.readBytes(length: chunk.readableBytes) {
                 continuation.yield(.body(Data(bytes)))

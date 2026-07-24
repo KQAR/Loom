@@ -610,18 +610,33 @@ public actor ProxyEngine: ProxyControlling {
 
         let newID = UUID()
         let startedAt = Date()
+        // Replay consumes the same event stream as live traffic (not the buffered
+        // `forward`), so rule hits arrive via `.metadata` before any response or
+        // error — a replay that fails to connect still records its applied rules.
+        var appliedRules: [AppliedRule] = []
+        var statusCode = 0
+        var httpVersion: String?
+        var responseHeaders: [HeaderPair] = []
+        var responseBody = Data()
         do {
-            let result = try await forwarder.forward(method: method, url: url, headers: headers, body: body)
+            for try await event in forwarder.forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
+                switch event {
+                case let .metadata(rules): appliedRules = rules
+                case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
+                case let .body(chunk): responseBody.append(chunk)
+                case .end: break
+                }
+            }
             let flow = Flow(
                 id: newID,
                 request: capturedRequest,
                 startedAt: startedAt,
                 outcome: .completed(
-                    CapturedResponse(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, body: result.body),
+                    CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody),
                     at: Date()
                 ),
                 replayedFrom: id,
-                appliedRules: result.appliedRules.isEmpty ? nil : result.appliedRules
+                appliedRules: appliedRules.isEmpty ? nil : appliedRules
             )
             await store.upsert(flow, force: true) // explicit action: record even when capture is paused
             return flow
@@ -631,7 +646,8 @@ public actor ProxyEngine: ProxyControlling {
                 request: capturedRequest,
                 startedAt: startedAt,
                 outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
-                replayedFrom: id
+                replayedFrom: id,
+                appliedRules: appliedRules.isEmpty ? nil : appliedRules
             )
             await store.upsert(flow, force: true)
             throw ProxyControlError.replayFailed(error.localizedDescription)

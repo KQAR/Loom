@@ -72,11 +72,15 @@ enum StreamRelay {
                 // upstream stream (onTermination → upstream close).
                 if Task.isCancelled || !channel.isActive { break }
                 switch event {
-                case let .head(code, version, headers, rules):
+                case let .metadata(rules):
+                    // Rule hits arrive before the head (or before an upstream error), so
+                    // record them now — this is what lets a *failed* exchange still show
+                    // its applied rules in the flow / UI.
+                    appliedRules = rules
+                case let .head(code, version, headers):
                     statusCode = code
                     httpVersion = version
                     responseHeaders = headers
-                    appliedRules = rules
                     headWritten = true
                     bodyless = HTTPUtil.responseHasNoBody(requestMethod: baseRequest.method, status: code)
                     HTTPUtil.writeResponseHead(channel: channel, status: code, headers: headers, keepAlive: keepAlive, chunked: !bodyless)
@@ -85,7 +89,7 @@ enum StreamRelay {
                         id: flowID, request: request(), startedAt: startedAt,
                         outcome: .streaming(CapturedResponse(statusCode: code, httpVersion: version, headers: headers, body: nil)),
                         sourceApp: sourceApp, sourceDevice: sourceDevice,
-                        appliedRules: rules.isEmpty ? nil : rules
+                        appliedRules: appliedRules.isEmpty ? nil : appliedRules
                     ))
                 case let .body(chunk):
                     // A bodyless response (HEAD / 204 / 304) must never carry body
@@ -124,7 +128,8 @@ enum StreamRelay {
                 await store.upsert(Flow(
                     id: flowID, request: request(), startedAt: startedAt,
                     outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
-                    sourceApp: sourceApp, sourceDevice: sourceDevice
+                    sourceApp: sourceApp, sourceDevice: sourceDevice,
+                    appliedRules: appliedRules.isEmpty ? nil : appliedRules
                 ))
                 HTTPUtil.writeResponse(
                     channel: channel, status: 502, headers: [],

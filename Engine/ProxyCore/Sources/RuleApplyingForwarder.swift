@@ -16,10 +16,24 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        let plan = RuleEngine.planRequest(
-            state: rules.snapshot(), method: method, url: url, headers: headers, body: body
+        // Fold our own event stream into a buffered result, so `forward` and
+        // `forwardStream` are one production path that can never disagree — applied
+        // rules come from the same `.metadata` event either way.
+        var statusCode = 200
+        var httpVersion: String?
+        var responseHeaders: [HeaderPair] = []
+        var responseBody = Data()
+        for try await event in forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
+            switch event {
+            case .metadata: break // applied rules travel on the event stream, not the buffered result
+            case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
+            case let .body(chunk): responseBody.append(chunk)
+            case .end: break
+            }
+        }
+        return ForwardResult(
+            statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody
         )
-        return try await execute(plan: plan)
     }
 
     /// Execute an already-computed plan. Taking the plan as a parameter (rather
@@ -50,9 +64,10 @@ final class RuleApplyingForwarder: UpstreamForwarding {
             result = Self.serveLocalFile(local)
         }
 
-        result = RuleEngine.applyResponseRewrites(plan.matched, to: result)
-        result.appliedRules = plan.appliedRules
-        return result
+        // Applied rules are not stamped on the result here: the caller emits them as a
+        // leading `.metadata` event (from `plan.appliedRules`), which is the single
+        // carrier that also survives a failure before any response.
+        return RuleEngine.applyResponseRewrites(plan.matched, to: result)
     }
 
     /// Stream the request body straight through when no matched rule needs the whole
@@ -85,8 +100,12 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                     do {
                         let collected = try await body.collect()
                         let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: collected)
+                        // Emit rule hits before running the plan so they survive an
+                        // upstream failure (the exchange records what matched even if
+                        // the connection never completes).
+                        if !plan.appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: plan.appliedRules)) }
                         let result = try await self.execute(plan: plan)
-                        continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
+                        continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
                         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                         continuation.yield(.end)
                         continuation.finish()
@@ -113,13 +132,13 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                     // Cancellation (client gone) aborts the delay instead of
                     // sleeping then forwarding anyway.
                     if delayMs > 0 { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
+                    // Emit rule hits before touching the network so they survive an
+                    // upstream failure that throws before any response head.
+                    if !appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: appliedRules)) }
                     for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: body) {
-                        switch event {
-                        case let .head(code, version, headers, _):
-                            continuation.yield(.head(statusCode: code, httpVersion: version, headers: headers, appliedRules: appliedRules))
-                        case .body, .end:
-                            continuation.yield(event)
-                        }
+                        // The base (NIO) forwarder carries no rules; forward its events
+                        // untouched — the leading `.metadata` above is the rule carrier.
+                        continuation.yield(event)
                     }
                     continuation.finish()
                 } catch {
