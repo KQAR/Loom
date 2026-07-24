@@ -445,17 +445,30 @@ public struct MainView: View {
 
 // MARK: - Status pill (table Status column)
 
-/// Request status as a color dot: green 2xx · orange 3xx · red 4xx/5xx/error ·
-/// gray in-flight. The numeric code stays reachable as a tooltip (color isn't the
-/// only signal) and in the inspector.
+/// Request status as a color dot: green 2xx · orange 3xx · red 4xx/5xx/error.
+/// An in-flight request (no response yet, no error) shows a small spinner instead
+/// of a static dot, so "still running" reads at a glance. The numeric code stays
+/// reachable as a tooltip (color isn't the only signal) and in the inspector.
 struct StatusDot: View {
     let flow: Flow
 
+    /// No response head and no error yet → the request is still in flight.
+    private var isInFlight: Bool { flow.statusCode == nil && flow.error == nil }
+
     var body: some View {
-        Circle()
-            .fill(LoomTheme.statusColor(status: flow.statusCode, isError: flow.error != nil))
-            .frame(width: 9, height: 9)
-            .help(statusText)
+        Group {
+            if isInFlight {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6) // fit the 28pt status column without inflating row height
+                    .frame(width: 14, height: 14)
+            } else {
+                Circle()
+                    .fill(LoomTheme.statusColor(status: flow.statusCode, isError: flow.error != nil))
+                    .frame(width: 9, height: 9)
+            }
+        }
+        .help(statusText)
     }
 
     private var statusText: String {
