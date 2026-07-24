@@ -12,6 +12,9 @@ public struct MainView: View {
     @State private var followTail = true
     /// Fill of the clear button's charging ring (0…1) while it's held.
     @State private var clearProgress: CGFloat = 0
+    /// The clear control is a small dot at rest, expanding to the full button when
+    /// the cursor is over/near it.
+    @State private var clearHovering = false
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
 
@@ -141,21 +144,16 @@ public struct MainView: View {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             requestTable
-                // Bottom scroll redundancy (~3 rows) so the last rows scroll clear
-                // of the floating clear button. `contentMargins` pads *inside* the
-                // scroll content (same background), so there's no distinct dimmed
-                // band the way a safe-area inset spacer would leave.
-                .contentMargins(.bottom, Self.clearFABScrollInset, for: .scrollContent)
+                // The clear control floats over the table (bottom-right): a small red
+                // dot at rest, expanding to the full hold-to-clear button on hover, so
+                // it barely covers content until you reach for it. No reserved gap —
+                // the table keeps full height and the row stripes fill it.
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if store.droppedFlowCount > 0 { capBanner }
                 }
                 .overlay(alignment: .bottomTrailing) { clearFAB }
         }
     }
-
-    /// Bottom scroll padding under the flow table so the floating clear button
-    /// (`clearFAB`) can't hide the last rows — roughly three table rows.
-    private static let clearFABScrollInset: CGFloat = 84
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped
     /// the oldest flows, so a huge capture doesn't masquerade as complete.
@@ -172,36 +170,54 @@ public struct MainView: View {
         .background(.bar)
     }
 
-    /// Destructive "clear captured flows", floated bottom-right of the flow list so
-    /// it only appears with the traffic it clears. Hold for 1s to fire — a red ring
-    /// charges around the trash glyph while held and springs back if released early,
-    /// so a single stray click can't wipe the capture (no modal confirmation).
+    /// Destructive "clear captured flows", floated bottom-right of the flow list.
+    /// At rest it's just a small red dot so it barely covers the table; hovering
+    /// (or reaching toward it) expands it to the full button. Hold for 1s to fire —
+    /// a red ring charges around the trash glyph while held and springs back if
+    /// released early, so a stray click can't wipe the capture (no modal dialog).
     private var clearFAB: some View {
         ZStack {
-            Circle()
-                .fill(.regularMaterial)
-                .overlay(Circle().strokeBorder(.quaternary, lineWidth: 1))
-            Circle()
-                .trim(from: 0, to: clearProgress)
-                .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
-                .padding(3)
-            Image(systemName: "trash")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.red)
+            if clearHovering {
+                ZStack {
+                    Circle()
+                        .fill(.regularMaterial)
+                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 1))
+                    Circle()
+                        .trim(from: 0, to: clearProgress)
+                        .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
+                        .padding(3)
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color.red)
+                }
+                // Grow out of the dot: scale up from the corner + fade in.
+                .transition(.scale(scale: 0.3, anchor: .bottomTrailing).combined(with: .opacity))
+            } else {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 12, height: 12)
+                    .transition(.scale(scale: 0.5).combined(with: .opacity))
+            }
         }
-        .frame(width: 44, height: 44)
-        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+        .frame(width: clearHovering ? 44 : 22, height: clearHovering ? 44 : 22)
+        .shadow(color: .black.opacity(0.25), radius: clearHovering ? 4 : 2, y: clearHovering ? 2 : 1)
         .contentShape(Circle())
+        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: clearHovering)
+        .onHover { hovering in
+            clearHovering = hovering
+        }
         .onLongPressGesture(minimumDuration: 1.0, maximumDistance: 60) {
             store.send(.clearTapped)
             clearProgress = 0
         } onPressingChanged: { pressing in
+            // Pressing implies the cursor is on it — keep it expanded while held.
+            if pressing { clearHovering = true }
             withAnimation(pressing ? .linear(duration: 1.0) : .easeOut(duration: 0.2)) {
                 clearProgress = pressing ? 1 : 0
             }
         }
-        .help("Hold to clear captured flows")
+        .help(clearHovering ? "Hold to clear captured flows" : "Clear captured flows")
         .padding(LoomTheme.Space.md)
     }
 
