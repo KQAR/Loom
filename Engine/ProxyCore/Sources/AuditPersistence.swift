@@ -40,7 +40,7 @@ final class AuditPersistence: @unchecked Sendable {
     deinit { sqlite3_close(db) }
 
     static func makeDefault() -> AuditPersistence? {
-        AuditPersistence(fileURL: LoomPaths.appSupportFile("audit.sqlite"), maxRows: 3000)
+        AuditPersistence(fileURL: LoomPaths.appSupportFile("audit.sqlite"))
     }
 
     /// Fire-and-forget write; drained by `flush()` on quit.

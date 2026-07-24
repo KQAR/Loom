@@ -12,7 +12,7 @@ actor AuditStore {
     private let persistence: AuditPersistence?
     private var didLoadPersisted = false
 
-    init(capacity: Int = 3000, persistence: AuditPersistence? = nil) {
+    init(capacity: Int = 1000, persistence: AuditPersistence? = nil) {
         self.capacity = capacity
         self.persistence = persistence
     }
