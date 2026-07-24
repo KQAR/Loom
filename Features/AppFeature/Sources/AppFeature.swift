@@ -48,8 +48,9 @@ public struct AppFeature: Sendable {
         /// Bounded like the flow list so a long session can't grow it unbounded;
         /// the durable store keeps more, surfaced via the `get_audit_log` MCP tool.
         public var auditEntries: IdentifiedArrayOf<AuditEntry> = []
-        /// Most audit entries the window keeps in memory this session.
-        public static let auditDisplayCap = 500
+        /// Most audit entries the window keeps in memory this session (matches the
+        /// engine ring + durable-store cap).
+        public static let auditDisplayCap = 3000
 
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
@@ -230,6 +231,8 @@ public struct AppFeature: Sendable {
         case flowReceived(Flow)
         /// A write action was recorded (seed at boot + live stream).
         case auditEntryReceived(AuditEntry)
+        /// The human cleared the audit trail from the panel.
+        case auditClearTapped
         case connectedDeviceCountChanged(Int)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
@@ -438,6 +441,10 @@ public struct AppFeature: Sendable {
                     }
                 }
                 return .none
+
+            case .auditClearTapped:
+                state.auditEntries.removeAll()
+                return .run { _ in await proxyClient.clearAudit() }
 
             case let .categorySelected(category):
                 state.selectedCategory = category

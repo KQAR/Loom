@@ -205,6 +205,8 @@ public protocol AuditControlling: Sendable {
     /// Like `flowStream()`, it is unbuffered fan-out — a late subscriber misses
     /// prior entries (seed from `recentAuditEntries(limit:)`).
     func auditStream() async -> AsyncStream<AuditEntry>
+    /// Clear the entire audit trail — the in-memory ring and the durable store.
+    func clearAudit() async
 }
 
 public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling & AuditControlling

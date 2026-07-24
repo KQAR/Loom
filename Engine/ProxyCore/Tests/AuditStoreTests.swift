@@ -107,4 +107,17 @@ import LoomSharedModels
         #expect(recent.count == 2, "seeds the ring from disk")
         #expect(recent.first?.arguments == #"{"n":2}"#)
     }
+
+    @Test func store_clear_emptiesRingAndDisk() async throws {
+        let persistence = try #require(AuditPersistence(fileURL: fileURL))
+        let store = AuditStore(persistence: persistence)
+        await store.record(entry(1))
+        await store.record(entry(2))
+
+        await store.clear()
+
+        #expect(await store.recent(limit: 100).isEmpty, "ring cleared")
+        await store.flush() // drain the deleteAll
+        #expect(persistence.recent(limit: 100).isEmpty, "durable store cleared")
+    }
 }

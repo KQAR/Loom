@@ -124,4 +124,5 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
         Array(recordedAudits.reversed().prefix(limit))
     }
     func auditStream() async -> AsyncStream<AuditEntry> { AsyncStream { $0.finish() } }
+    func clearAudit() async { recordedAudits.removeAll() }
 }

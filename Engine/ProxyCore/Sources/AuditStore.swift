@@ -12,7 +12,7 @@ actor AuditStore {
     private let persistence: AuditPersistence?
     private var didLoadPersisted = false
 
-    init(capacity: Int = 1000, persistence: AuditPersistence? = nil) {
+    init(capacity: Int = 3000, persistence: AuditPersistence? = nil) {
         self.capacity = capacity
         self.persistence = persistence
     }
@@ -37,6 +37,15 @@ actor AuditStore {
         for continuation in continuations.values {
             continuation.yield(entry)
         }
+    }
+
+    /// Wipe the whole trail — the in-memory ring and the durable store — for the
+    /// human's "clear audit" control. Keeps `didLoadPersisted` true so the next read
+    /// doesn't reload the (now-empty) disk.
+    func clear() {
+        didLoadPersisted = true
+        entries.removeAll()
+        persistence?.deleteAll()
     }
 
     /// Newest-first, up to `limit`.

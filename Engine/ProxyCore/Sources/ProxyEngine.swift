@@ -211,6 +211,10 @@ public actor ProxyEngine: ProxyControlling {
         await auditStore.stream()
     }
 
+    public func clearAudit() async {
+        await auditStore.clear()
+    }
+
     // MARK: - CaptureControlling
 
     /// Pause/resume recording. Forwarding (and MITM decryption) is unaffected;
