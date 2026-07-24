@@ -12,9 +12,23 @@ actor FlowStore {
     private let persistence: FlowPersistence?
     private var didLoadPersisted = false
 
-    init(capacity: Int = 2000, persistence: FlowPersistence? = nil) {
+    /// Layer 2: total in-memory body bytes across the ring, and the ceiling. Over
+    /// the ceiling, the oldest *persisted* flows' bodies are dropped from memory
+    /// (they're safe on disk, re-attached on demand by `hydrated`). The ring keeps
+    /// up to `capacity` flows regardless; this bounds their *bytes*, which is what
+    /// large bodies actually blow up. Only completed flows are slimmed — an
+    /// in-flight body isn't on disk yet — and only when a store backs us.
+    private var bodyBytes = 0
+    private let bodyBudget: Int
+
+    init(capacity: Int = 2000, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil) {
         self.capacity = capacity
+        self.bodyBudget = bodyBudget
         self.persistence = persistence
+    }
+
+    private func bodySize(of flow: Flow) -> Int {
+        (flow.request.body?.count ?? 0) + (flow.response?.body?.count ?? 0)
     }
 
     /// Load recent persisted flows into the ring once (at boot), so captures
@@ -40,12 +54,16 @@ actor FlowStore {
     /// record their result.
     func upsert(_ flow: Flow, force: Bool = false) {
         if let idx = flows.firstIndex(where: { $0.id == flow.id }) {
+            bodyBytes += bodySize(of: flow) - bodySize(of: flows[idx])
             flows[idx] = flow
         } else {
             guard recording || force else { return }
             flows.append(flow)
+            bodyBytes += bodySize(of: flow)
             if flows.count > capacity {
-                flows.removeFirst(flows.count - capacity)
+                let overflow = flows.count - capacity
+                for evicted in flows.prefix(overflow) { bodyBytes -= bodySize(of: evicted) }
+                flows.removeFirst(overflow)
             }
         }
         // Persist only completed exchanges — in-flight flows live in the ring, so
@@ -53,8 +71,28 @@ actor FlowStore {
         if flow.completedAt != nil {
             persistence?.save(flow)
         }
+        enforceBodyBudget()
         for continuation in continuations.values {
             continuation.yield(flow)
+        }
+    }
+
+    /// Drop in-memory bodies from the oldest persisted flows until the ring is
+    /// under its byte budget. Slimmed flows keep all metadata; their bodies stay
+    /// on disk and `hydrated` re-attaches them on a detail/replay/export read.
+    /// No-op without a store (nothing to hydrate back from) or when in budget.
+    private func enforceBodyBudget() {
+        guard persistence != nil, bodyBytes > bodyBudget else { return }
+        for idx in flows.indices {
+            guard bodyBytes > bodyBudget else { break }
+            let existing = flows[idx]
+            // Only slim completed flows (an in-flight body isn't on disk yet) that
+            // still carry bytes.
+            guard existing.completedAt != nil else { continue }
+            let size = bodySize(of: existing)
+            guard size > 0 else { continue }
+            flows[idx] = existing.strippingBodies()
+            bodyBytes -= size
         }
     }
 
@@ -64,6 +102,7 @@ actor FlowStore {
 
     func clear() {
         flows.removeAll()
+        bodyBytes = 0
         persistence?.deleteAll()
     }
 
