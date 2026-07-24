@@ -55,6 +55,29 @@ private let appVersion: String =
 /// sending traffic to a dead port. (A crash skips this; the boot-time state
 /// sync in `AppFeature` then shows the stale override so the human can act.)
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Single-instance guard. Runs before the scene renders (so before the
+    /// menu-bar label's boot `.task` starts the proxy) and before MCP binds its
+    /// fixed port. If another Loom is already running under the same bundle id —
+    /// a second `/Applications` copy, a stray dev build from a git worktree, a
+    /// double double-click — hand focus to it and `exit(0)` immediately.
+    ///
+    /// We use `exit(0)`, NOT `NSApp.terminate`, on purpose: terminate would run
+    /// `applicationShouldTerminate` below, whose cleanup turns off the system
+    /// proxy — but that proxy belongs to the *first* instance, so tearing it
+    /// down here would break the live one. A duplicate must die without touching
+    /// any shared system state.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let others = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != me }
+        guard let existing = others.first else { return }
+        existing.activate()
+        NSLog("Loom: another instance (pid \(existing.processIdentifier)) is already running — exiting.")
+        exit(0)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let helper = PrivilegedHelperClient.liveValue
         Task.detached {
