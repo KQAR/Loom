@@ -455,15 +455,22 @@ public actor ProxyEngine: ProxyControlling {
         }
     }
 
-    public func setRules(_ rules: [TrafficRule]) async throws {
-        // Validate every rule before touching state so one bad rule can't leave a
-        // half-applied set.
+    @discardableResult
+    public func setRules(_ rules: [TrafficRule]) async -> SetRulesReport {
+        // Degrade gracefully: apply every rule that validates and drop the rest,
+        // so a single malformed rule can't reject the whole synced set. The
+        // caller gets a per-rule report of what was left out and why.
+        var applied: [TrafficRule] = []
+        var rejected: [SetRulesReport.Rejection] = []
         for rule in rules {
             if let reason = rule.validationError() {
-                throw ProxyControlError.invalidRule(reason)
+                rejected.append(.init(id: rule.id, name: rule.name, reason: reason))
+            } else {
+                applied.append(rule)
             }
         }
-        rulesConfig.replaceAll(rules)
+        rulesConfig.replaceAll(applied)
+        return SetRulesReport(applied: applied, rejected: rejected)
     }
 
     public func setGroupEnabled(group: String?, enabled: Bool) async {

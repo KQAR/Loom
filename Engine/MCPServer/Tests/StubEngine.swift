@@ -68,11 +68,18 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
         deletedRuleIDs.append(id)
         rules.rules.removeAll { $0.id == id }
     }
-    func setRules(_ rules: [TrafficRule]) async throws {
-        for rule in rules where rule.validationError() != nil {
-            throw ProxyControlError.invalidRule(rule.validationError()!)
+    func setRules(_ rules: [TrafficRule]) async -> SetRulesReport {
+        var applied: [TrafficRule] = []
+        var rejected: [SetRulesReport.Rejection] = []
+        for rule in rules {
+            if let reason = rule.validationError() {
+                rejected.append(.init(id: rule.id, name: rule.name, reason: reason))
+            } else {
+                applied.append(rule)
+            }
         }
-        self.rules.rules = rules
+        self.rules.rules = applied
+        return SetRulesReport(applied: applied, rejected: rejected)
     }
     func setGroupEnabled(group: String?, enabled: Bool) async {
         for i in rules.rules.indices where rules.rules[i].group == group { rules.rules[i].isEnabled = enabled }

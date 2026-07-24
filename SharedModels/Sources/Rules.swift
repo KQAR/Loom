@@ -484,6 +484,38 @@ public struct RulesState: Equatable, Codable, Sendable {
 
 // MARK: - Engine surface
 
+/// The outcome of a full-set sync via `setRules(_:)`: which rules were applied
+/// and which were dropped, each with the reason. A caller syncing an
+/// externally-owned rule set can then degrade gracefully — one malformed rule
+/// no longer poisons the whole set — and surface exactly what was rejected.
+public struct SetRulesReport: Equatable, Sendable {
+    /// A single rule that failed validation and was left out of the applied set.
+    public struct Rejection: Equatable, Sendable {
+        public let id: UUID
+        public let name: String
+        public let reason: String
+
+        public init(id: UUID, name: String, reason: String) {
+            self.id = id
+            self.name = name
+            self.reason = reason
+        }
+    }
+
+    /// Rules that passed validation and are now the active set, in order.
+    public let applied: [TrafficRule]
+    /// Rules dropped from the sync, each paired with its validation error.
+    public let rejected: [Rejection]
+
+    public init(applied: [TrafficRule], rejected: [Rejection]) {
+        self.applied = applied
+        self.rejected = rejected
+    }
+
+    /// True when every submitted rule was applied.
+    public var allApplied: Bool { rejected.isEmpty }
+}
+
 /// The rules surface of the engine — CRUD over `TrafficRule`s plus the master
 /// switch. Composed into `ProxyControlling` so the MCP server and the TCA client
 /// mutate the same rule set through the one shared engine.
@@ -495,10 +527,13 @@ public protocol RulesControlling: Sendable {
     /// Replaces the rule with the same id; throws when unknown or invalid.
     func updateRule(_ rule: TrafficRule) async throws
     func deleteRule(id: UUID) async throws
-    /// Atomically replaces the whole rule list, validating each rule first — for a
-    /// caller (e.g. an embedding host) that owns the rule set elsewhere and syncs
-    /// it in one shot rather than through per-rule CRUD.
-    func setRules(_ rules: [TrafficRule]) async throws
+    /// Replaces the whole rule list in one shot — for a caller (e.g. an embedding
+    /// host) that owns the rule set elsewhere and syncs it wholesale rather than
+    /// through per-rule CRUD. Applies every rule that validates and drops the
+    /// rest, returning a `SetRulesReport` of what was applied and what was
+    /// rejected (with reasons), so one malformed rule can't reject the whole set.
+    @discardableResult
+    func setRules(_ rules: [TrafficRule]) async -> SetRulesReport
     /// Enable/disable every rule in a group at once (`nil` = the ungrouped rules).
     func setGroupEnabled(group: String?, enabled: Bool) async
 }
