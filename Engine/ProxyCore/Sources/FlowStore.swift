@@ -98,8 +98,29 @@ actor FlowStore {
         return finalized
     }
 
+    /// A flow by id, with bodies re-attached from disk when the in-memory copy is
+    /// body-free — i.e. a flow reloaded from a prior session (or, once Layer 2
+    /// lands, slimmed by the ring budget). Detail/replay/diff read through here, so
+    /// they always see full bodies without knowing the flow was ever slimmed.
     func flow(id: UUID) -> Flow? {
-        flows.first { $0.id == id }
+        flows.first { $0.id == id }.map(hydrated)
+    }
+
+    /// Recent flows with bodies re-attached — for exports (HAR) that need the full
+    /// payload. The plain `recent` stays body-free for cheap list/summary reads.
+    func recentHydrated(limit: Int) -> [Flow] {
+        recent(limit: limit).map(hydrated)
+    }
+
+    /// Re-attach persisted bodies when the in-memory flow carries none. A live
+    /// flow that still holds its bodies is returned untouched; a genuinely
+    /// body-less flow stays body-less (the columns are nil too).
+    private func hydrated(_ flow: Flow) -> Flow {
+        guard flow.request.body == nil, flow.response?.body == nil,
+              let persistence, let bodies = persistence.bodies(id: flow.id),
+              bodies.request != nil || bodies.response != nil
+        else { return flow }
+        return flow.attachingBodies(request: bodies.request, response: bodies.response)
     }
 
     var count: Int { flows.count }

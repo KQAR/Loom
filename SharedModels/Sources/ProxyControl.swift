@@ -90,6 +90,10 @@ public enum ProxyControlError: Error, Equatable, Sendable {
 public protocol FlowProviding: Sendable {
     func status() async -> ProxyStatus
     func recentFlows(limit: Int) async -> [Flow]
+    /// Like `recentFlows`, but with request/response bodies hydrated — for
+    /// exports (HAR) that need the full payload, not just summaries. Kept
+    /// separate so the common list/summary path stays body-free (cheap).
+    func recentFlowsForExport(limit: Int) async -> [Flow]
     func flow(id: UUID) async -> Flow?
     /// A live stream of flows as they are captured or updated.
     func flowStream() async -> AsyncStream<Flow>
