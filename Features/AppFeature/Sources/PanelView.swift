@@ -128,7 +128,7 @@ public struct PanelView: View {
         }
         // Cert setup card: only while SSL is on and the CA isn't trusted yet.
         if store.setup.sslEnabled, !store.setup.certificateStatus.trustState.isReady {
-            certificateCard
+            CertificateTrustCard(store: store.scope(state: \.setup, action: \.setup))
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.top, LoomTheme.Space.xxs)
         }
@@ -181,91 +181,6 @@ public struct PanelView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: Certificate setup card
-
-    @ViewBuilder private var certificateCard: some View {
-        let state = store.setup.certificateStatus.trustState
-        VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
-            HStack(spacing: LoomTheme.Space.sm) {
-                Image(systemName: state.systemImageName)
-                    .font(LoomTheme.Icon.card)
-                    .foregroundStyle(.orange)
-                    .frame(width: 20)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(state.title).font(.callout.weight(.semibold))
-                    Text(state.message).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            if let fingerprint = store.setup.certificateStatus.sha256Fingerprint {
-                Text(fingerprint)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-            }
-
-            HStack(spacing: LoomTheme.Space.sm) {
-                Button {
-                    store.send(.setup(.installAndTrustCATapped))
-                } label: {
-                    Label("Install & Trust", systemImage: "checkmark.shield")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(store.setup.certBusy)
-
-                Button("Recheck") { store.send(.setup(.recheckCertTapped)) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(store.setup.certBusy)
-
-                Button("Export…") { store.send(.setup(.exportCATapped)) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(store.setup.certBusy)
-            }
-
-            if store.setup.certBusy {
-                HStack(spacing: LoomTheme.Space.xs) {
-                    ProgressView().controlSize(.small)
-                    Text(store.setup.certActionMessage ?? "Working…").font(.caption2).foregroundStyle(.secondary)
-                }
-            } else if let message = store.setup.certActionMessage {
-                Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let path = store.setup.certificateStatus.exportedPEMPath {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Manual trust:").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                    manualCommand(path: path)
-                }
-            }
-        }
-        .padding(LoomTheme.Space.sm)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-    }
-
-    private func manualCommand(path: String) -> some View {
-        let command = "sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain \(path)"
-        return HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
-            Text(command)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(command, forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc")
-            }
-            .buttonStyle(.borderless)
-            .font(.caption2)
-            .help("Copy the trust command")
-        }
-    }
 
     // MARK: Footer
 

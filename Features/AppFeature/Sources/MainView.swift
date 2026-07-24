@@ -12,6 +12,8 @@ public struct MainView: View {
     @State private var followTail = true
     /// Fill of the clear button's charging ring (0…1) while it's held.
     @State private var clearProgress: CGFloat = 0
+    /// Whether the SSL button's cert install-&-trust popover is open.
+    @State private var showingCertTrust = false
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -378,10 +380,7 @@ public struct MainView: View {
                            help: store.setup.isSystemProxy ? "System proxy: on" : "System proxy: off") {
                     store.send(.setup(.toggleSystemProxyTapped))
                 }
-                statusIcon("lock.shield", on: store.setup.sslEnabled,
-                           help: store.setup.sslEnabled ? "SSL proxying: on" : "SSL proxying: off") {
-                    store.send(.setup(.toggleSSLTapped))
-                }
+                sslButton
                 statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
                            help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
                     store.send(.rules(.toggleRulesTapped))
@@ -415,6 +414,34 @@ public struct MainView: View {
         .help(store.isRecording
             ? "Stop recording — traffic keeps flowing but isn't captured"
             : "Start recording captured traffic")
+    }
+
+    /// SSL proxying toggle with a cert-trust affordance. When SSL is on but the
+    /// root CA isn't trusted yet, HTTPS can't be decrypted — the icon goes **yellow**
+    /// and a tap opens the same install-&-trust popover as the status-bar panel
+    /// (reusing `CertificateTrustCard`) instead of toggling. Otherwise it's the
+    /// normal on/off toggle (green when on).
+    private var sslButton: some View {
+        let needsTrust = store.setup.sslEnabled && !store.setup.certificateStatus.trustState.isReady
+        return Button {
+            if needsTrust { showingCertTrust = true }
+            else { store.send(.setup(.toggleSSLTapped)) }
+        } label: {
+            Image(systemName: "lock.shield")
+                .font(LoomTheme.Icon.toolbar)
+                .foregroundStyle(needsTrust ? Color.yellow : (store.setup.sslEnabled ? Color.green : Color.secondary))
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(needsTrust
+            ? "HTTPS interception is on but the CA isn't trusted — click to install & trust"
+            : (store.setup.sslEnabled ? "SSL proxying: on" : "SSL proxying: off"))
+        .popover(isPresented: $showingCertTrust, arrowEdge: .bottom) {
+            CertificateTrustCard(store: store.scope(state: \.setup, action: \.setup))
+                .frame(width: 320)
+                .padding(LoomTheme.Space.md)
+        }
     }
 
     private func statusIcon(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
