@@ -28,6 +28,12 @@ final class ProxyServer {
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
+                // Count the connecting device (LAN peers only; loopback = this Mac)
+                // the moment the socket is accepted — independent of whether its
+                // traffic is ever captured, so a blind-tunneled HTTPS phone counts.
+                if let ip = channel.remoteAddress?.ipAddress {
+                    Task { await store.noteConnection(remoteIP: ip) }
+                }
                 let encoder = HTTPResponseEncoder()
                 let decoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
                 let proxy = ProxyHandler(store: store, group: group, forwarder: forwarder, ca: ca, config: config, observeTunnels: observeTunnels)

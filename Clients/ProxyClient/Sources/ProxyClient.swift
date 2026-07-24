@@ -43,6 +43,8 @@ public struct ProxyClient: Sendable {
     public var recentAuditEntries: @Sendable (_ limit: Int) async -> [AuditEntry] = { _ in [] }
     /// Live stream of audit entries as write actions are recorded.
     public var auditStream: @Sendable () async -> AsyncStream<AuditEntry> = { AsyncStream { $0.finish() } }
+    /// Live count of LAN devices connected to the proxy (excludes this Mac).
+    public var connectedDeviceCountStream: @Sendable () async -> AsyncStream<Int> = { AsyncStream { $0.finish() } }
 }
 
 extension ProxyClient: DependencyKey {
@@ -74,7 +76,8 @@ extension ProxyClient: DependencyKey {
             stopPhoneOnboarding: { await engine.stopPhoneOnboarding() },
             phoneOnboardingInfo: { await engine.phoneOnboardingInfo() },
             recentAuditEntries: { await engine.recentAuditEntries(limit: $0) },
-            auditStream: { await engine.auditStream() }
+            auditStream: { await engine.auditStream() },
+            connectedDeviceCountStream: { await engine.connectedDeviceCountStream() }
         )
     }()
 

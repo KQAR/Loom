@@ -12,6 +12,14 @@ actor FlowStore {
     private let persistence: FlowPersistence?
     private var didLoadPersisted = false
 
+    /// Distinct remote LAN client IPs that have opened a connection to the proxy
+    /// this session — i.e. *devices connected to the proxy*, independent of whether
+    /// their traffic was ever captured (a blind-tunneled HTTPS phone still counts,
+    /// which the flow-derived `SourceDevice` view would miss). Loopback (this Mac)
+    /// is excluded. Session-scoped: reset on `clear()` and by a relaunch.
+    private var connectedLANIPs: Set<String> = []
+    private var deviceCountContinuations: [UUID: AsyncStream<Int>.Continuation] = [:]
+
     /// Layer 2: total in-memory body bytes across the ring, and the ceiling. Over
     /// the ceiling, the oldest *persisted* flows' bodies are dropped from memory
     /// (they're safe on disk, re-attached on demand by `hydrated`). The ring keeps
@@ -54,6 +62,35 @@ actor FlowStore {
     }
 
     var isRecording: Bool { recording }
+
+    /// Record that a client opened a connection to the proxy. Called from the
+    /// server's child-channel initializer for every accepted connection. Only LAN
+    /// peers count (loopback = this Mac). Broadcasts the new total on a first sight.
+    func noteConnection(remoteIP: String) {
+        guard SourceDevice.kind(forIP: remoteIP) == .lan else { return }
+        guard connectedLANIPs.insert(remoteIP).inserted else { return }
+        let count = connectedLANIPs.count
+        for continuation in deviceCountContinuations.values { continuation.yield(count) }
+    }
+
+    var connectedDeviceCount: Int { connectedLANIPs.count }
+
+    /// Live count of connected LAN devices. Seeds the current value on subscribe,
+    /// then yields on each newly-seen device (and on `clear()`).
+    func connectedDeviceCountStream() -> AsyncStream<Int> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            continuation.yield(connectedLANIPs.count)
+            deviceCountContinuations[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.dropDeviceCountContinuation(id) }
+            }
+        }
+    }
+
+    private func dropDeviceCountContinuation(_ id: UUID) {
+        deviceCountContinuations[id] = nil
+    }
 
     /// Pause/resume capture. Paused: new flows are dropped, but updates to
     /// already-recorded flows (in-flight completions) still land, so a request
@@ -115,6 +152,8 @@ actor FlowStore {
     func clear() {
         flows.removeAll()
         bodyBytes = 0
+        connectedLANIPs.removeAll()
+        for continuation in deviceCountContinuations.values { continuation.yield(0) }
         persistence?.deleteAll()
     }
 
