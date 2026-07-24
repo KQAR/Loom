@@ -48,9 +48,9 @@ public struct AppFeature: Sendable {
         /// Bounded like the flow list so a long session can't grow it unbounded;
         /// the durable store keeps more, surfaced via the `get_audit_log` MCP tool.
         public var auditEntries: IdentifiedArrayOf<AuditEntry> = []
-        /// Most audit entries the window keeps in memory this session (matches the
-        /// engine ring + durable-store cap).
-        public static let auditDisplayCap = 3000
+        /// Most audit entries the window keeps in memory this session; the durable
+        /// store keeps more, surfaced via the `get_audit_log` MCP tool.
+        public static let auditDisplayCap = 500
 
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
