@@ -6,7 +6,7 @@ import NIOHTTPCompression
 import NIOSSL
 import LoomSharedModels
 
-/// Upstream client built directly on SwiftNIO (M4), replacing `URLSessionForwarder`.
+/// Upstream client built directly on SwiftNIO (M4), replacing an earlier URLSession-based forwarder.
 /// Unlike URLSession it lets Loom own every request header — notably `Host`, so a
 /// map-remote rule can keep the original Host (`keepHostHeader`) — and originates
 /// its own normally-validated TLS to the real server for the intercept path.
