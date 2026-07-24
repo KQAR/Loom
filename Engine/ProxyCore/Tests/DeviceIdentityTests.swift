@@ -1,24 +1,27 @@
-import XCTest
+import Testing
 @testable import ProxyCore
 import SharedModels
 
-final class DeviceIdentityTests: XCTestCase {
-    // MARK: - Display name: disambiguated fallback (aliases layered on in the UI)
+@Suite struct DeviceIdentityTests {
+    // MARK: Display name: disambiguated fallback (aliases layered on in the UI)
 
-    func test_displayName_usesPlatformAndIPSuffix() {
+    @Test func displayName_usesPlatformAndIPSuffix() {
         let device = SourceDevice(ip: "192.168.1.37", kind: .lan, platform: "iOS", client: "Safari")
-        XCTAssertEqual(device.ipSuffix, ".37")
-        XCTAssertEqual(device.displayName, "iOS .37") // two same-type devices stay distinct by suffix
+        #expect(device.ipSuffix == ".37")
+        #expect(device.displayName == "iOS .37") // two same-type devices stay distinct by suffix
     }
 
-    func test_displayName_localIsThisMac() {
+    @Test func displayName_localIsThisMac() {
         let device = SourceDevice(ip: "127.0.0.1", kind: .local, platform: "macOS", client: "Chrome")
-        XCTAssertEqual(device.displayName, "This Mac")
+        #expect(device.displayName == "This Mac")
     }
 
-    func test_kindClassification() {
-        XCTAssertEqual(SourceDevice.kind(forIP: "127.0.0.1"), .local)
-        XCTAssertEqual(SourceDevice.kind(forIP: "::1"), .local)
-        XCTAssertEqual(SourceDevice.kind(forIP: "192.168.1.20"), .lan)
+    @Test(arguments: [
+        ("127.0.0.1", SourceDevice.Kind.local),
+        ("::1", .local),
+        ("192.168.1.20", .lan),
+    ])
+    func kindClassification(ip: String, expected: SourceDevice.Kind) {
+        #expect(SourceDevice.kind(forIP: ip) == expected)
     }
 }

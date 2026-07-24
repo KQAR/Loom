@@ -1,79 +1,82 @@
+import Foundation
 import SharedModels
-import XCTest
+import Testing
 
 @testable import AppFeature
 
 // MARK: - Order-preserving JSON
 
-final class JSONValueTests: XCTestCase {
+@Suite struct JSONValueTests {
     private func parse(_ s: String) -> JSONValue? { JSONValue.parse(Data(s.utf8)) }
 
-    func test_object_preservesKeyOrder() {
+    @Test func object_preservesKeyOrder() {
         // Foundation's JSONSerialization reshuffles keys; a debugger must not.
-        XCTAssertEqual(parse(#"{"b":1,"a":2}"#), .object([("b", .number("1")), ("a", .number("2"))]))
-        XCTAssertNotEqual(parse(#"{"b":1,"a":2}"#), .object([("a", .number("2")), ("b", .number("1"))]))
+        #expect(parse(#"{"b":1,"a":2}"#) == .object([("b", .number("1")), ("a", .number("2"))]))
+        #expect(parse(#"{"b":1,"a":2}"#) != .object([("a", .number("2")), ("b", .number("1"))]))
     }
 
-    func test_nestedContainers_boolNullNumberString() {
+    @Test func nestedContainers_boolNullNumberString() {
         let parsed = parse(#"{"s":"a\nb","arr":[true,null,3.5]}"#)
-        XCTAssertEqual(parsed, .object([
+        #expect(parsed == .object([
             ("s", .string("a\nb")),
             ("arr", .array([.bool(true), .null, .number("3.5")])),
         ]))
     }
 
-    func test_unicodeEscape() {
+    @Test func unicodeEscape() {
         // JSON text {"k":"Aé"} decodes to "Aé".
         let json = "{\"k\":\"\\u0041\\u00e9\"}"
-        XCTAssertEqual(parse(json), .object([("k", .string("Aé"))]))
+        #expect(parse(json) == .object([("k", .string("Aé"))]))
     }
 
-    func test_malformed_returnsNil() {
-        XCTAssertNil(parse(#"{"a":}"#))
-        XCTAssertNil(parse("not json"))
-        XCTAssertNil(parse(#"{"a":1"#)) // unterminated object
+    @Test(arguments: [
+        #"{"a":}"#,     // value missing
+        "not json",
+        #"{"a":1"#,      // unterminated object
+    ])
+    func malformed_returnsNil(input: String) {
+        #expect(parse(input) == nil)
     }
 
-    func test_prettyPrinted_roundTrips() {
-        let original = parse(#"{"z":[1,2],"a":{"nested":"x"}}"#)
-        XCTAssertNotNil(original)
-        let reparsed = JSONValue.parse(Data(original!.prettyPrinted().utf8))
-        XCTAssertEqual(reparsed, original) // reformatting never reorders keys
+    @Test func prettyPrinted_roundTrips() throws {
+        let original = try #require(parse(#"{"z":[1,2],"a":{"nested":"x"}}"#))
+        let reparsed = JSONValue.parse(Data(original.prettyPrinted().utf8))
+        #expect(reparsed == original) // reformatting never reorders keys
     }
 }
 
 // MARK: - Cookie parsing
 
-final class CookieParsingTests: XCTestCase {
-    func test_requestCookies_splitsPairs() {
+@Suite struct CookieParsingTests {
+    @Test func requestCookies_splitsPairs() {
         let cookies = CookieParsing.requestCookies([
             HeaderPair(name: "Cookie", value: "a=1; b=2"),
         ])
-        XCTAssertEqual(cookies.map(\.name), ["a", "b"])
-        XCTAssertEqual(cookies.map(\.value), ["1", "2"])
+        #expect(cookies.map(\.name) == ["a", "b"])
+        #expect(cookies.map(\.value) == ["1", "2"])
     }
 
-    func test_requestCookies_caseInsensitiveHeaderAndDropsMalformed() {
+    @Test func requestCookies_caseInsensitiveHeaderAndDropsMalformed() {
         let cookies = CookieParsing.requestCookies([
             HeaderPair(name: "cookie", value: "ok=yes; bare; =leading"),
         ])
-        XCTAssertEqual(cookies.map(\.name), ["ok"]) // "bare" (no =) and "=leading" dropped
+        #expect(cookies.map(\.name) == ["ok"]) // "bare" (no =) and "=leading" dropped
     }
 
-    func test_responseCookies_splitsValueFromAttributes() {
+    @Test func responseCookies_splitsValueFromAttributes() {
         let cookies = CookieParsing.responseCookies([
             HeaderPair(name: "Set-Cookie", value: "session=xyz; Path=/; HttpOnly"),
         ])
-        XCTAssertEqual(cookies.first?.name, "session")
-        XCTAssertEqual(cookies.first?.value, "xyz")
-        XCTAssertEqual(cookies.first?.attributes, "Path=/ · HttpOnly")
+        #expect(cookies.first?.name == "session")
+        #expect(cookies.first?.value == "xyz")
+        #expect(cookies.first?.attributes == "Path=/ · HttpOnly")
     }
 }
 
 // MARK: - cURL reconstruction
 
-final class CurlCommandTests: XCTestCase {
-    func test_get_omitsMethodFlag_andCurlSetHeaders() {
+@Suite struct CurlCommandTests {
+    @Test func get_omitsMethodFlag_andCurlSetHeaders() {
         let flow = Fixtures.flow(
             method: "GET",
             url: "https://api.example.com/v1/home",
@@ -84,14 +87,14 @@ final class CurlCommandTests: XCTestCase {
             ]
         )
         let curl = Curl.command(flow)
-        XCTAssertFalse(curl.contains("-X"), "GET should not carry an explicit method")
-        XCTAssertTrue(curl.contains("'https://api.example.com/v1/home'"))
-        XCTAssertTrue(curl.contains("-H 'Accept: application/json'"))
-        XCTAssertFalse(curl.contains("Host:"), "curl sets Host itself")
-        XCTAssertFalse(curl.contains("Content-Length:"), "curl sets Content-Length itself")
+        #expect(!curl.contains("-X"), "GET should not carry an explicit method")
+        #expect(curl.contains("'https://api.example.com/v1/home'"))
+        #expect(curl.contains("-H 'Accept: application/json'"))
+        #expect(!curl.contains("Host:"), "curl sets Host itself")
+        #expect(!curl.contains("Content-Length:"), "curl sets Content-Length itself")
     }
 
-    func test_post_addsMethodAndBody() {
+    @Test func post_addsMethodAndBody() {
         let flow = Fixtures.flow(
             method: "POST",
             url: "https://api.example.com/v1/login",
@@ -99,25 +102,25 @@ final class CurlCommandTests: XCTestCase {
             status: 200
         )
         let curl = Curl.command(flow)
-        XCTAssertTrue(curl.contains("-X POST"))
-        XCTAssertTrue(curl.contains(#"--data '{"u":"a"}'"#))
+        #expect(curl.contains("-X POST"))
+        #expect(curl.contains(#"--data '{"u":"a"}'"#))
     }
 
-    func test_singleQuotesInValuesAreEscaped() {
+    @Test func singleQuotesInValuesAreEscaped() {
         let flow = Fixtures.flow(
             method: "GET",
             url: "https://api.example.com/it's",
             requestHeaders: []
         )
         let curl = Curl.command(flow)
-        XCTAssertTrue(curl.contains(#"it'\''s"#), "single quotes must be POSIX-escaped")
+        #expect(curl.contains(#"it'\''s"#), "single quotes must be POSIX-escaped")
     }
 }
 
 // MARK: - One-click rule templates
 
-final class RuleFactoryTests: XCTestCase {
-    func test_mockResponse_pinsCapturedResponse_stripsQuery() {
+@Suite struct RuleFactoryTests {
+    @Test func mockResponse_pinsCapturedResponse_stripsQuery() throws {
         let flow = Fixtures.flow(
             method: "GET",
             url: "https://api.example.com/v1/home?x=1",
@@ -125,33 +128,36 @@ final class RuleFactoryTests: XCTestCase {
             responseBody: Data(#"{"pinned":true}"#.utf8)
         )
         let rule = RuleFactory.rule(from: flow, template: .mockResponse)
-        XCTAssertEqual(rule?.match.urlPattern, "https://api.example.com/v1/home") // query stripped
-        XCTAssertEqual(rule?.match.methods, ["GET"])
-        guard case let .mock(mock) = rule?.actions.route else { return XCTFail("expected mock") }
-        XCTAssertEqual(mock.statusCode, 201)
-        XCTAssertEqual(mock.bodyText, #"{"pinned":true}"#)
+        #expect(rule?.match.urlPattern == "https://api.example.com/v1/home") // query stripped
+        #expect(rule?.match.methods == ["GET"])
+        guard case let .mock(mock) = rule?.actions.route else {
+            Issue.record("expected mock")
+            return
+        }
+        #expect(mock.statusCode == 201)
+        #expect(mock.bodyText == #"{"pinned":true}"#)
     }
 
-    func test_blockURL_blocksExactPrefix() {
+    @Test func blockURL_blocksExactPrefix() {
         let flow = Fixtures.flow(url: "https://api.example.com/v1/home?x=1")
         let rule = RuleFactory.rule(from: flow, template: .blockURL)
-        XCTAssertEqual(rule?.actions.route, .block)
-        XCTAssertEqual(rule?.match.urlPattern, "https://api.example.com/v1/home")
-        XCTAssertFalse(rule?.match.isRegex ?? true)
+        #expect(rule?.actions.route == .block)
+        #expect(rule?.match.urlPattern == "https://api.example.com/v1/home")
+        #expect(!(rule?.match.isRegex ?? true))
     }
 
-    func test_blockHost_usesAnchoredRegex_notSubstringGlob() {
+    @Test func blockHost_usesAnchoredRegex_notSubstringGlob() throws {
         let flow = Fixtures.flow(url: "https://api.example.com/v1/home")
-        let rule = RuleFactory.rule(from: flow, template: .blockHost)
-        XCTAssertEqual(rule?.actions.route, .block)
-        XCTAssertTrue(rule?.match.isRegex ?? false)
+        let rule = try #require(RuleFactory.rule(from: flow, template: .blockHost))
+        #expect(rule.actions.route == .block)
+        #expect(rule.match.isRegex)
         // Must match the host but not a look-alike suffix domain.
-        XCTAssertTrue(rule!.match.matches(method: "GET", url: "https://api.example.com/x"))
-        XCTAssertFalse(rule!.match.matches(method: "GET", url: "https://api.example.com.evil.io/x"))
+        #expect(rule.match.matches(method: "GET", url: "https://api.example.com/x"))
+        #expect(!rule.match.matches(method: "GET", url: "https://api.example.com.evil.io/x"))
     }
 
-    func test_blockHost_nilHost_returnsNil() {
+    @Test func blockHost_nilHost_returnsNil() {
         let flow = Fixtures.flow(url: "garbage-not-a-url")
-        XCTAssertNil(RuleFactory.rule(from: flow, template: .blockHost))
+        #expect(RuleFactory.rule(from: flow, template: .blockHost) == nil)
     }
 }
