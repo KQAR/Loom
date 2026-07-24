@@ -400,14 +400,16 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .auditEntryReceived(entry):
-                // Newest-first. Dedup by id (a re-seed after a resubscribe could
-                // repeat), then bound to the display cap.
+                // Stored oldest-first (newest appended at the end), like the flow
+                // list — the panel shows a chronological log with the newest at the
+                // bottom. Dedup by id (a re-seed after a resubscribe could repeat),
+                // then bound to the display cap by dropping the oldest.
                 if let existing = state.auditEntries.index(id: entry.id) {
                     state.auditEntries[existing] = entry
                 } else {
-                    state.auditEntries.insert(entry, at: 0)
+                    state.auditEntries.append(entry)
                     if state.auditEntries.count > State.auditDisplayCap {
-                        state.auditEntries.removeLast(state.auditEntries.count - State.auditDisplayCap)
+                        state.auditEntries.removeFirst(state.auditEntries.count - State.auditDisplayCap)
                     }
                 }
                 return .none

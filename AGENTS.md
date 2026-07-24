@@ -179,6 +179,12 @@ The capture engine is reusable by **any** Swift host (a CLI, another macOS app, 
 - **One write path**: UI and MCP both go through `ProxyEngine.shared`. Adding a write must extend `ProxyControlling`, not bypass it.
 - **Bundle prefix**: `com.loom` (personal project — no employer branding anywhere).
 - **UI**: follow [`DESIGN.md`](DESIGN.md) — semantic system colors, text styles, capsule controls. Never inline hex or fixed font sizes.
+- **Performance is a hard requirement, not a nice-to-have.** A capture proxy routinely holds tens of thousands of flows with multi-MB bodies; every list and every large-data render must stay smooth at that scale. Rules:
+  - **Never render a large/unbounded collection eagerly.** Row-based views use a lazy container — `List`, `Table` (both NSTableView-backed), or `LazyVStack`/`LazyVGrid` in a `ScrollView`. Never `ScrollView { VStack/ForEach over data } }` for a collection that can grow (only for a fixed, small set of blocks).
+  - **Bound what's in memory.** Every in-memory collection has an explicit cap (flow ring/UI list = 2000, audit = 500) and the UI honestly surfaces when it dropped items (no silent truncation).
+  - **Bodies out-of-line.** List/summary/boot reads stay body-free; a body is hydrated on demand only when a row is opened (see `FlowStore.hydrated` / SQLite BLOB columns). Never load megabyte bodies to render a list.
+  - **Cheap row bodies.** No per-row allocation of expensive objects (date formatters, regexes, `JSONDecoder`) — hoist to a shared static. Hand genuinely large text to AppKit (`NSTextView`), not a SwiftUI `Text`.
+  - When adding any new list/table/feed, state in the PR how it stays bounded and lazy.
 
 ### Project Structure
 
