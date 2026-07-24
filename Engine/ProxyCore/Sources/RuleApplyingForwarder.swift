@@ -17,23 +17,8 @@ final class RuleApplyingForwarder: UpstreamForwarding {
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         // Fold our own event stream into a buffered result, so `forward` and
-        // `forwardStream` are one production path that can never disagree — applied
-        // rules come from the same `.metadata` event either way.
-        var statusCode = 200
-        var httpVersion: String?
-        var responseHeaders: [HeaderPair] = []
-        var responseBody = Data()
-        for try await event in forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
-            switch event {
-            case .metadata: break // applied rules travel on the event stream, not the buffered result
-            case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
-            case let .body(chunk): responseBody.append(chunk)
-            case .end: break
-            }
-        }
-        return ForwardResult(
-            statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody
-        )
+        // `forwardStream` are one production path that can never disagree.
+        try await forwardStream(method: method, url: url, headers: headers, body: .bytes(body)).collect()
     }
 
     /// Execute an already-computed plan. Taking the plan as a parameter (rather
