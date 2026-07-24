@@ -96,6 +96,33 @@ public protocol FlowProviding: Sendable {
     func recentFlowsForExport(limit: Int) async -> [Flow]
     func flow(id: UUID) async -> Flow?
     /// A live stream of flows as they are captured or updated.
+    ///
+    /// ## Emission contract
+    /// Consumers (including "Loom as a backend" embedders) can rely on the
+    /// following. The push `FlowObserving` sink delivers the identical sequence.
+    ///
+    /// - **Same id, multiple emissions.** A flow is emitted when capture starts
+    ///   (`outcome == .pending`) and again on each state change through to a
+    ///   terminal outcome (`.completed` / `.failed`). Dedupe/replace by
+    ///   `Flow.id`; the latest emission for an id supersedes earlier ones.
+    /// - **Streaming responses** emit intermediate `.streaming` updates between
+    ///   start and completion.
+    /// - **WebSocket** flows re-emit once per recorded frame, each carrying the
+    ///   grown `webSocketMessages` (capped; see the WS relay). A `ws://`/`wss://`
+    ///   exchange is one long-lived flow, not one flow per frame.
+    /// - **HTTP/2** streams surface as independent flows (one per h2 stream),
+    ///   same shape as HTTP/1.1 — no multiplexing is exposed to the consumer.
+    /// - **Replays re-appear** on the stream, distinguished only by
+    ///   `Flow.replayedFrom != nil` (the source flow's id). A consumer that
+    ///   maps flows onto its own request/response events skips these to avoid
+    ///   echoing a replay it initiated.
+    /// - **Device attribution.** `sourceDevice` is populated from the
+    ///   connection's remote IP (typed by `User-Agent`) for every capture,
+    ///   loopback or LAN; `sourceApp` is resolved via libproc for loopback
+    ///   traffic only (a LAN device has no local pid).
+    /// - **Ordering / buffering.** Emissions preserve per-flow order. The stream
+    ///   is unbuffered fan-out: a subscriber that starts late misses prior
+    ///   emissions (seed from `recentFlows(limit:)` if you need history).
     func flowStream() async -> AsyncStream<Flow>
     /// Distinct devices that have sent traffic through the proxy (this Mac + LAN
     /// devices), with per-device flow counts and last-seen time.
