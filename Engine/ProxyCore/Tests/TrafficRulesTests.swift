@@ -412,3 +412,38 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         #expect(config.snapshot().rules.isEmpty)
     }
 }
+
+// MARK: - Full-set sync (setRules)
+
+@Suite struct SetRulesReportTests {
+    private func rule(name: String, pattern: String = "https://x.test*") -> TrafficRule {
+        TrafficRule(name: name, match: RuleMatch(urlPattern: pattern), actions: RuleActions(route: .block))
+    }
+
+    @Test func setRules_appliesValid_dropsInvalid_andReports() async {
+        let engine = ProxyEngine(forwarder: StubUpstream(), caStore: InMemoryCAStore())
+        let good1 = rule(name: "good1")
+        let bad = rule(name: "  ") // empty name → invalid
+        let good2 = rule(name: "good2")
+
+        let report = await engine.setRules([good1, bad, good2])
+
+        // The one bad rule is dropped; the valid rules still apply.
+        #expect(!report.allApplied)
+        #expect(report.applied.map(\.id) == [good1.id, good2.id])
+        #expect(report.rejected.count == 1)
+        #expect(report.rejected.first?.id == bad.id)
+        #expect(report.rejected.first?.reason != nil)
+
+        let state = await engine.rulesState()
+        #expect(state.rules.map(\.id) == [good1.id, good2.id])
+    }
+
+    @Test func setRules_allValid_reportsAllApplied() async {
+        let engine = ProxyEngine(forwarder: StubUpstream(), caStore: InMemoryCAStore())
+        let report = await engine.setRules([rule(name: "a"), rule(name: "b")])
+        #expect(report.allApplied)
+        #expect(report.rejected.isEmpty)
+        #expect(report.applied.count == 2)
+    }
+}
