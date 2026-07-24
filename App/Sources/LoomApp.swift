@@ -104,12 +104,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// Also the always-present surface that boots the capture subscription at launch.
 private struct MenuBarLabel: View {
     let store: StoreOf<AppFeature>
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Image(systemName: store.rules.rulesEnabled ? "arrow.triangle.branch" : "arrow.left.arrow.right")
             .fontWeight(.semibold)
             .foregroundStyle(store.setup.isSystemProxy ? Color.yellow : Color.primary)
             .opacity(store.status.isRunning ? 1 : 0.4)
-            .task { store.send(.task) }
+            .task {
+                store.send(.task)
+                // Open the main window on launch so the app presents its working
+                // surface by default (it's a Dock-less menu-bar app; without this
+                // the human would have to open the window from the panel first).
+                // `.task` runs once for this always-present label, and `Window` is a
+                // singleton scene, so this opens exactly one main window.
+                openWindow(id: "main")
+                NSApplication.shared.activate(ignoringOtherApps: true)
+            }
     }
 }
