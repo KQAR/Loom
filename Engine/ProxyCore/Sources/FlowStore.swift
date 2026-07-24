@@ -174,6 +174,9 @@ actor FlowStore {
 
     var count: Int { flows.count }
 
+    /// A new live subscription. Every `broadcast(_:)` (from `upsert` /
+    /// `finalizeInFlight`) yields here; see `FlowProviding.flowStream()` for the
+    /// emission contract. Unbuffered — a late subscriber misses prior emissions.
     func stream() -> AsyncStream<Flow> {
         let id = UUID()
         return AsyncStream { continuation in

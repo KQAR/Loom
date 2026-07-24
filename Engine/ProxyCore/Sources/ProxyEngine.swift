@@ -233,6 +233,10 @@ public actor ProxyEngine: ProxyControlling {
         await store.flow(id: id)
     }
 
+    /// Live fan-out of flow captures/updates. See `FlowProviding.flowStream()`
+    /// for the emission contract (same id emitted on start + each state change,
+    /// WS per-frame re-emits, replays carry `replayedFrom`, late subscribers miss
+    /// history). `FlowObserving` delivers the identical sequence, pushed.
     public func flowStream() async -> AsyncStream<Flow> {
         await store.stream()
     }
