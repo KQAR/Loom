@@ -10,6 +10,8 @@ public struct MainView: View {
     @Bindable var store: StoreOf<AppFeature>
     /// Tail-follow the newest row until the user scrolls away.
     @State private var followTail = true
+    /// Fill of the clear button's charging ring (0…1) while it's held.
+    @State private var clearProgress: CGFloat = 0
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -137,6 +139,7 @@ public struct MainView: View {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             requestTable
+                .overlay(alignment: .bottomTrailing) { clearFAB }
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if store.droppedFlowCount > 0 { capBanner }
                 }
@@ -156,6 +159,39 @@ public struct MainView: View {
         .padding(.vertical, LoomTheme.Space.xxs)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
+    }
+
+    /// Destructive "clear captured flows", floated bottom-right of the flow list so
+    /// it only appears with the traffic it clears. Hold for 1s to fire — a red ring
+    /// charges around the trash glyph while held and springs back if released early,
+    /// so a single stray click can't wipe the capture (no modal confirmation).
+    private var clearFAB: some View {
+        ZStack {
+            Circle()
+                .fill(.regularMaterial)
+                .overlay(Circle().strokeBorder(.quaternary, lineWidth: 1))
+            Circle()
+                .trim(from: 0, to: clearProgress)
+                .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
+                .padding(3)
+            Image(systemName: "trash")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.red)
+        }
+        .frame(width: 44, height: 44)
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+        .contentShape(Circle())
+        .onLongPressGesture(minimumDuration: 1.0, maximumDistance: 60) {
+            store.send(.clearTapped)
+            clearProgress = 0
+        } onPressingChanged: { pressing in
+            withAnimation(pressing ? .linear(duration: 1.0) : .easeOut(duration: 0.2)) {
+                clearProgress = pressing ? 1 : 0
+            }
+        }
+        .help("Hold to clear captured flows")
+        .padding(LoomTheme.Space.md)
     }
 
     private var requestTable: some View {
@@ -379,32 +415,9 @@ public struct MainView: View {
         .help(store.isRecording
             ? "Stop recording — traffic keeps flowing but isn't captured"
             : "Start recording captured traffic")
-
-        barButton(
-            "xmark.bin",
-            help: "Clear captured flows",
-            disabled: store.flows.isEmpty
-        ) { store.send(.clearTapped) }
-    }
-
-    /// A plain toolbar icon button — no Liquid Glass container, larger tap target.
-    private func barButton(
-        _ symbol: String,
-        color: Color = .primary,
-        help: String,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(LoomTheme.Icon.toolbar)
-                .foregroundStyle(color)
-                .frame(width: 30, height: 26)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .disabled(disabled)
-        .help(help)
+        // Clear lives as a hold-to-confirm floating button in the flow list itself
+        // (see `clearFAB`), so it only shows with the traffic it clears — never on
+        // the Rules/Audit panels.
     }
 
     private func statusIcon(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
