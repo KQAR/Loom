@@ -62,6 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if await helper.isSystemProxyActive(port) {
                 _ = await helper.setSystemProxy(false, port)
             }
+            // Drain the flow-persistence write queue before we die: completed
+            // flows are saved fire-and-forget, so a quit could otherwise outrun
+            // the last few writes.
+            await ProxyEngine.shared.flushFlows()
             await MainActor.run {
                 sender.reply(toApplicationShouldTerminate: true)
             }

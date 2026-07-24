@@ -92,4 +92,48 @@ final class StateProjectionTests: XCTestCase {
         XCTAssertEqual(s.selectedFlow?.id, flow.id)
         XCTAssertEqual(s.allCount, 1)
     }
+
+    // MARK: Session display cap (② capacity visibility)
+
+    func test_recordFlow_underCap_dropsNothing() {
+        var s = AppFeature.State()
+        let flows = (0 ..< 5).map { _ in Fixtures.flow() }
+        flows.forEach { s.recordFlow($0) }
+        XCTAssertEqual(s.flows.count, 5)
+        XCTAssertEqual(s.droppedFlowCount, 0)
+    }
+
+    func test_recordFlow_overCap_dropsOldestAndCounts() {
+        var s = AppFeature.State()
+        let cap = AppFeature.State.displayCap
+        let flows = (0 ..< (cap + 3)).map { _ in Fixtures.flow() }
+        flows.forEach { s.recordFlow($0) }
+
+        XCTAssertEqual(s.flows.count, cap, "held to the cap")
+        XCTAssertEqual(s.droppedFlowCount, 3, "the 3 oldest were dropped")
+        XCTAssertEqual(s.flows.last?.id, flows.last?.id, "newest is retained")
+        XCTAssertNil(s.flows[id: flows[0].id], "oldest is gone")
+        XCTAssertEqual(s.flows.first?.id, flows[3].id, "oldest survivor is the 4th inserted")
+    }
+
+    func test_recordFlow_upsertExistingID_doesNotCountAsNew() {
+        var s = AppFeature.State()
+        let flow = Fixtures.flow(status: nil, responseBody: nil) // in-flight
+        s.recordFlow(flow)
+        s.recordFlow(Fixtures.flow(id: flow.id, status: 200)) // completion re-arrives
+        XCTAssertEqual(s.flows.count, 1)
+        XCTAssertEqual(s.flows[id: flow.id]?.statusCode, 200)
+        XCTAssertEqual(s.droppedFlowCount, 0)
+    }
+
+    func test_recordFlow_droppingSelectedClearsSelection() {
+        var s = AppFeature.State()
+        let first = Fixtures.flow()
+        s.recordFlow(first)
+        s.selectedFlowID = first.id
+        // Push exactly past the cap so `first` (the oldest) is evicted.
+        (0 ..< AppFeature.State.displayCap).forEach { _ in s.recordFlow(Fixtures.flow()) }
+        XCTAssertNil(s.flows[id: first.id])
+        XCTAssertNil(s.selectedFlowID, "a dropped selection must not dangle")
+    }
 }

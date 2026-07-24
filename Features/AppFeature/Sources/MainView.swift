@@ -134,7 +134,25 @@ public struct MainView: View {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             requestTable
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if store.droppedFlowCount > 0 { capBanner }
+                }
         }
+    }
+
+    /// Honest "you're not seeing everything" strip: the session cap has dropped
+    /// the oldest flows, so a huge capture doesn't masquerade as complete.
+    private var capBanner: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            Image(systemName: "clock.arrow.circlepath").font(.caption2)
+            Text("Showing the latest \(AppFeature.State.displayCap) · \(store.droppedFlowCount) older cleared")
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, LoomTheme.Space.sm)
+        .padding(.vertical, LoomTheme.Space.xxs)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
     }
 
     private var requestTable: some View {
