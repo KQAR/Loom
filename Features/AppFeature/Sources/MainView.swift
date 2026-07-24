@@ -233,7 +233,7 @@ public struct MainView: View {
                     Button("Path") { Self.copy(Self.path(flow.request.url)) }
                     Button("URL") { Self.copy(flow.request.url) }
                     Divider()
-                    Button("as cURL") { Self.copy(Self.curlCommand(flow)) }
+                    Button("as cURL") { store.send(.copyCurlTapped(id)) }
                 }
                 Menu("Add Rule") {
                     Button("Mock This Response") { store.send(.addRuleFromFlow(id, .mockResponse)) }
@@ -253,34 +253,6 @@ public struct MainView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    /// Reconstruct a runnable `curl` for the captured request: method, URL,
-    /// headers (minus ones curl sets itself), and body. Single-quoted with proper
-    /// `'\''` escaping, line-continued for readability.
-    static func curlCommand(_ flow: Flow) -> String {
-        let request = flow.request
-        var parts: [String] = ["curl"]
-        if request.method.uppercased() != "GET" {
-            parts.append("-X \(request.method)")
-        }
-        parts.append("'\(shellEscape(request.url))'")
-        for header in request.headers where !curlOmittedHeader(header.name) {
-            parts.append("-H '\(shellEscape("\(header.name): \(header.value)"))'")
-        }
-        if let body = request.body, !body.isEmpty {
-            let text = String(data: body, encoding: .utf8) ?? ""
-            if !text.isEmpty { parts.append("--data '\(shellEscape(text))'") }
-        }
-        return parts.joined(separator: " \\\n  ")
-    }
-
-    private static func curlOmittedHeader(_ name: String) -> Bool {
-        ["content-length", "host"].contains(name.lowercased())
-    }
-
-    /// Escape a string for embedding inside single quotes in a POSIX shell.
-    private static func shellEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "'", with: "'\\''")
-    }
 
     // MARK: Content — table only, or table + inspector when a flow is selected
 
@@ -292,8 +264,11 @@ public struct MainView: View {
                 requestArea
                     .frame(minHeight: 160, idealHeight: 280, maxHeight: .infinity)
                 InspectorPanel(
-                    flow: flow,
-                    original: flow.replayedFrom.flatMap { store.flows[id: $0] },
+                    // The hydrated detail (with bodies) once it lands; the
+                    // metadata-only list row until then, so the panel appears
+                    // immediately and its body fills in.
+                    flow: store.selectedFlowDetail ?? flow,
+                    original: store.selectedOriginalDetail,
                     onReplay: { store.send(.replayTapped(flow.id)) },
                     onClose: { store.send(.flowSelected(nil)) }
                 )

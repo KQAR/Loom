@@ -83,7 +83,7 @@ final class CurlCommandTests: XCTestCase {
                 HeaderPair(name: "Content-Length", value: "0"),          // curl sets it
             ]
         )
-        let curl = MainView.curlCommand(flow)
+        let curl = Curl.command(flow)
         XCTAssertFalse(curl.contains("-X"), "GET should not carry an explicit method")
         XCTAssertTrue(curl.contains("'https://api.example.com/v1/home'"))
         XCTAssertTrue(curl.contains("-H 'Accept: application/json'"))
@@ -98,7 +98,7 @@ final class CurlCommandTests: XCTestCase {
             requestBody: Data(#"{"u":"a"}"#.utf8),
             status: 200
         )
-        let curl = MainView.curlCommand(flow)
+        let curl = Curl.command(flow)
         XCTAssertTrue(curl.contains("-X POST"))
         XCTAssertTrue(curl.contains(#"--data '{"u":"a"}'"#))
     }
@@ -109,7 +109,7 @@ final class CurlCommandTests: XCTestCase {
             url: "https://api.example.com/it's",
             requestHeaders: []
         )
-        let curl = MainView.curlCommand(flow)
+        let curl = Curl.command(flow)
         XCTAssertTrue(curl.contains(#"it'\''s"#), "single quotes must be POSIX-escaped")
     }
 }

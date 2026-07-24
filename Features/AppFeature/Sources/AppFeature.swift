@@ -1,3 +1,4 @@
+import AppKit
 import ComposableArchitecture
 import Foundation
 import ProxyClient
@@ -67,7 +68,9 @@ public struct AppFeature: Sendable {
         /// drops. An upsert of an existing id doesn't grow the array, so this only
         /// trims on genuinely new flows. Clears the selection if it was dropped.
         mutating func recordFlow(_ flow: Flow) {
-            flows[id: flow.id] = flow
+            // Store metadata only — bodies for up to 2000 flows would be a large RAM
+            // sink; the inspector hydrates the selected flow's body on demand.
+            flows[id: flow.id] = flow.strippingBodies()
             let overflow = flows.count - Self.displayCap
             if overflow > 0 {
                 let droppedIDs = Set(flows.prefix(overflow).map(\.id))
@@ -168,7 +171,15 @@ public struct AppFeature: Sendable {
         public var errorCount: Int { flows.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }.count }
         public var replayedCount: Int { flows.filter { $0.replayedFrom != nil }.count }
 
+        /// Metadata-only selected flow (from the body-free list). The inspector
+        /// reads `selectedFlowDetail` for the full payload.
         public var selectedFlow: Flow? { selectedFlowID.flatMap { flows[id: $0] } }
+        /// The selected flow with bodies hydrated (fetched on selection / kept
+        /// fresh from the live stream). Nil until the fetch lands.
+        public var selectedFlowDetail: Flow?
+        /// The hydrated `replayedFrom` original of the selection, for the inspector
+        /// diff. Nil unless the selection is a replay.
+        public var selectedOriginalDetail: Flow?
     }
 
     public enum Action: BindableAction, Sendable {
@@ -201,6 +212,11 @@ public struct AppFeature: Sendable {
         case flowReceived(Flow)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
+        /// Hydrated bodies for a selection landed (self + optional replay original);
+        /// carries the requested id so a stale load for a past selection is ignored.
+        case selectedDetailLoaded(id: Flow.ID, flow: Flow?, original: Flow?)
+        /// Copy a captured flow as a runnable cURL — fetches the full body first.
+        case copyCurlTapped(Flow.ID)
         case replayTapped(Flow.ID)
         case replayFinished(Flow?)
         case clearTapped
@@ -333,12 +349,15 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .addRuleFromFlow(id, template):
-                guard let flow = state.flows[id: id],
-                      let rule = RuleFactory.rule(from: flow, template: template)
-                else { return .none }
-                // Stamp a rule from the captured flow and hand it to the rules
-                // feature to open the editor; nothing is persisted until Save.
-                return .send(.rules(.presentEditor(rule: rule, isNew: true)))
+                // Fetch the full flow (bodies hydrated) so a "Mock This Response"
+                // rule captures the actual response body — the list copy is
+                // metadata-only. Nothing is persisted until the editor's Save.
+                return .run { send in
+                    guard let flow = await proxyClient.flow(id),
+                          let rule = RuleFactory.rule(from: flow, template: template)
+                    else { return }
+                    await send(.rules(.presentEditor(rule: rule, isNew: true)))
+                }
 
             case let .proxyStarted(port):
                 state.status.isRunning = true
@@ -349,6 +368,12 @@ public struct AppFeature: Sendable {
 
             case let .flowReceived(flow):
                 state.recordFlow(flow)
+                // The stream copy still carries bodies; if it's the open selection,
+                // refresh the inspector's hydrated copy directly (no extra fetch),
+                // so a completing/streaming flow's body stays live.
+                if flow.id == state.selectedFlowID {
+                    state.selectedFlowDetail = flow
+                }
                 return .none
 
             case let .categorySelected(category):
@@ -357,7 +382,33 @@ public struct AppFeature: Sendable {
 
             case let .flowSelected(id):
                 state.selectedFlowID = id
+                state.selectedFlowDetail = nil
+                state.selectedOriginalDetail = nil
+                guard let id else { return .none }
+                // Hydrate the selection's bodies (and its replay original, if any)
+                // for the inspector; the list itself is body-free now.
+                return .run { send in
+                    let flow = await proxyClient.flow(id)
+                    var original: Flow?
+                    if let originalID = flow?.replayedFrom { original = await proxyClient.flow(originalID) }
+                    await send(.selectedDetailLoaded(id: id, flow: flow, original: original))
+                }
+
+            case let .selectedDetailLoaded(id, flow, original):
+                guard id == state.selectedFlowID else { return .none } // selection moved on
+                state.selectedFlowDetail = flow
+                state.selectedOriginalDetail = original
                 return .none
+
+            case let .copyCurlTapped(id):
+                return .run { _ in
+                    guard let flow = await proxyClient.flow(id) else { return }
+                    let command = Curl.command(flow)
+                    await MainActor.run {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(command, forType: .string)
+                    }
+                }
 
             case let .replayTapped(id):
                 state.rules.rulesMessage = nil // shares the rules panel's error line
@@ -374,11 +425,20 @@ public struct AppFeature: Sendable {
                 guard let flow else { return .none }
                 state.recordFlow(flow)
                 state.selectedFlowID = flow.id // jump to the replayed result (after any cap trim)
-                return .none
+                state.selectedFlowDetail = flow // the replay result still carries bodies
+                state.selectedOriginalDetail = nil
+                // Fetch the original for the inspector diff.
+                guard let originalID = flow.replayedFrom else { return .none }
+                return .run { send in
+                    let original = await proxyClient.flow(originalID)
+                    await send(.selectedDetailLoaded(id: flow.id, flow: flow, original: original))
+                }
 
             case .clearTapped:
                 state.flows.removeAll()
                 state.selectedFlowID = nil
+                state.selectedFlowDetail = nil
+                state.selectedOriginalDetail = nil
                 state.droppedFlowCount = 0
                 state.status.capturedCount = 0
                 return .run { _ in await proxyClient.clearFlows() }

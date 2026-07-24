@@ -31,7 +31,11 @@ final class AppFeatureReducerTests: XCTestCase {
         let flow = Fixtures.flow()
         var initial = AppFeature.State()
         initial.flows = [flow]
-        let store = TestStore(initialState: initial) { AppFeature() }
+        // Mock-from-flow now hydrates the full flow (bodies) via the client, since
+        // the list holds metadata only.
+        let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+            $0.proxyClient.flow = { _ in flow }
+        }
         store.exhaustivity = .off // the stamped rule carries a fresh UUID/date
 
         await store.send(.addRuleFromFlow(flow.id, .mockResponse))
@@ -43,7 +47,9 @@ final class AppFeatureReducerTests: XCTestCase {
     }
 
     func test_addRuleFromFlow_unknownID_isNoOp() async {
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.proxyClient.flow = { _ in nil } // hydrate finds nothing → no editor
+        }
         await store.send(.addRuleFromFlow(UUID(), .blockURL)) // no flow → nothing happens
     }
 
@@ -66,11 +72,19 @@ final class AppFeatureReducerTests: XCTestCase {
     func test_replayFinished_insertsAndSelects() async {
         let original = UUID()
         let replayed = Fixtures.flow(id: UUID(), replayedFrom: original)
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        let originalFlow = Fixtures.flow(id: original)
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.proxyClient.flow = { id in id == original ? originalFlow : nil }
+        }
         await store.send(.replayFinished(replayed)) {
-            $0.flows[id: replayed.id] = replayed
+            $0.flows[id: replayed.id] = replayed.strippingBodies() // list is body-free
             $0.selectedFlowID = replayed.id // jump to the replayed result
+            $0.selectedFlowDetail = replayed // result still carries bodies
             $0.status.capturedCount = 1
+        }
+        // Effect fetches the replay's original for the inspector diff.
+        await store.receive(\.selectedDetailLoaded) {
+            $0.selectedOriginalDetail = originalFlow
         }
     }
 
@@ -85,7 +99,7 @@ final class AppFeatureReducerTests: XCTestCase {
         let flow = Fixtures.flow()
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
         await store.send(.flowReceived(flow)) {
-            $0.flows[id: flow.id] = flow
+            $0.flows[id: flow.id] = flow.strippingBodies() // list stores metadata only
             $0.status.capturedCount = 1
         }
     }
