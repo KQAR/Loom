@@ -51,6 +51,16 @@ struct MCPToolExecutor {
                 ],
             ],
             [
+                "name": "get_audit_log",
+                "description": "List recent write actions taken through Loom (replay, rules, breakpoints, ssl-scope), newest first, each with the tool name, arguments, outcome and timestamp. Read tools are never logged. Use this to review what write actions have been taken this or a prior session.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "limit": ["type": "integer", "description": "Max entries to return (default 50)."],
+                    ],
+                ],
+            ],
+            [
                 "name": "replay_flow",
                 "description": "Re-send a captured flow with optional overrides (method, url, headers, body) and return the new flow. This is a write action.",
                 "inputSchema": [
@@ -182,49 +192,27 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "list_rules",
-                "description": "List all traffic rules and the master rules switch. Mock/rewrite bodies are truncated; use get_rule for the full rule.",
-                "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
-            ],
-            [
-                "name": "get_rule",
-                "description": "Get one traffic rule by id, with full (untruncated) bodies.",
+                "description": "List traffic rules and the master rules switch. Without arguments, returns all rules with mock/rewrite bodies truncated. Pass `id` to return that single rule with full (untruncated) bodies.",
                 "inputSchema": [
                     "type": "object",
-                    "properties": ["id": ["type": "string", "description": "Rule UUID."]],
-                    "required": ["id"],
+                    "properties": ["id": ["type": "string", "description": "Optional rule UUID — return just this rule, with full bodies."]],
                 ],
             ],
             [
-                "name": "create_rule",
-                "description": "Create a traffic rule: match requests by URL pattern (+ optional methods) and act on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. Rules apply to live traffic and replays, in list order. This is a write action.",
+                "name": "set_rule",
+                "description": "Create or update a traffic rule (upsert). Omit `id` to create; pass `id` to update an existing rule. A rule matches requests by URL pattern (+ optional methods) and acts on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. On update, provided fields replace the existing ones (match/actions are replaced whole, not merged); toggle a single rule with just {id, enabled}. Rules apply to live traffic and replays, in list order. This is a write action.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "name": ["type": "string", "description": "Short human-readable rule name (shows in flow audit trails)."],
+                        "id": ["type": "string", "description": "Rule UUID to update. Omit to create a new rule."],
+                        "name": ["type": "string", "description": "Short human-readable rule name (shows in flow audit trails). Required when creating."],
                         "comment": ["type": "string", "description": "Optional note on why the rule exists."],
-                        "group": ["type": "string", "description": "Optional group label (e.g. one group per scenario); a whole group can be toggled with set_group_enabled."],
-                        "enabled": ["type": "boolean", "description": "Default true."],
+                        "group": ["type": "string", "description": "Optional group label (e.g. one group per scenario); a whole group can be toggled with set_group_enabled. On update, pass \"\" to ungroup."],
+                        "enabled": ["type": "boolean", "description": "Default true on create."],
                         "match": Self.matchSchema,
                         "actions": Self.actionsSchema,
                     ],
-                    "required": ["name", "match", "actions"],
-                ],
-            ],
-            [
-                "name": "update_rule",
-                "description": "Update a traffic rule by id. Provided fields replace the existing ones (match/actions are replaced whole, not merged). Toggle a single rule with just {id, enabled}. This is a write action.",
-                "inputSchema": [
-                    "type": "object",
-                    "properties": [
-                        "id": ["type": "string", "description": "Rule UUID."],
-                        "name": ["type": "string"],
-                        "comment": ["type": "string"],
-                        "group": ["type": "string", "description": "New group label; pass \"\" to ungroup."],
-                        "enabled": ["type": "boolean"],
-                        "match": Self.matchSchema,
-                        "actions": Self.actionsSchema,
-                    ],
-                    "required": ["id"],
+                    "required": [] as [String],
                 ],
             ],
             [
@@ -380,6 +368,7 @@ struct MCPToolExecutor {
         "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
+        "get_audit_log": { ex, args in try await ex.handleGetAuditLog(args) },
         "diff_flows": { ex, args in try await ex.handleDiffFlows(args) },
         "arm_breakpoint": { ex, args in try await ex.handleArmBreakpoint(args) },
         "disarm_breakpoint": { ex, args in try await ex.handleDisarmBreakpoint(args) },
@@ -392,19 +381,73 @@ struct MCPToolExecutor {
         "set_ssl_scope": { ex, args in try await ex.handleSetSSLScope(args) },
         "export_har": { ex, args in try await ex.handleExportHAR(args) },
         "list_rules": { ex, args in try await ex.handleListRules(args) },
-        "get_rule": { ex, args in try await ex.handleGetRule(args) },
-        "create_rule": { ex, args in try await ex.handleCreateRule(args) },
-        "update_rule": { ex, args in try await ex.handleUpdateRule(args) },
+        "set_rule": { ex, args in try await ex.handleSetRule(args) },
         "delete_rule": { ex, args in try await ex.handleDeleteRule(args) },
         "set_rules_enabled": { ex, args in try await ex.handleSetRulesEnabled(args) },
         "set_group_enabled": { ex, args in try await ex.handleSetGroupEnabled(args) },
+    ]
+
+    /// Tools that touch real traffic — every one is audited (§ `call`). Kept as an
+    /// explicit set rather than string-matching the "This is a write action."
+    /// description marker, so a typo in a description can't silently stop auditing
+    /// a write. `MCPServerTests` asserts this set matches the marked definitions.
+    static let writeTools: Set<String> = [
+        "replay_flow",
+        "arm_breakpoint",
+        "disarm_breakpoint",
+        "resume",
+        "export_ca_certificate",
+        "set_ssl_scope",
+        "export_har",
+        "set_rule",
+        "delete_rule",
+        "set_rules_enabled",
+        "set_group_enabled",
     ]
 
     func call(name: String, arguments: [String: Any]) async throws -> String {
         guard let handler = Self.handlers[name] else {
             throw MCPError.methodNotFound("unknown tool: \(name)")
         }
-        return try await handler(self, arguments)
+        // Read tools run straight through. Write tools are the whole reason Loom
+        // exists — record each in the audit trail (success or failure) so the
+        // supervising human can see what the agent did to real traffic.
+        guard Self.writeTools.contains(name) else {
+            return try await handler(self, arguments)
+        }
+        let renderedArgs = AuditEntry.truncate(Self.auditArguments(arguments))
+        do {
+            let result = try await handler(self, arguments)
+            await engine.recordAudit(AuditEntry(
+                tool: name, succeeded: true,
+                arguments: renderedArgs, detail: AuditEntry.truncate(result)
+            ))
+            return result
+        } catch {
+            let message: String
+            switch error {
+            case let failure as MCPToolFailure: message = failure.message
+            case let mcp as MCPError: message = mcp.message
+            default: message = error.localizedDescription
+            }
+            await engine.recordAudit(AuditEntry(
+                tool: name, succeeded: false,
+                arguments: renderedArgs, detail: AuditEntry.truncate(message)
+            ))
+            throw error
+        }
+    }
+
+    /// Render a tool's arguments as compact JSON for the audit trail. Falls back
+    /// to `String(describing:)` for the rare non-JSON value. Truncation is applied
+    /// by the caller (whole-string, so we don't split a key from its value).
+    private static func auditArguments(_ arguments: [String: Any]) -> String {
+        guard !arguments.isEmpty else { return "{}" }
+        guard JSONSerialization.isValidJSONObject(arguments),
+              let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8)
+        else { return String(describing: arguments) }
+        return string
     }
 
     // MARK: - Handlers (one per tool)
@@ -446,6 +489,12 @@ struct MCPToolExecutor {
             throw MCPToolFailure("no flow with id \(idString)")
         }
         return prettyJSON(Self.flowDetail(flow))
+    }
+
+    private func handleGetAuditLog(_ arguments: [String: Any]) async throws -> String {
+        let limit = (arguments["limit"] as? Int) ?? 50
+        let entries = await engine.recentAuditEntries(limit: limit)
+        return prettyJSON(entries.map(Self.auditSummary))
     }
 
     private func handleDiffFlows(_ arguments: [String: Any]) async throws -> String {
@@ -637,7 +686,13 @@ struct MCPToolExecutor {
         return prettyJSON(["path": url.path, "entries": flows.count])
     }
 
+    /// `list_rules`: all rules (bodies truncated), or — with `id` — one rule with
+    /// full bodies. Absorbs the former `get_rule`.
     private func handleListRules(_ arguments: [String: Any]) async throws -> String {
+        if arguments["id"] != nil {
+            let rule = try await existingRule(arguments)
+            return prettyJSON(Self.rule(rule, truncateBodies: false))
+        }
         let state = await engine.rulesState()
         return prettyJSON([
             "enabled": state.enabled,
@@ -646,14 +701,17 @@ struct MCPToolExecutor {
         ])
     }
 
-    private func handleGetRule(_ arguments: [String: Any]) async throws -> String {
-        let rule = try await existingRule(arguments)
-        return prettyJSON(Self.rule(rule, truncateBodies: false))
+    /// `set_rule`: upsert. No `id` → create (name/match/actions required); `id` →
+    /// update (provided fields replace). Absorbs `create_rule` + `update_rule`.
+    private func handleSetRule(_ arguments: [String: Any]) async throws -> String {
+        arguments["id"] == nil
+            ? try await createRule(arguments)
+            : try await updateRule(arguments)
     }
 
-    private func handleCreateRule(_ arguments: [String: Any]) async throws -> String {
+    private func createRule(_ arguments: [String: Any]) async throws -> String {
         guard let ruleName = arguments["name"] as? String else {
-            throw MCPError.invalidParams("`name` is required")
+            throw MCPError.invalidParams("`name` is required to create a rule")
         }
         guard let matchRaw = arguments["match"] as? [String: Any],
               let match = Self.ruleMatch(from: matchRaw) else {
@@ -678,7 +736,7 @@ struct MCPToolExecutor {
         return prettyJSON(Self.rule(rule, truncateBodies: false))
     }
 
-    private func handleUpdateRule(_ arguments: [String: Any]) async throws -> String {
+    private func updateRule(_ arguments: [String: Any]) async throws -> String {
         var rule = try await existingRule(arguments)
         if let newName = arguments["name"] as? String { rule.name = newName }
         if let comment = arguments["comment"] as? String { rule.comment = comment }
@@ -775,6 +833,20 @@ struct MCPToolExecutor {
             out["sourceDevice"] = deviceOut
         }
         return out
+    }
+
+    /// One entry for `get_audit_log`. Timestamp as ISO-8601 so the model can order
+    /// them; `arguments` is already-truncated compact JSON (a string, not re-parsed).
+    private static func auditSummary(_ entry: AuditEntry) -> [String: Any] {
+        [
+            "id": entry.id.uuidString,
+            "timestamp": iso8601.string(from: entry.timestamp),
+            "tool": entry.tool,
+            "source": entry.source.rawValue,
+            "succeeded": entry.succeeded,
+            "arguments": entry.arguments,
+            "detail": entry.detail,
+        ]
     }
 
     /// One entry for `list_devices`. Dates as ISO-8601 so the model can order them.

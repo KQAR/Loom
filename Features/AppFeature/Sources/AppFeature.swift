@@ -13,6 +13,8 @@ public enum FlowCategory: Hashable, Sendable {
     case replayed
     /// Not a flow filter: selecting it swaps the detail area for the rules panel.
     case rules
+    /// Not a flow filter: swaps the detail area for the write-action audit trail.
+    case audit
     case host(String)
     case app(String)
     /// Group by originating device (keyed on remote IP): this Mac or a LAN device.
@@ -35,6 +37,13 @@ public struct AppFeature: Sendable {
         public var droppedFlowCount = 0
         public var selectedCategory: FlowCategory? = .all
         public var selectedFlowID: Flow.ID?
+
+        /// Write-action audit trail, newest-first (the sidebar → Audit panel).
+        /// Bounded like the flow list so a long session can't grow it unbounded;
+        /// the durable store keeps more, surfaced via the `get_audit_log` MCP tool.
+        public var auditEntries: IdentifiedArrayOf<AuditEntry> = []
+        /// Most audit entries the window keeps in memory this session.
+        public static let auditDisplayCap = 500
 
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
@@ -94,8 +103,8 @@ public struct AppFeature: Sendable {
                 result = result.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }
             case .replayed:
                 result = result.filter { $0.replayedFrom != nil }
-            case .rules:
-                return [] // the rules panel replaces the table
+            case .rules, .audit:
+                return [] // the rules / audit panel replaces the table
 
             case let .host(host):
                 result = result.filter { $0.host == host }
@@ -210,6 +219,8 @@ public struct AppFeature: Sendable {
         /// because it reads the flow store); forwarded to `RulesFeature`.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
         case flowReceived(Flow)
+        /// A write action was recorded (seed at boot + live stream).
+        case auditEntryReceived(AuditEntry)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
         /// Hydrated bodies for a selection landed (self + optional replay original);
@@ -237,7 +248,7 @@ public struct AppFeature: Sendable {
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.updaterClient) var updaterClient
 
-    private enum CancelID { case subscription, updates }
+    private enum CancelID { case subscription, updates, audit }
 
     public init() {}
 
@@ -314,7 +325,19 @@ public struct AppFeature: Sendable {
                             await send(.updateAvailabilityChanged(availability))
                         }
                     }
-                    .cancellable(id: CancelID.updates, cancelInFlight: true)
+                    .cancellable(id: CancelID.updates, cancelInFlight: true),
+                    // Write-action audit trail: seed history, then follow live. A
+                    // separate effect from the flow subscription because that loop
+                    // never returns (its stream is endless).
+                    .run { send in
+                        for entry in await proxyClient.recentAuditEntries(State.auditDisplayCap).reversed() {
+                            await send(.auditEntryReceived(entry))
+                        }
+                        for await entry in await proxyClient.auditStream() {
+                            await send(.auditEntryReceived(entry))
+                        }
+                    }
+                    .cancellable(id: CancelID.audit, cancelInFlight: true)
                 )
 
             case .viewAppeared:
@@ -373,6 +396,21 @@ public struct AppFeature: Sendable {
                 // so a completing/streaming flow's body stays live.
                 if flow.id == state.selectedFlowID {
                     state.selectedFlowDetail = flow
+                }
+                return .none
+
+            case let .auditEntryReceived(entry):
+                // Stored oldest-first (newest appended at the end), like the flow
+                // list — the panel shows a chronological log with the newest at the
+                // bottom. Dedup by id (a re-seed after a resubscribe could repeat),
+                // then bound to the display cap by dropping the oldest.
+                if let existing = state.auditEntries.index(id: entry.id) {
+                    state.auditEntries[existing] = entry
+                } else {
+                    state.auditEntries.append(entry)
+                    if state.auditEntries.count > State.auditDisplayCap {
+                        state.auditEntries.removeFirst(state.auditEntries.count - State.auditDisplayCap)
+                    }
                 }
                 return .none
 

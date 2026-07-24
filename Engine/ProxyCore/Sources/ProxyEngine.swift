@@ -20,6 +20,10 @@ public actor ProxyEngine: ProxyControlling {
     /// `BreakpointForwarder` wrapping `forwarder`, off the actor so forwarding can
     /// check for a breakpoint without hopping here.
     private let breakpointStore: BreakpointStore
+    /// Durable trail of MCP write actions (replay / rules / breakpoints /
+    /// ssl-scope). The MCP tool choke point records here; the UI and an agent read
+    /// it back. See `AuditControlling`.
+    private let auditStore: AuditStore
 
     /// Lazily generated on first `start()` (or first cert query) and cached.
     private var ca: CertificateAuthority?
@@ -60,6 +64,7 @@ public actor ProxyEngine: ProxyControlling {
         // launch. One-time migration preserves an already-trusted Keychain CA.
         self.caStore = Self.migratedCAStore()
         self.config = InterceptionConfig() // persisted across launches (UserDefaults)
+        self.auditStore = AuditStore(persistence: AuditPersistence.makeDefault())
         self.caExportURL = Self.defaultCAExportURL
     }
 
@@ -94,6 +99,9 @@ public actor ProxyEngine: ProxyControlling {
         )
         self.caStore = Self.migratedCAStore()
         self.config = InterceptionConfig()
+        // Persist the audit trail only when the embedder lets Loom own storage —
+        // matches `persistFlows` for the flow store.
+        self.auditStore = AuditStore(persistence: persistFlows ? AuditPersistence.makeDefault() : nil)
         self.caExportURL = Self.defaultCAExportURL
     }
 
@@ -125,6 +133,7 @@ public actor ProxyEngine: ProxyControlling {
         )
         self.caStore = caStore
         self.config = InterceptionConfig(defaults: nil)
+        self.auditStore = AuditStore(persistence: nil) // no disk in tests
         // Hermetic: never let a test clobber the user's real exported CA file.
         self.caExportURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("loom-ca-test-\(UUID()).pem")
@@ -185,6 +194,21 @@ public actor ProxyEngine: ProxyControlling {
     public func flushFlows() async {
         await store.finalizeInFlight(reason: "interrupted (app quit)")
         await store.flush()
+        await auditStore.flush()
+    }
+
+    // MARK: - AuditControlling
+
+    public func recordAudit(_ entry: AuditEntry) async {
+        await auditStore.record(entry)
+    }
+
+    public func recentAuditEntries(limit: Int) async -> [AuditEntry] {
+        await auditStore.recent(limit: limit)
+    }
+
+    public func auditStream() async -> AsyncStream<AuditEntry> {
+        await auditStore.stream()
     }
 
     // MARK: - CaptureControlling

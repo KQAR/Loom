@@ -100,6 +100,7 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 | `list_devices` | read | devices that sent traffic through the proxy (this Mac + LAN devices), typed from User-Agent, with per-device flow counts + last-seen |
 | `get_recent_flows` | read | newest-first flow summaries |
 | `get_flow_detail` | read | full headers + body for one flow id |
+| `get_audit_log` | read | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, each with tool name, arguments, outcome, timestamp; read tools are never logged |
 | `diff_flows` | read | structured diff of two flows (method/url, request+response headers add/remove/change, status, line-level body diff); `base` alone diffs a replay against its `replayedFrom` original |
 | `replay_flow` | **write** | re-send a flow with overrides → new flow, linked via `replayedFrom` |
 | `arm_breakpoint` | **write** | hold matching traffic mid-flight (request and/or response phase) for inspection/editing; match reuses `RuleMatch` |
@@ -110,16 +111,14 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 | `get_ssl_scope` | read | current interception scope (enabled + include/exclude host globs) |
 | `export_ca_certificate` | **write** | write the root CA (PEM) to disk for trusting; returns the path |
 | `set_ssl_scope` | **write** | enable/disable HTTPS interception and set include/exclude host globs |
-| `list_rules` | read | master switch + all traffic rules (long bodies truncated) |
-| `get_rule` | read | one rule by id, full bodies |
-| `create_rule` | **write** | structured traffic rule: URL glob/regex + methods → mock / map remote (+exclude/keep-host) / map local / rewrite req+res / find-replace substitutions (request_substitutions/response_substitutions) / block / delay; optional `group` label |
-| `update_rule` | **write** | replace fields of a rule by id (per-rule enable/disable, regroup with `group`, `""` ungroups) |
+| `list_rules` | read | master switch + all traffic rules (long bodies truncated); pass `id` to get one rule with full bodies (absorbs the former `get_rule`) |
+| `set_rule` | **write** | create (omit `id`) or update (`id`) a structured traffic rule — upsert (absorbs `create_rule`+`update_rule`): URL glob/regex + methods → mock / map remote (+exclude/keep-host) / map local / rewrite req+res / find-replace substitutions (request_substitutions/response_substitutions) / block / delay; optional `group`; on update, provided fields replace (per-rule enable/disable, regroup with `group`, `""` ungroups) |
 | `delete_rule` | **write** | remove a rule by id |
 | `set_rules_enabled` | **write** | master switch for the rule engine |
 | `set_group_enabled` | **write** | enable/disable every rule in a group (scenario switching) |
 | `export_har` | **write** | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
 
-WebSocket flows (ws:// and wss:// via MITM) are captured as a single flow whose frames appear in `get_flow_detail` under `webSocket.messages` (direction/kind/text-or-bytes) and are flagged in `get_recent_flows`. GraphQL POSTs are recognized (`GraphQLParser`); `get_flow_detail` adds a `graphQL` block (kind/operationName/query/variables) and the Inspector shows a GraphQL tab. HTTP/2 is intercepted when the client negotiates ALPN `h2`: the MITM leaf advertises `h2`+`http/1.1`, and each h2 stream is demuxed through the h2↔h1 codec into the same `TLSInterceptHandler` capture path (falls back to http/1.1 otherwise). Completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` and reload on launch.
+WebSocket flows (ws:// and wss:// via MITM) are captured as a single flow whose frames appear in `get_flow_detail` under `webSocket.messages` (direction/kind/text-or-bytes) and are flagged in `get_recent_flows`. GraphQL POSTs are recognized (`GraphQLParser`); `get_flow_detail` adds a `graphQL` block (kind/operationName/query/variables) and the Inspector shows a GraphQL tab. HTTP/2 is intercepted when the client negotiates ALPN `h2`: the MITM leaf advertises `h2`+`http/1.1`, and each h2 stream is demuxed through the h2↔h1 codec into the same `TLSInterceptHandler` capture path (falls back to http/1.1 otherwise). Completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` and reload on launch. Every MCP **write** tool call is recorded in a durable **audit trail** (`~/Library/Application Support/com.loom/audit.sqlite`, row-capped, survives relaunch): the choke point is `MCPToolExecutor.call`, which records an `AuditEntry` (tool, arguments, success/failure, detail) for each tool in `MCPToolExecutor.writeTools` — read tools are never logged. The engine owns an `AuditStore` (actor + fan-out, sibling of `FlowStore`) exposed via `AuditControlling` (`recordAudit` / `recentAuditEntries` / `auditStream`); the supervising human reads it in the main-window **sidebar → Audit** panel (`AuditPanelView`, read-only newest-first timeline), and an agent reads it back via `get_audit_log`. `MCPServerTests` asserts `writeTools` matches the "write action"-marked tool definitions so a write can't silently escape auditing.
 
 Write tools are the reason Loom exists. When adding one, it must be scoped and — if destructive — gated per [`INTERACTION.md`](INTERACTION.md).
 
@@ -182,6 +181,12 @@ The capture engine is reusable by **any** Swift host (a CLI, another macOS app, 
 - **One write path**: UI and MCP both go through `ProxyEngine.shared`. Adding a write must extend `ProxyControlling`, not bypass it.
 - **Bundle prefix**: `com.loom` (personal project — no employer branding anywhere).
 - **UI**: follow [`DESIGN.md`](DESIGN.md) — semantic system colors, text styles, capsule controls. Never inline hex or fixed font sizes.
+- **Performance is a hard requirement, not a nice-to-have.** A capture proxy routinely holds tens of thousands of flows with multi-MB bodies; every list and every large-data render must stay smooth at that scale. Rules:
+  - **Never render a large/unbounded collection eagerly.** Row-based views use a lazy container — `List`, `Table` (both NSTableView-backed), or `LazyVStack`/`LazyVGrid` in a `ScrollView`. Never `ScrollView { VStack/ForEach over data } }` for a collection that can grow (only for a fixed, small set of blocks).
+  - **Bound what's in memory.** Every in-memory collection has an explicit cap (flow ring/UI list = 2000, audit = 500) and the UI honestly surfaces when it dropped items (no silent truncation).
+  - **Bodies out-of-line.** List/summary/boot reads stay body-free; a body is hydrated on demand only when a row is opened (see `FlowStore.hydrated` / SQLite BLOB columns). Never load megabyte bodies to render a list.
+  - **Cheap row bodies.** No per-row allocation of expensive objects (date formatters, regexes, `JSONDecoder`) — hoist to a shared static. Hand genuinely large text to AppKit (`NSTextView`), not a SwiftUI `Text`.
+  - When adding any new list/table/feed, state in the PR how it stays bounded and lazy.
 
 ### Project Structure
 

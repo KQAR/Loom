@@ -39,6 +39,10 @@ public struct ProxyClient: Sendable {
     public var stopPhoneOnboarding: @Sendable () async -> Void
     /// Current onboarding info, or `nil` when inactive.
     public var phoneOnboardingInfo: @Sendable () async -> PhoneOnboardingInfo? = { nil }
+    /// Recent write-action audit entries, newest first (the human Audit panel).
+    public var recentAuditEntries: @Sendable (_ limit: Int) async -> [AuditEntry] = { _ in [] }
+    /// Live stream of audit entries as write actions are recorded.
+    public var auditStream: @Sendable () async -> AsyncStream<AuditEntry> = { AsyncStream { $0.finish() } }
 }
 
 extension ProxyClient: DependencyKey {
@@ -68,7 +72,9 @@ extension ProxyClient: DependencyKey {
             setGroupEnabled: { await engine.setGroupEnabled(group: $0, enabled: $1) },
             startPhoneOnboarding: { try await engine.startPhoneOnboarding() },
             stopPhoneOnboarding: { await engine.stopPhoneOnboarding() },
-            phoneOnboardingInfo: { await engine.phoneOnboardingInfo() }
+            phoneOnboardingInfo: { await engine.phoneOnboardingInfo() },
+            recentAuditEntries: { await engine.recentAuditEntries(limit: $0) },
+            auditStream: { await engine.auditStream() }
         )
     }()
 

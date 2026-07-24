@@ -59,7 +59,7 @@ Loom is built for one cycle — do this, don't just read:
    a changed method/URL/headers/body. The result is a *new* flow linked via
    `replayedFrom`.
 3. **Automate** — when a change should apply to *future* traffic, express it as a
-   rule (`create_rule`): mock, map-remote, map-local, rewrite, find/replace,
+   rule (`set_rule`): mock, map-remote, map-local, rewrite, find/replace,
    block, or delay. Toggle sets of them with groups for scenario switching.
 4. **Diff** — `diff_flows` gives a structured comparison of the original vs the
    replayed/ruled flow (method/url, header add/remove/change, status, line-level
@@ -78,10 +78,10 @@ Loom is built for one cycle — do this, don't just read:
 | `get_recent_flows` | newest-first flow summaries (method, url, status, host, flags) |
 | `get_flow_detail` | full headers + body for one flow id; adds `webSocket.messages` / `graphQL` blocks when present |
 | `diff_flows` | structured diff of two flows by id (`base` + `compared`, or `base` alone to diff a replay vs its original); reports method/url, header add/remove/change, status, line-level body diff |
+| `get_audit_log` | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, with tool name, arguments, outcome, timestamp; use to review what writes have been made (yours or a prior session's) |
 | `get_certificate_status` | root-CA state: generated? trusted? fingerprint, expiry, exported path |
 | `get_ssl_scope` | HTTPS interception on/off + include/exclude host globs |
-| `list_rules` | master switch + all rules (long bodies truncated) |
-| `get_rule` | one rule by id, full bodies |
+| `list_rules` | master switch + all rules (long bodies truncated); pass `id` for one rule with full bodies |
 | `list_pending` | armed breakpoints + exchanges held right now awaiting a `resume` (poll this — there is no server push) |
 
 ### Write (the reason Loom exists — these change behavior; there is NO approval gate, they act directly)
@@ -89,8 +89,7 @@ Loom is built for one cycle — do this, don't just read:
 | Tool | Purpose |
 | --- | --- |
 | `replay_flow` | re-send a flow with `overrides` (method / url / set+remove headers / body) → a new flow linked via `replayedFrom` |
-| `create_rule` | add a structured traffic rule (see below) |
-| `update_rule` | replace fields of a rule by id (incl. per-rule enable/disable, regroup) |
+| `set_rule` | create (omit `id`) or update (`id`) a structured traffic rule — upsert (see below); on update, provided fields replace, incl. per-rule enable/disable + regroup |
 | `delete_rule` | remove a rule by id |
 | `set_rules_enabled` | master switch for the whole rule engine |
 | `set_group_enabled` | enable/disable every rule in a group — scenario switching |
@@ -101,7 +100,7 @@ Loom is built for one cycle — do this, don't just read:
 | `export_ca_certificate` | write the root CA (PEM) to disk for trusting; returns the path |
 | `export_har` | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
 
-### Rules (`create_rule` / `update_rule`) — the shape
+### Rules (`set_rule`) — the shape
 
 A rule is a **structured** match + action (no text DSL). Match on a URL
 glob-or-regex + HTTP methods; then one action:
@@ -124,7 +123,7 @@ glob-or-regex + HTTP methods; then one action:
   with `overrides` removing `Authorization` (or setting a new body). Then call
   `diff_flows` with `base` = the new flow's id to see exactly what changed vs the
   original it was replayed from.
-- **"Make this endpoint return 500 / a fixed payload."** → `create_rule` with a
+- **"Make this endpoint return 500 / a fixed payload."** → `set_rule` with a
   mock action matching the URL. Verify by re-triggering the client and reading
   the newest flow (it will carry the rule in `appliedRules`).
 - **"Pause this request so I can tamper with it before it goes out."** →
@@ -133,7 +132,7 @@ glob-or-regex + HTTP methods; then one action:
   with edits (or `abort`). There is no push — you must poll. An unattended hold
   auto-continues after a timeout, so don't arm one and walk away. `disarm_breakpoint`
   when done.
-- **"Point this API at staging."** → `create_rule` map-remote (set
+- **"Point this API at staging."** → `set_rule` map-remote (set
   `keepHostHeader` only if the upstream needs the original Host). Group related
   redirects so `set_group_enabled` flips the whole scenario at once.
 - **"Capture HTTPS for api.example.com."** → `set_ssl_scope` enabled with an
