@@ -1,7 +1,7 @@
 import Testing
 import Foundation
-import SharedModels
-@testable import ProxyCore
+import LoomSharedModels
+@testable import LoomProxyCore
 
 /// Contract for the breakpoint choke point: `BreakpointForwarder` holds matching
 /// traffic on `BreakpointStore` until a resume decision arrives, applies edits to

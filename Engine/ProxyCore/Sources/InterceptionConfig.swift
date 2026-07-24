@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// A thread-safe holder for the SSL-proxying scope, shared between the actor
 /// (which updates it) and the NIO handlers (which read a snapshot synchronously

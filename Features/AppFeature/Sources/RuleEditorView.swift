@@ -1,5 +1,5 @@
 import ComposableArchitecture
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// Modal editor for one `TrafficRule`, styled after Reqable's rewrite editors:

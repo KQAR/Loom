@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import SharedModels
+import LoomSharedModels
 @testable import MCPServer
 
 /// Behavior contract for `MCPToolExecutor`, pinned before the registry refactor:

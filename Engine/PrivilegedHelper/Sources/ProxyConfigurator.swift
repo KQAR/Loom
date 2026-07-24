@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import os
 
 /// Reads and writes the system proxy across every enabled network service via

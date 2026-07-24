@@ -1,5 +1,5 @@
 import AppKit
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// Resolves a source app's icon from its `.app` bundle path via NSWorkspace

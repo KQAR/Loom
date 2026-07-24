@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import SharedModels
+import LoomSharedModels
 
 /// Covers the pure privileged-proxy logic that the root helper relies on, without
 /// needing root or `networksetup`.

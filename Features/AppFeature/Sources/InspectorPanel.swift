@@ -1,5 +1,5 @@
 import AppKit
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// Size guards for the detail panes. A flow's body can be up to

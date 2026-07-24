@@ -1,5 +1,5 @@
 import ComposableArchitecture
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// The main-window rules surface (sidebar → Rules). The agent authors rules over

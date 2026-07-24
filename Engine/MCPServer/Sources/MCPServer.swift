@@ -2,7 +2,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOHTTP1
-import SharedModels
+import LoomSharedModels
 
 /// A tool ran but failed for a domain reason (flow/rule not found, replay or file
 /// write failed). Per the MCP spec this is returned as a tool result with

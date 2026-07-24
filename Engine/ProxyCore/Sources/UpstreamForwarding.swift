@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// The upstream leg of a proxied exchange, factored out so the plain-HTTP path,
 /// the TLS-interception path, and replay all re-send through one place — and so

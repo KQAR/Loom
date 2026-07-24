@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 public struct MCPHandshake: Codable, Sendable {
     public let token: String

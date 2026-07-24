@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// In-memory, bounded store of flows plus a fan-out of live updates.
 /// Actor-isolated so the NIO handlers and the UI/MCP readers stay race-free.

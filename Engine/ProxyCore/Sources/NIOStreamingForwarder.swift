@@ -4,7 +4,7 @@ import NIOPosix
 import NIOHTTP1
 import NIOHTTPCompression
 import NIOSSL
-import SharedModels
+import LoomSharedModels
 
 /// Upstream client built directly on SwiftNIO (M4), replacing `URLSessionForwarder`.
 /// Unlike URLSession it lets Loom own every request header — notably `Host`, so a

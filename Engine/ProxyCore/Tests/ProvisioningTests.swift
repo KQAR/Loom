@@ -1,7 +1,7 @@
 import Foundation
 import NIOPosix
 import Testing
-@testable import ProxyCore
+@testable import LoomProxyCore
 
 @Suite struct ProvisioningTests {
     private func makeContent() throws -> ProvisioningContent {

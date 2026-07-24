@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// An in-memory `ProxyControlling` for exercising `MCPToolExecutor` without NIO.
 /// Records the last write so tests can assert the executor forwarded correctly,

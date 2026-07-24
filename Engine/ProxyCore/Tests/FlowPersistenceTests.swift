@@ -1,7 +1,7 @@
 import Testing
 import Foundation
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 @Suite final class FlowPersistenceTests {
     private let fileURL: URL

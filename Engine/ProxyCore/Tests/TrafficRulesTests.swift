@@ -1,6 +1,6 @@
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 import Foundation
 
 // MARK: - Matching

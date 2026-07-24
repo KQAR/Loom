@@ -1,5 +1,5 @@
 import Testing
-@testable import ProxyCore
+@testable import LoomProxyCore
 
 /// Swift Testing beachhead: this suite was the migration pattern for the pure,
 /// table-driven tests. Runs in ProxyCore's Swift 5 language mode alongside the

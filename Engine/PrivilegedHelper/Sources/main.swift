@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import os
 
 // Loom privileged helper (root daemon, M2 — UNVERIFIED SCAFFOLD).

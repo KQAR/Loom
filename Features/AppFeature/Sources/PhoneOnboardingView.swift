@@ -1,6 +1,6 @@
 import AppKit
 import ComposableArchitecture
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// The QR popover shown from the proxy row's phone button: scan to open Loom's

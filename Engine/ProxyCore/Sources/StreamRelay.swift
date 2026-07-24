@@ -1,6 +1,6 @@
 import Foundation
 import NIOCore
-import SharedModels
+import LoomSharedModels
 
 /// Consumes an upstream response stream, relaying it to the client channel
 /// chunk-by-chunk while capturing the exchange as a `Flow`. Shared by the plain

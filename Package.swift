@@ -24,10 +24,10 @@ let package = Package(
         // Pure value types (Flow, CapturedRequest/Response, HeaderPair, rules,
         // HAR, …). Foundation-only, no NIO — a consumer that just wants to map
         // Loom's models can depend on this alone.
-        .library(name: "LoomSharedModels", targets: ["SharedModels"]),
+        .library(name: "LoomSharedModels", targets: ["LoomSharedModels"]),
         // The capture/forward engine: SwiftNIO proxy, HTTPS MITM, on-demand CA,
-        // traffic rules, replay. Depends on SharedModels.
-        .library(name: "LoomProxyCore", targets: ["ProxyCore"]),
+        // traffic rules, replay. Depends on LoomSharedModels.
+        .library(name: "LoomProxyCore", targets: ["LoomProxyCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.72.0"),
@@ -43,13 +43,13 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "SharedModels",
+            name: "LoomSharedModels",
             path: "SharedModels/Sources"
         ),
         .target(
-            name: "ProxyCore",
+            name: "LoomProxyCore",
             dependencies: [
-                "SharedModels",
+                "LoomSharedModels",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
@@ -62,7 +62,7 @@ let package = Package(
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
             path: "Engine/ProxyCore/Sources",
-            // ProxyCore builds in Swift 5 language mode (the NIO channel model
+            // LoomProxyCore builds in Swift 5 language mode (the NIO channel model
             // predates Swift 6 Sendable enforcement) — matches Project.swift.
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
@@ -71,7 +71,7 @@ let package = Package(
         // in the Tuist test targets.
         .testTarget(
             name: "SharedModelsTests",
-            dependencies: ["SharedModels"],
+            dependencies: ["LoomSharedModels"],
             path: "SharedModels/Tests"
         ),
     ]

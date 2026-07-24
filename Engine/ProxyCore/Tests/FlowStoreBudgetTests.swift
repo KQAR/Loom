@@ -1,7 +1,7 @@
 import Testing
 import Foundation
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// Layer 2 of large-body governance: the ring's byte budget. Over budget, the
 /// oldest *persisted* flows' bodies are dropped from memory (safe on disk,

@@ -1,5 +1,5 @@
 import ComposableArchitecture
-import SharedModels
+import LoomSharedModels
 
 /// The modal rule editor as a presented child feature. The actual field editing
 /// lives in `RuleEditorView` (SwiftUI `@State` over a `RuleDraft`); this feature

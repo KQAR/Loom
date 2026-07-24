@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import os
 
 /// On helper startup, undo a proxy override left behind by an app (or helper)

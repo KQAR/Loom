@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Reconstruct a runnable `curl` for a captured request. A pure helper (not a
 /// View method) so the reducer can build it after hydrating the flow's body —

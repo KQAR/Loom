@@ -3,8 +3,8 @@ import NIOCore
 import NIOHTTP1
 import NIOPosix
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// Exercises the M4 NIO upstream client against a real local NIO HTTP/1.1 server:
 /// method / headers / body reach upstream, status + body come back, and the Host

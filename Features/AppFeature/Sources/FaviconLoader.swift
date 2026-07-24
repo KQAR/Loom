@@ -1,5 +1,5 @@
 import AppKit
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// Loads and caches per-host favicons for the sidebar / host column — the

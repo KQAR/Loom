@@ -1,7 +1,7 @@
 import ComposableArchitecture
 import Foundation
-import ProxyCore
-import SharedModels
+import LoomProxyCore
+import LoomSharedModels
 
 /// TCA-facing surface over the shared `ProxyEngine`. Reducers depend on this,
 /// never on NIO directly, which keeps the feature layer testable and Swift-6 clean.

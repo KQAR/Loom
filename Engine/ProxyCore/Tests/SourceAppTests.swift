@@ -1,7 +1,7 @@
 import Testing
 import Foundation
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 @Suite struct SourceAppTests {
     @Test func groupingKey_prefersBundleID() {

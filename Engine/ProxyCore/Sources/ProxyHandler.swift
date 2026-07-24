@@ -5,7 +5,7 @@ import NIOHTTP1
 import NIOHTTP2
 import NIOTLS
 import NIOSSL
-import SharedModels
+import LoomSharedModels
 
 /// Terminates one proxied client connection. For plain HTTP it captures the
 /// exchange and forwards it. For CONNECT it either MITM-decrypts the TLS (when

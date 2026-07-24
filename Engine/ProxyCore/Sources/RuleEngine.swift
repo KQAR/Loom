@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Pure rule evaluation — no I/O, no locks — so the semantics are unit-testable
 /// in isolation. `RuleApplyingForwarder` executes the plans this produces.

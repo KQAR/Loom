@@ -1,7 +1,7 @@
 import Foundation
 import NIOCore
 import NIOHTTP1
-import SharedModels
+import LoomSharedModels
 
 enum HTTPUtil {
     /// Headers that describe the hop, not the message — must not be forwarded.

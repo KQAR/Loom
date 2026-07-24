@@ -1,6 +1,6 @@
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 @Suite struct DeviceIdentityTests {
     // MARK: Display name: disambiguated fallback (aliases layered on in the UI)

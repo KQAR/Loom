@@ -2,8 +2,8 @@ import Foundation
 import NIOSSL
 import X509
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 @Suite struct CertificateAuthorityTests {
     @Test func loadOrGenerate_persistsAndReuses() throws {

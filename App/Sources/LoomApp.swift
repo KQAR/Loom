@@ -2,7 +2,7 @@ import AppFeature
 import ComposableArchitecture
 import MCPServer
 import PrivilegedHelperClient
-import ProxyCore
+import LoomProxyCore
 import SwiftUI
 
 @main

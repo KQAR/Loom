@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 @Suite struct HARExportTests {
     private func decode(_ data: Data) throws -> [String: Any] {
