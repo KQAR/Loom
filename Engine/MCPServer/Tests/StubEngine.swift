@@ -15,6 +15,7 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
 
     // Spies
     private(set) var lastReplay: (id: UUID, overrides: ReplayOverrides)?
+    private(set) var lastReplayFlow: (flow: Flow, overrides: ReplayOverrides)?
     private(set) var lastSSLScope: SSLScope?
     private(set) var setRulesEnabledCalls: [Bool] = []
     private(set) var addedRules: [TrafficRule] = []
@@ -38,6 +39,15 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
         return Flow(id: UUID(), request: CapturedRequest(method: "GET", url: "https://x/", headers: []),
                     startedAt: Date(), outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
                     replayedFrom: id)
+    }
+
+    func replay(flow: Flow, overrides: ReplayOverrides) async throws -> Flow {
+        lastReplayFlow = (flow, overrides)
+        if let replayError { throw replayError }
+        if let replayResult { return replayResult }
+        return Flow(id: UUID(), request: flow.request,
+                    startedAt: Date(), outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
+                    replayedFrom: flow.id)
     }
 
     // TLSInterceptControlling
