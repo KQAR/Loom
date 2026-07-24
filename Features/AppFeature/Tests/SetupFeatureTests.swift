@@ -1,7 +1,8 @@
 import ComposableArchitecture
+import Foundation
 import PrivilegedHelperClient
 import SharedModels
-import XCTest
+import Testing
 
 @testable import AppFeature
 
@@ -9,12 +10,12 @@ import XCTest
 /// optimistic system-proxy toggle (with revert on failure), the SSL toggle's
 /// intercept-all default, and the CA trust/recheck/export flows.
 @MainActor
-final class SetupFeatureTests: XCTestCase {
+@Suite struct SetupFeatureTests {
     private struct StubError: Error {}
 
     // MARK: Refresh (boot re-sync)
 
-    func test_refresh_loadsSystemProxyCertAndScope() async {
+    @Test func test_refresh_loadsSystemProxyCertAndScope() async {
         let cert = CertificateStatus(isGenerated: true, isTrusted: false, commonName: "Loom Root")
         let scope = SSLScope(enabled: true, include: ["*"])
         let store = TestStore(initialState: SetupFeature.State()) {
@@ -35,7 +36,7 @@ final class SetupFeatureTests: XCTestCase {
 
     // MARK: System proxy
 
-    func test_toggleSystemProxy_blockedWhenProxyStoppedButProxyOn() async {
+    @Test func test_toggleSystemProxy_blockedWhenProxyStoppedButProxyOn() async {
         // Pre-existing guard: can't change while the system proxy is on but the
         // Loom proxy is stopped — the human must start the proxy first.
         var initial = SetupFeature.State()
@@ -47,7 +48,7 @@ final class SetupFeatureTests: XCTestCase {
         }
     }
 
-    func test_toggleSystemProxy_enabling_optimistic_thenResultOK() async {
+    @Test func test_toggleSystemProxy_enabling_optimistic_thenResultOK() async {
         var initial = SetupFeature.State()
         initial.proxyRunning = true
         initial.isSystemProxy = false
@@ -67,7 +68,7 @@ final class SetupFeatureTests: XCTestCase {
         }
     }
 
-    func test_toggleSystemProxy_result_failure_revertsOptimisticToggle() async {
+    @Test func test_toggleSystemProxy_result_failure_revertsOptimisticToggle() async {
         var initial = SetupFeature.State()
         initial.proxyRunning = true
         initial.isSystemProxy = false
@@ -90,7 +91,7 @@ final class SetupFeatureTests: XCTestCase {
 
     // MARK: SSL interception
 
-    func test_toggleSSL_enabling_defaultsToInterceptAll_thenReloadsCert() async {
+    @Test func test_toggleSSL_enabling_defaultsToInterceptAll_thenReloadsCert() async {
         let cert = CertificateStatus(isGenerated: true, isTrusted: false)
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
@@ -107,7 +108,7 @@ final class SetupFeatureTests: XCTestCase {
         }
     }
 
-    func test_sslScopeLoaded_syncsEnabledFlag() async {
+    @Test func test_sslScopeLoaded_syncsEnabledFlag() async {
         let store = TestStore(initialState: SetupFeature.State()) { SetupFeature() }
         let scope = SSLScope(enabled: true, include: ["api.example.com"])
         await store.send(.sslScopeLoaded(scope)) {
@@ -118,7 +119,7 @@ final class SetupFeatureTests: XCTestCase {
 
     // MARK: Root-CA trust
 
-    func test_installAndTrustCA_started_loaded_finished() async {
+    @Test func test_installAndTrustCA_started_loaded_finished() async {
         let trusted = CertificateStatus(isGenerated: true, isTrusted: true)
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
@@ -140,7 +141,7 @@ final class SetupFeatureTests: XCTestCase {
         }
     }
 
-    func test_recheckCert_reloadsStatus_clearsMessage() async {
+    @Test func test_recheckCert_reloadsStatus_clearsMessage() async {
         let cert = CertificateStatus(isGenerated: true, isTrusted: false)
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
@@ -161,7 +162,7 @@ final class SetupFeatureTests: XCTestCase {
         }
     }
 
-    func test_exportCA_failure_yieldsNilWithoutSideEffect() async {
+    @Test func test_exportCA_failure_yieldsNilWithoutSideEffect() async {
         // Export failing → caExported(nil) → no state change and no Finder reveal.
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()

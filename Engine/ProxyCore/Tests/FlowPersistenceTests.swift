@@ -1,20 +1,19 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ProxyCore
 import SharedModels
 
-final class FlowPersistenceTests: XCTestCase {
-    private var fileURL: URL!
+@Suite final class FlowPersistenceTests {
+    private let fileURL: URL
 
-    override func setUp() {
-        super.setUp()
+    init() {
         fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("loom-flows-\(UUID())", isDirectory: true)
             .appendingPathComponent("flows.sqlite")
     }
 
-    override func tearDown() {
+    deinit {
         try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
-        super.tearDown()
     }
 
     private func flow(_ n: Int, method: String = "GET") -> Flow {
@@ -29,50 +28,51 @@ final class FlowPersistenceTests: XCTestCase {
         )
     }
 
-    func test_saveAndRecent_roundTrips_bodyFree() throws {
-        let store = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
+    @Test func saveAndRecent_roundTrips_bodyFree() throws {
+        let store = try #require(FlowPersistence(fileURL: fileURL))
         store.save(flow(1))
         store.save(flow(2))
         let recent = store.recent(limit: 10) // sync — save's async writes drain on the same serial queue
-        XCTAssertEqual(recent.count, 2)
-        XCTAssertEqual(recent.first?.request.url, "https://api.test/2", "newest first")
+        #expect(recent.count == 2)
+        #expect(recent.first?.request.url == "https://api.test/2", "newest first")
         // Layer 1: the metadata read is body-free; bodies live in their own columns.
-        XCTAssertNil(recent.first?.response?.body, "recent() no longer carries bodies")
+        #expect(recent.first?.response?.body == nil, "recent() no longer carries bodies")
     }
 
-    func test_bodies_roundTrip() throws {
-        let store = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
+    @Test func bodies_roundTrip() throws {
+        let store = try #require(FlowPersistence(fileURL: fileURL))
         store.save(flow(2))
         _ = store.recent(limit: 1) // drain the async write
-        let bodies = try XCTUnwrap(store.bodies(id: try XCTUnwrap(store.recent(limit: 1).first).id))
-        XCTAssertEqual(bodies.response, Data("body2".utf8))
-        XCTAssertNil(bodies.request, "this fixture has no request body")
+        let firstFlow = try #require(store.recent(limit: 1).first)
+        let bodies = try #require(store.bodies(id: firstFlow.id))
+        #expect(bodies.response == Data("body2".utf8))
+        #expect(bodies.request == nil, "this fixture has no request body")
     }
 
-    func test_bodies_missingRow_isNil() throws {
-        let store = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
-        XCTAssertNil(store.bodies(id: UUID()))
+    @Test func bodies_missingRow_isNil() throws {
+        let store = try #require(FlowPersistence(fileURL: fileURL))
+        #expect(store.bodies(id: UUID()) == nil)
     }
 
-    func test_survivesReopen() throws {
+    @Test func survivesReopen() throws {
         do {
-            let store = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
+            let store = try #require(FlowPersistence(fileURL: fileURL))
             store.save(flow(1))
             _ = store.recent(limit: 1) // drain the write
         }
-        let reopened = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
-        XCTAssertEqual(reopened.recent(limit: 10).count, 1, "rows persist across instances")
+        let reopened = try #require(FlowPersistence(fileURL: fileURL))
+        #expect(reopened.recent(limit: 10).count == 1, "rows persist across instances")
     }
 
-    func test_deleteAll() throws {
-        let store = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
+    @Test func deleteAll() throws {
+        let store = try #require(FlowPersistence(fileURL: fileURL))
         store.save(flow(1))
         store.deleteAll()
-        XCTAssertTrue(store.recent(limit: 10).isEmpty)
+        #expect(store.recent(limit: 10).isEmpty)
     }
 
-    func test_flowStore_reloadedFlowIsBodyFree_butHydratesOnDetail() async throws {
-        let persistence = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
+    @Test func flowStore_reloadedFlowIsBodyFree_butHydratesOnDetail() async throws {
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
         let saved = flow(2)
         persistence.save(saved)
         _ = persistence.recent(limit: 1) // drain
@@ -82,14 +82,14 @@ final class FlowPersistenceTests: XCTestCase {
 
         // The ring holds the reloaded flow body-free (Layer 1 RAM win)…
         let listed = await store.recent(limit: 10).first
-        XCTAssertNil(listed?.response?.body)
+        #expect(listed?.response?.body == nil)
         // …but a detail read hydrates the body back from disk.
         let detailed = await store.flow(id: saved.id)
-        XCTAssertEqual(detailed?.response?.body, Data("body2".utf8))
+        #expect(detailed?.response?.body == Data("body2".utf8))
     }
 
-    func test_flowStore_loadsPersistedOnce() async throws {
-        let persistence = try XCTUnwrap(FlowPersistence(fileURL: fileURL))
+    @Test func flowStore_loadsPersistedOnce() async throws {
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
         persistence.save(flow(1))
         persistence.save(flow(2))
         _ = persistence.recent(limit: 1) // drain
@@ -97,8 +97,8 @@ final class FlowPersistenceTests: XCTestCase {
         let store = FlowStore(persistence: persistence)
         await store.loadPersisted(limit: 10)
         let count = await store.count
-        XCTAssertEqual(count, 2)
+        #expect(count == 2)
         let recent = await store.recent(limit: 10)
-        XCTAssertEqual(recent.first?.request.url, "https://api.test/2")
+        #expect(recent.first?.request.url == "https://api.test/2")
     }
 }

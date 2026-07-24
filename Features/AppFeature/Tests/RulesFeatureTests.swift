@@ -1,6 +1,7 @@
 import ComposableArchitecture
+import Foundation
 import SharedModels
-import XCTest
+import Testing
 
 @testable import AppFeature
 
@@ -9,14 +10,14 @@ import XCTest
 /// rule mutation. Each write is asserted to adopt engine truth over the optimistic
 /// guess (the engine's returned state is made observably different).
 @MainActor
-final class RulesFeatureTests: XCTestCase {
+@Suite struct RulesFeatureTests {
     private struct StubError: LocalizedError {
         var errorDescription: String? { "save failed" }
     }
 
     // MARK: Editor presentation
 
-    func test_presentEditor_opensWithGivenRule() async {
+    @Test func test_presentEditor_opensWithGivenRule() async {
         let rule = Fixtures.rule(name: "From flow")
         let store = TestStore(initialState: RulesFeature.State()) { RulesFeature() }
         await store.send(.presentEditor(rule: rule, isNew: true)) {
@@ -24,7 +25,7 @@ final class RulesFeatureTests: XCTestCase {
         }
     }
 
-    func test_editRuleTapped_opensPrefilledFromExisting() async {
+    @Test func test_editRuleTapped_opensPrefilledFromExisting() async {
         let rule = Fixtures.rule(group: "scenario-a")
         var initial = RulesFeature.State()
         initial.rulesState = RulesState(enabled: true, rules: [rule])
@@ -34,20 +35,20 @@ final class RulesFeatureTests: XCTestCase {
         }
     }
 
-    func test_editRuleTapped_unknownID_isNoOp() async {
+    @Test func test_editRuleTapped_unknownID_isNoOp() async {
         let store = TestStore(initialState: RulesFeature.State()) { RulesFeature() }
         await store.send(.editRuleTapped(UUID()))
     }
 
-    func test_newRuleTapped_opensEmptyEditor() async {
+    @Test func test_newRuleTapped_opensEmptyEditor() async {
         let store = TestStore(initialState: RulesFeature.State()) { RulesFeature() }
         store.exhaustivity = .off // the blank rule carries a fresh UUID/date
         await store.send(.newRuleTapped)
-        XCTAssertTrue(store.state.editor?.isNew ?? false)
-        XCTAssertEqual(store.state.editor?.rule.name, "")
+        #expect(store.state.editor?.isNew ?? false)
+        #expect(store.state.editor?.rule.name == "")
     }
 
-    func test_editorCancel_closesEditor() async {
+    @Test func test_editorCancel_closesEditor() async {
         let rule = Fixtures.rule()
         var initial = RulesFeature.State()
         initial.editor = RuleEditorFeature.State(rule: rule, isNew: false, existingGroups: [])
@@ -59,7 +60,7 @@ final class RulesFeatureTests: XCTestCase {
 
     // MARK: Editor save — new
 
-    func test_editorSave_new_optimisticAppend_flipsMasterSwitch_thenResyncs() async {
+    @Test func test_editorSave_new_optimisticAppend_flipsMasterSwitch_thenResyncs() async {
         let rule = Fixtures.rule(name: "Block home")
         var initial = RulesFeature.State()
         initial.editor = RuleEditorFeature.State(rule: rule, isNew: true, existingGroups: [])
@@ -89,7 +90,7 @@ final class RulesFeatureTests: XCTestCase {
         }
     }
 
-    func test_editorSave_new_addRuleThrows_surfacesMessage() async {
+    @Test func test_editorSave_new_addRuleThrows_surfacesMessage() async {
         let rule = Fixtures.rule()
         var initial = RulesFeature.State()
         initial.editor = RuleEditorFeature.State(rule: rule, isNew: true, existingGroups: [])
@@ -120,7 +121,7 @@ final class RulesFeatureTests: XCTestCase {
 
     // MARK: Editor save — update
 
-    func test_editorSave_update_replacesInPlace_thenResyncs() async {
+    @Test func test_editorSave_update_replacesInPlace_thenResyncs() async {
         let id = UUID()
         let original = Fixtures.rule(id: id, name: "Original")
         var edited = original
@@ -152,7 +153,7 @@ final class RulesFeatureTests: XCTestCase {
 
     // MARK: Master switch + per-rule/group writes
 
-    func test_toggleRulesTapped_optimisticFlip_thenResyncs() async {
+    @Test func test_toggleRulesTapped_optimisticFlip_thenResyncs() async {
         var initial = RulesFeature.State()
         initial.rulesState = RulesState(enabled: false, rules: [])
         let loaded = RulesState(enabled: true, rules: [Fixtures.rule()])
@@ -170,7 +171,7 @@ final class RulesFeatureTests: XCTestCase {
         }
     }
 
-    func test_ruleToggled_flipsEnabled_thenResyncs() async {
+    @Test func test_ruleToggled_flipsEnabled_thenResyncs() async {
         let rule = Fixtures.rule(isEnabled: true)
         var initial = RulesFeature.State()
         initial.rulesState = RulesState(enabled: true, rules: [rule])
@@ -189,7 +190,7 @@ final class RulesFeatureTests: XCTestCase {
         }
     }
 
-    func test_ruleDeleted_resyncs() async {
+    @Test func test_ruleDeleted_resyncs() async {
         let rule = Fixtures.rule()
         var initial = RulesFeature.State()
         initial.rulesState = RulesState(enabled: true, rules: [rule])
@@ -206,7 +207,7 @@ final class RulesFeatureTests: XCTestCase {
         }
     }
 
-    func test_ruleWriteFailed_setsMessage() async {
+    @Test func test_ruleWriteFailed_setsMessage() async {
         let store = TestStore(initialState: RulesFeature.State()) { RulesFeature() }
         await store.send(.ruleWriteFailed("boom")) {
             $0.rulesMessage = "boom"
