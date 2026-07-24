@@ -275,9 +275,9 @@ import LoomSharedModels
         #expect(engine.lastSSLScope?.include == ["*.example.com"])
     }
 
-    @Test func createRule_strictParse_missingMatch_isInvalidParams() async {
+    @Test func setRule_create_strictParse_missingMatch_isInvalidParams() async {
         do {
-            _ = try await makeExecutor().call(name: "create_rule", arguments: [
+            _ = try await makeExecutor().call(name: "set_rule", arguments: [
                 "name": "r", "actions": ["block": true],
             ])
             Issue.record("expected invalidParams for missing match")
@@ -286,9 +286,9 @@ import LoomSharedModels
         } catch { Issue.record("wrong error type: \(error)") }
     }
 
-    @Test func createRule_valid_addsToEngine() async throws {
+    @Test func setRule_noID_createsRule() async throws {
         let engine = StubEngine()
-        let out = try json(try await makeExecutor(engine).call(name: "create_rule", arguments: [
+        let out = try json(try await makeExecutor(engine).call(name: "set_rule", arguments: [
             "name": "block home",
             "match": ["url_pattern": "https://api.example.com/home"],
             "actions": ["block": true],
@@ -296,6 +296,43 @@ import LoomSharedModels
         #expect(out["name"] as? String == "block home")
         #expect(engine.addedRules.count == 1)
         #expect(engine.rules.rules.count == 1)
+    }
+
+    @Test func setRule_withID_updatesExistingRule() async throws {
+        let engine = StubEngine()
+        let existing = TrafficRule(name: "old", match: RuleMatch(urlPattern: "https://a/*"),
+                                   actions: RuleActions(route: .block))
+        engine.rules.rules = [existing]
+        _ = try await makeExecutor(engine).call(name: "set_rule", arguments: [
+            "id": existing.id.uuidString, "name": "renamed", "enabled": false,
+        ])
+        let updated = try #require(engine.rules.rules.first { $0.id == existing.id })
+        #expect(updated.name == "renamed")
+        #expect(updated.isEnabled == false)
+        #expect(engine.addedRules.isEmpty, "update must not go through the create path")
+    }
+
+    @Test func setRule_withUnknownID_isToolFailure() async {
+        do {
+            _ = try await makeExecutor().call(name: "set_rule", arguments: [
+                "id": UUID().uuidString, "name": "x",
+            ])
+            Issue.record("expected tool failure")
+        } catch is MCPToolFailure {
+        } catch { Issue.record("expected MCPToolFailure, got \(error)") }
+    }
+
+    @Test func listRules_withID_returnsSingleFullRule() async throws {
+        let engine = StubEngine()
+        let rule = TrafficRule(name: "only", match: RuleMatch(urlPattern: "https://a/*"),
+                               actions: RuleActions(route: .block))
+        engine.rules.rules = [rule]
+        // No id → collection with a count; id → the single rule object.
+        let all = try json(try await makeExecutor(engine).call(name: "list_rules", arguments: [:]))
+        #expect(all["count"] as? Int == 1)
+        let one = try json(try await makeExecutor(engine).call(name: "list_rules", arguments: ["id": rule.id.uuidString]))
+        #expect(one["name"] as? String == "only")
+        #expect(one["count"] == nil, "single-rule form isn't the list envelope")
     }
 
     @Test func deleteRule_unknownID_isToolFailure() async {
@@ -331,14 +368,14 @@ import LoomSharedModels
 
     @Test func writeTool_success_recordsAuditEntry() async throws {
         let engine = StubEngine()
-        _ = try await makeExecutor(engine).call(name: "create_rule", arguments: [
+        _ = try await makeExecutor(engine).call(name: "set_rule", arguments: [
             "name": "block home",
             "match": ["url_pattern": "https://api.example.com/home"],
             "actions": ["block": true],
         ])
         let entry = try #require(engine.recordedAudits.first)
         #expect(engine.recordedAudits.count == 1)
-        #expect(entry.tool == "create_rule")
+        #expect(entry.tool == "set_rule")
         #expect(entry.source == .mcp)
         #expect(entry.succeeded)
         #expect(entry.arguments.contains("block home"))
@@ -389,8 +426,8 @@ import LoomSharedModels
     @Test func auditArguments_areTruncatedToCap() async throws {
         let engine = StubEngine()
         let huge = String(repeating: "x", count: AuditEntry.cap + 500)
-        // A create_rule whose mock body is oversized — the args render must clip.
-        _ = try? await makeExecutor(engine).call(name: "create_rule", arguments: [
+        // A set_rule whose name is oversized — the args render must clip.
+        _ = try? await makeExecutor(engine).call(name: "set_rule", arguments: [
             "name": huge,
             "match": ["url_pattern": "https://a/*"],
             "actions": ["block": true],

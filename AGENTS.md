@@ -107,10 +107,8 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 | `get_ssl_scope` | read | current interception scope (enabled + include/exclude host globs) |
 | `export_ca_certificate` | **write** | write the root CA (PEM) to disk for trusting; returns the path |
 | `set_ssl_scope` | **write** | enable/disable HTTPS interception and set include/exclude host globs |
-| `list_rules` | read | master switch + all traffic rules (long bodies truncated) |
-| `get_rule` | read | one rule by id, full bodies |
-| `create_rule` | **write** | structured traffic rule: URL glob/regex + methods → mock / map remote (+exclude/keep-host) / map local / rewrite req+res / find-replace substitutions (request_substitutions/response_substitutions) / block / delay; optional `group` label |
-| `update_rule` | **write** | replace fields of a rule by id (per-rule enable/disable, regroup with `group`, `""` ungroups) |
+| `list_rules` | read | master switch + all traffic rules (long bodies truncated); pass `id` to get one rule with full bodies (absorbs the former `get_rule`) |
+| `set_rule` | **write** | create (omit `id`) or update (`id`) a structured traffic rule — upsert (absorbs `create_rule`+`update_rule`): URL glob/regex + methods → mock / map remote (+exclude/keep-host) / map local / rewrite req+res / find-replace substitutions (request_substitutions/response_substitutions) / block / delay; optional `group`; on update, provided fields replace (per-rule enable/disable, regroup with `group`, `""` ungroups) |
 | `delete_rule` | **write** | remove a rule by id |
 | `set_rules_enabled` | **write** | master switch for the rule engine |
 | `set_group_enabled` | **write** | enable/disable every rule in a group (scenario switching) |

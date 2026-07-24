@@ -192,49 +192,27 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "list_rules",
-                "description": "List all traffic rules and the master rules switch. Mock/rewrite bodies are truncated; use get_rule for the full rule.",
-                "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
-            ],
-            [
-                "name": "get_rule",
-                "description": "Get one traffic rule by id, with full (untruncated) bodies.",
+                "description": "List traffic rules and the master rules switch. Without arguments, returns all rules with mock/rewrite bodies truncated. Pass `id` to return that single rule with full (untruncated) bodies.",
                 "inputSchema": [
                     "type": "object",
-                    "properties": ["id": ["type": "string", "description": "Rule UUID."]],
-                    "required": ["id"],
+                    "properties": ["id": ["type": "string", "description": "Optional rule UUID — return just this rule, with full bodies."]],
                 ],
             ],
             [
-                "name": "create_rule",
-                "description": "Create a traffic rule: match requests by URL pattern (+ optional methods) and act on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. Rules apply to live traffic and replays, in list order. This is a write action.",
+                "name": "set_rule",
+                "description": "Create or update a traffic rule (upsert). Omit `id` to create; pass `id` to update an existing rule. A rule matches requests by URL pattern (+ optional methods) and acts on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. On update, provided fields replace the existing ones (match/actions are replaced whole, not merged); toggle a single rule with just {id, enabled}. Rules apply to live traffic and replays, in list order. This is a write action.",
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "name": ["type": "string", "description": "Short human-readable rule name (shows in flow audit trails)."],
+                        "id": ["type": "string", "description": "Rule UUID to update. Omit to create a new rule."],
+                        "name": ["type": "string", "description": "Short human-readable rule name (shows in flow audit trails). Required when creating."],
                         "comment": ["type": "string", "description": "Optional note on why the rule exists."],
-                        "group": ["type": "string", "description": "Optional group label (e.g. one group per scenario); a whole group can be toggled with set_group_enabled."],
-                        "enabled": ["type": "boolean", "description": "Default true."],
+                        "group": ["type": "string", "description": "Optional group label (e.g. one group per scenario); a whole group can be toggled with set_group_enabled. On update, pass \"\" to ungroup."],
+                        "enabled": ["type": "boolean", "description": "Default true on create."],
                         "match": Self.matchSchema,
                         "actions": Self.actionsSchema,
                     ],
-                    "required": ["name", "match", "actions"],
-                ],
-            ],
-            [
-                "name": "update_rule",
-                "description": "Update a traffic rule by id. Provided fields replace the existing ones (match/actions are replaced whole, not merged). Toggle a single rule with just {id, enabled}. This is a write action.",
-                "inputSchema": [
-                    "type": "object",
-                    "properties": [
-                        "id": ["type": "string", "description": "Rule UUID."],
-                        "name": ["type": "string"],
-                        "comment": ["type": "string"],
-                        "group": ["type": "string", "description": "New group label; pass \"\" to ungroup."],
-                        "enabled": ["type": "boolean"],
-                        "match": Self.matchSchema,
-                        "actions": Self.actionsSchema,
-                    ],
-                    "required": ["id"],
+                    "required": [] as [String],
                 ],
             ],
             [
@@ -403,9 +381,7 @@ struct MCPToolExecutor {
         "set_ssl_scope": { ex, args in try await ex.handleSetSSLScope(args) },
         "export_har": { ex, args in try await ex.handleExportHAR(args) },
         "list_rules": { ex, args in try await ex.handleListRules(args) },
-        "get_rule": { ex, args in try await ex.handleGetRule(args) },
-        "create_rule": { ex, args in try await ex.handleCreateRule(args) },
-        "update_rule": { ex, args in try await ex.handleUpdateRule(args) },
+        "set_rule": { ex, args in try await ex.handleSetRule(args) },
         "delete_rule": { ex, args in try await ex.handleDeleteRule(args) },
         "set_rules_enabled": { ex, args in try await ex.handleSetRulesEnabled(args) },
         "set_group_enabled": { ex, args in try await ex.handleSetGroupEnabled(args) },
@@ -423,8 +399,7 @@ struct MCPToolExecutor {
         "export_ca_certificate",
         "set_ssl_scope",
         "export_har",
-        "create_rule",
-        "update_rule",
+        "set_rule",
         "delete_rule",
         "set_rules_enabled",
         "set_group_enabled",
@@ -711,7 +686,13 @@ struct MCPToolExecutor {
         return prettyJSON(["path": url.path, "entries": flows.count])
     }
 
+    /// `list_rules`: all rules (bodies truncated), or — with `id` — one rule with
+    /// full bodies. Absorbs the former `get_rule`.
     private func handleListRules(_ arguments: [String: Any]) async throws -> String {
+        if arguments["id"] != nil {
+            let rule = try await existingRule(arguments)
+            return prettyJSON(Self.rule(rule, truncateBodies: false))
+        }
         let state = await engine.rulesState()
         return prettyJSON([
             "enabled": state.enabled,
@@ -720,14 +701,17 @@ struct MCPToolExecutor {
         ])
     }
 
-    private func handleGetRule(_ arguments: [String: Any]) async throws -> String {
-        let rule = try await existingRule(arguments)
-        return prettyJSON(Self.rule(rule, truncateBodies: false))
+    /// `set_rule`: upsert. No `id` → create (name/match/actions required); `id` →
+    /// update (provided fields replace). Absorbs `create_rule` + `update_rule`.
+    private func handleSetRule(_ arguments: [String: Any]) async throws -> String {
+        arguments["id"] == nil
+            ? try await createRule(arguments)
+            : try await updateRule(arguments)
     }
 
-    private func handleCreateRule(_ arguments: [String: Any]) async throws -> String {
+    private func createRule(_ arguments: [String: Any]) async throws -> String {
         guard let ruleName = arguments["name"] as? String else {
-            throw MCPError.invalidParams("`name` is required")
+            throw MCPError.invalidParams("`name` is required to create a rule")
         }
         guard let matchRaw = arguments["match"] as? [String: Any],
               let match = Self.ruleMatch(from: matchRaw) else {
@@ -752,7 +736,7 @@ struct MCPToolExecutor {
         return prettyJSON(Self.rule(rule, truncateBodies: false))
     }
 
-    private func handleUpdateRule(_ arguments: [String: Any]) async throws -> String {
+    private func updateRule(_ arguments: [String: Any]) async throws -> String {
         var rule = try await existingRule(arguments)
         if let newName = arguments["name"] as? String { rule.name = newName }
         if let comment = arguments["comment"] as? String { rule.comment = comment }
