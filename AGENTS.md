@@ -34,7 +34,11 @@ Loom is a clean-room implementation. Studying open-source proxies to learn *what
 ```bash
 tuist install                 # Resolve SPM dependencies
 tuist generate                # Generate Loom.xcworkspace
-tuist build Loom              # Build the app
+# Build the app (`tuist build` is deprecated; `tuist xcodebuild` wraps xcodebuild).
+# The `-workspace` flag is REQUIRED — with only `-scheme` xcodebuild picks the wrong
+# project and fails to resolve SPM modules (e.g. "Unable to find module dependency:
+# 'ComposableArchitecture'"). Products land in the same DerivedData either way.
+tuist xcodebuild -workspace Loom.xcworkspace -scheme Loom -configuration Debug -destination 'platform=macOS' build
 tuist clean                   # Clean
 tuist edit                    # Edit Tuist manifests in Xcode
 
