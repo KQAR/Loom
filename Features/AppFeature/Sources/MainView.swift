@@ -386,28 +386,28 @@ public struct MainView: View {
                            help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
                     store.send(.rules(.toggleRulesTapped))
                 }
+
+                // Record lives at the right end of the ip toolbar, split from the
+                // status toggles by a divider. Clear is a floating button in the
+                // flow list (`clearFAB`), so the trailing toolbar group is gone.
+                Divider().frame(height: 14)
+                recordButton
             }
             .padding(.horizontal, LoomTheme.Space.sm)
         }
-        // macOS 26 wraps a ToolbarItemGroup in a shared Liquid Glass container;
-        // hide it so these read as flat icons. Plain group on the 14 baseline.
-        if #available(macOS 26.0, *) {
-            ToolbarItemGroup(placement: .primaryAction) { trailingButtons }
-                .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItemGroup(placement: .primaryAction) { trailingButtons }
-        }
     }
 
-    @ViewBuilder private var trailingButtons: some View {
+    /// Start/stop capture. Idle shows a circular record symbol; recording shows a
+    /// stop glyph. Text label kept ("Record"/"Stop").
+    private var recordButton: some View {
         Button { store.send(.toggleRecordingTapped) } label: {
             HStack(spacing: 5) {
-                Image(systemName: store.isRecording ? "stop.fill" : "play.fill")
+                Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
                     .font(LoomTheme.Icon.toolbar)
                 Text(store.isRecording ? "Stop" : "Record")
                     .font(.callout)
             }
-            .foregroundStyle(store.isRecording ? Color.orange : Color.primary)
+            .foregroundStyle(store.isRecording ? Color.orange : Color.red)
             .frame(height: 26)
             .contentShape(Rectangle())
         }
@@ -415,9 +415,6 @@ public struct MainView: View {
         .help(store.isRecording
             ? "Stop recording — traffic keeps flowing but isn't captured"
             : "Start recording captured traffic")
-        // Clear lives as a hold-to-confirm floating button in the flow list itself
-        // (see `clearFAB`), so it only shows with the traffic it clears — never on
-        // the Rules/Audit panels.
     }
 
     private func statusIcon(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
