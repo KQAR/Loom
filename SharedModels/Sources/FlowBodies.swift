@@ -1,15 +1,15 @@
 import Foundation
-import SharedModels
 
-/// Body separation for storage (Layer 1 of large-body governance): request and
-/// response bodies are the heavy part of a `Flow`. Persistence stores them in
-/// their own BLOB columns and keeps the JSON metadata body-free, so list/boot
-/// reads decode cheaply. These helpers strip bodies before encoding and re-attach
-/// them on demand — the `Flow` model shape is unchanged, so every reader that
-/// reads `.body` off a hydrated flow keeps working.
-extension Flow {
-    /// A copy with both bodies removed — the shape stored as the JSON metadata
-    /// blob and held in the in-memory ring once slimmed.
+/// Body separation for large-body governance. Request and response bodies are
+/// the heavy part of a `Flow`; the storage layer keeps them in dedicated columns
+/// (not the JSON blob), the engine ring drops them once over a byte budget, and
+/// the UI holds metadata-only flows and hydrates a body on demand. These helpers
+/// strip bodies before storing and re-attach them when a full payload is needed.
+/// The `Flow` model shape is unchanged, so every reader of `.body` on a hydrated
+/// flow keeps working.
+public extension Flow {
+    /// A copy with both bodies removed — the shape stored as JSON metadata, held
+    /// in the in-memory ring once slimmed, and kept in the UI's flow list.
     func strippingBodies() -> Flow {
         var copy = self
         copy.request.body = nil
@@ -17,8 +17,8 @@ extension Flow {
         return copy
     }
 
-    /// A copy with bodies re-attached from separate storage. Nil arguments leave
-    /// that side empty (the flow genuinely had no body).
+    /// A copy with bodies re-attached from separate storage. A nil argument leaves
+    /// that side empty (the flow genuinely had no body there).
     func attachingBodies(request requestBody: Data?, response responseBody: Data?) -> Flow {
         var copy = self
         copy.request.body = requestBody
