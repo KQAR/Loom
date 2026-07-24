@@ -75,6 +75,14 @@ final class FlowPersistence: @unchecked Sendable {
         queue.async { [weak self] in self?.exec("DELETE FROM flows;") }
     }
 
+    /// Block until every queued `save`/`deleteAll` has run. `save` is fire-and-
+    /// forget (`queue.async`), so on quit the last few writes may still be sitting
+    /// in the queue — call this from the terminate handler to drain them before
+    /// the process dies. A no-op barrier is enough since the queue is serial.
+    func flush() {
+        queue.sync {}
+    }
+
     // MARK: - Private (queue-confined)
 
     private func writeRow(_ flow: Flow, _ data: Data) {

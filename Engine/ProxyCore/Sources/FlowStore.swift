@@ -67,6 +67,37 @@ actor FlowStore {
         persistence?.deleteAll()
     }
 
+    /// Drain the persistence write queue so completed flows saved just before
+    /// quit actually reach disk (saves are `queue.async`). No-op without a store.
+    func flush() {
+        persistence?.flush()
+    }
+
+    /// Terminal-state every still-open flow (`.pending` or mid-`.streaming`) as
+    /// failed, so a quit with requests in flight doesn't silently drop them:
+    /// completed flows already persist as they finish, but in-flight ones live
+    /// only in the ring. Preserves a streaming flow's partial response, persists
+    /// each, and broadcasts the transition. Returns how many were finalized.
+    @discardableResult
+    func finalizeInFlight(reason: String, at date: Date = Date()) -> Int {
+        var finalized = 0
+        for idx in flows.indices {
+            let partial: CapturedResponse?
+            switch flows[idx].outcome {
+            case .pending: partial = nil
+            case let .streaming(response): partial = response
+            case .completed, .failed: continue // already terminal
+            }
+            flows[idx].outcome = .failed(FlowError(reason), at: date, partialResponse: partial)
+            finalized += 1
+            persistence?.save(flows[idx])
+            for continuation in continuations.values {
+                continuation.yield(flows[idx])
+            }
+        }
+        return finalized
+    }
+
     func flow(id: UUID) -> Flow? {
         flows.first { $0.id == id }
     }

@@ -25,6 +25,13 @@ public struct AppFeature: Sendable {
         public var status = ProxyStatus(isRunning: false, port: 9090, capturedCount: 0)
         /// Stored oldest-first (insertion order); lists display newest-first.
         public var flows: IdentifiedArrayOf<Flow> = []
+        /// Most flows the window keeps in memory this session; older ones are
+        /// dropped oldest-first (the engine ring is bounded the same way, so the
+        /// list would never surface them anyway). Matches `FlowStore.capacity`.
+        public static let displayCap = 2000
+        /// How many flows the cap has dropped this session — surfaced in the list
+        /// footer so a big capture doesn't *look* like it kept everything.
+        public var droppedFlowCount = 0
         public var selectedCategory: FlowCategory? = .all
         public var selectedFlowID: Flow.ID?
 
@@ -54,6 +61,24 @@ public struct AppFeature: Sendable {
         public var displayHost: String { localIP ?? "127.0.0.1" }
 
         public init() {}
+
+        /// Upsert a flow, then enforce the session display cap by dropping the
+        /// oldest overflow (oldest-first storage → `removeFirst`), counting the
+        /// drops. An upsert of an existing id doesn't grow the array, so this only
+        /// trims on genuinely new flows. Clears the selection if it was dropped.
+        mutating func recordFlow(_ flow: Flow) {
+            flows[id: flow.id] = flow
+            let overflow = flows.count - Self.displayCap
+            if overflow > 0 {
+                let droppedIDs = Set(flows.prefix(overflow).map(\.id))
+                flows.removeFirst(overflow)
+                droppedFlowCount += overflow
+                if let selected = selectedFlowID, droppedIDs.contains(selected) {
+                    selectedFlowID = nil
+                }
+            }
+            status.capturedCount = flows.count
+        }
 
         /// Requests for the selected category, filtered by search, oldest-first
         /// (chronological — newest at the bottom, like a log/terminal).
@@ -323,8 +348,7 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .flowReceived(flow):
-                state.flows[id: flow.id] = flow
-                state.status.capturedCount = state.flows.count
+                state.recordFlow(flow)
                 return .none
 
             case let .categorySelected(category):
@@ -348,14 +372,14 @@ public struct AppFeature: Sendable {
 
             case let .replayFinished(flow):
                 guard let flow else { return .none }
-                state.flows[id: flow.id] = flow
-                state.selectedFlowID = flow.id // jump to the replayed result
-                state.status.capturedCount = state.flows.count
+                state.recordFlow(flow)
+                state.selectedFlowID = flow.id // jump to the replayed result (after any cap trim)
                 return .none
 
             case .clearTapped:
                 state.flows.removeAll()
                 state.selectedFlowID = nil
+                state.droppedFlowCount = 0
                 state.status.capturedCount = 0
                 return .run { _ in await proxyClient.clearFlows() }
 

@@ -161,6 +161,16 @@ public actor ProxyEngine: ProxyControlling {
         await store.clear()
     }
 
+    /// Persist everything to disk before the app dies. Call from the terminate
+    /// handler. Two gaps closed: (1) flows still in flight (`.pending`/streaming)
+    /// live only in the ring and never got saved — finalize them as interrupted
+    /// and write them; (2) completed flows are saved fire-and-forget, so drain the
+    /// write queue afterwards so a quit can't outrun the last few writes.
+    public func flushFlows() async {
+        await store.finalizeInFlight(reason: "interrupted (app quit)")
+        await store.flush()
+    }
+
     // MARK: - CaptureControlling
 
     /// Pause/resume recording. Forwarding (and MITM decryption) is unaffected;
