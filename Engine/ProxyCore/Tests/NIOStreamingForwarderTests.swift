@@ -92,6 +92,7 @@ import LoomSharedModels
         var bodies: [String] = []
         for try await event in forwarder.forwardStream(method: "GET", url: url, headers: [], body: .bytes(nil)) {
             switch event {
+            case .metadata: break
             case .head: order.append("head")
             case let .body(data): order.append("body"); bodies.append(String(decoding: data, as: UTF8.self))
             case .end: order.append("end")

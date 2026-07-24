@@ -249,12 +249,21 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         return (RuleApplyingForwarder(base: upstream, rules: config), upstream)
     }
 
+    /// Applied rules now live on the `.metadata` event, not `ForwardResult`.
+    private func appliedRules(_ forwarder: RuleApplyingForwarder, method: String = "GET", body: Data? = nil) async throws -> [AppliedRule] {
+        var applied: [AppliedRule] = []
+        for try await event in forwarder.forwardStream(method: method, url: url, headers: [], body: .bytes(body)) {
+            if case let .metadata(rules) = event { applied = rules }
+        }
+        return applied
+    }
+
     @Test func noRules_passthrough_untouched() async throws {
         let (forwarder, upstream) = makeForwarder([])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
         #expect(upstream.callCount == 1)
         #expect(result.body == Data("upstream".utf8))
-        #expect(result.appliedRules.isEmpty)
+        #expect(try await appliedRules(forwarder).isEmpty)
     }
 
     @Test func mock_shortCircuits_neverContactsUpstream() async throws {
@@ -271,7 +280,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         #expect(result.statusCode == 200)
         #expect(result.body == Data(#"{"body":"MOCK"}"#.utf8))
         #expect(result.headers.first(where: { $0.name.lowercased() == "content-type" })?.value == "application/json")
-        #expect(result.appliedRules.map(\.name) == ["home mock"])
+        #expect(try await appliedRules(forwarder).map(\.name) == ["home mock"])
     }
 
     @Test func block_returns403() async throws {
@@ -297,7 +306,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
 
         #expect(upstream.lastURL?.absoluteString == "http://127.0.0.1:3001/v1/home")
         #expect(upstream.lastHeaders.map(\.name) == ["X-Debug"])
-        #expect(result.appliedRules.map(\.name) == ["to local"])
+        #expect(try await appliedRules(forwarder).map(\.name) == ["to local"])
     }
 
     @Test func responseRewrite_appliesToRealUpstreamResponse() async throws {

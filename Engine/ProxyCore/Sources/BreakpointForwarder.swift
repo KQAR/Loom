@@ -20,78 +20,109 @@ final class BreakpointForwarder: UpstreamForwarding {
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        let originalMethod = method
-        let originalURL = url.absoluteString
-
-        var method = method
-        var url = url
-        var headers = headers
-        var body = body
-
-        // Request phase: hold the request as the client sent it, apply any edit.
-        if let bp = store.firstMatch(method: originalMethod, url: originalURL, phase: .request) {
-            let info = PendingBreakpoint(
-                breakpointID: bp.id, phase: .request,
-                method: method, url: url.absoluteString, requestHeaders: headers, requestBody: body
-            )
-            switch await store.hold(info) {
-            case .abort:
-                return Self.aborted()
-            case let .proceed(edit):
-                (method, url, headers, body) = Self.applyRequestEdit(edit, method: method, url: url, headers: headers, body: body)
+        // Fold our own event stream (which owns the hold logic) into a buffered
+        // result — one production path shared with `forwardStream`.
+        var statusCode = 200
+        var httpVersion: String?
+        var responseHeaders: [HeaderPair] = []
+        var responseBody = Data()
+        for try await event in forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
+            switch event {
+            case .metadata: break // applied rules travel on the event stream, not the buffered result
+            case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
+            case let .body(chunk): responseBody.append(chunk)
+            case .end: break
             }
         }
-
-        var result = try await base.forward(method: method, url: url, headers: headers, body: body)
-
-        // Response phase: hold the final response before it reaches the client.
-        // Matched off the *original* request so a request-phase URL edit can't
-        // change whether the response pauses.
-        if let bp = store.firstMatch(method: originalMethod, url: originalURL, phase: .response) {
-            let info = PendingBreakpoint(
-                breakpointID: bp.id, phase: .response,
-                method: method, url: url.absoluteString, requestHeaders: headers, requestBody: body,
-                statusCode: result.statusCode, responseHeaders: result.headers, responseBody: result.body
-            )
-            switch await store.hold(info) {
-            case .abort:
-                return Self.aborted()
-            case let .proceed(edit):
-                result = Self.applyResponseEdit(edit, to: result)
-            }
-        }
-
-        return result
+        return ForwardResult(
+            statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody
+        )
     }
 
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
-        let urlString = url.absoluteString
-        let matchesRequest = store.firstMatch(method: method, url: urlString, phase: .request) != nil
-        let matchesResponse = store.firstMatch(method: method, url: urlString, phase: .response) != nil
+        let originalMethod = method
+        let originalURL = url.absoluteString
+        let requestBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .request)
+        let responseBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .response)
 
         // Fast path: no breakpoint touches this exchange — delegate untouched so the
         // request body (and streaming responses) keep streaming chunk-by-chunk.
-        guard matchesRequest || matchesResponse else {
+        guard requestBP != nil || responseBP != nil else {
             return base.forwardStream(method: method, url: url, headers: headers, body: body)
         }
 
-        // A held exchange must be buffered (we may edit the request or the whole
-        // response), so materialize the body first, then run the buffered path.
+        // A held exchange is buffered (we may edit the request or the whole response),
+        // but the base stream's rule `.metadata` is surfaced *immediately* — so a held
+        // exchange that then fails upstream still records the rules that acted on it.
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let collected = try await body.collect()
-                    let result = try await self.forward(method: method, url: url, headers: headers, body: collected)
-                    continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers, appliedRules: result.appliedRules))
-                    if !result.body.isEmpty { continuation.yield(.body(result.body)) }
-                    continuation.yield(.end)
-                    continuation.finish()
+                    var method = method
+                    var url = url
+                    var headers = headers
+                    var body = try await body.collect()
+
+                    // Request phase: hold the request as the client sent it, apply any edit.
+                    if let bp = requestBP {
+                        let info = PendingBreakpoint(
+                            breakpointID: bp.id, phase: .request,
+                            method: method, url: url.absoluteString, requestHeaders: headers, requestBody: body
+                        )
+                        switch await store.hold(info) {
+                        case .abort:
+                            Self.emit(Self.aborted(), into: continuation); return
+                        case let .proceed(edit):
+                            (method, url, headers, body) = Self.applyRequestEdit(edit, method: method, url: url, headers: headers, body: body)
+                        }
+                    }
+
+                    // Forward through the base stream: pass rule `.metadata` straight
+                    // out as it arrives, buffer the response for a possible response hold.
+                    var statusCode = 200
+                    var httpVersion: String?
+                    var responseHeaders: [HeaderPair] = []
+                    var responseBody = Data()
+                    for try await event in base.forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
+                        switch event {
+                        case let .metadata(rules): continuation.yield(.metadata(appliedRules: rules))
+                        case let .head(code, version, hdrs): statusCode = code; httpVersion = version; responseHeaders = hdrs
+                        case let .body(chunk): responseBody.append(chunk)
+                        case .end: break
+                        }
+                    }
+                    var result = ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody)
+
+                    // Response phase: hold the final response before it reaches the client.
+                    // Matched off the *original* request so a request-phase URL edit can't
+                    // change whether the response pauses.
+                    if let bp = responseBP {
+                        let info = PendingBreakpoint(
+                            breakpointID: bp.id, phase: .response,
+                            method: method, url: url.absoluteString, requestHeaders: headers, requestBody: body,
+                            statusCode: result.statusCode, responseHeaders: result.headers, responseBody: result.body
+                        )
+                        switch await store.hold(info) {
+                        case .abort:
+                            Self.emit(Self.aborted(), into: continuation); return
+                        case let .proceed(edit):
+                            result = Self.applyResponseEdit(edit, to: result)
+                        }
+                    }
+                    Self.emit(result, into: continuation)
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Yield a buffered result to the client stream as head/body/end, then finish.
+    private static func emit(_ result: ForwardResult, into continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation) {
+        continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
+        if !result.body.isEmpty { continuation.yield(.body(result.body)) }
+        continuation.yield(.end)
+        continuation.finish()
     }
 
     // MARK: - Edit application
