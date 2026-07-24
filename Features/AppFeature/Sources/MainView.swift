@@ -141,12 +141,21 @@ public struct MainView: View {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             requestTable
-                .overlay(alignment: .bottomTrailing) { clearFAB }
+                // Bottom scroll redundancy (~3 rows) so the last rows scroll clear
+                // of the floating clear button. `contentMargins` pads *inside* the
+                // scroll content (same background), so there's no distinct dimmed
+                // band the way a safe-area inset spacer would leave.
+                .contentMargins(.bottom, Self.clearFABScrollInset, for: .scrollContent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if store.droppedFlowCount > 0 { capBanner }
                 }
+                .overlay(alignment: .bottomTrailing) { clearFAB }
         }
     }
+
+    /// Bottom scroll padding under the flow table so the floating clear button
+    /// (`clearFAB`) can't hide the last rows — roughly three table rows.
+    private static let clearFABScrollInset: CGFloat = 84
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped
     /// the oldest flows, so a huge capture doesn't masquerade as complete.
