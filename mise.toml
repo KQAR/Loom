@@ -1,3 +1,14 @@
 [tools]
 tuist = "4.202.5"
 # DMG packaging uses macOS's built-in hdiutil (scripts/create-dmg.sh) — no extra tool.
+
+[env]
+# Opt into Tuist's SwifterPM resolver (experimental, Tuist ≥ 4.201.0): a globally
+# content-addressable dependency store instead of a per-checkout `.build`. Gives
+# sub-second warm resolutions and a ~260× smaller local `.build` — the win shows
+# most under git worktrees, where every worktree otherwise re-resolves from
+# scratch. See community.tuist.dev/t/.../1001.
+# Caveat: this resolver rewrites GitHub locations in `Package.resolved`
+# (lowercases owner/repo, drops `.git`); our committed `Tuist/Package.resolved`
+# was regenerated under it so the lockfile stays consistent.
+TUIST_USE_SWIFTERPM = "1"
