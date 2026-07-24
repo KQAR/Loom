@@ -126,6 +126,24 @@ public protocol CaptureControlling: Sendable {
     func setRecording(_ recording: Bool) async
 }
 
+/// A push-based sink for flow updates, for an embedder that keeps captured flows
+/// in its own store and wants them delivered rather than polling/consuming
+/// `flowStream()`. Register one via `ProxyEngine(persistFlows:capacity:observer:)`.
+///
+/// Delivers the **same** payload, with the same emission contract, as
+/// `flowStream()`: a flow is pushed on capture start and again on
+/// completion/failure (a streaming flow may be pushed several times as it
+/// progresses; a WebSocket flow once per recorded frame), and replayed flows
+/// arrive with `replayedFrom != nil`. Called from the store's actor, so keep the
+/// implementation cheap and non-blocking (hand off heavy work).
+///
+/// Combined with `replay(flow:overrides:)` and `capacity: 0` (store-less), an
+/// embedder can run the engine with zero internal retention — flows land only in
+/// the embedder's store via this sink.
+public protocol FlowObserving: Sendable {
+    func flowDidUpdate(_ flow: Flow)
+}
+
 /// Breakpoints: hold matching traffic mid-flight so an operator (AI over MCP or
 /// the UI) can inspect and edit it, then release it. A poll model — MCP has no
 /// server push — so held exchanges surface via `pendingBreakpoints()` and are

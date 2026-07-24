@@ -20,11 +20,25 @@ actor FlowStore {
     /// in-flight body isn't on disk yet — and only when a store backs us.
     private var bodyBytes = 0
     private let bodyBudget: Int
+    /// Push sink for embedders that own storage — fired alongside the stream on
+    /// every insert/update. See `FlowObserving`.
+    private let observer: FlowObserving?
 
-    init(capacity: Int = 2000, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil) {
+    init(capacity: Int = 2000, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil, observer: FlowObserving? = nil) {
         self.capacity = capacity
         self.bodyBudget = bodyBudget
         self.persistence = persistence
+        self.observer = observer
+    }
+
+    /// Fan a flow out to every live `flowStream()` consumer and the push
+    /// observer. The single broadcast point so the stream and the sink can never
+    /// diverge.
+    private func broadcast(_ flow: Flow) {
+        for continuation in continuations.values {
+            continuation.yield(flow)
+        }
+        observer?.flowDidUpdate(flow)
     }
 
     private func bodySize(of flow: Flow) -> Int {
@@ -72,9 +86,7 @@ actor FlowStore {
             persistence?.save(flow)
         }
         enforceBodyBudget()
-        for continuation in continuations.values {
-            continuation.yield(flow)
-        }
+        broadcast(flow)
     }
 
     /// Drop in-memory bodies from the oldest persisted flows until the ring is
@@ -130,9 +142,7 @@ actor FlowStore {
             flows[idx].outcome = .failed(FlowError(reason), at: date, partialResponse: partial)
             finalized += 1
             persistence?.save(flows[idx])
-            for continuation in continuations.values {
-                continuation.yield(flows[idx])
-            }
+            broadcast(flows[idx])
         }
         return finalized
     }
