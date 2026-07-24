@@ -17,13 +17,19 @@ struct AuditPanelView: View {
     let store: StoreOf<AppFeature>
     /// The entry whose detail sheet is open, if any.
     @State private var sheetID: AuditEntry.ID?
+    /// Guards the destructive clear behind a confirmation.
+    @State private var confirmingClear = false
 
     var body: some View {
-        Group {
-            if store.auditEntries.isEmpty {
-                emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                list
+        VStack(spacing: 0) {
+            header
+            Divider()
+            Group {
+                if store.auditEntries.isEmpty {
+                    emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    list
+                }
             }
         }
         // A sheet, not a popover — a focused modal window like RuleEditorView.
@@ -32,6 +38,39 @@ struct AuditPanelView: View {
                 AuditDetailSheet(entries: store.auditEntries, currentID: sheetID)
             }
         }
+    }
+
+    // Mirrors the Rules panel header: a count on the left, the action button
+    // right-aligned and `.small` — here Clear instead of New Rule.
+    private var header: some View {
+        HStack(spacing: LoomTheme.Space.sm) {
+            Text(summaryText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button(role: .destructive) {
+                confirmingClear = true
+            } label: {
+                Label("Clear", systemImage: "trash")
+            }
+            .controlSize(.small)
+            .disabled(store.auditEntries.isEmpty)
+            .confirmationDialog("Clear the audit trail?", isPresented: $confirmingClear, titleVisibility: .visible) {
+                Button("Clear \(store.auditEntries.count) actions", role: .destructive) {
+                    store.send(.auditClearTapped)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Removes every recorded write action from Loom and from disk. This can't be undone.")
+            }
+        }
+        .padding(.horizontal, LoomTheme.Space.md)
+        .padding(.vertical, LoomTheme.Space.sm)
+    }
+
+    private var summaryText: String {
+        let count = store.auditEntries.count
+        return count == 0 ? "No write actions" : "\(count) write action\(count == 1 ? "" : "s")"
     }
 
     private var list: some View {
