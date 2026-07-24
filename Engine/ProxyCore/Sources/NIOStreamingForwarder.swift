@@ -25,20 +25,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        // Collect the streaming events back into a buffered result.
-        var statusCode = 200
-        var httpVersion: String?
-        var responseHeaders: [HeaderPair] = []
-        var bodyData = Data()
-        for try await event in forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
-            switch event {
-            case .metadata: break // applied rules travel on the event stream, not the buffered result
-            case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
-            case let .body(chunk): bodyData.append(chunk)
-            case .end: break
-            }
-        }
-        return ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: bodyData)
+        try await forwardStream(method: method, url: url, headers: headers, body: .bytes(body)).collect()
     }
 
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {

@@ -59,3 +59,26 @@ extension UpstreamForwarding {
         }
     }
 }
+
+extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure == Error {
+    /// Fold a response event stream into a buffered `ForwardResult` — the single place
+    /// that reassembles `.head` / `.body` / `.end`. Applied rules ride the `.metadata`
+    /// event and are consumed there (`StreamRelay` / replay), so they are not carried on
+    /// the buffered result. Shared by every buffered `forward`; replay folds inline
+    /// instead because it needs the rules even when the stream fails mid-flight.
+    func collect() async throws -> ForwardResult {
+        var statusCode = 200
+        var httpVersion: String?
+        var headers: [HeaderPair] = []
+        var body = Data()
+        for try await event in self {
+            switch event {
+            case .metadata: break
+            case let .head(code, version, hdrs): statusCode = code; httpVersion = version; headers = hdrs
+            case let .body(chunk): body.append(chunk)
+            case .end: break
+            }
+        }
+        return ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: headers, body: body)
+    }
+}
