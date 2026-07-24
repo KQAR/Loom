@@ -1,33 +1,40 @@
-import XCTest
+import Foundation
+import Testing
 import SharedModels
 
-final class GraphQLParserTests: XCTestCase {
+@Suite struct GraphQLParserTests {
     private func request(method: String = "POST", body: String?) -> CapturedRequest {
         CapturedRequest(method: method, url: "https://api.test/graphql", headers: [], body: body.map { Data($0.utf8) })
     }
 
-    func test_parsesQueryOperationNameAndVariables() {
+    @Test func parsesQueryOperationNameAndVariables() {
         let op = GraphQLParser.parse(request(body: #"{"operationName":"GetHome","query":"query GetHome { home { id } }","variables":{"id":"5","x":1}}"#))
-        XCTAssertEqual(op?.kind, .query)
-        XCTAssertEqual(op?.operationName, "GetHome")
-        XCTAssertEqual(op?.query, "query GetHome { home { id } }")
-        XCTAssertNotNil(op?.variablesJSON)
-        XCTAssertTrue(op?.variablesJSON?.contains("\"id\"") ?? false)
+        #expect(op?.kind == .query)
+        #expect(op?.operationName == "GetHome")
+        #expect(op?.query == "query GetHome { home { id } }")
+        #expect(op?.variablesJSON != nil)
+        #expect(op?.variablesJSON?.contains("\"id\"") ?? false)
     }
 
-    func test_infersMutationAndShorthand() {
-        XCTAssertEqual(GraphQLParser.parse(request(body: #"{"query":"mutation { like(id:1) }"}"#))?.kind, .mutation)
-        XCTAssertEqual(GraphQLParser.parse(request(body: #"{"query":"{ me { name } }"}"#))?.kind, .query)
+    @Test(arguments: [
+        (body: #"{"query":"mutation { like(id:1) }"}"#, kind: GraphQLOperation.Kind.mutation),
+        (body: #"{"query":"{ me { name } }"}"#, kind: .query), // shorthand → query
+    ])
+    func infersKind(body: String, kind: GraphQLOperation.Kind) {
+        #expect(GraphQLParser.parse(request(body: body))?.kind == kind)
     }
 
-    func test_emptyVariablesOmitted() {
+    @Test func emptyVariablesOmitted() {
         let op = GraphQLParser.parse(request(body: #"{"query":"{ a }","variables":{}}"#))
-        XCTAssertNil(op?.variablesJSON)
+        #expect(op?.variablesJSON == nil)
     }
 
-    func test_rejectsNonGraphQL() {
-        XCTAssertNil(GraphQLParser.parse(request(body: #"{"user":"jane"}"#)))
-        XCTAssertNil(GraphQLParser.parse(request(method: "GET", body: nil)))
-        XCTAssertNil(GraphQLParser.parse(request(body: "not json")))
+    @Test(arguments: [
+        (method: "POST", body: Optional(#"{"user":"jane"}"#)), // not a GraphQL envelope
+        (method: "GET", body: nil),                            // no body
+        (method: "POST", body: Optional("not json")),
+    ])
+    func rejectsNonGraphQL(method: String, body: String?) {
+        #expect(GraphQLParser.parse(request(method: method, body: body)) == nil)
     }
 }

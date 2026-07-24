@@ -1,50 +1,46 @@
-import XCTest
+import Testing
 @testable import ProxyCore
 
-final class UserAgentParserTests: XCTestCase {
-    func test_iphoneSafari() {
-        let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        let r = UserAgentParser.parse(ua)
-        XCTAssertEqual(r.platform, "iOS")
-        XCTAssertEqual(r.client, "Safari")
+/// Swift Testing beachhead: this suite was the migration pattern for the pure,
+/// table-driven tests. Runs in ProxyCore's Swift 5 language mode alongside the
+/// remaining XCTest suites (both frameworks coexist in one target).
+@Suite struct UserAgentParserTests {
+    struct Case: CustomTestStringConvertible {
+        let name: String
+        let ua: String
+        let platform: String?
+        let client: String?
+        var testDescription: String { name }
     }
 
-    func test_androidChrome() {
-        let ua = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        let r = UserAgentParser.parse(ua)
-        XCTAssertEqual(r.platform, "Android") // Android wins over the Linux token
-        XCTAssertEqual(r.client, "Chrome")     // Chrome wins over the Safari token
+    @Test(arguments: [
+        Case(name: "iPhone Safari",
+             ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+             platform: "iOS", client: "Safari"),
+        // Android wins over the Linux token; Chrome wins over the Safari token.
+        Case(name: "Android Chrome",
+             ua: "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+             platform: "Android", client: "Chrome"),
+        Case(name: "Mac Chrome",
+             ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+             platform: "macOS", client: "Chrome"),
+        // Edge's `Edg/` token beats the Chrome token it also carries.
+        Case(name: "Edge beats Chrome",
+             ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+             platform: "Windows", client: "Edge"),
+        Case(name: "curl: client, no platform", ua: "curl/8.4.0", platform: nil, client: "curl"),
+        Case(name: "custom app falls back to leading token",
+             ua: "MyCoolApp/2.1 (iPhone)", platform: "iOS", client: "MyCoolApp"),
+    ])
+    func parses(_ c: Case) {
+        let result = UserAgentParser.parse(c.ua)
+        #expect(result.platform == c.platform)
+        #expect(result.client == c.client)
     }
 
-    func test_macChrome() {
-        let ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        let r = UserAgentParser.parse(ua)
-        XCTAssertEqual(r.platform, "macOS")
-        XCTAssertEqual(r.client, "Chrome")
-    }
-
-    func test_edgeBeatsChrome() {
-        let ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
-        let r = UserAgentParser.parse(ua)
-        XCTAssertEqual(r.platform, "Windows")
-        XCTAssertEqual(r.client, "Edge")
-    }
-
-    func test_curl_hasClientButNoPlatform() {
-        let r = UserAgentParser.parse("curl/8.4.0")
-        XCTAssertNil(r.platform)
-        XCTAssertEqual(r.client, "curl")
-    }
-
-    func test_customApp_fallsBackToLeadingToken() {
-        let r = UserAgentParser.parse("MyCoolApp/2.1 (iPhone)")
-        XCTAssertEqual(r.platform, "iOS")
-        XCTAssertEqual(r.client, "MyCoolApp")
-    }
-
-    func test_emptyAndNil() {
-        XCTAssertEqual(UserAgentParser.parse(nil).platform, nil)
-        XCTAssertEqual(UserAgentParser.parse(nil).client, nil)
-        XCTAssertEqual(UserAgentParser.parse("").client, nil)
+    @Test func emptyAndNil() {
+        #expect(UserAgentParser.parse(nil).platform == nil)
+        #expect(UserAgentParser.parse(nil).client == nil)
+        #expect(UserAgentParser.parse("").client == nil)
     }
 }
