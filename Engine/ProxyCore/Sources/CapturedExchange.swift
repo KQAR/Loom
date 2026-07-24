@@ -81,8 +81,20 @@ enum CapturedExchange {
         }
 
         Task {
+            // Record the pending flow *first*, before the blocking libproc scan, so
+            // the row (and its in-flight spinner) appears the instant the request
+            // head is parsed rather than after `ProcessResolver.resolve` returns.
+            // This also keeps the synchronous scan off the before-first-paint path.
+            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceDevice: sourceDevice))
+            // Backfill the originating app off the hot path, then re-upsert so the
+            // app icon fills in even while the request is still in flight. Safe from
+            // races: forwarding (below) hasn't started, so no response upsert can
+            // interleave. `nil` (e.g. a LAN device with no local pid) skips the
+            // redundant re-upsert.
             let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
-            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
+            if sourceApp != nil {
+                await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
+            }
             await StreamRelay.relay(
                 stream: forwarder.forwardStream(method: method, url: routing.url, headers: headers, body: body),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
