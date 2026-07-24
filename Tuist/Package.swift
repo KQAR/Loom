@@ -28,6 +28,27 @@ let packageSettings = PackageSettings(
         "DequeModule": .framework,
         "_NIOBase64": .framework,
         "_NIODataStructures": .framework,
+        // Keep NIO's C shim targets as STATIC frameworks. When a framework NIO
+        // module (above) pulls a C target in, Tuist would otherwise build that C
+        // target as a *dynamic* framework too — and a dynamic C-target framework's
+        // generated "Copy Module Map" script phase forms a build-system cycle with
+        // its Copy-Files phase ("Cycle inside CNIODarwin …"), which fails clean
+        // builds (`tuist run`, CI). A static framework is linked at build time
+        // (not embedded/copied), so there's no cycle — while still exposing its
+        // module map by the framework product path (a plain `.staticLibrary`
+        // instead fails to link: "library 'CNIOAtomics' not found"). Unlike the
+        // Swift modules above, these are stateless C shims (syscall/atomics/parser
+        // wrappers) with no global state, so statically linking a copy into each
+        // consuming framework is harmless — it does NOT reintroduce the NIO "one
+        // shared copy" crash, which is about stateful Swift types (event loops).
+        "CNIODarwin": .staticFramework,
+        "CNIOPosix": .staticFramework,
+        "CNIOAtomics": .staticFramework,
+        "CNIOSHA1": .staticFramework,
+        "CNIOLLHTTP": .staticFramework,
+        "CNIOExtrasZlib": .staticFramework,
+        "CNIOBoringSSL": .staticFramework,
+        "CNIOBoringSSLShims": .staticFramework,
     ]
 )
 #endif
