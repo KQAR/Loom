@@ -31,14 +31,6 @@ import Testing
         #expect(s.errorCount == 2)
     }
 
-    @Test func displayFlows_replayed_onlyReplays() {
-        let live = Fixtures.flow()
-        let replay = Fixtures.flow(replayedFrom: live.id)
-        let s = state([live, replay], category: .replayed)
-        #expect(s.displayFlows.map(\.id) == [replay.id])
-        #expect(s.replayedCount == 1)
-    }
-
     @Test func displayFlows_rulesCategory_isEmpty() {
         // The rules panel replaces the table, so the flow list must be empty.
         let s = state([Fixtures.flow()], category: .rules)

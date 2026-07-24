@@ -24,12 +24,11 @@ enum InspectorText {
 struct InspectorPanel: View {
     let flow: Flow
     let original: Flow?
-    let onReplay: () -> Void
     let onClose: () -> Void
 
     var body: some View {
         HSplitView {
-            RequestPane(flow: flow, original: original, onReplay: onReplay)
+            RequestPane(flow: flow, original: original)
                 .frame(minWidth: 300)
             ResponsePane(flow: flow, onClose: onClose)
                 .frame(minWidth: 300)
@@ -42,7 +41,6 @@ struct InspectorPanel: View {
 private struct RequestPane: View {
     let flow: Flow
     let original: Flow?
-    let onReplay: () -> Void
 
     enum Tab: Hashable { case summary, graphQL, raw, headers, cookies, body, diff }
     @State private var tab: Tab = .summary
@@ -73,12 +71,6 @@ private struct RequestPane: View {
                 InspectorTabStrip(tabs: tabs, selection: $tab)
                 Spacer(minLength: LoomTheme.Space.xs)
                 MethodBadge(method: flow.request.method)
-                Button(action: onReplay) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help("Replay this request")
             }
             .padding(.horizontal, LoomTheme.Space.md)
             .frame(height: 34)
