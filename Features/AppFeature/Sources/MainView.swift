@@ -10,6 +10,10 @@ public struct MainView: View {
     @Bindable var store: StoreOf<AppFeature>
     /// Tail-follow the newest row until the user scrolls away.
     @State private var followTail = true
+    /// Fill of the clear button's charging ring (0…1) while it's held.
+    @State private var clearProgress: CGFloat = 0
+    /// Whether the SSL button's cert install-&-trust popover is open.
+    @State private var showingCertTrust = false
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -137,11 +141,21 @@ public struct MainView: View {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             requestTable
+                // Bottom scroll redundancy (~3 rows) so the last rows scroll clear
+                // of the floating clear button. `contentMargins` pads *inside* the
+                // scroll content (same background), so there's no distinct dimmed
+                // band the way a safe-area inset spacer would leave.
+                .contentMargins(.bottom, Self.clearFABScrollInset, for: .scrollContent)
                 .safeAreaInset(edge: .bottom, spacing: 0) {
                     if store.droppedFlowCount > 0 { capBanner }
                 }
+                .overlay(alignment: .bottomTrailing) { clearFAB }
         }
     }
+
+    /// Bottom scroll padding under the flow table so the floating clear button
+    /// (`clearFAB`) can't hide the last rows — roughly three table rows.
+    private static let clearFABScrollInset: CGFloat = 84
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped
     /// the oldest flows, so a huge capture doesn't masquerade as complete.
@@ -156,6 +170,39 @@ public struct MainView: View {
         .padding(.vertical, LoomTheme.Space.xxs)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.bar)
+    }
+
+    /// Destructive "clear captured flows", floated bottom-right of the flow list so
+    /// it only appears with the traffic it clears. Hold for 1s to fire — a red ring
+    /// charges around the trash glyph while held and springs back if released early,
+    /// so a single stray click can't wipe the capture (no modal confirmation).
+    private var clearFAB: some View {
+        ZStack {
+            Circle()
+                .fill(.regularMaterial)
+                .overlay(Circle().strokeBorder(.quaternary, lineWidth: 1))
+            Circle()
+                .trim(from: 0, to: clearProgress)
+                .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
+                .padding(3)
+            Image(systemName: "trash")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.red)
+        }
+        .frame(width: 44, height: 44)
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+        .contentShape(Circle())
+        .onLongPressGesture(minimumDuration: 1.0, maximumDistance: 60) {
+            store.send(.clearTapped)
+            clearProgress = 0
+        } onPressingChanged: { pressing in
+            withAnimation(pressing ? .linear(duration: 1.0) : .easeOut(duration: 0.2)) {
+                clearProgress = pressing ? 1 : 0
+            }
+        }
+        .help("Hold to clear captured flows")
+        .padding(LoomTheme.Space.md)
     }
 
     private var requestTable: some View {
@@ -342,36 +389,33 @@ public struct MainView: View {
                            help: store.setup.isSystemProxy ? "System proxy: on" : "System proxy: off") {
                     store.send(.setup(.toggleSystemProxyTapped))
                 }
-                statusIcon("lock.shield", on: store.setup.sslEnabled,
-                           help: store.setup.sslEnabled ? "SSL proxying: on" : "SSL proxying: off") {
-                    store.send(.setup(.toggleSSLTapped))
-                }
+                sslButton
                 statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
                            help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
                     store.send(.rules(.toggleRulesTapped))
                 }
+
+                // Record lives at the right end of the ip toolbar, split from the
+                // status toggles by a divider. Clear is a floating button in the
+                // flow list (`clearFAB`), so the trailing toolbar group is gone.
+                Divider().frame(height: 14)
+                recordButton
             }
             .padding(.horizontal, LoomTheme.Space.sm)
         }
-        // macOS 26 wraps a ToolbarItemGroup in a shared Liquid Glass container;
-        // hide it so these read as flat icons. Plain group on the 14 baseline.
-        if #available(macOS 26.0, *) {
-            ToolbarItemGroup(placement: .primaryAction) { trailingButtons }
-                .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItemGroup(placement: .primaryAction) { trailingButtons }
-        }
     }
 
-    @ViewBuilder private var trailingButtons: some View {
+    /// Start/stop capture. Idle shows a circular record symbol; recording shows a
+    /// stop glyph. Text label kept ("Record"/"Stop").
+    private var recordButton: some View {
         Button { store.send(.toggleRecordingTapped) } label: {
             HStack(spacing: 5) {
-                Image(systemName: store.isRecording ? "stop.fill" : "play.fill")
+                Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
                     .font(LoomTheme.Icon.toolbar)
                 Text(store.isRecording ? "Stop" : "Record")
                     .font(.callout)
             }
-            .foregroundStyle(store.isRecording ? Color.orange : Color.primary)
+            .foregroundStyle(store.isRecording ? Color.orange : Color.red)
             .frame(height: 26)
             .contentShape(Rectangle())
         }
@@ -379,32 +423,34 @@ public struct MainView: View {
         .help(store.isRecording
             ? "Stop recording — traffic keeps flowing but isn't captured"
             : "Start recording captured traffic")
-
-        barButton(
-            "xmark.bin",
-            help: "Clear captured flows",
-            disabled: store.flows.isEmpty
-        ) { store.send(.clearTapped) }
     }
 
-    /// A plain toolbar icon button — no Liquid Glass container, larger tap target.
-    private func barButton(
-        _ symbol: String,
-        color: Color = .primary,
-        help: String,
-        disabled: Bool = false,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
+    /// SSL proxying toggle with a cert-trust affordance. When SSL is on but the
+    /// root CA isn't trusted yet, HTTPS can't be decrypted — the icon goes **yellow**
+    /// and a tap opens the same install-&-trust popover as the status-bar panel
+    /// (reusing `CertificateTrustCard`) instead of toggling. Otherwise it's the
+    /// normal on/off toggle (green when on).
+    private var sslButton: some View {
+        let needsTrust = store.setup.sslEnabled && !store.setup.certificateStatus.trustState.isReady
+        return Button {
+            if needsTrust { showingCertTrust = true }
+            else { store.send(.setup(.toggleSSLTapped)) }
+        } label: {
+            Image(systemName: "lock.shield")
                 .font(LoomTheme.Icon.toolbar)
-                .foregroundStyle(color)
+                .foregroundStyle(needsTrust ? Color.yellow : (store.setup.sslEnabled ? Color.green : Color.secondary))
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .disabled(disabled)
-        .help(help)
+        .help(needsTrust
+            ? "HTTPS interception is on but the CA isn't trusted — click to install & trust"
+            : (store.setup.sslEnabled ? "SSL proxying: on" : "SSL proxying: off"))
+        .popover(isPresented: $showingCertTrust, arrowEdge: .bottom) {
+            CertificateTrustCard(store: store.scope(state: \.setup, action: \.setup))
+                .frame(width: 320)
+                .padding(LoomTheme.Space.md)
+        }
     }
 
     private func statusIcon(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
