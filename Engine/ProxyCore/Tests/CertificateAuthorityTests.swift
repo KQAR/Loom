@@ -1,22 +1,23 @@
+import Foundation
 import NIOSSL
 import X509
-import XCTest
+import Testing
 @testable import ProxyCore
 import SharedModels
 
-final class CertificateAuthorityTests: XCTestCase {
-    func test_loadOrGenerate_persistsAndReuses() throws {
+@Suite struct CertificateAuthorityTests {
+    @Test func loadOrGenerate_persistsAndReuses() throws {
         let store = InMemoryCAStore()
         let first = try CertificateAuthority.loadOrGenerate(store: store)
         let second = try CertificateAuthority.loadOrGenerate(store: store)
 
-        XCTAssertFalse(first.sha256Fingerprint.isEmpty)
+        #expect(!first.sha256Fingerprint.isEmpty)
         // Second call must reload the persisted CA, not mint a new one.
-        XCTAssertEqual(first.sha256Fingerprint, second.sha256Fingerprint)
-        XCTAssertEqual(first.certificate.subject, second.certificate.subject)
+        #expect(first.sha256Fingerprint == second.sha256Fingerprint)
+        #expect(first.certificate.subject == second.certificate.subject)
     }
 
-    func test_exportedPEM_isParseableCertificate() throws {
+    @Test func exportedPEM_isParseableCertificate() throws {
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("loom-ca-\(UUID()).pem")
         defer { try? FileManager.default.removeItem(at: url) }
@@ -24,25 +25,25 @@ final class CertificateAuthorityTests: XCTestCase {
         try ca.exportCACertificate(to: url)
         let pem = try String(contentsOf: url)
 
-        XCTAssertTrue(pem.contains("BEGIN CERTIFICATE"))
+        #expect(pem.contains("BEGIN CERTIFICATE"))
         // If NIOSSL can parse it, so can a system trust store.
-        XCTAssertNoThrow(try NIOSSLCertificate(bytes: Array(pem.utf8), format: .pem))
+        #expect(throws: Never.self) { try NIOSSLCertificate(bytes: Array(pem.utf8), format: .pem) }
     }
 
-    func test_serverContext_mintsLeafAndCachesPerHost() throws {
+    @Test func serverContext_mintsLeafAndCachesPerHost() throws {
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
 
         let a1 = try ca.serverContext(for: "example.test")
         let a2 = try ca.serverContext(for: "example.test")
         let b = try ca.serverContext(for: "api.other.test")
 
-        XCTAssertTrue(a1 === a2, "same host should return the cached context")
-        XCTAssertFalse(a1 === b, "different hosts get distinct contexts")
+        #expect(a1 === a2, "same host should return the cached context")
+        #expect(!(a1 === b), "different hosts get distinct contexts")
         // IP-literal hosts take the iPAddress-SAN path without throwing.
-        XCTAssertNoThrow(try ca.serverContext(for: "127.0.0.1"))
+        #expect(throws: Never.self) { try ca.serverContext(for: "127.0.0.1") }
     }
 
-    func test_mintedSerials_neverExceed20Octets() throws {
+    @Test func mintedSerials_neverExceed20Octets() throws {
         // Regression: a 21-octet serial (top random bit set → DER prepends 0x00)
         // violates RFC 5280 and makes Secure Transport reject the leaf with
         // -1015 "cannot decode raw data", silently breaking ~half of interception.
@@ -51,81 +52,81 @@ final class CertificateAuthorityTests: XCTestCase {
         for i in 0..<200 {
             let leaf = try ca.mintLeaf(for: "host\(i).example.test")
             let octets = leaf.serialNumber.bytes.count
-            XCTAssertLessThanOrEqual(octets, 20, "leaf serial must be ≤ 20 octets (RFC 5280), got \(octets)")
-            XCTAssertGreaterThan(octets, 0, "serial must be positive/non-empty")
+            #expect(octets <= 20, "leaf serial must be ≤ 20 octets (RFC 5280), got \(octets)")
+            #expect(octets > 0, "serial must be positive/non-empty")
         }
     }
 
-    func test_mintedLeaf_carriesSKIAndAKIMatchingCA() throws {
+    @Test func mintedLeaf_carriesSKIAndAKIMatchingCA() throws {
         // Regression: strict verifiers (Python 3.13's default VERIFY_X509_STRICT)
         // reject a leaf without an Authority Key Identifier.
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         let leaf = try ca.mintLeaf(for: "aki.example.test")
 
-        let leafSKI = try XCTUnwrap(try leaf.extensions.subjectKeyIdentifier)
-        XCTAssertFalse(leafSKI.keyIdentifier.isEmpty)
+        let leafSKI = try #require(try leaf.extensions.subjectKeyIdentifier)
+        #expect(!leafSKI.keyIdentifier.isEmpty)
 
-        let aki = try XCTUnwrap(try leaf.extensions.authorityKeyIdentifier)
-        let caSKI = try XCTUnwrap(try ca.certificate.extensions.subjectKeyIdentifier)
-        XCTAssertEqual(aki.keyIdentifier, caSKI.keyIdentifier,
-                       "leaf AKI must reference the issuing CA's SKI")
+        let aki = try #require(try leaf.extensions.authorityKeyIdentifier)
+        let caSKI = try #require(try ca.certificate.extensions.subjectKeyIdentifier)
+        #expect(aki.keyIdentifier == caSKI.keyIdentifier,
+                "leaf AKI must reference the issuing CA's SKI")
     }
 
-    func test_fingerprint_isColonSeparatedSHA256() throws {
+    @Test func fingerprint_isColonSeparatedSHA256() throws {
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         let bytes = ca.sha256Fingerprint.split(separator: ":")
-        XCTAssertEqual(bytes.count, 32) // SHA-256 = 32 bytes
-        XCTAssertTrue(bytes.allSatisfy { $0.count == 2 })
+        #expect(bytes.count == 32) // SHA-256 = 32 bytes
+        #expect(bytes.allSatisfy { $0.count == 2 })
     }
 }
 
-final class FileCAStoreTests: XCTestCase {
+@Suite struct FileCAStoreTests {
     private func tempURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("loom-ca-test-\(UUID())", isDirectory: true)
             .appendingPathComponent("ca-store.pem")
     }
 
-    func test_roundTrip() throws {
+    @Test func roundTrip() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = FileCAStore(fileURL: url)
 
-        XCTAssertNil(try store.load(), "empty store returns nil, no prompt")
+        #expect(try store.load() == nil, "empty store returns nil, no prompt")
 
         let material = CAMaterial(certificatePEM: "-----CERT-----", privateKeyPEM: "-----KEY-----")
         try store.save(material)
-        XCTAssertEqual(try store.load(), material)
+        #expect(try store.load() == material)
     }
 
-    func test_savedFileIsOwnerOnly() throws {
+    @Test func savedFileIsOwnerOnly() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = FileCAStore(fileURL: url)
         try store.save(CAMaterial(certificatePEM: "c", privateKeyPEM: "k"))
 
         let perms = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
-        XCTAssertEqual(perms, 0o600, "CA private key file must be owner-read/write only")
+        #expect(perms == 0o600, "CA private key file must be owner-read/write only")
     }
 
-    func test_loadableByCertificateAuthority() throws {
+    @Test func loadableByCertificateAuthority() throws {
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = FileCAStore(fileURL: url)
         let first = try CertificateAuthority.loadOrGenerate(store: store)
         // Reload from the same file must reuse the persisted CA, not mint a new one.
         let second = try CertificateAuthority.loadOrGenerate(store: FileCAStore(fileURL: url))
-        XCTAssertEqual(first.sha256Fingerprint, second.sha256Fingerprint)
+        #expect(first.sha256Fingerprint == second.sha256Fingerprint)
     }
 }
 
-final class InterceptionConfigPersistenceTests: XCTestCase {
+@Suite struct InterceptionConfigPersistenceTests {
     private func makeDefaults() -> UserDefaults {
         let suite = "com.loom.tests.\(UUID().uuidString)"
         return UserDefaults(suiteName: suite)!
     }
 
-    func test_scopeSurvivesReinit() {
+    @Test func scopeSurvivesReinit() {
         // Regression: SSL scope was in-memory only, so every relaunch reset to
         // disabled → all HTTPS blind-tunneled → nothing captured.
         let defaults = makeDefaults()
@@ -135,52 +136,52 @@ final class InterceptionConfigPersistenceTests: XCTestCase {
         // A fresh config (simulating an app relaunch) must reload the saved scope.
         let reloaded = InterceptionConfig(scope: .disabled, defaults: defaults)
         let scope = reloaded.snapshot()
-        XCTAssertTrue(scope.enabled)
-        XCTAssertEqual(scope.include, ["*"])
-        XCTAssertEqual(scope.exclude, ["secure.bank.com"])
-        XCTAssertTrue(reloaded.shouldIntercept(host: "api.example.com"))
-        XCTAssertFalse(reloaded.shouldIntercept(host: "secure.bank.com"))
+        #expect(scope.enabled)
+        #expect(scope.include == ["*"])
+        #expect(scope.exclude == ["secure.bank.com"])
+        #expect(reloaded.shouldIntercept(host: "api.example.com"))
+        #expect(!reloaded.shouldIntercept(host: "secure.bank.com"))
     }
 
-    func test_nilDefaults_doesNotPersist() {
+    @Test func nilDefaults_doesNotPersist() {
         let hermetic = InterceptionConfig(defaults: nil)
         hermetic.update(SSLScope(enabled: true, include: ["*"]))
-        XCTAssertTrue(hermetic.snapshot().enabled) // in-memory update still works
+        #expect(hermetic.snapshot().enabled) // in-memory update still works
         // No crash, no persistence — the point is tests stay isolated.
     }
 }
 
-final class SSLScopeTests: XCTestCase {
-    func test_wildcardMatching() {
-        XCTAssertTrue(SSLScope.matches(pattern: "*", host: "anything.com"))
-        XCTAssertTrue(SSLScope.matches(pattern: "example.com", host: "example.com"))
-        XCTAssertTrue(SSLScope.matches(pattern: "EXAMPLE.com", host: "example.COM"))
-        XCTAssertTrue(SSLScope.matches(pattern: "*.example.com", host: "api.example.com"))
-        XCTAssertFalse(SSLScope.matches(pattern: "*.example.com", host: "example.com"))
-        XCTAssertTrue(SSLScope.matches(pattern: "api.*", host: "api.test"))
-        XCTAssertTrue(SSLScope.matches(pattern: "*.foo.*", host: "a.foo.bar"))
-        XCTAssertFalse(SSLScope.matches(pattern: "api.example.com", host: "other.com"))
+@Suite struct SSLScopeTests {
+    @Test func wildcardMatching() {
+        #expect(SSLScope.matches(pattern: "*", host: "anything.com"))
+        #expect(SSLScope.matches(pattern: "example.com", host: "example.com"))
+        #expect(SSLScope.matches(pattern: "EXAMPLE.com", host: "example.COM"))
+        #expect(SSLScope.matches(pattern: "*.example.com", host: "api.example.com"))
+        #expect(!SSLScope.matches(pattern: "*.example.com", host: "example.com"))
+        #expect(SSLScope.matches(pattern: "api.*", host: "api.test"))
+        #expect(SSLScope.matches(pattern: "*.foo.*", host: "a.foo.bar"))
+        #expect(!SSLScope.matches(pattern: "api.example.com", host: "other.com"))
     }
 
-    func test_wildcardMatching_prefixAndSuffixDoNotOverlap() {
+    @Test func wildcardMatching_prefixAndSuffixDoNotOverlap() {
         // Regression: prefix "ab" + suffix "b" reused the same 'b', so a bare "ab"
         // wrongly matched "ab*b".
-        XCTAssertFalse(SSLScope.matches(pattern: "ab*b", host: "ab"))
-        XCTAssertTrue(SSLScope.matches(pattern: "ab*b", host: "abb"))
-        XCTAssertTrue(SSLScope.matches(pattern: "ab*b", host: "abXb"))
+        #expect(!SSLScope.matches(pattern: "ab*b", host: "ab"))
+        #expect(SSLScope.matches(pattern: "ab*b", host: "abb"))
+        #expect(SSLScope.matches(pattern: "ab*b", host: "abXb"))
         // The empty-wildcard cases stay correct.
-        XCTAssertTrue(SSLScope.matches(pattern: "a*c", host: "ac"))
-        XCTAssertFalse(SSLScope.matches(pattern: "a*c", host: "ab"))
+        #expect(SSLScope.matches(pattern: "a*c", host: "ac"))
+        #expect(!SSLScope.matches(pattern: "a*c", host: "ab"))
     }
 
-    func test_shouldIntercept_respectsEnableIncludeExclude() {
-        XCTAssertFalse(SSLScope(enabled: false, include: ["*"]).shouldIntercept(host: "x.com"))
-        XCTAssertTrue(SSLScope(enabled: true, include: ["*"]).shouldIntercept(host: "x.com"))
-        XCTAssertFalse(SSLScope(enabled: true, include: []).shouldIntercept(host: "x.com"))
+    @Test func shouldIntercept_respectsEnableIncludeExclude() {
+        #expect(!SSLScope(enabled: false, include: ["*"]).shouldIntercept(host: "x.com"))
+        #expect(SSLScope(enabled: true, include: ["*"]).shouldIntercept(host: "x.com"))
+        #expect(!SSLScope(enabled: true, include: []).shouldIntercept(host: "x.com"))
 
         // Exclude wins over include (the pinned / pass-through list).
         let scope = SSLScope(enabled: true, include: ["*.bank.com"], exclude: ["secure.bank.com"])
-        XCTAssertTrue(scope.shouldIntercept(host: "app.bank.com"))
-        XCTAssertFalse(scope.shouldIntercept(host: "secure.bank.com"))
+        #expect(scope.shouldIntercept(host: "app.bank.com"))
+        #expect(!scope.shouldIntercept(host: "secure.bank.com"))
     }
 }

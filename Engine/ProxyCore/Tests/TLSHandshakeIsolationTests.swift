@@ -1,15 +1,15 @@
 import NIOCore
 import NIOPosix
 import NIOSSL
-import XCTest
+import Testing
 @testable import ProxyCore
 
 /// Isolates the CA's server context from the proxy pipeline and URLSession: a
 /// plain NIO TLS client (trusting our CA) handshakes directly against a NIO TLS
 /// server using `serverContext(for:)`. If this passes, the certificate/key/chain
 /// are valid and any failure elsewhere is in the pipeline or the client.
-final class TLSHandshakeIsolationTests: XCTestCase {
-    func test_serverContext_completesHandshakeWithNIOClient() throws {
+@Suite struct TLSHandshakeIsolationTests {
+    @Test func serverContext_completesHandshakeWithNIOClient() throws {
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         let serverCtx = try ca.serverContext(for: "example.test")
 
@@ -50,7 +50,7 @@ final class TLSHandshakeIsolationTests: XCTestCase {
         try client.writeAndFlush(buffer).wait()
 
         let echoed = try collector.received.futureResult.wait()
-        XCTAssertEqual(echoed, "ping", "TLS handshake + echo through our minted leaf must succeed")
+        #expect(echoed == "ping", "TLS handshake + echo through our minted leaf must succeed")
     }
 }
 

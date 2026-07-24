@@ -1,16 +1,17 @@
+import Foundation
 import NIOCore
 import NIOPosix
 import NIOHTTP1
 import NIOHTTP2
 import NIOSSL
-import XCTest
+import Testing
 @testable import ProxyCore
 import SharedModels
 
 /// End-to-end: an HTTP/2 client (ALPN "h2") through the MITM proxy is decrypted,
 /// demuxed, forwarded, and captured — proving the ALPN branch + h2→h1 stream path.
-final class HTTP2InterceptionTests: XCTestCase {
-    func test_h2RequestIsDecryptedForwardedAndCaptured() async throws {
+@Suite struct HTTP2InterceptionTests {
+    @Test func h2RequestIsDecryptedForwardedAndCaptured() async throws {
         let responseBody = #"{"via":"loom-h2"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
@@ -53,22 +54,22 @@ final class HTTP2InterceptionTests: XCTestCase {
         }
 
         let response = try responded.futureResult.wait()
-        XCTAssertEqual(response.status, 200)
-        XCTAssertEqual(response.body, responseBody)
+        #expect(response.status == 200)
+        #expect(response.body == responseBody)
 
         let flows = try await engine.recentFlows(limit: 10)
-        let flow = try XCTUnwrap(flows.first { $0.request.url.contains("example.test/h2/thing") })
-        XCTAssertEqual(flow.request.method, "GET")
-        XCTAssertTrue(flow.request.url.hasPrefix("https://"))
-        XCTAssertEqual(flow.response?.statusCode, 200)
-        XCTAssertEqual(forwarder.lastURL?.absoluteString, "https://example.test/h2/thing")
+        let flow = try #require(flows.first { $0.request.url.contains("example.test/h2/thing") })
+        #expect(flow.request.method == "GET")
+        #expect(flow.request.url.hasPrefix("https://"))
+        #expect(flow.response?.statusCode == 200)
+        #expect(forwarder.lastURL?.absoluteString == "https://example.test/h2/thing")
     }
 
     /// An h2 POST body (DATA frames, no Content-Length) must stream through and be
     /// captured. The payload is larger than the default 64 KiB flow-control window,
     /// so the client can only finish sending if the MITM side replenishes the window
     /// as our read()-driven bridge consumes it — proving h2 back-pressure works.
-    func test_h2RequestBodyStreamsThroughAndIsCaptured() async throws {
+    @Test func h2RequestBodyStreamsThroughAndIsCaptured() async throws {
         let forwarder = StubForwarder(status: 200, body: Data("ok".utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
 
@@ -112,13 +113,13 @@ final class HTTP2InterceptionTests: XCTestCase {
         }
 
         let response = try responded.futureResult.wait()
-        XCTAssertEqual(response.status, 200)
+        #expect(response.status == 200)
 
-        XCTAssertEqual(forwarder.lastBody, payload, "the full h2 DATA body must reach upstream byte-for-byte")
+        #expect(forwarder.lastBody == payload, "the full h2 DATA body must reach upstream byte-for-byte")
         let flows = try await engine.recentFlows(limit: 10)
-        let flow = try XCTUnwrap(flows.first { $0.request.url.contains("example.test/h2/upload") })
-        XCTAssertEqual(flow.request.method, "POST")
-        XCTAssertEqual(flow.request.body, payload, "the captured h2 request body should match (200KB < cap)")
+        let flow = try #require(flows.first { $0.request.url.contains("example.test/h2/upload") })
+        #expect(flow.request.method == "POST")
+        #expect(flow.request.body == payload, "the captured h2 request body should match (200KB < cap)")
     }
 }
 

@@ -3,7 +3,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOSSL
-import XCTest
+import Testing
 @testable import ProxyCore
 import SharedModels
 
@@ -11,8 +11,8 @@ import SharedModels
 /// the proxy (CONNECT), speaks TLS trusting Loom's CA, and sends an HTTP request;
 /// Loom terminates the TLS with a minted leaf, captures the plaintext exchange,
 /// and answers via a stubbed upstream. Fully hermetic — no network, no origin.
-final class HTTPSInterceptionTests: XCTestCase {
-    func test_interceptsDecryptsAndCapturesHTTPS() throws {
+@Suite struct HTTPSInterceptionTests {
+    @Test func interceptsDecryptsAndCapturesHTTPS() throws {
         let responseBody = #"{"ok":true,"via":"loom-mitm"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
@@ -61,24 +61,24 @@ final class HTTPSInterceptionTests: XCTestCase {
 
         // 4. The decrypted response comes back through the MITM.
         let raw = try responded.futureResult.wait()
-        XCTAssertTrue(raw.contains("200"), "client should receive a 200 status line")
-        XCTAssertTrue(raw.contains(responseBody), "client should receive the decrypted body")
+        #expect(raw.contains("200"), "client should receive a 200 status line")
+        #expect(raw.contains(responseBody), "client should receive the decrypted body")
 
         // 5. The proxy captured the exchange in cleartext.
         let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        let flow = try XCTUnwrap(flows.first { $0.request.url.contains("example.test/api/thing") })
-        XCTAssertEqual(flow.request.method, "GET")
-        XCTAssertTrue(flow.request.url.hasPrefix("https://"))
-        XCTAssertTrue(
+        let flow = try #require(flows.first { $0.request.url.contains("example.test/api/thing") })
+        #expect(flow.request.method == "GET")
+        #expect(flow.request.url.hasPrefix("https://"))
+        #expect(
             flow.request.headers.contains { $0.name.lowercased() == "x-loom-test" && $0.value == "loom-integration" },
             "decrypted request headers should be captured"
         )
-        XCTAssertEqual(flow.response?.statusCode, 200)
-        XCTAssertEqual(flow.response?.body, Data(responseBody.utf8))
-        XCTAssertEqual(forwarder.lastURL?.absoluteString, "https://example.test/api/thing")
+        #expect(flow.response?.statusCode == 200)
+        #expect(flow.response?.body == Data(responseBody.utf8))
+        #expect(forwarder.lastURL?.absoluteString == "https://example.test/api/thing")
     }
 
-    func test_outOfScopeHostIsNotIntercepted() throws {
+    @Test func outOfScopeHostIsNotIntercepted() throws {
         // Interception off: a plain-HTTP request is still captured + forwarded
         // (sanity that the refactored forward path is intact).
         let forwarder = StubForwarder(status: 201, body: Data("created".utf8))
@@ -97,14 +97,14 @@ final class HTTPSInterceptionTests: XCTestCase {
         defer { session.invalidateAndCancel() }
 
         let (data, response) = try runBlocking { try await session.data(from: URL(string: "http://plain.test/create")!) }
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 201)
-        XCTAssertEqual(data, Data("created".utf8))
+        #expect((response as? HTTPURLResponse)?.statusCode == 201)
+        #expect(data == Data("created".utf8))
 
         let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        XCTAssertTrue(flows.contains { $0.request.url.contains("plain.test/create") })
+        #expect(flows.contains { $0.request.url.contains("plain.test/create") })
     }
 
-    func test_largeRequestBodyStreamsThroughProxyIntactAndIsCaptured() throws {
+    @Test func largeRequestBodyStreamsThroughProxyIntactAndIsCaptured() throws {
         // A large POST body must reach the upstream byte-for-byte via the streaming
         // request path, and be captured (under the cap) on the flow. Exercises the
         // full chain: handler bridge → RuleApplyingForwarder streaming passthrough →
@@ -132,15 +132,15 @@ final class HTTPSInterceptionTests: XCTestCase {
         request.httpMethod = "POST"
         request.httpBody = payload
         let (data, response) = try runBlocking { try await session.data(for: request) }
-        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
-        XCTAssertEqual(data, Data("ok".utf8))
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(data == Data("ok".utf8))
 
-        XCTAssertEqual(forwarder.lastBody, payload, "upstream must receive the full body byte-for-byte")
+        #expect(forwarder.lastBody == payload, "upstream must receive the full body byte-for-byte")
 
         let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        let flow = try XCTUnwrap(flows.first { $0.request.url.contains("plain.test/upload") })
-        XCTAssertEqual(flow.request.method, "POST")
-        XCTAssertEqual(flow.request.body, payload, "the captured request body should match (2MB < cap)")
+        let flow = try #require(flows.first { $0.request.url.contains("plain.test/upload") })
+        #expect(flow.request.method == "POST")
+        #expect(flow.request.body == payload, "the captured request body should match (2MB < cap)")
     }
 
     // MARK: - async → sync bridges (XCTest sync methods driving the actor)
