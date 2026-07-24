@@ -1,32 +1,33 @@
-import XCTest
+import Testing
+import Foundation
 import SharedModels
 @testable import MCPServer
 
 /// Behavior contract for `MCPToolExecutor`, pinned before the registry refactor:
 /// every advertised tool is dispatchable, argument validation stays strict, and
 /// the executor forwards writes to the engine and renders results as JSON.
-final class MCPToolExecutorTests: XCTestCase {
+@Suite struct MCPToolExecutorTests {
     private func makeExecutor(_ engine: StubEngine = StubEngine()) -> MCPToolExecutor {
         MCPToolExecutor(engine: engine, appVersion: "9.9", protocolVersion: "2025-06-18")
     }
 
     private func json(_ string: String) throws -> [String: Any] {
         let data = Data(string.utf8)
-        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     private func jsonArray(_ string: String) throws -> [[String: Any]] {
         let data = Data(string.utf8)
-        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        return try #require(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
     }
 
     // MARK: Registry consistency — the drift guard the refactor must preserve
 
-    func test_everyAdvertisedTool_isDispatchable() async {
+    @Test func everyAdvertisedTool_isDispatchable() async {
         let executor = makeExecutor()
         let names = executor.toolDefinitions.compactMap { $0["name"] as? String }
-        XCTAssertGreaterThanOrEqual(names.count, 16)
-        XCTAssertEqual(Set(names).count, names.count, "tool names must be unique")
+        #expect(names.count >= 16)
+        #expect(Set(names).count == names.count, "tool names must be unique")
         for name in names {
             if name == "export_har" { continue } // writes a real file to the app-support dir
             do {
@@ -35,7 +36,7 @@ final class MCPToolExecutorTests: XCTestCase {
                 // Missing required args are fine; "unknown tool" means the schema
                 // advertises a tool with no handler — the drift bug we guard against.
                 if case let .methodNotFound(message) = error {
-                    XCTFail("advertised tool \(name) has no handler: \(message)")
+                    Issue.record("advertised tool \(name) has no handler: \(message)")
                 }
             } catch {
                 // MCPToolFailure / other domain errors are acceptable for empty args.
@@ -43,22 +44,22 @@ final class MCPToolExecutorTests: XCTestCase {
         }
     }
 
-    func test_handlerRegistry_exactlyMatchesAdvertisedTools() {
+    @Test func handlerRegistry_exactlyMatchesAdvertisedTools() {
         let advertised = Set(makeExecutor().toolDefinitions.compactMap { $0["name"] as? String })
         let handled = Set(MCPToolExecutor.handlers.keys)
-        XCTAssertEqual(advertised, handled, "every advertised tool has a handler and vice-versa")
+        #expect(advertised == handled, "every advertised tool has a handler and vice-versa")
     }
 
-    func test_unknownTool_throwsMethodNotFound() async {
+    @Test func unknownTool_throwsMethodNotFound() async {
         do {
             _ = try await makeExecutor().call(name: "does_not_exist", arguments: [:])
-            XCTFail("expected methodNotFound")
+            Issue.record("expected methodNotFound")
         } catch let error as MCPError {
-            guard case .methodNotFound = error else { return XCTFail("wrong error: \(error)") }
-        } catch { XCTFail("wrong error type: \(error)") }
+            guard case .methodNotFound = error else { Issue.record("wrong error: \(error)"); return }
+        } catch { Issue.record("wrong error type: \(error)") }
     }
 
-    func test_listDevices_rendersEngineDevices() async throws {
+    @Test func listDevices_rendersEngineDevices() async throws {
         let engine = StubEngine()
         engine.devices = [
             DeviceSummary(
@@ -72,60 +73,60 @@ final class MCPToolExecutorTests: XCTestCase {
         ]
         let out = try await makeExecutor(engine).call(name: "list_devices", arguments: [:])
         let devices = try jsonArray(out)
-        XCTAssertEqual(devices.count, 2)
+        #expect(devices.count == 2)
 
-        let lan = try XCTUnwrap(devices.first { $0["ip"] as? String == "192.168.1.37" })
-        XCTAssertEqual(lan["kind"] as? String, "lan")
-        XCTAssertEqual(lan["platform"] as? String, "iOS")
-        XCTAssertEqual(lan["client"] as? String, "Safari")
-        XCTAssertEqual(lan["type"] as? String, "Safari (iOS)")
-        XCTAssertEqual(lan["flowCount"] as? Int, 3)
+        let lan = try #require(devices.first { $0["ip"] as? String == "192.168.1.37" })
+        #expect(lan["kind"] as? String == "lan")
+        #expect(lan["platform"] as? String == "iOS")
+        #expect(lan["client"] as? String == "Safari")
+        #expect(lan["type"] as? String == "Safari (iOS)")
+        #expect(lan["flowCount"] as? Int == 3)
     }
 
     // MARK: Read tools
 
-    func test_getVersion() async throws {
+    @Test func getVersion() async throws {
         let out = try json(try await makeExecutor().call(name: "get_version", arguments: [:]))
-        XCTAssertEqual(out["app"] as? String, "Loom")
-        XCTAssertEqual(out["appVersion"] as? String, "9.9")
+        #expect(out["app"] as? String == "Loom")
+        #expect(out["appVersion"] as? String == "9.9")
     }
 
-    func test_getRecentFlows_rendersSummaries() async throws {
+    @Test func getRecentFlows_rendersSummaries() async throws {
         let engine = StubEngine()
         engine.flows = [Fixtures.completedFlow(url: "https://a/1"), Fixtures.completedFlow(url: "https://b/2")]
         let out = try jsonArray(try await makeExecutor(engine).call(name: "get_recent_flows", arguments: ["limit": 10]))
-        XCTAssertEqual(out.count, 2)
-        XCTAssertEqual(out.first?["url"] as? String, "https://a/1")
+        #expect(out.count == 2)
+        #expect(out.first?["url"] as? String == "https://a/1")
     }
 
-    func test_getFlowDetail_includesHTTPVersion() async throws {
+    @Test func getFlowDetail_includesHTTPVersion() async throws {
         let engine = StubEngine()
         let flow = Fixtures.completedFlow(url: "https://a/1", httpVersion: "HTTP/2")
         engine.flows = [flow]
         let out = try json(try await makeExecutor(engine).call(name: "get_flow_detail", arguments: ["id": flow.id.uuidString]))
-        let response = try XCTUnwrap(out["response"] as? [String: Any])
-        XCTAssertEqual(response["httpVersion"] as? String, "HTTP/2")
+        let response = try #require(out["response"] as? [String: Any])
+        #expect(response["httpVersion"] as? String == "HTTP/2")
     }
 
-    func test_getFlowDetail_unknownID_isToolFailure() async {
+    @Test func getFlowDetail_unknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "get_flow_detail", arguments: ["id": UUID().uuidString])
-            XCTFail("expected failure")
+            Issue.record("expected failure")
         } catch is MCPToolFailure {
             // expected: in-band tool failure, not a JSON-RPC error
-        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+        } catch { Issue.record("expected MCPToolFailure, got \(error)") }
     }
 
-    func test_getFlowDetail_badID_isInvalidParams() async {
+    @Test func getFlowDetail_badID_isInvalidParams() async {
         do {
             _ = try await makeExecutor().call(name: "get_flow_detail", arguments: ["id": "not-a-uuid"])
-            XCTFail("expected invalidParams")
+            Issue.record("expected invalidParams")
         } catch let error as MCPError {
-            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
-        } catch { XCTFail("wrong error type: \(error)") }
+            guard case .invalidParams = error else { Issue.record("wrong error: \(error)"); return }
+        } catch { Issue.record("wrong error type: \(error)") }
     }
 
-    func test_diffFlows_explicitPair_rendersDiff() async throws {
+    @Test func diffFlows_explicitPair_rendersDiff() async throws {
         let engine = StubEngine()
         let base = Fixtures.completedFlow(url: "https://a/1")
         var compared = Fixtures.completedFlow(url: "https://a/1")
@@ -137,13 +138,13 @@ final class MCPToolExecutorTests: XCTestCase {
         let out = try json(try await makeExecutor(engine).call(name: "diff_flows", arguments: [
             "base": base.id.uuidString, "compared": compared.id.uuidString,
         ]))
-        XCTAssertEqual(out["identical"] as? Bool, false)
-        let status = try XCTUnwrap((out["response"] as? [String: Any])?["status"] as? [String: Any])
-        XCTAssertEqual(status["base"] as? Int, 200)
-        XCTAssertEqual(status["compared"] as? Int, 500)
+        #expect(out["identical"] as? Bool == false)
+        let status = try #require((out["response"] as? [String: Any])?["status"] as? [String: Any])
+        #expect(status["base"] as? Int == 200)
+        #expect(status["compared"] as? Int == 500)
     }
 
-    func test_diffFlows_baseOnly_usesReplayedFrom() async throws {
+    @Test func diffFlows_baseOnly_usesReplayedFrom() async throws {
         let engine = StubEngine()
         let original = Fixtures.completedFlow(url: "https://a/1")
         var replay = Fixtures.completedFlow(url: "https://a/1")
@@ -153,56 +154,56 @@ final class MCPToolExecutorTests: XCTestCase {
         let out = try json(try await makeExecutor(engine).call(name: "diff_flows", arguments: [
             "base": replay.id.uuidString,
         ]))
-        XCTAssertEqual(out["baseId"] as? String, original.id.uuidString)
-        XCTAssertEqual(out["comparedId"] as? String, replay.id.uuidString)
-        let method = try XCTUnwrap((out["request"] as? [String: Any])?["method"] as? [String: Any])
-        XCTAssertEqual(method["compared"] as? String, "POST")
+        #expect(out["baseId"] as? String == original.id.uuidString)
+        #expect(out["comparedId"] as? String == replay.id.uuidString)
+        let method = try #require((out["request"] as? [String: Any])?["method"] as? [String: Any])
+        #expect(method["compared"] as? String == "POST")
     }
 
-    func test_diffFlows_baseOnly_noReplayLink_isToolFailure() async {
+    @Test func diffFlows_baseOnly_noReplayLink_isToolFailure() async {
         let engine = StubEngine()
         let lone = Fixtures.completedFlow(url: "https://a/1")
         engine.flows = [lone]
         do {
             _ = try await makeExecutor(engine).call(name: "diff_flows", arguments: ["base": lone.id.uuidString])
-            XCTFail("expected tool failure")
+            Issue.record("expected tool failure")
         } catch is MCPToolFailure {
-        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+        } catch { Issue.record("expected MCPToolFailure, got \(error)") }
     }
 
-    func test_diffFlows_missingBase_isInvalidParams() async {
+    @Test func diffFlows_missingBase_isInvalidParams() async {
         do {
             _ = try await makeExecutor().call(name: "diff_flows", arguments: [:])
-            XCTFail("expected invalidParams")
+            Issue.record("expected invalidParams")
         } catch let error as MCPError {
-            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
-        } catch { XCTFail("wrong error type: \(error)") }
+            guard case .invalidParams = error else { Issue.record("wrong error: \(error)"); return }
+        } catch { Issue.record("wrong error type: \(error)") }
     }
 
     // MARK: Breakpoints
 
-    func test_armBreakpoint_forwardsToEngine() async throws {
+    @Test func armBreakpoint_forwardsToEngine() async throws {
         let engine = StubEngine()
         let out = try json(try await makeExecutor(engine).call(name: "arm_breakpoint", arguments: [
             "match": ["url_pattern": "https://api.example.com/*"],
             "on_response": true,
         ]))
-        XCTAssertNotNil(UUID(uuidString: out["id"] as? String ?? ""))
-        XCTAssertEqual(out["onRequest"] as? Bool, true)
-        XCTAssertEqual(out["onResponse"] as? Bool, true)
-        XCTAssertEqual(engine.armed.count, 1)
+        #expect(UUID(uuidString: out["id"] as? String ?? "") != nil)
+        #expect(out["onRequest"] as? Bool == true)
+        #expect(out["onResponse"] as? Bool == true)
+        #expect(engine.armed.count == 1)
     }
 
-    func test_armBreakpoint_missingMatch_isInvalidParams() async {
+    @Test func armBreakpoint_missingMatch_isInvalidParams() async {
         do {
             _ = try await makeExecutor().call(name: "arm_breakpoint", arguments: ["on_request": true])
-            XCTFail("expected invalidParams")
+            Issue.record("expected invalidParams")
         } catch let error as MCPError {
-            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
-        } catch { XCTFail("wrong error type: \(error)") }
+            guard case .invalidParams = error else { Issue.record("wrong error: \(error)"); return }
+        } catch { Issue.record("wrong error type: \(error)") }
     }
 
-    func test_listPending_rendersArmedAndPending() async throws {
+    @Test func listPending_rendersArmedAndPending() async throws {
         let engine = StubEngine()
         engine.armed = [Breakpoint(match: RuleMatch(urlPattern: "*"))]
         engine.pending = [PendingBreakpoint(
@@ -210,13 +211,13 @@ final class MCPToolExecutorTests: XCTestCase {
             method: "GET", url: "https://a/1", requestHeaders: [], requestBody: Data("hi".utf8)
         )]
         let out = try json(try await makeExecutor(engine).call(name: "list_pending", arguments: [:]))
-        XCTAssertEqual((out["armed"] as? [[String: Any]])?.count, 1)
-        let pending = try XCTUnwrap(out["pending"] as? [[String: Any]])
-        XCTAssertEqual(pending.count, 1)
-        XCTAssertEqual((pending.first?["request"] as? [String: Any])?["method"] as? String, "GET")
+        #expect((out["armed"] as? [[String: Any]])?.count == 1)
+        let pending = try #require(out["pending"] as? [[String: Any]])
+        #expect(pending.count == 1)
+        #expect((pending.first?["request"] as? [String: Any])?["method"] as? String == "GET")
     }
 
-    func test_resume_forwardsEditsToEngine() async throws {
+    @Test func resume_forwardsEditsToEngine() async throws {
         let engine = StubEngine()
         let held = PendingBreakpoint(
             breakpointID: UUID(), phase: .response,
@@ -228,90 +229,90 @@ final class MCPToolExecutorTests: XCTestCase {
             "status_code": 503,
             "body": "down",
         ])
-        let call = try XCTUnwrap(engine.resumeCalls.first)
-        XCTAssertEqual(call.id, held.id)
-        XCTAssertFalse(call.abort)
-        XCTAssertEqual(call.edit.statusCode, 503)
-        XCTAssertEqual(call.edit.body, .replace(Data("down".utf8)))
+        let call = try #require(engine.resumeCalls.first)
+        #expect(call.id == held.id)
+        #expect(!(call.abort))
+        #expect(call.edit.statusCode == 503)
+        #expect(call.edit.body == .replace(Data("down".utf8)))
     }
 
-    func test_resume_unknownPendingID_isToolFailure() async {
+    @Test func resume_unknownPendingID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "resume", arguments: ["pending_id": UUID().uuidString])
-            XCTFail("expected tool failure")
+            Issue.record("expected tool failure")
         } catch is MCPToolFailure {
-        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+        } catch { Issue.record("expected MCPToolFailure, got \(error)") }
     }
 
-    func test_disarmBreakpoint_unknownID_isToolFailure() async {
+    @Test func disarmBreakpoint_unknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "disarm_breakpoint", arguments: ["id": UUID().uuidString])
-            XCTFail("expected tool failure")
+            Issue.record("expected tool failure")
         } catch is MCPToolFailure {
-        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+        } catch { Issue.record("expected MCPToolFailure, got \(error)") }
     }
 
     // MARK: Write tools forward to the engine
 
-    func test_replayFlow_forwardsAndRendersFailureInBand() async throws {
+    @Test func replayFlow_forwardsAndRendersFailureInBand() async throws {
         let engine = StubEngine()
         engine.replayError = ProxyControlError.replayFailed("boom")
         do {
             _ = try await makeExecutor(engine).call(name: "replay_flow", arguments: ["id": UUID().uuidString])
-            XCTFail("expected tool failure")
+            Issue.record("expected tool failure")
         } catch let failure as MCPToolFailure {
-            XCTAssertTrue(failure.message.contains("boom"))
+            #expect(failure.message.contains("boom"))
         }
-        XCTAssertNotNil(engine.lastReplay)
+        #expect(engine.lastReplay != nil)
     }
 
-    func test_setSSLScope_mergesAndForwards() async throws {
+    @Test func setSSLScope_mergesAndForwards() async throws {
         let engine = StubEngine()
         _ = try await makeExecutor(engine).call(name: "set_ssl_scope", arguments: [
             "enabled": true, "include": ["*.example.com"],
         ])
-        XCTAssertEqual(engine.lastSSLScope?.enabled, true)
-        XCTAssertEqual(engine.lastSSLScope?.include, ["*.example.com"])
+        #expect(engine.lastSSLScope?.enabled == true)
+        #expect(engine.lastSSLScope?.include == ["*.example.com"])
     }
 
-    func test_createRule_strictParse_missingMatch_isInvalidParams() async {
+    @Test func createRule_strictParse_missingMatch_isInvalidParams() async {
         do {
             _ = try await makeExecutor().call(name: "create_rule", arguments: [
                 "name": "r", "actions": ["block": true],
             ])
-            XCTFail("expected invalidParams for missing match")
+            Issue.record("expected invalidParams for missing match")
         } catch let error as MCPError {
-            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
-        } catch { XCTFail("wrong error type: \(error)") }
+            guard case .invalidParams = error else { Issue.record("wrong error: \(error)"); return }
+        } catch { Issue.record("wrong error type: \(error)") }
     }
 
-    func test_createRule_valid_addsToEngine() async throws {
+    @Test func createRule_valid_addsToEngine() async throws {
         let engine = StubEngine()
         let out = try json(try await makeExecutor(engine).call(name: "create_rule", arguments: [
             "name": "block home",
             "match": ["url_pattern": "https://api.example.com/home"],
             "actions": ["block": true],
         ]))
-        XCTAssertEqual(out["name"] as? String, "block home")
-        XCTAssertEqual(engine.addedRules.count, 1)
-        XCTAssertEqual(engine.rules.rules.count, 1)
+        #expect(out["name"] as? String == "block home")
+        #expect(engine.addedRules.count == 1)
+        #expect(engine.rules.rules.count == 1)
     }
 
-    func test_deleteRule_unknownID_isToolFailure() async {
+    @Test func deleteRule_unknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "delete_rule", arguments: ["id": UUID().uuidString])
-            XCTFail("expected failure")
+            Issue.record("expected failure")
         } catch is MCPToolFailure {
-        } catch { XCTFail("expected MCPToolFailure, got \(error)") }
+        } catch { Issue.record("expected MCPToolFailure, got \(error)") }
     }
 
-    func test_setRulesEnabled_requiresBool() async {
+    @Test func setRulesEnabled_requiresBool() async {
         do {
             _ = try await makeExecutor().call(name: "set_rules_enabled", arguments: [:])
-            XCTFail("expected invalidParams")
+            Issue.record("expected invalidParams")
         } catch let error as MCPError {
-            guard case .invalidParams = error else { return XCTFail("wrong error: \(error)") }
-        } catch { XCTFail("wrong error type: \(error)") }
+            guard case .invalidParams = error else { Issue.record("wrong error: \(error)"); return }
+        } catch { Issue.record("wrong error type: \(error)") }
     }
 }
 

@@ -1,4 +1,5 @@
-import XCTest
+import Testing
+import Foundation
 import SharedModels
 @testable import ProxyCore
 
@@ -6,14 +7,14 @@ import SharedModels
 /// traffic on `BreakpointStore` until a resume decision arrives, applies edits to
 /// the request or response, aborts on request, and — crucially — leaves
 /// non-matching traffic completely untouched (including streaming).
-final class BreakpointTests: XCTestCase {
+@Suite struct BreakpointTests {
     private let url = URL(string: "https://api.example.test/v1/home")!
 
     private func recordingUpstream() -> BPStubUpstream { BPStubUpstream() }
 
     // MARK: Request phase
 
-    func test_requestBreakpoint_holdsThenAppliesEdit() async throws {
+    @Test func requestBreakpoint_holdsThenAppliesEdit() async throws {
         let upstream = recordingUpstream()
         let store = BreakpointStore()
         let forwarder = BreakpointForwarder(base: upstream, store: store)
@@ -23,21 +24,21 @@ final class BreakpointTests: XCTestCase {
 
         // The exchange should now be held; resume it with edits.
         let pending = try await waitForPending(store)
-        XCTAssertEqual(pending.phase, .request)
-        XCTAssertTrue(store.resume(pendingID: pending.id, resolution: .proceed(BreakpointEdit(
+        #expect(pending.phase == .request)
+        #expect(store.resume(pendingID: pending.id, resolution: .proceed(BreakpointEdit(
             method: "POST",
             setHeaders: [HeaderPair(name: "X-Edited", value: "1")],
             body: .replace(Data("edited".utf8))
         ))))
 
         _ = try await resultTask
-        XCTAssertEqual(upstream.lastMethod, "POST")
-        XCTAssertEqual(upstream.lastBody, Data("edited".utf8))
-        XCTAssertEqual(upstream.lastHeaders.value(named: "X-Edited"), "1")
-        XCTAssertTrue(store.pending().isEmpty, "resumed exchange must be dropped from pending")
+        #expect(upstream.lastMethod == "POST")
+        #expect(upstream.lastBody == Data("edited".utf8))
+        #expect(upstream.lastHeaders.value(named: "X-Edited") == "1")
+        #expect(store.pending().isEmpty, "resumed exchange must be dropped from pending")
     }
 
-    func test_requestBreakpoint_abort_returns502_neverForwards() async throws {
+    @Test func requestBreakpoint_abort_returns502_neverForwards() async throws {
         let upstream = recordingUpstream()
         let store = BreakpointStore()
         let forwarder = BreakpointForwarder(base: upstream, store: store)
@@ -45,16 +46,16 @@ final class BreakpointTests: XCTestCase {
 
         async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
         let pending = try await waitForPending(store)
-        XCTAssertTrue(store.resume(pendingID: pending.id, resolution: .abort))
+        #expect(store.resume(pendingID: pending.id, resolution: .abort))
 
         let result = try await resultTask
-        XCTAssertEqual(result.statusCode, 502)
-        XCTAssertEqual(upstream.callCount, 0, "an aborted request must never reach the upstream")
+        #expect(result.statusCode == 502)
+        #expect(upstream.callCount == 0, "an aborted request must never reach the upstream")
     }
 
     // MARK: Response phase
 
-    func test_responseBreakpoint_editsResponse() async throws {
+    @Test func responseBreakpoint_editsResponse() async throws {
         let upstream = recordingUpstream()
         upstream.result = ForwardResult(statusCode: 200, headers: [], body: Data("original".utf8))
         let store = BreakpointStore()
@@ -63,33 +64,33 @@ final class BreakpointTests: XCTestCase {
 
         async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
         let pending = try await waitForPending(store)
-        XCTAssertEqual(pending.phase, .response)
-        XCTAssertEqual(pending.statusCode, 200)
-        XCTAssertTrue(store.resume(pendingID: pending.id, resolution: .proceed(BreakpointEdit(
+        #expect(pending.phase == .response)
+        #expect(pending.statusCode == 200)
+        #expect(store.resume(pendingID: pending.id, resolution: .proceed(BreakpointEdit(
             statusCode: 503, body: .replace(Data("MAINTENANCE".utf8))
         ))))
 
         let result = try await resultTask
-        XCTAssertEqual(upstream.callCount, 1, "the response phase runs after the real upstream call")
-        XCTAssertEqual(result.statusCode, 503)
-        XCTAssertEqual(result.body, Data("MAINTENANCE".utf8))
+        #expect(upstream.callCount == 1, "the response phase runs after the real upstream call")
+        #expect(result.statusCode == 503)
+        #expect(result.body == Data("MAINTENANCE".utf8))
     }
 
     // MARK: Non-matching / lifecycle
 
-    func test_noMatch_passthroughUntouched() async throws {
+    @Test func noMatch_passthroughUntouched() async throws {
         let upstream = recordingUpstream()
         let store = BreakpointStore()
         let forwarder = BreakpointForwarder(base: upstream, store: store)
         store.arm(Breakpoint(match: RuleMatch(urlPattern: "https://other.test/*"), onRequest: true))
 
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
-        XCTAssertEqual(upstream.callCount, 1)
-        XCTAssertEqual(result.body, Data("upstream".utf8))
-        XCTAssertTrue(store.pending().isEmpty)
+        #expect(upstream.callCount == 1)
+        #expect(result.body == Data("upstream".utf8))
+        #expect(store.pending().isEmpty)
     }
 
-    func test_forwardStream_noMatch_delegatesToBase() async throws {
+    @Test func forwardStream_noMatch_delegatesToBase() async throws {
         let upstream = recordingUpstream()
         let store = BreakpointStore()
         let forwarder = BreakpointForwarder(base: upstream, store: store)
@@ -98,10 +99,10 @@ final class BreakpointTests: XCTestCase {
         for try await event in forwarder.forwardStream(method: "GET", url: url, headers: [], body: .bytes(nil)) {
             if case let .body(data) = event { bodies.append(data) }
         }
-        XCTAssertEqual(bodies, [Data("upstream".utf8)])
+        #expect(bodies == [Data("upstream".utf8)])
     }
 
-    func test_timeout_autoProceedsUnchanged() async throws {
+    @Test func timeout_autoProceedsUnchanged() async throws {
         let upstream = recordingUpstream()
         let store = BreakpointStore(timeout: 0.05) // fire almost immediately
         let forwarder = BreakpointForwarder(base: upstream, store: store)
@@ -109,24 +110,24 @@ final class BreakpointTests: XCTestCase {
 
         // No resume call — the timeout must release it unchanged.
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: Data("keep".utf8))
-        XCTAssertEqual(upstream.callCount, 1)
-        XCTAssertEqual(upstream.lastBody, Data("keep".utf8))
-        XCTAssertEqual(result.body, Data("upstream".utf8))
+        #expect(upstream.callCount == 1)
+        #expect(upstream.lastBody == Data("keep".utf8))
+        #expect(result.body == Data("upstream".utf8))
     }
 
-    func test_disarm_removesArmedBreakpoint() {
+    @Test func disarm_removesArmedBreakpoint() {
         let store = BreakpointStore()
         let bp = Breakpoint(match: RuleMatch(urlPattern: "*"))
         store.arm(bp)
-        XCTAssertEqual(store.armed().count, 1)
-        XCTAssertTrue(store.disarm(id: bp.id))
-        XCTAssertFalse(store.disarm(id: bp.id), "disarming a gone breakpoint returns false")
-        XCTAssertTrue(store.armed().isEmpty)
+        #expect(store.armed().count == 1)
+        #expect(store.disarm(id: bp.id))
+        #expect(!(store.disarm(id: bp.id)), "disarming a gone breakpoint returns false")
+        #expect(store.armed().isEmpty)
     }
 
-    func test_resume_unknownPendingID_returnsFalse() {
+    @Test func resume_unknownPendingID_returnsFalse() {
         let store = BreakpointStore()
-        XCTAssertFalse(store.resume(pendingID: UUID(), resolution: .proceed(.none)))
+        #expect(!(store.resume(pendingID: UUID(), resolution: .proceed(.none))))
     }
 
     // MARK: Helpers
@@ -138,7 +139,7 @@ final class BreakpointTests: XCTestCase {
             if let first = store.pending().first { return first }
             try await Task.sleep(nanoseconds: 5_000_000) // 5ms
         }
-        XCTFail("no exchange was held within the timeout")
+        Issue.record("no exchange was held within the timeout")
         throw CancellationError()
     }
 }

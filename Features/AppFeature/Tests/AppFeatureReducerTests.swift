@@ -1,6 +1,7 @@
 import ComposableArchitecture
+import Foundation
 import SharedModels
-import XCTest
+import Testing
 
 @testable import AppFeature
 
@@ -9,14 +10,14 @@ import XCTest
 /// seams (Add-Rule-from-flow → present editor, replay failure → rules message).
 /// The rule CRUD itself is tested in `RulesFeatureTests`.
 @MainActor
-final class AppFeatureReducerTests: XCTestCase {
+@Suite struct AppFeatureReducerTests {
     private struct StubError: LocalizedError {
         var errorDescription: String? { "replay failed" }
     }
 
     // MARK: Boot idempotency
 
-    func test_task_isNoOpOnceBooted() async {
+    @Test func task_isNoOpOnceBooted() async {
         var initial = AppFeature.State()
         initial.didBoot = true // already booted; re-render must not restart the proxy
         let store = TestStore(initialState: initial) { AppFeature() }
@@ -27,7 +28,7 @@ final class AppFeatureReducerTests: XCTestCase {
 
     // MARK: Add-Rule-from-flow seam (parent owns the flow store, child owns the editor)
 
-    func test_addRuleFromFlow_stampsRuleAndPresentsEditor() async {
+    @Test func addRuleFromFlow_stampsRuleAndPresentsEditor() async {
         let flow = Fixtures.flow()
         var initial = AppFeature.State()
         initial.flows = [flow]
@@ -40,13 +41,14 @@ final class AppFeatureReducerTests: XCTestCase {
 
         await store.send(.addRuleFromFlow(flow.id, .mockResponse))
         await store.receive(\.rules.presentEditor)
-        XCTAssertTrue(store.state.rules.editor?.isNew ?? false)
+        #expect(store.state.rules.editor?.isNew ?? false)
         guard case .mock = store.state.rules.editor?.rule.actions.route else {
-            return XCTFail("expected a mock rule stamped from the flow")
+            Issue.record("expected a mock rule stamped from the flow")
+            return
         }
     }
 
-    func test_addRuleFromFlow_unknownID_isNoOp() async {
+    @Test func addRuleFromFlow_unknownID_isNoOp() async {
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
             $0.proxyClient.flow = { _ in nil } // hydrate finds nothing → no editor
         }
@@ -55,7 +57,7 @@ final class AppFeatureReducerTests: XCTestCase {
 
     // MARK: Replay failure routes into the shared rules message
 
-    func test_replayTapped_failure_surfacesInRulesMessage() async {
+    @Test func replayTapped_failure_surfacesInRulesMessage() async {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
@@ -69,7 +71,7 @@ final class AppFeatureReducerTests: XCTestCase {
 
     // MARK: Replay success
 
-    func test_replayFinished_insertsAndSelects() async {
+    @Test func replayFinished_insertsAndSelects() async {
         let original = UUID()
         let replayed = Fixtures.flow(id: UUID(), replayedFrom: original)
         let originalFlow = Fixtures.flow(id: original)
@@ -88,14 +90,14 @@ final class AppFeatureReducerTests: XCTestCase {
         }
     }
 
-    func test_replayFinished_nil_isNoOp() async {
+    @Test func replayFinished_nil_isNoOp() async {
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
         await store.send(.replayFinished(nil))
     }
 
     // MARK: Capture stream + clear
 
-    func test_flowReceived_appendsAndCounts() async {
+    @Test func flowReceived_appendsAndCounts() async {
         let flow = Fixtures.flow()
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
         await store.send(.flowReceived(flow)) {
@@ -104,7 +106,7 @@ final class AppFeatureReducerTests: XCTestCase {
         }
     }
 
-    func test_clearTapped_emptiesStore() async {
+    @Test func clearTapped_emptiesStore() async {
         let flow = Fixtures.flow()
         var initial = AppFeature.State()
         initial.flows = [flow]
@@ -122,7 +124,7 @@ final class AppFeatureReducerTests: XCTestCase {
         }
     }
 
-    func test_toggleRecording_flips() async {
+    @Test func toggleRecording_flips() async {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {

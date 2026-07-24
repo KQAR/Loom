@@ -1,10 +1,11 @@
-import XCTest
+import Testing
+import Foundation
 @testable import ProxyCore
 import SharedModels
 
 /// The Record toggle's engine contract: paused capture drops new flows but
 /// still lets in-flight completions and explicit (forced) writes land.
-final class FlowStoreRecordingTests: XCTestCase {
+@Suite struct FlowStoreRecordingTests {
     private func makeFlow(id: UUID = UUID(), completed: Bool = false) -> Flow {
         Flow(
             id: id,
@@ -16,22 +17,22 @@ final class FlowStoreRecordingTests: XCTestCase {
         )
     }
 
-    func test_recordsByDefault() async {
+    @Test func recordsByDefault() async {
         let store = FlowStore()
         await store.upsert(makeFlow())
         let count = await store.count
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
     }
 
-    func test_paused_dropsNewFlows() async {
+    @Test func paused_dropsNewFlows() async {
         let store = FlowStore()
         await store.setRecording(false)
         await store.upsert(makeFlow())
         let count = await store.count
-        XCTAssertEqual(count, 0, "paused capture must not record new flows")
+        #expect(count == 0, "paused capture must not record new flows")
     }
 
-    func test_paused_stillCompletesInFlightFlows() async {
+    @Test func paused_stillCompletesInFlightFlows() async {
         let store = FlowStore()
         let id = UUID()
         await store.upsert(makeFlow(id: id))          // captured while recording
@@ -39,26 +40,26 @@ final class FlowStoreRecordingTests: XCTestCase {
         await store.upsert(makeFlow(id: id, completed: true)) // completion arrives after pause
 
         let flow = await store.flow(id: id)
-        XCTAssertEqual(flow?.response?.statusCode, 200, "in-flight flows must not get stuck open")
+        #expect(flow?.response?.statusCode == 200, "in-flight flows must not get stuck open")
         let count = await store.count
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
     }
 
-    func test_paused_forcedUpsertStillRecords() async {
+    @Test func paused_forcedUpsertStillRecords() async {
         let store = FlowStore()
         await store.setRecording(false)
         await store.upsert(makeFlow(), force: true)   // replay path
         let count = await store.count
-        XCTAssertEqual(count, 1, "explicit actions (replay) record even while paused")
+        #expect(count == 1, "explicit actions (replay) record even while paused")
     }
 
-    func test_resume_recordsAgain() async {
+    @Test func resume_recordsAgain() async {
         let store = FlowStore()
         await store.setRecording(false)
         await store.upsert(makeFlow())
         await store.setRecording(true)
         await store.upsert(makeFlow())
         let count = await store.count
-        XCTAssertEqual(count, 1)
+        #expect(count == 1)
     }
 }
