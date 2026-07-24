@@ -116,4 +116,12 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
         resumeCalls.append((pendingID, abort, edit))
         pending.removeAll { $0.id == pendingID }
     }
+
+    // AuditControlling
+    private(set) var recordedAudits: [AuditEntry] = []
+    func recordAudit(_ entry: AuditEntry) async { recordedAudits.append(entry) }
+    func recentAuditEntries(limit: Int) async -> [AuditEntry] {
+        Array(recordedAudits.reversed().prefix(limit))
+    }
+    func auditStream() async -> AsyncStream<AuditEntry> { AsyncStream { $0.finish() } }
 }

@@ -51,6 +51,16 @@ struct MCPToolExecutor {
                 ],
             ],
             [
+                "name": "get_audit_log",
+                "description": "List recent write actions taken through Loom (replay, rules, breakpoints, ssl-scope), newest first, each with the tool name, arguments, outcome and timestamp. Read tools are never logged. Use this to review what write actions have been taken this or a prior session.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "limit": ["type": "integer", "description": "Max entries to return (default 50)."],
+                    ],
+                ],
+            ],
+            [
                 "name": "replay_flow",
                 "description": "Re-send a captured flow with optional overrides (method, url, headers, body) and return the new flow. This is a write action.",
                 "inputSchema": [
@@ -380,6 +390,7 @@ struct MCPToolExecutor {
         "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
+        "get_audit_log": { ex, args in try await ex.handleGetAuditLog(args) },
         "diff_flows": { ex, args in try await ex.handleDiffFlows(args) },
         "arm_breakpoint": { ex, args in try await ex.handleArmBreakpoint(args) },
         "disarm_breakpoint": { ex, args in try await ex.handleDisarmBreakpoint(args) },
@@ -400,11 +411,68 @@ struct MCPToolExecutor {
         "set_group_enabled": { ex, args in try await ex.handleSetGroupEnabled(args) },
     ]
 
+    /// Tools that touch real traffic — every one is audited (§ `call`). Kept as an
+    /// explicit set rather than string-matching the "This is a write action."
+    /// description marker, so a typo in a description can't silently stop auditing
+    /// a write. `MCPServerTests` asserts this set matches the marked definitions.
+    static let writeTools: Set<String> = [
+        "replay_flow",
+        "arm_breakpoint",
+        "disarm_breakpoint",
+        "resume",
+        "export_ca_certificate",
+        "set_ssl_scope",
+        "export_har",
+        "create_rule",
+        "update_rule",
+        "delete_rule",
+        "set_rules_enabled",
+        "set_group_enabled",
+    ]
+
     func call(name: String, arguments: [String: Any]) async throws -> String {
         guard let handler = Self.handlers[name] else {
             throw MCPError.methodNotFound("unknown tool: \(name)")
         }
-        return try await handler(self, arguments)
+        // Read tools run straight through. Write tools are the whole reason Loom
+        // exists — record each in the audit trail (success or failure) so the
+        // supervising human can see what the agent did to real traffic.
+        guard Self.writeTools.contains(name) else {
+            return try await handler(self, arguments)
+        }
+        let renderedArgs = AuditEntry.truncate(Self.auditArguments(arguments))
+        do {
+            let result = try await handler(self, arguments)
+            await engine.recordAudit(AuditEntry(
+                tool: name, succeeded: true,
+                arguments: renderedArgs, detail: AuditEntry.truncate(result)
+            ))
+            return result
+        } catch {
+            let message: String
+            switch error {
+            case let failure as MCPToolFailure: message = failure.message
+            case let mcp as MCPError: message = mcp.message
+            default: message = error.localizedDescription
+            }
+            await engine.recordAudit(AuditEntry(
+                tool: name, succeeded: false,
+                arguments: renderedArgs, detail: AuditEntry.truncate(message)
+            ))
+            throw error
+        }
+    }
+
+    /// Render a tool's arguments as compact JSON for the audit trail. Falls back
+    /// to `String(describing:)` for the rare non-JSON value. Truncation is applied
+    /// by the caller (whole-string, so we don't split a key from its value).
+    private static func auditArguments(_ arguments: [String: Any]) -> String {
+        guard !arguments.isEmpty else { return "{}" }
+        guard JSONSerialization.isValidJSONObject(arguments),
+              let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+              let string = String(data: data, encoding: .utf8)
+        else { return String(describing: arguments) }
+        return string
     }
 
     // MARK: - Handlers (one per tool)
@@ -446,6 +514,12 @@ struct MCPToolExecutor {
             throw MCPToolFailure("no flow with id \(idString)")
         }
         return prettyJSON(Self.flowDetail(flow))
+    }
+
+    private func handleGetAuditLog(_ arguments: [String: Any]) async throws -> String {
+        let limit = (arguments["limit"] as? Int) ?? 50
+        let entries = await engine.recentAuditEntries(limit: limit)
+        return prettyJSON(entries.map(Self.auditSummary))
     }
 
     private func handleDiffFlows(_ arguments: [String: Any]) async throws -> String {
@@ -775,6 +849,20 @@ struct MCPToolExecutor {
             out["sourceDevice"] = deviceOut
         }
         return out
+    }
+
+    /// One entry for `get_audit_log`. Timestamp as ISO-8601 so the model can order
+    /// them; `arguments` is already-truncated compact JSON (a string, not re-parsed).
+    private static func auditSummary(_ entry: AuditEntry) -> [String: Any] {
+        [
+            "id": entry.id.uuidString,
+            "timestamp": iso8601.string(from: entry.timestamp),
+            "tool": entry.tool,
+            "source": entry.source.rawValue,
+            "succeeded": entry.succeeded,
+            "arguments": entry.arguments,
+            "detail": entry.detail,
+        ]
     }
 
     /// One entry for `list_devices`. Dates as ISO-8601 so the model can order them.

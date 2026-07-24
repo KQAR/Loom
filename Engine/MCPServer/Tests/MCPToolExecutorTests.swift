@@ -314,6 +314,91 @@ import LoomSharedModels
             guard case .invalidParams = error else { Issue.record("wrong error: \(error)"); return }
         } catch { Issue.record("wrong error type: \(error)") }
     }
+
+    // MARK: Write-action audit log
+
+    /// The audited set must match exactly the tools whose definition is marked
+    /// "This is a write action." — a marker and a missed audit can't diverge.
+    @Test func writeToolSet_matchesMarkedDefinitions() {
+        // Match without the trailing period: some markers read "This is a write
+        // action (writes a file)." rather than "…action.".
+        let marked = Set(makeExecutor().toolDefinitions
+            .filter { ($0["description"] as? String)?.contains("This is a write action") == true }
+            .compactMap { $0["name"] as? String })
+        #expect(marked == MCPToolExecutor.writeTools,
+                "every write-marked tool is audited and vice-versa; diff: \(marked.symmetricDifference(MCPToolExecutor.writeTools))")
+    }
+
+    @Test func writeTool_success_recordsAuditEntry() async throws {
+        let engine = StubEngine()
+        _ = try await makeExecutor(engine).call(name: "create_rule", arguments: [
+            "name": "block home",
+            "match": ["url_pattern": "https://api.example.com/home"],
+            "actions": ["block": true],
+        ])
+        let entry = try #require(engine.recordedAudits.first)
+        #expect(engine.recordedAudits.count == 1)
+        #expect(entry.tool == "create_rule")
+        #expect(entry.source == .mcp)
+        #expect(entry.succeeded)
+        #expect(entry.arguments.contains("block home"))
+    }
+
+    @Test func writeTool_failure_recordsFailedAuditEntry_andStillThrows() async {
+        let engine = StubEngine()
+        engine.replayError = ProxyControlError.replayFailed("boom")
+        do {
+            _ = try await makeExecutor(engine).call(name: "replay_flow", arguments: ["id": UUID().uuidString])
+            Issue.record("expected the failure to propagate")
+        } catch is MCPToolFailure {
+            // expected — the audit record must not swallow the error
+        } catch { Issue.record("unexpected error: \(error)") }
+        #expect(engine.recordedAudits.count == 1)
+        let entry = engine.recordedAudits.first
+        #expect(entry?.tool == "replay_flow")
+        #expect(entry?.succeeded == false)
+        #expect(entry?.detail.contains("boom") == true)
+    }
+
+    @Test func readTool_isNotAudited() async throws {
+        let engine = StubEngine()
+        engine.flows = [Fixtures.completedFlow(url: "https://a/1")]
+        _ = try await makeExecutor(engine).call(name: "get_recent_flows", arguments: [:])
+        _ = try await makeExecutor(engine).call(name: "get_audit_log", arguments: [:])
+        #expect(engine.recordedAudits.isEmpty, "read tools must never be audited")
+    }
+
+    @Test func getAuditLog_rendersEntriesNewestFirst() async throws {
+        let engine = StubEngine()
+        await engine.recordAudit(AuditEntry(
+            timestamp: Date(timeIntervalSince1970: 1_000), tool: "create_rule",
+            succeeded: true, arguments: #"{"name":"a"}"#, detail: "ok"
+        ))
+        await engine.recordAudit(AuditEntry(
+            timestamp: Date(timeIntervalSince1970: 2_000), tool: "delete_rule",
+            succeeded: false, arguments: #"{"id":"x"}"#, detail: "no rule"
+        ))
+        let out = try jsonArray(try await makeExecutor(engine).call(name: "get_audit_log", arguments: [:]))
+        #expect(out.count == 2)
+        #expect(out.first?["tool"] as? String == "delete_rule") // newest first
+        #expect(out.first?["succeeded"] as? Bool == false)
+        #expect(out.first?["detail"] as? String == "no rule")
+        #expect(out.last?["tool"] as? String == "create_rule")
+    }
+
+    @Test func auditArguments_areTruncatedToCap() async throws {
+        let engine = StubEngine()
+        let huge = String(repeating: "x", count: AuditEntry.cap + 500)
+        // A create_rule whose mock body is oversized — the args render must clip.
+        _ = try? await makeExecutor(engine).call(name: "create_rule", arguments: [
+            "name": huge,
+            "match": ["url_pattern": "https://a/*"],
+            "actions": ["block": true],
+        ])
+        let entry = try #require(engine.recordedAudits.first)
+        #expect(entry.arguments.count <= AuditEntry.cap + 40) // cap + the "… (N more)" marker
+        #expect(entry.arguments.contains("more chars)"))
+    }
 }
 
 private enum Fixtures {

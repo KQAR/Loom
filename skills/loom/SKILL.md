@@ -78,6 +78,7 @@ Loom is built for one cycle — do this, don't just read:
 | `get_recent_flows` | newest-first flow summaries (method, url, status, host, flags) |
 | `get_flow_detail` | full headers + body for one flow id; adds `webSocket.messages` / `graphQL` blocks when present |
 | `diff_flows` | structured diff of two flows by id (`base` + `compared`, or `base` alone to diff a replay vs its original); reports method/url, header add/remove/change, status, line-level body diff |
+| `get_audit_log` | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, with tool name, arguments, outcome, timestamp; use to review what writes have been made (yours or a prior session's) |
 | `get_certificate_status` | root-CA state: generated? trusted? fingerprint, expiry, exported path |
 | `get_ssl_scope` | HTTPS interception on/off + include/exclude host globs |
 | `list_rules` | master switch + all rules (long bodies truncated) |

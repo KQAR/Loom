@@ -44,6 +44,9 @@ public struct MainView: View {
             Label("Rules", systemImage: "wand.and.stars")
                 .badge(store.rules.rulesState.rules.count)
                 .tag(FlowCategory.rules)
+            Label("Audit", systemImage: "checklist")
+                .badge(store.auditEntries.count)
+                .tag(FlowCategory.audit)
 
             if !store.devices.isEmpty {
                 Section("Devices") {
@@ -259,6 +262,8 @@ public struct MainView: View {
     @ViewBuilder private var content: some View {
         if store.selectedCategory == .rules {
             RulesPanelView(store: store.scope(state: \.rules, action: \.rules))
+        } else if store.selectedCategory == .audit {
+            AuditPanelView(store: store)
         } else if let flow = store.selectedFlow {
             VSplitView {
                 requestArea

@@ -191,4 +191,20 @@ public protocol BreakpointControlling: Sendable {
     func resumeBreakpoint(pendingID: UUID, abort: Bool, edit: BreakpointEdit) async throws
 }
 
-public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling
+/// The write-action audit trail. The MCP server records every write tool call
+/// here (success or failure); the supervising human reads it in the main-window
+/// Audit panel, and an agent can read it back via the `get_audit_log` tool.
+/// Reads are never recorded — only writes, which are the actions that touch real
+/// traffic.
+public protocol AuditControlling: Sendable {
+    /// Append one write-action record. Called from the MCP tool choke point.
+    func recordAudit(_ entry: AuditEntry) async
+    /// Most-recent-first audit entries, up to `limit`.
+    func recentAuditEntries(limit: Int) async -> [AuditEntry]
+    /// A live stream of audit entries as they are recorded, for the human panel.
+    /// Like `flowStream()`, it is unbuffered fan-out — a late subscriber misses
+    /// prior entries (seed from `recentAuditEntries(limit:)`).
+    func auditStream() async -> AsyncStream<AuditEntry>
+}
+
+public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling & AuditControlling
