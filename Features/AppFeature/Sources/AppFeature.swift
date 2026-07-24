@@ -10,7 +10,6 @@ import UpdaterClient
 public enum FlowCategory: Hashable, Sendable {
     case all
     case errors
-    case replayed
     /// Not a flow filter: selecting it swaps the detail area for the rules panel.
     case rules
     /// Not a flow filter: swaps the detail area for the write-action audit trail.
@@ -101,8 +100,6 @@ public struct AppFeature: Sendable {
                 break
             case .errors:
                 result = result.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }
-            case .replayed:
-                result = result.filter { $0.replayedFrom != nil }
             case .rules, .audit:
                 return [] // the rules / audit panel replaces the table
 
@@ -178,7 +175,6 @@ public struct AppFeature: Sendable {
 
         public var allCount: Int { flows.count }
         public var errorCount: Int { flows.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }.count }
-        public var replayedCount: Int { flows.filter { $0.replayedFrom != nil }.count }
 
         /// Metadata-only selected flow (from the body-free list). The inspector
         /// reads `selectedFlowDetail` for the full payload.

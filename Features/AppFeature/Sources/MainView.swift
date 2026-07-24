@@ -45,9 +45,6 @@ public struct MainView: View {
             Label("Errors", systemImage: "exclamationmark.triangle")
                 .badge(store.errorCount)
                 .tag(FlowCategory.errors)
-            Label("Replayed", systemImage: "arrow.triangle.2.circlepath")
-                .badge(store.replayedCount)
-                .tag(FlowCategory.replayed)
             Label("Rules", systemImage: "wand.and.stars")
                 .badge(store.rules.rulesState.rules.count)
                 .tag(FlowCategory.rules)
@@ -294,6 +291,10 @@ public struct MainView: View {
         .background(RequestTableAutoScroll(rowCount: store.displayFlows.count, follow: $followTail))
         .contextMenu(forSelectionType: Flow.ID.self) { ids in
             if let id = ids.first, let flow = store.flows[id: id] {
+                Button("Replay", systemImage: "arrow.triangle.2.circlepath") {
+                    store.send(.replayTapped(id))
+                }
+                Divider()
                 Menu("Copy") {
                     Button("Host") { Self.copy(Self.host(flow.request.url)) }
                     Button("Path") { Self.copy(Self.path(flow.request.url)) }
@@ -337,7 +338,6 @@ public struct MainView: View {
                     // immediately and its body fills in.
                     flow: store.selectedFlowDetail ?? flow,
                     original: store.selectedOriginalDetail,
-                    onReplay: { store.send(.replayTapped(flow.id)) },
                     onClose: { store.send(.flowSelected(nil)) }
                 )
                 .frame(minHeight: 160, maxHeight: .infinity)
