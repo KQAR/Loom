@@ -1,6 +1,6 @@
 import AppKit
 import ComposableArchitecture
-import SharedModels
+import LoomSharedModels
 import SwiftUI
 
 /// The main window. Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style):

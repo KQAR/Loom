@@ -1,6 +1,6 @@
 import ComposableArchitecture
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Drives the phone-onboarding popover: shows the QR + proxy address and hosts
 /// the LAN-device-connection switch. LAN reachability is a persistent app-level

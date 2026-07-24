@@ -1,7 +1,7 @@
 import Testing
 import Foundation
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// The Record toggle's engine contract: paused capture drops new flows but
 /// still lets in-flight completions and explicit (forced) writes land.

@@ -2,7 +2,7 @@ import AppKit
 import ComposableArchitecture
 import Foundation
 import ProxyClient
-import SharedModels
+import LoomSharedModels
 import UpdaterClient
 
 /// Left-sidebar categories in the main window. `.host` groups by domain,

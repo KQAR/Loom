@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// One-click rule shapes offered in the request row's context menu. The human
 /// picks a captured flow and stamps a rule out of it; fine-tuning (pattern,

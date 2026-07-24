@@ -1,6 +1,6 @@
 import Darwin
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Maps a proxied connection back to the local app that made it.
 ///

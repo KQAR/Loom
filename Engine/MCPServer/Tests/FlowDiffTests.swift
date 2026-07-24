@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import SharedModels
+import LoomSharedModels
 @testable import MCPServer
 
 /// Unit contract for `FlowDiff` — the pure "observe" step. Exercises header

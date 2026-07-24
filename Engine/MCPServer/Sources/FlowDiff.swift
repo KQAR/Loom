@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Pure, transport-free diff between two captured flows — the "observe" step of
 /// Loom's capture → modify → replay → **diff** loop. Given a baseline flow and a

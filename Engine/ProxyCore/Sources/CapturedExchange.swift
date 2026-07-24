@@ -1,7 +1,7 @@
 import Foundation
 import NIOCore
 import NIOHTTP1
-import SharedModels
+import LoomSharedModels
 
 /// The capture-and-forward core shared by the plain-HTTP path (`ProxyHandler`)
 /// and the TLS-interception path (`TLSInterceptHandler`). Both saw an identical

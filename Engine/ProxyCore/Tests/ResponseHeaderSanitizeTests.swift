@@ -1,6 +1,6 @@
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// Regression: the forwarder decompresses the upstream body, so forwarding the
 /// origin's Content-Encoding/Content-Length makes the client re-decode plaintext

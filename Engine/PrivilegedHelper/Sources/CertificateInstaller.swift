@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import os
 
 /// Installs / removes / verifies the root CA in the **system** keychain. Trust

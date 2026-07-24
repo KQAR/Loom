@@ -4,8 +4,8 @@ import NIOCore
 import NIOPosix
 import NIOSSL
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// End-to-end proof that Loom decrypts HTTPS. A raw NIO client tunnels through
 /// the proxy (CONNECT), speaks TLS trusting Loom's CA, and sends an HTTP request;

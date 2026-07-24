@@ -1,7 +1,7 @@
 import Foundation
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 @Suite struct WebSocketFrameParserTests {
     /// Server→client text frame "hi": FIN+text, unmasked, len 2.

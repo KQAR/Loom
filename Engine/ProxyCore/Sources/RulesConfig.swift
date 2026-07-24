@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// A thread-safe holder for the traffic-rules state, shared between the actor
 /// (which mutates it) and the forwarding path (which reads a snapshot per

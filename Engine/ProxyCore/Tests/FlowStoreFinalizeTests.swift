@@ -1,7 +1,7 @@
 import Testing
 import Foundation
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// Quit-time finalize contract: in-flight flows (`.pending` / `.streaming`) live
 /// only in the ring, so `finalizeInFlight` must terminal-state them as failed and

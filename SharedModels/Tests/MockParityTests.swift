@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import SharedModels
+@testable import LoomSharedModels
 
 /// Covers the mock-model parity fields (exact match, host/query predicates,
 /// binary response body) that let a host embedder map a richer mock model onto

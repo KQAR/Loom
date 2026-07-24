@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import UniformTypeIdentifiers
 
 /// Decorates the real upstream forwarder with the traffic-rule engine. Because

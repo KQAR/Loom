@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import ProxyCore
+@testable import LoomProxyCore
 
 @Suite struct QRCodeTests {
     @Test func generate_producesSquareMatrixAndPNG() throws {

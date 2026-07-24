@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import ProxyCore
+@testable import LoomProxyCore
 
 /// The tap skips a direction's HTTP handshake preamble, then surfaces WS frames.
 @Suite struct WebSocketStreamTapTests {

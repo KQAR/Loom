@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import os
 
 /// A short-lived child process the helper spawns while a proxy override is active.

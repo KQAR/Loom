@@ -1,6 +1,6 @@
 import Foundation
 import NIOPosix
-import SharedModels
+import LoomSharedModels
 
 /// The single source of truth for proxy state and captured flows. Both the TCA
 /// `ProxyClient` and the `MCPServer` talk to this same shared instance, so AI

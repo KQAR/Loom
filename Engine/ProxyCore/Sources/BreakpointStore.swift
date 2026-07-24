@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// How a held exchange should continue, delivered by `resumeBreakpoint`.
 enum BreakpointResolution: Sendable {

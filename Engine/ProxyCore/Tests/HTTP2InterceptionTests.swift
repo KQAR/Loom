@@ -5,8 +5,8 @@ import NIOHTTP1
 import NIOHTTP2
 import NIOSSL
 import Testing
-@testable import ProxyCore
-import SharedModels
+@testable import LoomProxyCore
+import LoomSharedModels
 
 /// End-to-end: an HTTP/2 client (ALPN "h2") through the MITM proxy is decrypted,
 /// demuxed, forwarded, and captured — proving the ALPN branch + h2→h1 stream path.

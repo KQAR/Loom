@@ -1,6 +1,6 @@
 import Foundation
 import SystemConfiguration
-import SharedModels
+import LoomSharedModels
 
 /// Sets the macOS system HTTP+HTTPS proxy without a privileged helper.
 ///

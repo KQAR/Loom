@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import SharedModels
+import LoomSharedModels
 
 @Suite struct GraphQLParserTests {
     private func request(method: String = "POST", body: String?) -> CapturedRequest {

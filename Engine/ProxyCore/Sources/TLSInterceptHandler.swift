@@ -1,7 +1,7 @@
 import Foundation
 import NIOCore
 import NIOHTTP1
-import SharedModels
+import LoomSharedModels
 
 /// Runs on a client channel *after* TLS has been terminated with a minted leaf
 /// certificate. It reads the now-decrypted HTTP requests, captures them, forwards

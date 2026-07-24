@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 import SQLite3
 
 /// SQLite-backed durable store for completed flows, so captures survive a

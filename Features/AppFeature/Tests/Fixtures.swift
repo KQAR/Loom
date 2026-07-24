@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Deterministic constructors for the domain fixtures the AppFeature tests share.
 /// IDs and timestamps are pinned so `TestStore` state assertions stay exact.

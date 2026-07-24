@@ -2,7 +2,7 @@ import NIOCore
 import NIOPosix
 import NIOSSL
 import Testing
-@testable import ProxyCore
+@testable import LoomProxyCore
 
 /// Isolates the CA's server context from the proxy pipeline and URLSession: a
 /// plain NIO TLS client (trusting our CA) handshakes directly against a NIO TLS

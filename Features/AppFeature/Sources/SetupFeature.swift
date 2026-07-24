@@ -2,7 +2,7 @@ import ComposableArchitecture
 import Foundation
 import PrivilegedHelperClient
 import ProxyClient
-import SharedModels
+import LoomSharedModels
 
 /// The "make Loom capture" setup surface, split out of `AppFeature`: the system
 /// proxy toggle, HTTPS-interception (SSL) toggle, and the root-CA trust card.

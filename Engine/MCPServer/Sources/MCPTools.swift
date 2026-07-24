@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Dispatches MCP `tools/call` requests to the proxy engine and renders results.
 /// Read tools inspect captured traffic; `replay_flow` is the write tool that

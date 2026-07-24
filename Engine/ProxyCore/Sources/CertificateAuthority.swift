@@ -1,7 +1,7 @@
 import Crypto
 import Foundation
 import NIOSSL
-import SharedModels
+import LoomSharedModels
 import SwiftASN1
 import X509
 

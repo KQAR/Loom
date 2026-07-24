@@ -1,5 +1,5 @@
 import Foundation
-import SharedModels
+import LoomSharedModels
 
 /// Decorates the upstream forwarder so an armed breakpoint can hold an exchange
 /// mid-flight for inspection/editing. Placed as the *outermost* decorator (outside

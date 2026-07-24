@@ -3,7 +3,7 @@ import NIOCore
 import NIOPosix
 import NIOHTTP1
 import NIOSSL
-import SharedModels
+import LoomSharedModels
 
 /// Splices a WebSocket connection client↔upstream, relaying the post-upgrade
 /// bytes verbatim (never re-encoded) while tapping a copy of each direction

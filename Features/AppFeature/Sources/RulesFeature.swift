@@ -1,6 +1,6 @@
 import ComposableArchitecture
 import ProxyClient
-import SharedModels
+import LoomSharedModels
 
 /// The traffic-rules surface, split out of `AppFeature`: the rule set mirrored
 /// from the engine, the presented editor, and every rule write. The agent authors

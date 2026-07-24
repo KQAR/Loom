@@ -49,11 +49,11 @@ let project = Project(
             dependencies: [
                 .target(name: "AppFeature"),
                 .target(name: "ProxyClient"),
-                .target(name: "ProxyCore"),
+                .target(name: "LoomProxyCore"),
                 .target(name: "MCPServer"),
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "UpdaterClient"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon"])
         ),
@@ -67,7 +67,7 @@ let project = Project(
                 .target(name: "ProxyClient"),
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "UpdaterClient"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ]
         ),
 
@@ -77,8 +77,8 @@ let project = Project(
             sources: ["Clients/ProxyClient/Sources/**"],
             dependencies: [
                 .external(name: "ComposableArchitecture"),
-                .target(name: "ProxyCore"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomProxyCore"),
+                .target(name: "LoomSharedModels"),
             ]
         ),
 
@@ -97,7 +97,7 @@ let project = Project(
 
         // MARK: Engine (plain Swift, zero TCA)
         .module(
-            name: "ProxyCore",
+            name: "LoomProxyCore",
             sources: ["Engine/ProxyCore/Sources/**"],
             dependencies: [
                 .external(name: "NIO"),
@@ -111,7 +111,7 @@ let project = Project(
                 .external(name: "X509"),     // M2: on-demand CA + leaf certificate minting
                 .external(name: "Crypto"),
                 .external(name: "SwiftASN1"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // NIO channel model vs Swift 6 Sendable
         ),
@@ -123,12 +123,12 @@ let project = Project(
                 .external(name: "NIOCore"),
                 .external(name: "NIOPosix"),
                 .external(name: "NIOHTTP1"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),
         .module(
-            name: "SharedModels",
+            name: "LoomSharedModels",
             sources: ["SharedModels/Sources/**"]
         ),
 
@@ -139,7 +139,7 @@ let project = Project(
             sources: ["Clients/PrivilegedHelperClient/Sources/**"],
             dependencies: [
                 .external(name: "ComposableArchitecture"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // XPC + continuations vs Swift 6 Sendable
         ),
@@ -161,7 +161,7 @@ let project = Project(
             bundleIdSuffix: "helper",
             sources: ["Engine/PrivilegedHelper/Sources/**"],
             dependencies: [
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // XPC daemon: shared mutable state + locks
         ),
@@ -176,8 +176,8 @@ let project = Project(
             infoPlist: .default,
             sources: ["Engine/ProxyCore/Tests/**"],
             dependencies: [
-                .target(name: "ProxyCore"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomProxyCore"),
+                .target(name: "LoomSharedModels"),
                 .external(name: "NIOCore"),
                 .external(name: "NIOPosix"),
                 .external(name: "NIOHTTP1"),
@@ -203,7 +203,7 @@ let project = Project(
                 .target(name: "ProxyClient"),
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "UpdaterClient"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
                 .external(name: "ComposableArchitecture"),
                 // Transitive through UpdaterClient; the test target must see the
                 // module directly to load AppFeature's interface (@testable import).
@@ -223,7 +223,7 @@ let project = Project(
             sources: ["Engine/MCPServer/Tests/**"],
             dependencies: [
                 .target(name: "MCPServer"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),
@@ -239,7 +239,7 @@ let project = Project(
             sources: ["Clients/PrivilegedHelperClient/Tests/**"],
             dependencies: [
                 .target(name: "PrivilegedHelperClient"),
-                .target(name: "SharedModels"),
+                .target(name: "LoomSharedModels"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),

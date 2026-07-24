@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import NIOCore
-@testable import ProxyCore
+@testable import LoomProxyCore
 
 /// Contract for the request-body bridge + `RequestBody`: chunks yielded into the
 /// bridge come out of the consumed stream in order, a capped copy is captured, and

@@ -1,6 +1,6 @@
 import Foundation
 import Security
-import SharedModels
+import LoomSharedModels
 
 /// The persisted root-CA material: certificate + private key, both PEM-encoded.
 struct CAMaterial: Sendable, Equatable {

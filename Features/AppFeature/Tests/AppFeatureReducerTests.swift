@@ -1,6 +1,6 @@
 import ComposableArchitecture
 import Foundation
-import SharedModels
+import LoomSharedModels
 import Testing
 
 @testable import AppFeature
