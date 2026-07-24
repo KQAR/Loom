@@ -72,13 +72,18 @@ public actor ProxyEngine: ProxyControlling {
     /// `FlowPersistence` stays internal to the module. Mirror any change to the
     /// forwarder/CA/config wiring in `init()` above.
     ///
-    /// - Parameter capacity: size of the in-memory flow ring. An embedder that
-    ///   owns its own storage and replays via `replay(flow:overrides:)` can shrink
-    ///   this to bound Loom's retention (`capacity: 0` keeps nothing between
-    ///   captures — flows live only on the live `flowStream()`).
-    public init(persistFlows: Bool, capacity: Int = 2000) {
+    /// - Parameters:
+    ///   - capacity: size of the in-memory flow ring. An embedder that owns its
+    ///     own storage and replays via `replay(flow:overrides:)` can shrink this
+    ///     to bound Loom's retention. `capacity: 0` is **store-less**: nothing is
+    ///     retained between captures — flows land only on `flowStream()` / the
+    ///     `observer` below (and `replay(id:)` / `recentFlows` return nothing, so
+    ///     replay via `replay(flow:)`).
+    ///   - observer: an optional push sink delivered every flow insert/update,
+    ///     the same payload as `flowStream()` but pushed. See `FlowObserving`.
+    public init(persistFlows: Bool, capacity: Int = 2000, observer: FlowObserving? = nil) {
         self.flowCapacity = capacity
-        self.store = FlowStore(capacity: capacity, persistence: persistFlows ? FlowPersistence.makeDefault() : nil)
+        self.store = FlowStore(capacity: capacity, persistence: persistFlows ? FlowPersistence.makeDefault() : nil, observer: observer)
         let rulesConfig = RulesConfig()
         self.rulesConfig = rulesConfig
         let breakpointStore = BreakpointStore()
