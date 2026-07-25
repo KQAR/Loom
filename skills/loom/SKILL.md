@@ -96,7 +96,7 @@ Loom is built for one cycle — do this, don't just read:
 | --- | --- |
 | `set_recording` | pause/resume recording (traffic keeps flowing; nothing new is stored) — use it to keep background noise out of a capture |
 | `clear_flows` | discard every captured flow, in memory and on disk. Destructive and not undoable, and it empties the human's window too — prefer `get_recent_flows` with `since_seconds` unless you really need a clean slate |
-| `replay_flow` | re-send a flow with `overrides` (method / url / set+remove headers / body) → a new flow linked via `replayedFrom` |
+| `replay_flow` | re-send a flow with `overrides` (method / url / set+remove headers / body) → a new flow linked via `replayedFrom`. `count` (max 50) re-sends it N times with `concurrency` (max 10) in flight — for "is this failure intermittent?" / "does it hold up in parallel?"; the reply becomes a batch summary (`succeeded`/`failed`/`statusClasses`/`ttfbMS` + per-attempt ids) and a failing attempt is reported, not thrown. Each attempt is a real request and obeys armed rules/breakpoints |
 | `set_rule` | create (omit `id`) or update (`id`) a structured traffic rule — upsert (see below); on update, provided fields replace, incl. per-rule enable/disable + regroup |
 | `delete_rule` | remove a rule by id |
 | `set_rules_enabled` | master switch for the whole rule engine |
@@ -141,6 +141,9 @@ glob-or-regex + HTTP methods; then one action:
   is holding a live client connection while you think, and an unattended hold
   auto-continues after a timeout, so decide and resume promptly. `disarm_breakpoint`
   when done.
+- **"Does it fail every time, or one in ten?"** → `replay_flow` with `count: 10`
+  (add `concurrency` to test parallel behaviour). Read `statusClasses` and `failed`
+  in the summary; each attempt has its own flow id for a closer look.
 - **"Why is this screen slow / what's failing?"** → `get_stats` with
   `since_seconds` (and `group_by: endpoint` once you know the host). Read the error
   rate and the TTFB p95, then `get_flow_detail` on an id from `slowest` — don't page
