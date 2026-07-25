@@ -30,8 +30,7 @@ import Testing
 
     @Test func addRuleFromFlow_stampsRuleAndPresentsEditor() async {
         let flow = Fixtures.flow()
-        var initial = AppFeature.State()
-        initial.flows = [flow]
+        var initial = AppFeature.State(flows: [flow])
         // Mock-from-flow now hydrates the full flow (bodies) via the client, since
         // the list holds metadata only.
         let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
@@ -79,10 +78,9 @@ import Testing
             $0.proxyClient.flow = { id in id == original ? originalFlow : nil }
         }
         await store.send(.replayFinished(replayed)) {
-            $0.flows[id: replayed.id] = replayed.strippingBodies() // list is body-free
+            $0.recordFlow(replayed) // body-free in the list, counts + aggregates updated
             $0.selectedFlowID = replayed.id // jump to the replayed result
             $0.selectedFlowDetail = replayed // result still carries bodies
-            $0.status.capturedCount = 1
         }
         // Effect fetches the replay's original for the inspector diff.
         await store.receive(\.selectedDetailLoaded) {
@@ -101,15 +99,13 @@ import Testing
         let flow = Fixtures.flow()
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
         await store.send(.flowReceived(flow)) {
-            $0.flows[id: flow.id] = flow.strippingBodies() // list stores metadata only
-            $0.status.capturedCount = 1
+            $0.recordFlow(flow) // metadata-only in the list, aggregates in sync
         }
     }
 
     @Test func clearTapped_emptiesStore() async {
         let flow = Fixtures.flow()
-        var initial = AppFeature.State()
-        initial.flows = [flow]
+        var initial = AppFeature.State(flows: [flow])
         initial.selectedFlowID = flow.id
         initial.status.capturedCount = 1
         let store = TestStore(initialState: initial) {
@@ -118,9 +114,7 @@ import Testing
             $0.proxyClient.clearFlows = { }
         }
         await store.send(.clearTapped) {
-            $0.flows = []
-            $0.selectedFlowID = nil
-            $0.status.capturedCount = 0
+            $0.forgetCapturedFlows()
         }
     }
 
@@ -128,8 +122,7 @@ import Testing
     /// the human supervises a list of flows the engine no longer holds.
     @Test func flowsClearedExternally_emptiesTheWindow() async {
         let flow = Fixtures.flow()
-        var initial = AppFeature.State()
-        initial.flows = [flow]
+        var initial = AppFeature.State(flows: [flow])
         initial.selectedFlowID = flow.id
         initial.selectedFlowDetail = flow
         initial.status.capturedCount = 1
@@ -137,11 +130,7 @@ import Testing
         let store = TestStore(initialState: initial) { AppFeature() }
 
         await store.send(.flowsClearedExternally) {
-            $0.flows = []
-            $0.selectedFlowID = nil
-            $0.selectedFlowDetail = nil
-            $0.status.capturedCount = 0
-            $0.droppedFlowCount = 0
+            $0.forgetCapturedFlows()
         }
         // Idempotent: the echo of our own Clear must not be a second state change.
         await store.send(.flowsClearedExternally)
