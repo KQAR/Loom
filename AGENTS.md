@@ -191,7 +191,7 @@ The capture engine is reusable by **any** Swift host (a CLI, another macOS app, 
   - **Bound what's in memory.** Every in-memory collection has an explicit cap (flow ring/UI list = 2000, audit = 500) and the UI honestly surfaces when it dropped items (no silent truncation).
   - **Bodies out-of-line.** List/summary/boot reads stay body-free; a body is hydrated on demand only when a row is opened (see `FlowStore.hydrated` / SQLite BLOB columns). Never load megabyte bodies to render a list.
   - **Aggregate incrementally, coalesce updates.** Sidebar counts (hosts / apps / devices / errors) are maintained as flows arrive (`AppFeature.State.recordFlow` → `contribute`/`retract`), never recomputed by scanning the list on render, and the live flow stream is batched into one action per ~100 ms window (`AppFeature.streamFlows`) instead of one action per emission.
-  - **Cheap row bodies.** No per-row allocation of expensive objects (date formatters, regexes, `JSONDecoder`) — hoist to a shared static. Hand genuinely large text to AppKit (`NSTextView`), not a SwiftUI `Text`.
+  - **Cheap row bodies.** No per-row allocation of expensive objects (date formatters, regexes, `JSONDecoder`, `URLComponents`) — hoist to a shared static or a direct scan. `Flow.host` goes through `URLHost` (an authority scan that defers to `URLComponents` only for percent-escaped / punycode / malformed URLs), and a host-filtered list compares via `URLHost.hostMatches` so it never materializes a host per row. Hand genuinely large text to AppKit (`NSTextView`), not a SwiftUI `Text`.
   - When adding any new list/table/feed, state in the PR how it stays bounded and lazy.
 
 ### Project Structure

@@ -237,8 +237,12 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
 
     public var statusCode: Int? { response?.statusCode }
 
+    /// Host of the request URL. Read on every render of a host-filtered list, on
+    /// every `FlowQuery` candidate and on every persistence write, so it goes
+    /// through `URLHost` (a direct authority scan, falling back to `URLComponents`
+    /// for unusual shapes) rather than building a `URLComponents` each time.
     public var host: String? {
-        URLComponents(string: request.url)?.host
+        URLHost.host(ofURLString: request.url)
     }
 
     public var durationMS: Int? {

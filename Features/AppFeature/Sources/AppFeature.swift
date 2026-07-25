@@ -226,7 +226,9 @@ public struct AppFeature: Sendable {
                 result = result.filter(Self.isError)
 
             case let .host(host):
-                result = result.filter { $0.host == host }
+                // Compared without materializing each flow's host: this runs over the
+                // whole list on every render of a host-filtered table.
+                result = result.filter { URLHost.hostMatches(urlString: $0.request.url, host: host) }
             case let .app(key):
                 result = result.filter { $0.sourceApp?.groupingKey == key }
             case let .device(ip):
