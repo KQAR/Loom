@@ -108,6 +108,113 @@ import LoomSharedModels
         #expect(response["httpVersion"] as? String == "HTTP/2")
     }
 
+    // MARK: Bounded, typed bodies — an agent must never be handed an unbounded
+    // body, nor a `""` that could mean either "empty" or "binary".
+
+    @Test func getFlowDetail_smallTextBody_isPlainString() async throws {
+        let engine = StubEngine()
+        let flow = Fixtures.flow(responseBody: Data(#"{"ok":true}"#.utf8))
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(name: "get_flow_detail", arguments: ["id": flow.id.uuidString]))
+        let response = try #require(out["response"] as? [String: Any])
+        #expect(response["body"] as? String == #"{"ok":true}"#)
+    }
+
+    @Test func getFlowDetail_largeBody_isTruncatedWithPagingOffset() async throws {
+        let engine = StubEngine()
+        let body = Data(String(repeating: "x", count: 50_000).utf8)
+        let flow = Fixtures.flow(responseBody: body)
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(
+            name: "get_flow_detail", arguments: ["id": flow.id.uuidString, "max_bytes": 1_000]
+        ))
+        let rendered = try #require((out["response"] as? [String: Any])?["body"] as? [String: Any])
+        #expect(rendered["truncated"] as? Bool == true)
+        #expect(rendered["bytes"] as? Int == 50_000)
+        #expect((rendered["preview"] as? String)?.count == 1_000)
+        #expect(rendered["nextOffset"] as? Int == 1_000)
+    }
+
+    @Test func getFlowDetail_bodyOffset_pagesThroughTheBody() async throws {
+        let engine = StubEngine()
+        let text = (0 ..< 500).map { "line \($0)" }.joined(separator: "\n")
+        let flow = Fixtures.flow(responseBody: Data(text.utf8))
+        engine.flows = [flow]
+        let executor = makeExecutor(engine)
+
+        var assembled = ""
+        var offset = 0
+        while true {
+            let out = try json(try await executor.call(
+                name: "get_flow_detail",
+                arguments: ["id": flow.id.uuidString, "max_bytes": 300, "body_offset": offset]
+            ))
+            let body = try #require((out["response"] as? [String: Any])?["body"])
+            if let whole = body as? String { assembled += whole; break }
+            let page = try #require(body as? [String: Any])
+            assembled += try #require(page["preview"] as? String)
+            guard let next = page["nextOffset"] as? Int else { break }
+            offset = next
+        }
+        #expect(assembled == text, "paging must reassemble the exact body")
+    }
+
+    @Test func getFlowDetail_multiByteBody_isNotCutMidCodePoint() async throws {
+        let engine = StubEngine()
+        // Every character is 3 bytes, so a 100-byte window lands mid-code-point.
+        let text = String(repeating: "配置", count: 200)
+        let flow = Fixtures.flow(responseBody: Data(text.utf8))
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(
+            name: "get_flow_detail", arguments: ["id": flow.id.uuidString, "max_bytes": 100]
+        ))
+        let rendered = try #require((out["response"] as? [String: Any])?["body"] as? [String: Any])
+        let preview = try #require(rendered["preview"] as? String)
+        #expect(!preview.contains("\u{FFFD}"), "must trim the partial code point, not emit U+FFFD")
+        #expect(text.hasPrefix(preview))
+    }
+
+    @Test func getFlowDetail_binaryBody_isLabelled_notEmptyString() async throws {
+        let engine = StubEngine()
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0xD8, 0xFE])
+        let flow = Fixtures.flow(responseBody: png)
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(name: "get_flow_detail", arguments: ["id": flow.id.uuidString]))
+        let rendered = try #require((out["response"] as? [String: Any])?["body"] as? [String: Any])
+        #expect(rendered["binary"] as? Bool == true)
+        #expect(rendered["bytes"] as? Int == png.count)
+    }
+
+    @Test func getFlowDetail_emptyBody_staysEmptyString() async throws {
+        let engine = StubEngine()
+        let flow = Fixtures.flow(responseBody: nil)
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(name: "get_flow_detail", arguments: ["id": flow.id.uuidString]))
+        #expect((out["response"] as? [String: Any])?["body"] as? String == "")
+    }
+
+    @Test func getFlowDetail_webSocketFrames_areCappedAndFlagged() async throws {
+        let engine = StubEngine()
+        let messages = (0 ..< 250).map { index in
+            WebSocketMessage(
+                direction: .clientToServer, kind: .text,
+                payload: Data("frame \(index)".utf8), timestamp: Date(timeIntervalSince1970: 1_000)
+            )
+        }
+        var flow = Fixtures.flow(responseBody: nil)
+        flow.webSocketMessages = messages
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(
+            name: "get_flow_detail", arguments: ["id": flow.id.uuidString, "ws_limit": 10]
+        ))
+        let ws = try #require(out["webSocket"] as? [String: Any])
+        #expect(ws["messageCount"] as? Int == 250)
+        #expect(ws["messagesTruncated"] as? Bool == true)
+        let shown = try #require(ws["messages"] as? [[String: Any]])
+        #expect(shown.count == 10)
+        #expect(shown.last?["text"] as? String == "frame 249", "keeps the most recent frames")
+    }
+
     @Test func getFlowDetail_unknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "get_flow_detail", arguments: ["id": UUID().uuidString])
@@ -439,6 +546,20 @@ import LoomSharedModels
 }
 
 private enum Fixtures {
+    /// A completed flow carrying an arbitrary response body — for the body
+    /// rendering (bounding / typing / paging) tests.
+    static func flow(responseBody: Data?) -> Flow {
+        Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "https://a/body", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            outcome: .completed(
+                CapturedResponse(statusCode: 200, httpVersion: "HTTP/1.1", headers: [], body: responseBody),
+                at: Date(timeIntervalSince1970: 1_000.1)
+            )
+        )
+    }
+
     static func completedFlow(url: String, httpVersion: String? = "HTTP/1.1") -> Flow {
         Flow(
             id: UUID(),

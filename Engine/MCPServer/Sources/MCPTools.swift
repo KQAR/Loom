@@ -43,10 +43,24 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "get_flow_detail",
-                "description": "Get full request and response detail for one flow by id, including headers and body.",
+                "description": "Get full request and response detail for one flow by id, including headers and body. Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.",
                 "inputSchema": [
                     "type": "object",
-                    "properties": ["id": ["type": "string", "description": "Flow UUID."]],
+                    "properties": [
+                        "id": ["type": "string", "description": "Flow UUID."],
+                        "max_bytes": [
+                            "type": "integer",
+                            "description": "Max body bytes to return per side (default \(Self.defaultBodyBytes)). Larger bodies are truncated with a `nextOffset` to page from.",
+                        ],
+                        "body_offset": [
+                            "type": "integer",
+                            "description": "Byte offset into each body, for paging through a large one (default 0).",
+                        ],
+                        "ws_limit": [
+                            "type": "integer",
+                            "description": "Max WebSocket frames to return, most recent last (default \(Self.defaultWebSocketMessages)).",
+                        ],
+                    ],
                     "required": ["id"],
                 ],
             ],
@@ -488,7 +502,12 @@ struct MCPToolExecutor {
         guard let flow = await engine.flow(id: id) else {
             throw MCPToolFailure("no flow with id \(idString)")
         }
-        return prettyJSON(Self.flowDetail(flow))
+        return prettyJSON(Self.flowDetail(
+            flow,
+            offset: max(0, (arguments["body_offset"] as? Int) ?? 0),
+            maxBytes: max(1, (arguments["max_bytes"] as? Int) ?? Self.defaultBodyBytes),
+            webSocketLimit: max(1, (arguments["ws_limit"] as? Int) ?? Self.defaultWebSocketMessages)
+        ))
     }
 
     private func handleGetAuditLog(_ arguments: [String: Any]) async throws -> String {
@@ -865,19 +884,28 @@ struct MCPToolExecutor {
         return out
     }
 
-    private static func flowDetail(_ flow: Flow) -> [String: Any] {
+    /// One flow rendered for `get_flow_detail`. Bodies go through `bodyField`, so
+    /// a multi-megabyte response is bounded (with a `nextOffset` to page from) and
+    /// a binary payload is labelled instead of silently becoming `""` — an agent
+    /// must be able to tell "no body" from "2 MB of PNG".
+    private static func flowDetail(
+        _ flow: Flow,
+        offset: Int = 0,
+        maxBytes: Int = defaultBodyBytes,
+        webSocketLimit: Int = defaultWebSocketMessages
+    ) -> [String: Any] {
         var out = flowSummary(flow)
         out["request"] = [
             "method": flow.request.method,
             "url": flow.request.url,
             "headers": flow.request.headers.map { ["name": $0.name, "value": $0.value] },
-            "body": flow.request.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
+            "body": bodyField(flow.request.body, offset: offset, maxBytes: maxBytes),
         ]
         if let response = flow.response {
             var responseOut: [String: Any] = [
                 "status": response.statusCode,
                 "headers": response.headers.map { ["name": $0.name, "value": $0.value] },
-                "body": response.body.flatMap { String(data: $0, encoding: .utf8) } ?? "",
+                "body": bodyField(response.body, offset: offset, maxBytes: maxBytes),
             ]
             if let version = response.httpVersion { responseOut["httpVersion"] = version }
             out["response"] = responseOut
@@ -889,22 +917,31 @@ struct MCPToolExecutor {
             out["graphQL"] = gql
         }
         if let messages = flow.webSocketMessages {
-            out["webSocket"] = [
+            // A chatty socket records up to 10k frames; returning them all would
+            // flood the agent's context, so hand back the most recent slice and say
+            // so. Each frame's text is capped the same way a body is.
+            let shown = messages.suffix(webSocketLimit)
+            var ws: [String: Any] = [
                 "messageCount": messages.count,
-                "messages": messages.map { message in
+                "messages": shown.map { message in
                     var msg: [String: Any] = [
                         "direction": message.direction.rawValue,
                         "kind": message.kind.rawValue,
                         "isFinal": message.isFinal,
                     ]
-                    if let text = message.textPayload {
-                        msg["text"] = text
+                    if message.textPayload != nil {
+                        msg["text"] = bodyField(message.payload, maxBytes: maxBytes)
                     } else {
                         msg["bytes"] = message.payload.count
                     }
                     return msg
                 },
             ]
+            if shown.count < messages.count {
+                ws["messagesTruncated"] = true
+                ws["messagesShown"] = shown.count
+            }
+            out["webSocket"] = ws
         }
         return out
     }
@@ -1175,18 +1212,58 @@ struct MCPToolExecutor {
         return out
     }
 
-    /// Render a body as UTF-8 text, or note that it is binary + how many bytes,
-    /// capped so a large held body can't flood the agent's context.
-    private static func bodyField(_ data: Data?) -> Any {
+    /// Default body budget per side for one tool call. Big enough for a normal API
+    /// payload, small enough that one flow can't blow up an agent's context; the
+    /// caller can raise it (or page) with `max_bytes` / `body_offset`.
+    static let defaultBodyBytes = 16_384
+    /// Default number of WebSocket frames returned by `get_flow_detail`.
+    static let defaultWebSocketMessages = 100
+
+    /// Render a body for an agent: UTF-8 text when it decodes, `{binary, bytes}`
+    /// when it doesn't (never a silent `""` — "no body" and "2 MB of PNG" must be
+    /// distinguishable), always bounded by `maxBytes`. `offset` pages into a large
+    /// body; the window is a *byte* range, so a code point straddling either edge
+    /// is trimmed rather than rendered as replacement characters.
+    private static func bodyField(_ data: Data?, offset: Int = 0, maxBytes: Int = defaultBodyBytes) -> Any {
         guard let data, !data.isEmpty else { return "" }
-        let cap = 16_384
-        if let text = String(data: data, encoding: .utf8) {
-            if text.count > cap {
-                return ["truncated": true, "preview": String(text.prefix(cap)), "bytes": data.count]
-            }
-            return text
+        let total = data.count
+        let start = min(max(0, offset), total)
+        let end = min(total, start + max(0, maxBytes))
+        let window = Data(data[data.startIndex.advanced(by: start) ..< data.startIndex.advanced(by: end)])
+        // Only forgive bytes at an edge we actually cut. An un-cut window that
+        // doesn't decode is genuinely binary — trimming it anyway would let a PNG
+        // header render as text.
+        guard let text = utf8Text(window, trimLeading: start > 0, trimTrailing: end < total) else {
+            return ["binary": true, "bytes": total]
         }
-        return ["binary": true, "bytes": data.count]
+        // Whole body, from the start: return it plainly (the common small-body case).
+        if start == 0, end == total { return text }
+        var out: [String: Any] = ["truncated": true, "preview": text, "bytes": total, "offset": start]
+        if end < total { out["nextOffset"] = end }
+        return out
+    }
+
+    /// Decode a byte window as UTF-8, dropping a leading continuation fragment and
+    /// a trailing incomplete code point (both artifacts of slicing on byte
+    /// boundaries). Nil when the bytes aren't text at all — i.e. a binary body.
+    private static func utf8Text(_ window: Data, trimLeading: Bool, trimTrailing: Bool) -> String? {
+        var bytes = [UInt8](window)
+        // A code point that began before `offset` leaves up to 3 continuation bytes.
+        if trimLeading {
+            var lead = 0
+            while lead < bytes.count, lead < 3, bytes[lead] & 0xC0 == 0x80 { lead += 1 }
+            if lead > 0 { bytes.removeFirst(lead) }
+        }
+        // A code point cut by the cap leaves up to 3 bytes at the tail.
+        if trimTrailing {
+            for _ in 0 ... 3 {
+                if let text = String(bytes: bytes, encoding: .utf8) { return text }
+                if bytes.isEmpty { return nil }
+                bytes.removeLast()
+            }
+            return nil
+        }
+        return String(bytes: bytes, encoding: .utf8)
     }
 
     private static func headerDict(_ headers: [HeaderPair]) -> [String: String] {
