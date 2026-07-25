@@ -55,9 +55,26 @@ enum CapturedExchange {
         // Device attribution (remote IP + UA type) is pure and loop-safe, unlike
         // the libproc `sourceApp` scan below — compute it here and capture it.
         let sourceDevice = device(channel: channel, headers: headers)
+        // Only a loopback peer has a local pid to find. For a LAN device the scan
+        // can't succeed, and its remote ephemeral port could collide with a local
+        // socket's local port and mis-attribute a phone's traffic to a Mac app.
+        let isLoopbackPeer = sourceDevice?.kind == .local
 
         // A WebSocket upgrade is spliced (frames captured) rather than fetched.
         if WebSocketRelay.isUpgrade(head) {
+            // A LAN peer has no app to resolve, so skip the pause/Task/hop-back
+            // dance entirely and splice straight away.
+            guard isLoopbackPeer else {
+                WebSocketRelay.start(
+                    clientChannel: channel, head: head, requestPath: routing.webSocketRequestPath,
+                    host: routing.webSocketHost, port: routing.webSocketPort,
+                    upstreamTLS: routing.webSocketUpstreamTLS,
+                    removeHandlerNames: routing.webSocketRemoveHandlerNames,
+                    flowID: flowID, request: capturedRequest, startedAt: startedAt,
+                    sourceApp: nil, sourceDevice: sourceDevice, store: store
+                )
+                return
+            }
             // Pause client reads *now* (we're on the event loop) so frames can't
             // reach a half-removed pipeline while we resolve the source app — that
             // resolution is a blocking libproc scan that must run off the loop, so
@@ -65,7 +82,9 @@ enum CapturedExchange {
             _ = channel.setOption(ChannelOptions.autoRead, value: false)
             let eventLoop = channel.eventLoop
             Task {
-                let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
+                let sourceApp = ProcessResolver.resolve(
+                    sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+                )
                 eventLoop.execute {
                     WebSocketRelay.start(
                         clientChannel: channel, head: head, requestPath: routing.webSocketRequestPath,
@@ -91,7 +110,9 @@ enum CapturedExchange {
             // races: forwarding (below) hasn't started, so no response upsert can
             // interleave. `nil` (e.g. a LAN device with no local pid) skips the
             // redundant re-upsert.
-            let sourceApp = ProcessResolver.resolve(sourcePort: sourcePort, proxyPort: proxyPort)
+            let sourceApp = ProcessResolver.resolve(
+                sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+            )
             if sourceApp != nil {
                 await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
             }
