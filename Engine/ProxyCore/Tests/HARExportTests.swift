@@ -85,6 +85,52 @@ import LoomSharedModels
         #expect((entry?["response"] as? [String: Any])?["status"] as? Int == 0)
     }
 
+    /// A truncated capture must report the wire size (not the kept size) and say
+    /// it is partial — otherwise the HAR claims a 5 MB body *is* the whole
+    /// response, and whoever opens it in DevTools sees a silently clipped payload.
+    @Test func encode_truncatedBodies_reportWireSizeAndAreFlagged() throws {
+        let flow = Flow(
+            id: UUID(),
+            request: CapturedRequest(
+                method: "POST", url: "https://api.example.test/upload", headers: [],
+                body: Data(repeating: 0x41, count: 10), fullBodyBytes: 9_000
+            ),
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            outcome: .completed(
+                CapturedResponse(
+                    statusCode: 200, headers: [],
+                    body: Data(repeating: 0x42, count: 20), fullBodyBytes: 8_000
+                ),
+                at: Date(timeIntervalSince1970: 1_001)
+            )
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "1"))
+        let entry = try #require(((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])?.first)
+
+        let request = try #require(entry["request"] as? [String: Any])
+        #expect(request["bodySize"] as? Int == 9_000)
+        #expect(request["_bodyTruncated"] as? Bool == true)
+
+        let response = try #require(entry["response"] as? [String: Any])
+        #expect(response["bodySize"] as? Int == 8_000)
+        #expect(response["_bodyTruncated"] as? Bool == true)
+        #expect((response["content"] as? [String: Any])?["size"] as? Int == 8_000)
+    }
+
+    @Test func encode_completeBodies_carryNoTruncationFlag() throws {
+        let flow = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "https://a/", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: [], body: Data("ok".utf8)), at: Date(timeIntervalSince1970: 2))
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "1"))
+        let entry = try #require(((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])?.first)
+        #expect((entry["request"] as? [String: Any])?["_bodyTruncated"] == nil)
+        #expect((entry["response"] as? [String: Any])?["_bodyTruncated"] == nil)
+        #expect((entry["response"] as? [String: Any])?["bodySize"] as? Int == 2)
+    }
+
     @Test func encode_sortsByStartedAt() throws {
         let older = Flow(id: UUID(), request: CapturedRequest(method: "GET", url: "http://a/", headers: []), startedAt: Date(timeIntervalSince1970: 1))
         let newer = Flow(id: UUID(), request: CapturedRequest(method: "GET", url: "http://b/", headers: []), startedAt: Date(timeIntervalSince1970: 2))

@@ -35,12 +35,22 @@ public struct CapturedRequest: Equatable, Codable, Sendable {
     public var url: String
     public var headers: [HeaderPair]
     public var body: Data?
+    /// Total body bytes that crossed the wire, recorded **only** when `body` holds
+    /// a capped prefix of them — i.e. the capture cap kicked in. Nil means `body`
+    /// is the whole payload. The peer always received every byte; only Loom's
+    /// recorded copy stops, and a reader must be able to tell. Optional so flows
+    /// persisted before this field existed still decode.
+    public var fullBodyBytes: Int?
 
-    public init(method: String, url: String, headers: [HeaderPair], body: Data? = nil) {
+    /// Whether `body` is a prefix of what actually flowed rather than the whole of it.
+    public var isBodyTruncated: Bool { fullBodyBytes != nil }
+
+    public init(method: String, url: String, headers: [HeaderPair], body: Data? = nil, fullBodyBytes: Int? = nil) {
         self.method = method
         self.url = url
         self.headers = headers
         self.body = body
+        self.fullBodyBytes = fullBodyBytes
     }
 }
 
@@ -51,12 +61,26 @@ public struct CapturedResponse: Equatable, Codable, Sendable {
     public var httpVersion: String?
     public var headers: [HeaderPair]
     public var body: Data?
+    /// Total body bytes that crossed the wire, recorded only when `body` holds a
+    /// capped prefix of them (an SSE/long-poll/large download hitting the capture
+    /// cap). Nil means `body` is complete. See `CapturedRequest.fullBodyBytes`.
+    public var fullBodyBytes: Int?
 
-    public init(statusCode: Int, httpVersion: String? = nil, headers: [HeaderPair], body: Data? = nil) {
+    /// Whether `body` is a prefix of what actually flowed rather than the whole of it.
+    public var isBodyTruncated: Bool { fullBodyBytes != nil }
+
+    public init(
+        statusCode: Int,
+        httpVersion: String? = nil,
+        headers: [HeaderPair],
+        body: Data? = nil,
+        fullBodyBytes: Int? = nil
+    ) {
         self.statusCode = statusCode
         self.httpVersion = httpVersion
         self.headers = headers
         self.body = body
+        self.fullBodyBytes = fullBodyBytes
     }
 }
 
@@ -141,6 +165,10 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// Non-nil once this flow is a WebSocket connection (its HTTP upgrade
     /// succeeded); frames captured in either direction append here over time.
     public var webSocketMessages: [WebSocketMessage]?
+    /// Frames the capture cap dropped from `webSocketMessages` (they were still
+    /// relayed to the peer). Nil when nothing was dropped — so a reader can tell a
+    /// complete frame log from a partial one.
+    public var webSocketDroppedMessages: Int?
 
     public init(
         id: UUID = UUID(),
@@ -151,7 +179,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         sourceApp: SourceApp? = nil,
         sourceDevice: SourceDevice? = nil,
         appliedRules: [AppliedRule]? = nil,
-        webSocketMessages: [WebSocketMessage]? = nil
+        webSocketMessages: [WebSocketMessage]? = nil,
+        webSocketDroppedMessages: Int? = nil
     ) {
         self.id = id
         self.request = request
@@ -162,6 +191,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.sourceDevice = sourceDevice
         self.appliedRules = appliedRules
         self.webSocketMessages = webSocketMessages
+        self.webSocketDroppedMessages = webSocketDroppedMessages
     }
 
     // MARK: Read accessors derived from `outcome` (keep call sites terse)

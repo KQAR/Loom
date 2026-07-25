@@ -840,6 +840,12 @@ struct MCPToolExecutor {
             out["webSocket"] = true
             out["wsMessageCount"] = messages.count
         }
+        // Flag a partially-captured exchange in the *summary* too, so an agent
+        // knows a body is a prefix before it fetches (or diffs) the detail.
+        if flow.request.isBodyTruncated || flow.response?.isBodyTruncated == true
+            || flow.webSocketDroppedMessages != nil {
+            out["captureTruncated"] = true
+        }
         if let app = flow.sourceApp {
             var appOut: [String: Any] = ["name": app.name, "pid": Int(app.pid)]
             if let bundleID = app.bundleID { appOut["bundleID"] = bundleID }
@@ -895,12 +901,20 @@ struct MCPToolExecutor {
         webSocketLimit: Int = defaultWebSocketMessages
     ) -> [String: Any] {
         var out = flowSummary(flow)
-        out["request"] = [
+        var requestOut: [String: Any] = [
             "method": flow.request.method,
             "url": flow.request.url,
             "headers": flow.request.headers.map { ["name": $0.name, "value": $0.value] },
             "body": bodyField(flow.request.body, offset: offset, maxBytes: maxBytes),
         ]
+        // Capture truncation is a different fact from render truncation above: the
+        // recorded copy itself is a prefix, so no `body_offset` can reach the rest.
+        // Say so explicitly, with the real wire size.
+        if let wireBytes = flow.request.fullBodyBytes {
+            requestOut["bodyCaptureTruncated"] = true
+            requestOut["bodyBytesOnWire"] = wireBytes
+        }
+        out["request"] = requestOut
         if let response = flow.response {
             var responseOut: [String: Any] = [
                 "status": response.statusCode,
@@ -908,6 +922,10 @@ struct MCPToolExecutor {
                 "body": bodyField(response.body, offset: offset, maxBytes: maxBytes),
             ]
             if let version = response.httpVersion { responseOut["httpVersion"] = version }
+            if let wireBytes = response.fullBodyBytes {
+                responseOut["bodyCaptureTruncated"] = true
+                responseOut["bodyBytesOnWire"] = wireBytes
+            }
             out["response"] = responseOut
         }
         if let graphQL = GraphQLParser.parse(flow.request) {
@@ -940,6 +958,11 @@ struct MCPToolExecutor {
             if shown.count < messages.count {
                 ws["messagesTruncated"] = true
                 ws["messagesShown"] = shown.count
+            }
+            // Frames the *capture* cap dropped — never recorded, so no paging can
+            // recover them. Distinct from the render cap above.
+            if let dropped = flow.webSocketDroppedMessages {
+                ws["framesNotRecorded"] = dropped
             }
             out["webSocket"] = ws
         }

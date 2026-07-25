@@ -18,7 +18,9 @@ import NIOCore
         for try await chunk in bridge.chunks { received.append(String(decoding: chunk, as: UTF8.self)) }
 
         #expect(received == ["one", "two", "three"])
-        #expect(capture.snapshot() == Data("onetwothree".utf8))
+        let snapshot = capture.snapshot()
+        #expect(snapshot.body == Data("onetwothree".utf8))
+        #expect(snapshot.fullBodyBytes == nil, "a complete capture reports no truncation")
     }
 
     @Test func bridge_failPropagatesError() async {
@@ -35,11 +37,15 @@ import NIOCore
         } catch { Issue.record("unexpected error: \(error)") }
     }
 
-    @Test func capture_capsAtLimit() {
+    @Test func capture_capsAtLimit_andReportsTheWireSize() {
         let capture = RequestBodyCapture(cap: 10)
         capture.append(Data(repeating: 0x41, count: 8))
         capture.append(Data(repeating: 0x42, count: 8)) // only 2 of these fit
-        #expect(capture.snapshot().count == 10)
+        let snapshot = capture.snapshot()
+        #expect(snapshot.body.count == 10)
+        // The upload was 16 bytes; the recorded copy is 10. Reporting 10 as the
+        // whole body would misrepresent the capture.
+        #expect(snapshot.fullBodyBytes == 16)
     }
 
     @Test func requestBody_collect() async throws {

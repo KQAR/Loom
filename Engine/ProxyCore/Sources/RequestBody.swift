@@ -58,22 +58,27 @@ struct RequestChunks: AsyncSequence, Sendable {
 final class RequestBodyCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var data = Data()
+    /// Every byte seen, including those past the cap — so a truncated capture can
+    /// report the real upload size instead of pretending the body ended at 5 MB.
+    private var wireBytes = 0
     private let cap: Int
 
     init(cap: Int = StreamRelay.captureCap) { self.cap = cap }
 
     func append(_ chunk: Data) {
         lock.lock(); defer { lock.unlock() }
+        wireBytes += chunk.count
         guard data.count < cap else { return }
         let remaining = cap - data.count
         data.append(chunk.count <= remaining ? chunk : chunk.prefix(remaining))
     }
 
-    /// The bytes captured so far (a value copy). Complete once the request stream
-    /// has finished — which, by HTTP ordering, is before the response head arrives.
-    func snapshot() -> Data {
+    /// The bytes captured so far (a value copy) plus, when the cap truncated them,
+    /// the total that actually flowed. Complete once the request stream has
+    /// finished — which, by HTTP ordering, is before the response head arrives.
+    func snapshot() -> (body: Data, fullBodyBytes: Int?) {
         lock.lock(); defer { lock.unlock() }
-        return data
+        return (data, wireBytes > data.count ? wireBytes : nil)
     }
 }
 
