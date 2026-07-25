@@ -255,7 +255,8 @@ public actor ProxyEngine: ProxyControlling {
             isRunning: running,
             port: boundPort,
             capturedCount: await store.count,
-            isRecording: await store.isRecording
+            isRecording: await store.isRecording,
+            listenHost: currentBindHost
         )
     }
 

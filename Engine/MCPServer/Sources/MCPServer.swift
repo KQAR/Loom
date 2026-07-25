@@ -58,13 +58,24 @@ public final class MCPServer: @unchecked Sendable {
     public static let defaultPort = 9092
 
     private let engine: ProxyControlling
+    /// Optional: whether this Mac's traffic is routed through Loom, and the switch
+    /// for it. Supplied by the app (it needs client-layer code the engine can't
+    /// depend on); absent in an embedder or a test, where the routing tools then
+    /// report honestly that they aren't available.
+    private let routing: SystemRoutingControlling?
     private let appVersion: String
     private let group: EventLoopGroup
     private var channel: Channel?
     private let token: String
 
-    public init(engine: ProxyControlling, appVersion: String, token: String = UUID().uuidString) {
+    public init(
+        engine: ProxyControlling,
+        appVersion: String,
+        token: String = UUID().uuidString,
+        routing: SystemRoutingControlling? = nil
+    ) {
         self.engine = engine
+        self.routing = routing
         self.appVersion = appVersion
         self.token = token
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -77,7 +88,10 @@ public final class MCPServer: @unchecked Sendable {
     /// thing telling the `loom-mcp` bridge where the real endpoint is.
     @discardableResult
     public func start(port: Int = 0, announce: Bool = true) async throws -> Int {
-        let executor = MCPToolExecutor(engine: engine, appVersion: appVersion, protocolVersion: Self.protocolVersion)
+        let executor = MCPToolExecutor(
+            engine: engine, appVersion: appVersion,
+            protocolVersion: Self.protocolVersion, routing: routing
+        )
         let dispatcher = MCPDispatcher(executor: executor)
         let token = self.token
 

@@ -23,6 +23,9 @@ struct MCPToolExecutor {
     let engine: ProxyControlling
     let appVersion: String
     let protocolVersion: String
+    /// Injected by the app; nil where system-proxy control isn't available (an
+    /// embedder driving the engine as a library, or a test).
+    var routing: SystemRoutingControlling?
 
     /// `ISO8601DateFormatter` is expensive to allocate; render every timestamp
     /// through one shared instance.
@@ -115,8 +118,36 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "get_proxy_status",
-                "description": "Get the current proxy status: running state, port, and captured flow count.",
+                "description": """
+                Get the current proxy status: running state, listen address, captured flow count, \
+                whether recording is paused, and whether this Mac's own traffic is actually routed \
+                through Loom (`systemProxy`). Check this first when a capture comes back empty — \
+                "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. \
+                `systemProxy: "unavailable"` means this build can't inspect it, not that it's off.
+                """,
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
+            ],
+            [
+                "name": "set_system_proxy",
+                "description": """
+                Route this Mac's HTTP/HTTPS traffic through Loom, or stop routing it. This is what \
+                makes local apps and browsers appear in the capture without configuring each one, \
+                and it is the fix when `get_proxy_status` shows nothing is routed here.
+
+                Machine-wide and visible to the human: it edits the active network service's proxy \
+                settings, may ask for an admin password, and also installs a pf rule blocking QUIC \
+                (UDP 443) so browsers fall back to TCP where a proxy can see them — browsers \
+                default to HTTP/3, which no TCP proxy can intercept. Turn it off when you're done; \
+                Loom also restores it on quit. Traffic from a phone or another device does NOT need \
+                this (point that device at the proxy instead). This is a write action.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "enabled": ["type": "boolean", "description": "true = route this Mac through Loom, false = restore the previous settings."],
+                    ],
+                    "required": ["enabled"],
+                ],
             ],
             [
                 "name": "list_devices",
@@ -634,6 +665,7 @@ struct MCPToolExecutor {
     static let handlers: [String: (MCPToolExecutor, [String: Any]) async throws -> String] = [
         "get_version": { ex, args in try await ex.handleGetVersion(args) },
         "get_proxy_status": { ex, args in try await ex.handleGetProxyStatus(args) },
+        "set_system_proxy": { ex, args in try await ex.handleSetSystemProxy(args) },
         "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
         "get_stats": { ex, args in try await ex.handleGetStats(args) },
@@ -667,6 +699,7 @@ struct MCPToolExecutor {
     /// a write. `MCPServerTests` asserts this set matches the marked definitions.
     static let writeTools: Set<String> = [
         "replay_flow",
+        "set_system_proxy",
         "set_recording",
         "clear_flows",
         "arm_breakpoint",
@@ -738,11 +771,52 @@ struct MCPToolExecutor {
 
     private func handleGetProxyStatus(_ arguments: [String: Any]) async throws -> String {
         let status = await engine.status()
-        return prettyJSON([
+        var payload: [String: Any] = [
             "isRunning": status.isRunning,
             "port": status.port,
+            "listenHost": status.listenHost,
+            "lanReachable": status.isLANReachable,
             "capturedCount": status.capturedCount,
             "isRecording": status.isRecording,
+        ]
+        // Three-valued on purpose: routed / not routed / can't tell. Collapsing the
+        // third into `false` would have an agent "fix" a routing problem that it has
+        // no way to observe, and report success it can't verify.
+        if let routing {
+            payload["systemProxy"] = await routing.isSystemProxyActive() ? "on" : "off"
+        } else {
+            payload["systemProxy"] = "unavailable"
+        }
+        return prettyJSON(payload)
+    }
+
+    private func handleSetSystemProxy(_ arguments: [String: Any]) async throws -> String {
+        guard let enabled = arguments["enabled"] as? Bool else {
+            throw MCPError.invalidParams("`enabled` must be a boolean")
+        }
+        guard let routing else {
+            throw MCPToolFailure(
+                "System-proxy control isn't available here (Loom's engine is running without the app's "
+                + "network configuration). Point the client at the proxy manually instead."
+            )
+        }
+        let status = await engine.status()
+        guard status.isRunning || !enabled else {
+            throw MCPToolFailure("The proxy isn't running, so there is nothing to route traffic to.")
+        }
+        let result = await routing.setSystemProxy(enabled: enabled)
+        guard result.ok else {
+            throw MCPToolFailure(result.message ?? "The system proxy change failed.")
+        }
+        // Read the state back rather than reporting the intent: this path goes through
+        // `networksetup` (and an admin prompt on some accounts), and "it returned ok"
+        // is not the same as "traffic is now routed here".
+        let active = await routing.isSystemProxyActive()
+        return prettyJSON([
+            "systemProxy": active ? "on" : "off",
+            "requested": enabled ? "on" : "off",
+            "port": status.port,
+            "detail": result.message ?? (enabled ? "This Mac's traffic now routes through Loom." : "Previous proxy settings restored."),
         ])
     }
 

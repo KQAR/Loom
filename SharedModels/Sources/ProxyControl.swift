@@ -47,12 +47,55 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// Whether observed traffic is being stored as flows. When false the proxy
     /// keeps forwarding (and MITM-decrypting) traffic but records nothing new.
     public var isRecording: Bool
+    /// Interface the listener is bound to: `127.0.0.1` (this Mac only) or `0.0.0.0`
+    /// (also reachable from the LAN, as phone onboarding needs). Part of the status
+    /// because "nothing is being captured" and "nothing can reach the proxy" look
+    /// identical from the outside, and this is half the answer.
+    public var listenHost: String
 
-    public init(isRunning: Bool, port: Int, capturedCount: Int, isRecording: Bool = true) {
+    public init(
+        isRunning: Bool, port: Int, capturedCount: Int, isRecording: Bool = true,
+        listenHost: String = "127.0.0.1"
+    ) {
         self.isRunning = isRunning
         self.port = port
         self.capturedCount = capturedCount
         self.isRecording = isRecording
+        self.listenHost = listenHost
+    }
+
+    /// Reachable from other devices on the network, not just this Mac.
+    public var isLANReachable: Bool { listenHost == "0.0.0.0" }
+}
+
+/// Whether this Mac's own traffic is routed through Loom, and the switch for it.
+///
+/// Lives here as a protocol, and is *injected into* the MCP server, because turning
+/// the system proxy on means `networksetup` + a pf anchor for QUIC — client-layer
+/// code the engine must not depend on (the dependency direction is one-way:
+/// App → Features → Clients → Engine). The engine-side tools get an abstraction; the
+/// app supplies the implementation at boot.
+///
+/// The reason it is exposed to an agent at all: an empty capture has two very
+/// different causes — nothing happened, or nothing was routed here — and an agent
+/// that can't tell them apart guesses. `nil` (no implementation wired) is itself an
+/// honest answer, reported as "unavailable" rather than as "off".
+public protocol SystemRoutingControlling: Sendable {
+    /// Is the system proxy currently pointing this Mac's HTTP/HTTPS traffic at Loom?
+    func isSystemProxyActive() async -> Bool
+    /// Point this Mac's traffic at Loom (or stop). May prompt for an admin password
+    /// on a non-admin account, and also toggles the QUIC block that forces browsers
+    /// off HTTP/3 (which a TCP proxy cannot see).
+    func setSystemProxy(enabled: Bool) async -> SystemRoutingResult
+}
+
+public struct SystemRoutingResult: Equatable, Sendable {
+    public var ok: Bool
+    public var message: String?
+
+    public init(ok: Bool, message: String? = nil) {
+        self.ok = ok
+        self.message = message
     }
 }
 
