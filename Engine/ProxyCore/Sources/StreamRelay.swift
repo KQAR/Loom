@@ -21,7 +21,8 @@ enum StreamRelay {
         sourceApp: SourceApp?,
         sourceDevice: SourceDevice?,
         store: FlowStore,
-        bodyCapture: RequestBodyCapture? = nil
+        bodyCapture: RequestBodyCapture? = nil,
+        captureCap: Int = StreamRelay.captureCap
     ) async {
         // If the client disconnects mid-stream (closed SSE tab, aborted download),
         // cancel consumption so the stream's onTermination cancels the upstream
@@ -31,7 +32,7 @@ enum StreamRelay {
         let work = Task { await relayInner(
             stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
             request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
-            store: store, bodyCapture: bodyCapture
+            store: store, bodyCapture: bodyCapture, captureCap: captureCap
         ) }
         channel.closeFuture.whenComplete { _ in work.cancel() }
         await work.value
@@ -47,7 +48,8 @@ enum StreamRelay {
         sourceApp: SourceApp?,
         sourceDevice: SourceDevice?,
         store: FlowStore,
-        bodyCapture: RequestBodyCapture?
+        bodyCapture: RequestBodyCapture?,
+        captureCap: Int
     ) async {
         // For a streamed request body, fold the (by-now complete) captured copy into
         // the request recorded on the flow. `baseRequest.body` is nil while streaming;
@@ -55,7 +57,9 @@ enum StreamRelay {
         func request() -> CapturedRequest {
             guard let bodyCapture else { return baseRequest }
             var request = baseRequest
-            request.body = bodyCapture.snapshot()
+            let snapshot = bodyCapture.snapshot()
+            request.body = snapshot.body
+            request.fullBodyBytes = snapshot.fullBodyBytes
             return request
         }
         var statusCode = 0
@@ -63,8 +67,19 @@ enum StreamRelay {
         var responseHeaders: [HeaderPair] = []
         var appliedRules: [AppliedRule] = []
         var capturedBody = Data()
+        /// Every response byte relayed, cap included — so a truncated capture can
+        /// report the true size rather than looking like a body that ended at the cap.
+        var wireBodyBytes = 0
         var headWritten = false
         var bodyless = false
+
+        /// The response as captured, flagged when `capturedBody` is only a prefix.
+        func response(body: Data) -> CapturedResponse {
+            CapturedResponse(
+                statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: body,
+                fullBodyBytes: wireBodyBytes > body.count ? wireBodyBytes : nil
+            )
+        }
 
         do {
             for try await event in stream {
@@ -95,6 +110,7 @@ enum StreamRelay {
                     // A bodyless response (HEAD / 204 / 304) must never carry body
                     // bytes on the wire; still capture them for the inspector.
                     if !bodyless { HTTPUtil.writeResponseChunk(channel: channel, data: chunk) }
+                    wireBodyBytes += chunk.count
                     if capturedBody.count < captureCap {
                         let remaining = captureCap - capturedBody.count
                         capturedBody.append(chunk.count <= remaining ? chunk : chunk.prefix(remaining))
@@ -105,10 +121,7 @@ enum StreamRelay {
             }
             await store.upsert(Flow(
                 id: flowID, request: request(), startedAt: startedAt,
-                outcome: .completed(
-                    CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody),
-                    at: Date()
-                ),
+                outcome: .completed(response(body: capturedBody), at: Date()),
                 sourceApp: sourceApp, sourceDevice: sourceDevice,
                 appliedRules: appliedRules.isEmpty ? nil : appliedRules
             ))
@@ -120,7 +133,7 @@ enum StreamRelay {
                     id: flowID, request: request(), startedAt: startedAt,
                     outcome: .failed(
                         FlowError(error.localizedDescription), at: Date(),
-                        partialResponse: CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: capturedBody)
+                        partialResponse: response(body: capturedBody)
                     ),
                     sourceApp: sourceApp, sourceDevice: sourceDevice, appliedRules: appliedRules.isEmpty ? nil : appliedRules
                 ))

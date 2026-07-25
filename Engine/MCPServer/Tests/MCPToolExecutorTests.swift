@@ -215,6 +215,51 @@ import LoomSharedModels
         #expect(shown.last?["text"] as? String == "frame 249", "keeps the most recent frames")
     }
 
+    /// Capture truncation is a *different* fact from render truncation: no
+    /// `body_offset` can reach bytes that were never recorded. Both must be
+    /// distinguishable, and the summary must flag it before an agent fetches detail.
+    @Test func getFlowDetail_captureTruncatedBody_reportsWireSize() async throws {
+        let engine = StubEngine()
+        var flow = Fixtures.flow(responseBody: Data(repeating: 0x41, count: 100))
+        flow.outcome = .completed(
+            CapturedResponse(
+                statusCode: 200, httpVersion: "HTTP/1.1", headers: [],
+                body: Data(repeating: 0x41, count: 100), fullBodyBytes: 9_000_000
+            ),
+            at: Date(timeIntervalSince1970: 1_000.1)
+        )
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(name: "get_flow_detail", arguments: ["id": flow.id.uuidString]))
+        let response = try #require(out["response"] as? [String: Any])
+        #expect(response["bodyCaptureTruncated"] as? Bool == true)
+        #expect(response["bodyBytesOnWire"] as? Int == 9_000_000)
+        #expect(out["captureTruncated"] as? Bool == true)
+    }
+
+    @Test func getRecentFlows_flagCaptureTruncation() async throws {
+        let engine = StubEngine()
+        var truncated = Fixtures.flow(responseBody: Data("x".utf8))
+        truncated.request.fullBodyBytes = 500_000
+        engine.flows = [truncated, Fixtures.flow(responseBody: Data("y".utf8))]
+        let out = try jsonArray(try await makeExecutor(engine).call(name: "get_recent_flows", arguments: [:]))
+        #expect(out.first?["captureTruncated"] as? Bool == true)
+        #expect(out.last?["captureTruncated"] == nil, "a complete capture carries no flag")
+    }
+
+    @Test func getFlowDetail_droppedWebSocketFrames_areReported() async throws {
+        let engine = StubEngine()
+        var flow = Fixtures.flow(responseBody: nil)
+        flow.webSocketMessages = [
+            WebSocketMessage(direction: .clientToServer, kind: .text, payload: Data("hi".utf8), timestamp: Date(timeIntervalSince1970: 1)),
+        ]
+        flow.webSocketDroppedMessages = 42
+        engine.flows = [flow]
+        let out = try json(try await makeExecutor(engine).call(name: "get_flow_detail", arguments: ["id": flow.id.uuidString]))
+        let ws = try #require(out["webSocket"] as? [String: Any])
+        #expect(ws["framesNotRecorded"] as? Int == 42)
+        #expect(out["captureTruncated"] as? Bool == true)
+    }
+
     @Test func getFlowDetail_unknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "get_flow_detail", arguments: ["id": UUID().uuidString])

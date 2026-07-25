@@ -154,6 +154,9 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     private var messages: [WebSocketMessage] = []
     private var capturedBytes = 0
     private var capped = false
+    /// Frames seen after the cap tripped — recorded as a count on the flow so the
+    /// transcript is honestly labelled partial.
+    private var dropped = 0
     private var finished = false
     private let continuation: AsyncStream<Flow>.Continuation
 
@@ -170,10 +173,20 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     }
 
     func record(direction: WebSocketMessage.Direction, frame: WebSocketFrameParser.Frame) {
-        if capped { return } // relay still forwards the bytes; we just stop recording
+        if capped {
+            // The relay still forwards the bytes; we just stop recording — but we
+            // count what we dropped so a reader can tell a complete frame log from a
+            // partial one. No upsert per dropped frame: that would reintroduce the
+            // per-frame store churn the cap exists to stop. The count rides the
+            // `finish()` upsert (and the first-drop one below).
+            dropped += 1
+            return
+        }
         if messages.count >= Self.maxMessages || capturedBytes >= Self.maxCapturedBytes {
             capped = true
+            dropped += 1
             Log.ws.notice("WebSocket capture cap reached for flow \(self.flowID, privacy: .public); further frames not recorded.")
+            enqueue(completed: false) // once, so the UI shows "capped" without waiting for close
             return
         }
         messages.append(WebSocketMessage(
@@ -199,7 +212,8 @@ final class WebSocketCaptureSink: @unchecked Sendable {
         continuation.yield(Flow(
             id: flowID, request: request, startedAt: startedAt,
             outcome: completed ? .completed(response, at: Date()) : .streaming(response),
-            sourceApp: sourceApp, sourceDevice: sourceDevice, webSocketMessages: messages
+            sourceApp: sourceApp, sourceDevice: sourceDevice, webSocketMessages: messages,
+            webSocketDroppedMessages: dropped > 0 ? dropped : nil
         ))
     }
 }

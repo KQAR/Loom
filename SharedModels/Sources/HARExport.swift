@@ -97,6 +97,16 @@ public enum HARExport {
         let headersSize: Int
         let bodySize: Int
         let postData: PostData?
+        /// Vendor extension: `postData.text` is only a prefix of `bodySize` bytes
+        /// because Loom's capture cap tripped. HAR has no standard marker for a
+        /// partial body, and silently shipping the prefix under the real size would
+        /// misrepresent the capture.
+        let bodyTruncated: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case method, url, httpVersion, headers, queryString, cookies, headersSize, bodySize, postData
+            case bodyTruncated = "_bodyTruncated"
+        }
 
         init(_ request: CapturedRequest) {
             method = request.method
@@ -106,7 +116,9 @@ public enum HARExport {
             queryString = HARExport.queryString(request.url)
             cookies = []
             headersSize = -1
-            bodySize = request.body?.count ?? 0
+            // The size that crossed the wire, not the size we kept.
+            bodySize = request.fullBodyBytes ?? request.body?.count ?? 0
+            bodyTruncated = request.isBodyTruncated ? true : nil
             if let body = request.body, !body.isEmpty {
                 let rendered = HARExport.renderBody(body)
                 postData = PostData(
@@ -141,6 +153,13 @@ public enum HARExport {
         let redirectURL: String
         let headersSize: Int
         let bodySize: Int
+        /// Vendor extension — see `Request.bodyTruncated`.
+        let bodyTruncated: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case status, statusText, httpVersion, headers, cookies, content, redirectURL, headersSize, bodySize
+            case bodyTruncated = "_bodyTruncated"
+        }
 
         init(_ flow: Flow) {
             guard let response = flow.response else {
@@ -154,6 +173,7 @@ public enum HARExport {
                 redirectURL = ""
                 headersSize = -1
                 bodySize = 0
+                bodyTruncated = nil
                 return
             }
             status = response.statusCode
@@ -170,14 +190,16 @@ public enum HARExport {
                 encoding = rendered.base64 ? "base64" : nil
             }
             content = Content(
-                size: response.body?.count ?? 0,
+                // Wire size, not captured size — see `bodyTruncated`.
+                size: response.fullBodyBytes ?? response.body?.count ?? 0,
                 mimeType: HARExport.contentType(response.headers) ?? "",
                 text: text,
                 encoding: encoding
             )
             redirectURL = HARExport.location(response.headers) ?? ""
             headersSize = -1
-            bodySize = response.body?.count ?? 0
+            bodySize = response.fullBodyBytes ?? response.body?.count ?? 0
+            bodyTruncated = response.isBodyTruncated ? true : nil
         }
     }
 
