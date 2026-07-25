@@ -178,7 +178,7 @@ public struct MainView: View {
                 ZStack {
                     Circle()
                         .fill(.regularMaterial)
-                        .overlay(Circle().strokeBorder(.quaternary, lineWidth: 1))
+                        .overlay { Circle().strokeBorder(.quaternary, lineWidth: 1) }
                     Circle()
                         .trim(from: 0, to: clearProgress)
                         .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
@@ -382,6 +382,7 @@ public struct MainView: View {
                 .foregroundStyle(store.lanEnabled ? Color.accentColor : .secondary)
         }
         .buttonStyle(.borderless)
+        .accessibilityLabel("Set up a phone to capture its traffic")
         .help("Set up a phone to capture its traffic")
         .popover(item: phonePopover, arrowEdge: .bottom) { phoneStore in
             PhoneOnboardingView(store: phoneStore)
@@ -479,6 +480,8 @@ public struct MainView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .accessibilityLabel("SSL proxying")
+        .accessibilityValue(needsTrust ? "on, certificate not trusted" : (store.setup.sslEnabled ? "on" : "off"))
         .help(needsTrust
             ? "HTTPS interception is on but the CA isn't trusted — click to install & trust"
             : (store.setup.sslEnabled ? "SSL proxying: on" : "SSL proxying: off"))
@@ -498,6 +501,8 @@ public struct MainView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .accessibilityLabel(help)
+        .accessibilityValue(on ? "on" : "off")
         .help(help)
     }
 

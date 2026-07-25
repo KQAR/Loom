@@ -271,9 +271,6 @@ private struct PanelRow: View {
     var detail: String?
     var disabled: Bool = false
     var help: String?
-    /// Optional trailing control that sits outside the row's tap target (e.g. the
-    /// proxy row's phone/QR button), so tapping it doesn't also toggle the row.
-    var accessory: AnyView? = nil
     let action: () -> Void
 
     /// Leading inset of the title = checkmark slot + icon slot + their spacings.
@@ -318,10 +315,6 @@ private struct PanelRow: View {
             }
             .buttonStyle(.plain)
             .disabled(disabled)
-
-            if let accessory {
-                accessory.padding(.trailing, LoomTheme.Space.md)
-            }
         }
         .background(
             RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)

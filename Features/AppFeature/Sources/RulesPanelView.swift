@@ -200,6 +200,7 @@ private struct RuleRow: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
+            .accessibilityLabel("Edit this rule")
             .help("Edit this rule")
 
             Button(role: .destructive, action: onDelete) {
@@ -207,6 +208,7 @@ private struct RuleRow: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
+            .accessibilityLabel("Delete this rule")
             .help("Delete this rule")
         }
         .padding(.vertical, 2)

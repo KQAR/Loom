@@ -118,6 +118,7 @@ struct PhoneOnboardingView: View {
             }
             .buttonStyle(.borderless)
             .font(.caption2)
+            .accessibilityLabel("Copy \(label)")
             .help("Copy \(label)")
         }
         .padding(.horizontal, LoomTheme.Space.sm)
