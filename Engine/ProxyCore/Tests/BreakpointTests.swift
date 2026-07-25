@@ -215,6 +215,46 @@ import LoomSharedModels
         #expect(await upstream.callCount == 0, "aborted exchange must never reach upstream")
     }
 
+    /// The push half of the poll model: a parked exchange is announced on
+    /// `pendingStream()` the moment it is parked, so `wait_for_pending` can be a wait
+    /// instead of a `list_pending` loop. It must fire *while the exchange is still
+    /// held* — a notification that arrives after the hold was resolved is useless.
+    @Test func parkingAnExchange_announcesItOnThePendingStream() async throws {
+        let store = BreakpointStore()
+        let forwarder = BreakpointForwarder(base: recordingUpstream(), store: store)
+        store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
+
+        var iterator = store.pendingStream().makeAsyncIterator()
+        async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+
+        let announced = try #require(await iterator.next())
+        #expect(announced.url == url.absoluteString)
+        #expect(store.pending().map(\.id) == [announced.id],
+                "the announcement must arrive while the exchange is still resumable")
+
+        #expect(store.resume(pendingID: announced.id, resolution: .proceed(.none)))
+        _ = try await resultTask
+    }
+
+    /// Two subscribers both hear about a hold, and a subscriber that goes away stops
+    /// costing anything — the same fan-out contract as the flow stream.
+    @Test func pendingStream_fansOutAndDropsTerminatedSubscribers() async throws {
+        let store = BreakpointStore()
+        let forwarder = BreakpointForwarder(base: recordingUpstream(), store: store)
+        store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
+
+        var first = store.pendingStream().makeAsyncIterator()
+        var second = store.pendingStream().makeAsyncIterator()
+
+        async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+        let a = try #require(await first.next())
+        let b = try #require(await second.next())
+        #expect(a.id == b.id)
+
+        #expect(store.resume(pendingID: a.id, resolution: .proceed(.none)))
+        _ = try await resultTask
+    }
+
     // MARK: Helpers
 
     /// Poll until the forwarder has parked an exchange (the async `forward` reaches

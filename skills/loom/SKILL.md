@@ -55,6 +55,9 @@ Loom is built for one cycle — do this, don't just read:
 
 1. **Capture** — `get_recent_flows` to see what happened; `get_flow_detail` for
    the full exchange (headers, body, timing, WebSocket frames, GraphQL block).
+   When you are about to *trigger* the traffic (tap a button, run a command), use
+   `wait_for_flow` instead of calling `get_recent_flows` in a loop: it blocks until
+   a matching exchange lands and returns it.
 2. **Modify + Replay** — `replay_flow` with `overrides` to re-send one flow with
    a changed method/URL/headers/body. The result is a *new* flow linked via
    `replayedFrom`.
@@ -75,14 +78,16 @@ Loom is built for one cycle — do this, don't just read:
 | `get_version` | app + MCP protocol version — a cheap readiness ping |
 | `get_proxy_status` | running state, bind port, captured flow count |
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
-| `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
+| `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `header_contains`, `body_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
+| `wait_for_flow` | **block** until a flow matching those same filters is captured (default 20 s, max 60), then return it — the tool to use around "trigger the action, then look". Checks the stored capture first, so a match that already arrived comes back immediately. `until` picks how much to wait for: `completed` (default), `response` (status known, body may still stream — use for WebSocket/long downloads), `request` (first sighting). The default window is the last 10 s (so triggering the action *then* calling can't race); widen with `since_seconds`/`since`. A timeout is a normal result (`timedOut: true`) and costs nothing: the flow stays in the store, and retrying with `since` = the reply's `windowFrom` resumes with no gap |
 | `get_flow_detail` | full headers + body for one flow id; adds `webSocket.messages` / `graphQL` blocks when present. Bodies are **bounded**: over `max_bytes` (default 16 KB) you get `{truncated, preview, bytes, offset, nextOffset}` — page with `body_offset: nextOffset`. A non-text body is `{binary, bytes}`, never `""`. WebSocket frames are capped by `ws_limit` (default 100, most recent) and flagged with `messagesTruncated` |
 | `diff_flows` | structured diff of two flows by id (`base` + `compared`, or `base` alone to diff a replay vs its original); reports method/url, header add/remove/change, status, line-level body diff |
 | `get_audit_log` | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, with tool name, arguments, outcome, timestamp; use to review what writes have been made (yours or a prior session's) |
 | `get_certificate_status` | root-CA state: generated? trusted? fingerprint, expiry, exported path |
 | `get_ssl_scope` | HTTPS interception on/off + include/exclude host globs |
 | `list_rules` | master switch + all rules (long bodies truncated); pass `id` for one rule with full bodies |
-| `list_pending` | armed breakpoints + exchanges held right now awaiting a `resume` (poll this — there is no server push) |
+| `list_pending` | armed breakpoints + exchanges held right now awaiting a `resume` (returns immediately with whatever is held) |
+| `wait_for_pending` | **block** until a breakpoint holds an exchange (default 20 s, max 60; optional `breakpoint_id`), then return it — use this after arming, instead of polling `list_pending`. Anything already held comes back immediately |
 
 ### Write (the reason Loom exists — these change behavior; there is NO approval gate, they act directly)
 
@@ -129,11 +134,16 @@ glob-or-regex + HTTP methods; then one action:
   mock action matching the URL. Verify by re-triggering the client and reading
   the newest flow (it will carry the rule in `appliedRules`).
 - **"Pause this request so I can tamper with it before it goes out."** →
-  `arm_breakpoint` with `on_request` (and/or `on_response`) matching the URL. Then
-  **poll `list_pending`** until the exchange shows up, inspect it, and `resume`
-  with edits (or `abort`). There is no push — you must poll. An unattended hold
-  auto-continues after a timeout, so don't arm one and walk away. `disarm_breakpoint`
+  `arm_breakpoint` with `on_request` (and/or `on_response`) matching the URL, trigger
+  the client, then `wait_for_pending` — it returns the held exchange as soon as it
+  lands (no polling). Inspect it and `resume` with edits (or `abort`). The exchange
+  is holding a live client connection while you think, and an unattended hold
+  auto-continues after a timeout, so decide and resume promptly. `disarm_breakpoint`
   when done.
+- **"Which request carried this order id / token?"** → `get_recent_flows` with
+  `body_contains` (or `header_contains` for an auth token / trace header) instead of
+  paging `get_flow_detail` over candidates. Narrow it with `host`/`since_seconds` —
+  a body search reads through to the on-disk capture.
 - **"Point this API at staging."** → `set_rule` map-remote (set
   `keepHostHeader` only if the upstream needs the original Host). Group related
   redirects so `set_group_enabled` flips the whole scenario at once.

@@ -1,6 +1,21 @@
 import Foundation
 import LoomSharedModels
 
+/// Shared accumulator for the blocking `wait_*` tools, so a collection in progress
+/// is readable after the deadline cancels the task that was filling it.
+private actor WaitCollector<Item: Sendable> {
+    private var items: [Item] = []
+    private var seen: Set<UUID> = []
+
+    /// Append unless this id was already collected; returns the running count.
+    func add(_ item: Item, id: UUID) -> Int {
+        if seen.insert(id).inserted { items.append(item) }
+        return items.count
+    }
+
+    var collected: [Item] { items }
+}
+
 /// Dispatches MCP `tools/call` requests to the proxy engine and renders results.
 /// Read tools inspect captured traffic; `replay_flow` is the write tool that
 /// makes Loom "AI-operable" rather than merely AI-readable.
@@ -19,6 +34,76 @@ struct MCPToolExecutor {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
     }()
+
+    /// Default / hard cap for `wait_for_flow` and `wait_for_pending`.
+    ///
+    /// The cap is the client's, not ours: Claude Code gives an HTTP MCP server 60 s
+    /// to produce the first response byte unless the server entry raises it (the
+    /// plugin's `.mcp.json` sets `timeout: 120000`, and the bridge sets its own
+    /// request timeout), and aborts a call that goes 5 minutes without a byte. 60 s
+    /// therefore stays inside the *unconfigured* limit, so a wait can't fail as a
+    /// transport error on a client that never read our config.
+    static let defaultWaitSeconds: Double = 20
+    static let maxWaitSeconds: Double = 60
+
+    /// How far back a `wait_for_flow` with no explicit window looks.
+    ///
+    /// Not zero, and that matters. The natural sequence is *trigger the action, then
+    /// call the tool* — so by the time the call lands, the request it is waiting for
+    /// may already have been captured. A strict "from now on" window would report a
+    /// timeout for traffic sitting in the store, which is the exact failure the tool
+    /// exists to remove. A few seconds of grace covers the gap without dragging in
+    /// traffic from earlier in the session (which is what `get_recent_flows` is for).
+    static let defaultWaitLookback: Double = 10
+
+    /// The flow-filter arguments, shared verbatim by `get_recent_flows` and
+    /// `wait_for_flow` — one filter vocabulary, parsed by one `flowQuery(from:)`, so
+    /// the two can't drift into subtly different notions of "matching".
+    static let flowFilterProperties: [String: Any] = [
+        "host": ["type": "string", "description": "Host, exact or glob: `api.example.com`, `*.example.com`."],
+        "method": [
+            "description": "HTTP method(s) to include, case-insensitive. A string or an array of strings.",
+            "oneOf": [
+                ["type": "string"],
+                ["type": "array", "items": ["type": "string"]],
+            ],
+        ],
+        "url_contains": ["type": "string", "description": "Case-insensitive substring of the full URL (path, query, …)."],
+        "header_contains": [
+            "type": "string",
+            "description": """
+            Case-insensitive substring of any request or response header. Plain text \
+            matches a header name or value (`authorization`, `Bearer ey`); with a colon \
+            it means `name: value` and both halves must hit the same header \
+            (`x-env: staging`, or `set-cookie:` for "has this header at all").
+            """,
+        ],
+        "body_contains": [
+            "type": "string",
+            "description": """
+            Case-insensitive substring of the captured request or response body — the \
+            "which exchange carried this id/token/error string" filter. Matched over raw \
+            bytes, so non-UTF-8 payloads are searched too. Combine with `host` / \
+            `url_contains` / `since_seconds` to keep the scan narrow, and note a flow \
+            with `captureTruncated: true` holds only a body prefix, so a miss on one of \
+            those isn't proof.
+            """,
+        ],
+        "status": [
+            "description": "Status code: an exact number (500) or a class as a string (\"5xx\", \"4xx\").",
+            "oneOf": [
+                ["type": "integer"],
+                ["type": "string"],
+            ],
+        ],
+        "status_min": ["type": "integer", "description": "Lowest status code to include (inclusive)."],
+        "status_max": ["type": "integer", "description": "Highest status code to include (inclusive)."],
+        "only_errors": ["type": "boolean", "description": "Only failures: a transport error or status >= 400 (in-flight flows are excluded)."],
+        "since_seconds": ["type": "number", "description": "Only flows started within the last N seconds — the usual way to isolate \"what I just triggered\"."],
+        "since": ["type": "string", "description": "Only flows started at/after this ISO-8601 timestamp (alternative to `since_seconds`)."],
+        "device_ip": ["type": "string", "description": "Only traffic from this device IP (see list_devices)."],
+        "source_app": ["type": "string", "description": "Only traffic from this local app, by bundle id or display name."],
+    ]
 
     /// JSON metadata advertised by `tools/list`.
     var toolDefinitions: [[String: Any]] {
@@ -49,52 +134,54 @@ struct MCPToolExecutor {
                 """,
                 "inputSchema": [
                     "type": "object",
-                    "properties": [
+                    "properties": Self.flowFilterProperties.merging([
                         "limit": ["type": "integer", "description": "Max flows to return after filtering (default 20)."],
-                        "host": ["type": "string", "description": "Host, exact or glob: `api.example.com`, `*.example.com`."],
-                        "method": [
-                            "description": "HTTP method(s) to include, case-insensitive. A string or an array of strings.",
-                            "oneOf": [
-                                ["type": "string"],
-                                ["type": "array", "items": ["type": "string"]],
-                            ],
-                        ],
-                        "url_contains": ["type": "string", "description": "Case-insensitive substring of the full URL (path, query, …)."],
-                        "header_contains": [
-                            "type": "string",
+                    ]) { current, _ in current },
+                ],
+            ],
+            [
+                "name": "wait_for_flow",
+                "description": """
+                Block until a flow matching the filters is captured, then return it — the \
+                "trigger the action, then see the request it made" tool. Takes the same filters as \
+                `get_recent_flows`, so you never poll it in a loop.
+
+                It is a query over the retained capture *and* a wait, in that order: flows already \
+                stored are checked first, so a request you triggered a moment before calling is \
+                returned immediately rather than waited for. Nothing is lost if the call times out \
+                at any layer — the flow stays in the store, and calling again with `since` set to \
+                the previous reply's `windowFrom` finds it with no gap.
+
+                Returns `{matched: [...summaries], timedOut, waitedMS, windowFrom}`. The default \
+                window is the last \(Int(Self.defaultWaitLookback)) seconds (not "from now on", so \
+                the trigger-then-call sequence can't race); pass `since_seconds` or `since` to widen \
+                or pin it.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": Self.flowFilterProperties.merging([
+                        "max_seconds": [
+                            "type": "number",
                             "description": """
-                            Case-insensitive substring of any request or response header. Plain text \
-                            matches a header name or value (`authorization`, `Bearer ey`); with a colon \
-                            it means `name: value` and both halves must hit the same header \
-                            (`x-env: staging`, or `set-cookie:` for "has this header at all").
+                            How long to wait before giving up (default \(Self.defaultWaitSeconds), \
+                            max \(Self.maxWaitSeconds)). A timeout is a normal result, not an error: \
+                            `timedOut: true` with an empty `matched`.
                             """,
                         ],
-                        "body_contains": [
+                        "until": [
                             "type": "string",
+                            "enum": ["completed", "response", "request"],
                             "description": """
-                            Case-insensitive substring of the captured request or response body — the \
-                            "which exchange carried this id/token/error string" filter. Matched over raw \
-                            bytes, so non-UTF-8 payloads are searched too. Combine with `host` / \
-                            `url_contains` / `since_seconds` to keep the scan narrow, and note a flow \
-                            with `captureTruncated: true` holds only a body prefix, so a miss on one of \
-                            those isn't proof.
+                            How much of the exchange to wait for. `completed` (default) = it finished \
+                            or failed, so status, timing and both bodies are final. `response` = the \
+                            status line is known but the body may still be streaming — use this for a \
+                            WebSocket (the 101 upgrade), which otherwise never completes while the \
+                            socket is open, or for a long download. `request` = return the moment the \
+                            request is seen, before any response exists.
                             """,
                         ],
-                        "status": [
-                            "description": "Status code: an exact number (500) or a class as a string (\"5xx\", \"4xx\").",
-                            "oneOf": [
-                                ["type": "integer"],
-                                ["type": "string"],
-                            ],
-                        ],
-                        "status_min": ["type": "integer", "description": "Lowest status code to include (inclusive)."],
-                        "status_max": ["type": "integer", "description": "Highest status code to include (inclusive)."],
-                        "only_errors": ["type": "boolean", "description": "Only failures: a transport error or status >= 400 (in-flight flows are excluded)."],
-                        "since_seconds": ["type": "number", "description": "Only flows started within the last N seconds — the usual way to isolate \"what I just triggered\"."],
-                        "since": ["type": "string", "description": "Only flows started at/after this ISO-8601 timestamp (alternative to `since_seconds`)."],
-                        "device_ip": ["type": "string", "description": "Only traffic from this device IP (see list_devices)."],
-                        "source_app": ["type": "string", "description": "Only traffic from this local app, by bundle id or display name."],
-                    ],
+                        "limit": ["type": "integer", "description": "Stop waiting once this many flows have matched (default 1)."],
+                    ]) { current, _ in current },
                 ],
             ],
             [
@@ -218,8 +305,32 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "list_pending",
-                "description": "List currently armed breakpoints and every exchange held right now awaiting a resume decision. Each pending item carries its id (pass to resume), phase (request/response), full request, and — for a response pause — the response the client would receive. Poll this to discover held traffic (MCP has no server push).",
+                "description": "List currently armed breakpoints and every exchange held right now awaiting a resume decision. Each pending item carries its id (pass to resume), phase (request/response), full request, and — for a response pause — the response the client would receive. Returns immediately with whatever is held; to wait for the next hold instead of polling, use wait_for_pending.",
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
+            ],
+            [
+                "name": "wait_for_pending",
+                "description": """
+                Block until a breakpoint holds an exchange, then return it — the second half of \
+                "arm the breakpoint, trigger the app, edit the request in flight". Anything already \
+                held is returned immediately, so the call can't miss a hold that landed first.
+
+                Returns `{pending: [...], timedOut, waitedMS}` with the same item shape as \
+                `list_pending`; feed an item's `id` to `resume`. Remember the exchange is holding a \
+                real client connection while you think, and an unattended hold auto-proceeds \
+                unchanged when the engine's hold timeout expires — so decide, then resume.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "max_seconds": [
+                            "type": "number",
+                            "description": "How long to wait before giving up (default \(Self.defaultWaitSeconds), max \(Self.maxWaitSeconds)). Timing out is a normal result: `timedOut: true`, empty `pending`.",
+                        ],
+                        "breakpoint_id": ["type": "string", "description": "Only wait for holds from this armed breakpoint (from arm_breakpoint)."],
+                        "limit": ["type": "integer", "description": "Stop waiting once this many exchanges are held (default 1)."],
+                    ],
+                ],
             ],
             [
                 "name": "resume",
@@ -464,6 +575,8 @@ struct MCPToolExecutor {
         "get_proxy_status": { ex, args in try await ex.handleGetProxyStatus(args) },
         "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
+        "wait_for_flow": { ex, args in try await ex.handleWaitForFlow(args) },
+        "wait_for_pending": { ex, args in try await ex.handleWaitForPending(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
         "get_audit_log": { ex, args in try await ex.handleGetAuditLog(args) },
         "set_recording": { ex, args in try await ex.handleSetRecording(args) },
@@ -581,6 +694,195 @@ struct MCPToolExecutor {
         let query = try Self.flowQuery(from: arguments)
         let flows = await engine.recentFlows(matching: query, limit: limit)
         return prettyJSON(flows.map(Self.flowSummary))
+    }
+
+    /// How much of an exchange `wait_for_flow` waits for.
+    enum WaitUntil: String {
+        /// The request has been seen; nothing is known about the response yet.
+        case request
+        /// The status line is known (streaming, completed or failed).
+        case response
+        /// Terminal: completed or failed, so bodies and timing are final.
+        case completed
+
+        func isSatisfied(by flow: Flow) -> Bool {
+            switch self {
+            case .request:
+                return true
+            case .response:
+                return flow.statusCode != nil || flow.error != nil
+            case .completed:
+                return flow.completedAt != nil || flow.error != nil
+            }
+        }
+    }
+
+    /// Wait for traffic instead of polling for it.
+    ///
+    /// Two properties make this safe to rely on, and both come from the ordering
+    /// here rather than from anything the caller does:
+    ///
+    /// 1. **No gap between looking and listening.** The stream is subscribed
+    ///    *before* the store is read, so a flow arriving in between is delivered on
+    ///    the stream rather than falling into the hole a check-then-subscribe order
+    ///    would leave.
+    /// 2. **A timeout costs nothing.** The match is a query over the retained
+    ///    capture, not the consumption of an event: whatever this call misses is
+    ///    still in the store for the next one. So a client-side abort, or the
+    ///    caller's own `max_seconds`, degrades to polling — never to lost traffic.
+    ///    `waitStartedAt` comes back so a retry can resume from exactly here.
+    private func handleWaitForFlow(_ arguments: [String: Any]) async throws -> String {
+        let seconds = try Self.waitSeconds(from: arguments)
+        let limit = max(1, (arguments["limit"] as? Int) ?? 1)
+        let until = try Self.waitUntil(from: arguments)
+        var query = try Self.flowQuery(from: arguments)
+        let startedWaitingAt = Date()
+        // A wait needs *some* window: inheriting `get_recent_flows`' match-everything
+        // default would return the oldest retained flow instantly, which is never what
+        // "wait for the request I'm about to trigger" means. See `defaultWaitLookback`
+        // for why the default window starts slightly in the past rather than at `now`.
+        if query.since == nil {
+            query.since = startedWaitingAt.addingTimeInterval(-Self.defaultWaitLookback)
+        }
+        let windowFrom = query.since ?? startedWaitingAt
+
+        let stream = await engine.flowStream()
+        let existing = await engine.recentFlows(matching: query, limit: limit)
+            .filter { until.isSatisfied(by: $0) }
+        if !existing.isEmpty {
+            // The store hands back newest-first; a wait reads better oldest-first
+            // (the order the exchanges actually happened in).
+            return waitResult(
+                matched: Array(existing.reversed()), timedOut: false,
+                startedWaitingAt: startedWaitingAt, windowFrom: windowFrom
+            )
+        }
+
+        let matched = await Self.waitCollecting(
+            from: stream, id: \.id, seconds: seconds, limit: limit,
+            accepts: { until.isSatisfied(by: $0) && query.matches($0) }
+        )
+        return waitResult(
+            matched: matched, timedOut: matched.count < limit,
+            startedWaitingAt: startedWaitingAt, windowFrom: windowFrom
+        )
+    }
+
+    private func waitResult(
+        matched: [Flow], timedOut: Bool, startedWaitingAt: Date, windowFrom: Date
+    ) -> String {
+        prettyJSON([
+            "matched": matched.map(Self.flowSummary),
+            "timedOut": timedOut,
+            "waitedMS": Int(Date().timeIntervalSince(startedWaitingAt) * 1000),
+            // The retry cursor: the start of the window this call considered. Passing
+            // it back as `since` on a follow-up call makes the retry gapless, which is
+            // what keeps a timeout (ours or the transport's) harmless.
+            "windowFrom": Self.iso8601.string(from: windowFrom),
+        ])
+    }
+
+    /// Wait for a breakpoint to hold an exchange. Same subscribe-then-check ordering
+    /// as `wait_for_flow`, for the same reason — except a hold is *not* retained
+    /// state: it is a live connection that auto-proceeds when the engine's hold
+    /// timeout expires, so a missed notification really would be a missed exchange.
+    private func handleWaitForPending(_ arguments: [String: Any]) async throws -> String {
+        let seconds = try Self.waitSeconds(from: arguments)
+        let limit = max(1, (arguments["limit"] as? Int) ?? 1)
+        let breakpointID = try Self.optionalUUID(arguments["breakpoint_id"], field: "breakpoint_id")
+        let startedWaitingAt = Date()
+
+        let accepts: @Sendable (PendingBreakpoint) -> Bool = { pending in
+            breakpointID == nil || pending.breakpointID == breakpointID
+        }
+
+        let stream = await engine.pendingBreakpointStream()
+        let alreadyHeld = await engine.pendingBreakpoints().filter(accepts)
+        if !alreadyHeld.isEmpty {
+            return pendingWaitResult(alreadyHeld, timedOut: false, startedWaitingAt: startedWaitingAt)
+        }
+
+        let held = await Self.waitCollecting(
+            from: stream, id: \.id, seconds: seconds, limit: limit, accepts: accepts
+        )
+        return pendingWaitResult(held, timedOut: held.count < limit, startedWaitingAt: startedWaitingAt)
+    }
+
+    private func pendingWaitResult(
+        _ pending: [PendingBreakpoint], timedOut: Bool, startedWaitingAt: Date
+    ) -> String {
+        prettyJSON([
+            "pending": pending.map(Self.pendingBreakpoint),
+            "timedOut": timedOut,
+            "waitedMS": Int(Date().timeIntervalSince(startedWaitingAt) * 1000),
+        ])
+    }
+
+    /// Accumulate accepted items off `stream` until `limit` is reached or `seconds`
+    /// elapse, whichever comes first.
+    ///
+    /// Partial results survive the deadline — the collector is shared state, not the
+    /// racing task's return value, so a wait for 3 flows that saw 2 reports those 2
+    /// instead of pretending it saw nothing. Deduplicated by id because a flow is
+    /// emitted several times as it progresses (pending → streaming → completed), and
+    /// `until: request` would otherwise count one exchange repeatedly.
+    private static func waitCollecting<Item: Sendable>(
+        from stream: AsyncStream<Item>,
+        id: @escaping @Sendable (Item) -> UUID,
+        seconds: Double,
+        limit: Int,
+        accepts: @escaping @Sendable (Item) -> Bool
+    ) async -> [Item] {
+        let collector = WaitCollector<Item>()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await item in stream where accepts(item) {
+                    if await collector.add(item, id: id(item)) >= limit { break }
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            }
+            // Whichever finishes first — a full collection or the deadline — ends the
+            // wait; cancelling the group tears down the other. Cancellation of the
+            // *calling* task (the MCP client hung up mid-call) lands here too, so a
+            // dropped connection doesn't leave a waiter parked for the full duration.
+            await group.next()
+            group.cancelAll()
+        }
+        return await collector.collected
+    }
+
+    static func waitSeconds(from arguments: [String: Any]) throws -> Double {
+        let raw: Double
+        switch arguments["max_seconds"] {
+        case let value as Double: raw = value
+        case let value as Int: raw = Double(value)
+        case nil: return defaultWaitSeconds
+        default: throw MCPError.invalidParams("`max_seconds` must be a number")
+        }
+        guard raw > 0 else { throw MCPError.invalidParams("`max_seconds` must be greater than 0") }
+        // Clamped rather than rejected: a client asking for a longer wait than the
+        // MCP transport will tolerate gets the longest safe one, not an error.
+        return min(raw, maxWaitSeconds)
+    }
+
+    /// An optional UUID argument. A present-but-malformed value is an error, never a
+    /// silently ignored filter.
+    static func optionalUUID(_ raw: Any?, field: String) throws -> UUID? {
+        guard let raw else { return nil }
+        guard let text = raw as? String, let id = UUID(uuidString: text) else {
+            throw MCPError.invalidParams("`\(field)` must be a UUID string")
+        }
+        return id
+    }
+
+    static func waitUntil(from arguments: [String: Any]) throws -> WaitUntil {
+        guard let raw = arguments["until"] else { return .completed }
+        guard let text = raw as? String, let until = WaitUntil(rawValue: text.lowercased()) else {
+            throw MCPError.invalidParams("`until` must be one of: completed, response, request")
+        }
+        return until
     }
 
     /// Parse the `get_recent_flows` filter arguments. Malformed input is rejected
