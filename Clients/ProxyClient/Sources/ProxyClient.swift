@@ -15,6 +15,9 @@ public struct ProxyClient: Sendable {
     public var recentFlows: @Sendable (_ limit: Int) async -> [Flow] = { _ in [] }
     public var flow: @Sendable (_ id: UUID) async -> Flow? = { _ in nil }
     public var flowStream: @Sendable () async -> AsyncStream<Flow> = { AsyncStream { $0.finish() } }
+    /// Fires when the capture is discarded by anyone — the window's own Clear or an
+    /// agent's `clear_flows` — so the list never shows flows the store dropped.
+    public var flowsClearedStream: @Sendable () async -> AsyncStream<Void> = { AsyncStream { $0.finish() } }
     public var replay: @Sendable (_ id: UUID, _ overrides: ReplayOverrides) async throws -> Flow
     public var clearFlows: @Sendable () async -> Void
     public var certificateStatus: @Sendable () async -> CertificateStatus = { .notGenerated }
@@ -59,6 +62,7 @@ extension ProxyClient: DependencyKey {
             recentFlows: { await engine.recentFlows(limit: $0) },
             flow: { await engine.flow(id: $0) },
             flowStream: { await engine.flowStream() },
+            flowsClearedStream: { await engine.flowsClearedStream() },
             replay: { try await engine.replay(id: $0, overrides: $1) },
             clearFlows: { await engine.clearFlows() },
             certificateStatus: { await engine.certificateStatus() },

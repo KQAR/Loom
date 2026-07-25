@@ -32,6 +32,7 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
     func recentFlowsForExport(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
     func flow(id: UUID) async -> Flow? { flows.first { $0.id == id } }
     func flowStream() async -> AsyncStream<Flow> { AsyncStream { $0.finish() } }
+    func flowsClearedStream() async -> AsyncStream<Void> { AsyncStream { $0.finish() } }
     func connectedDevices() async -> [DeviceSummary] { devices }
 
     // FlowReplaying
@@ -61,6 +62,12 @@ final class StubEngine: ProxyControlling, @unchecked Sendable {
 
     // CaptureControlling
     func setRecording(_ recording: Bool) async { self.recording = recording }
+    private(set) var clearFlowsCallCount = 0
+    func clearFlows() async {
+        clearFlowsCallCount += 1
+        flows.removeAll()
+        proxyStatus.capturedCount = 0
+    }
 
     // RulesControlling
     func rulesState() async -> RulesState { rules }

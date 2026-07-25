@@ -105,6 +105,18 @@ public struct AppFeature: Sendable {
             status.capturedCount = flows.count
         }
 
+        /// Drop the window's copy of the capture. Used by the Clear button and by
+        /// the engine's "cleared" signal (an agent's `clear_flows`), so both paths
+        /// leave exactly the same state.
+        mutating func forgetCapturedFlows() {
+            flows.removeAll()
+            selectedFlowID = nil
+            selectedFlowDetail = nil
+            selectedOriginalDetail = nil
+            droppedFlowCount = 0
+            status.capturedCount = 0
+        }
+
         /// Requests for the selected category, filtered by search, oldest-first
         /// (chronological — newest at the bottom, like a log/terminal).
         public var displayFlows: [Flow] {
@@ -244,6 +256,10 @@ public struct AppFeature: Sendable {
         case replayTapped(Flow.ID)
         case replayFinished(Flow?)
         case clearTapped
+        /// The engine's captured set was discarded by someone else — an agent's
+        /// `clear_flows` over MCP. Drops the window's copy so the human never
+        /// supervises a list of flows the store no longer holds.
+        case flowsClearedExternally
         case toggleRecordingTapped
         case pinHostToggled(String)
         case pinAppToggled(String)
@@ -261,7 +277,7 @@ public struct AppFeature: Sendable {
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.updaterClient) var updaterClient
 
-    private enum CancelID { case subscription, updates, audit, devices }
+    private enum CancelID { case subscription, updates, audit, devices, cleared }
 
     public init() {}
 
@@ -361,7 +377,16 @@ public struct AppFeature: Sendable {
                             await send(.connectedDeviceCountChanged(count))
                         }
                     }
-                    .cancellable(id: CancelID.devices, cancelInFlight: true)
+                    .cancellable(id: CancelID.devices, cancelInFlight: true),
+                    // "The capture was discarded" — fires for the window's own Clear
+                    // and for an agent's `clear_flows`. Handling it here is what keeps
+                    // the human's view honest when the AI wipes the store.
+                    .run { send in
+                        for await _ in await proxyClient.flowsClearedStream() {
+                            await send(.flowsClearedExternally)
+                        }
+                    }
+                    .cancellable(id: CancelID.cleared, cancelInFlight: true)
                 )
 
             case let .connectedDeviceCountChanged(count):
@@ -505,13 +530,14 @@ public struct AppFeature: Sendable {
                 }
 
             case .clearTapped:
-                state.flows.removeAll()
-                state.selectedFlowID = nil
-                state.selectedFlowDetail = nil
-                state.selectedOriginalDetail = nil
-                state.droppedFlowCount = 0
-                state.status.capturedCount = 0
+                state.forgetCapturedFlows()
                 return .run { _ in await proxyClient.clearFlows() }
+
+            case .flowsClearedExternally:
+                // Already-empty is the common case (our own Clear cleared state
+                // first, then the engine echoed) — the reset is idempotent.
+                state.forgetCapturedFlows()
+                return .none
 
             case .toggleRecordingTapped:
                 state.isRecording.toggle()

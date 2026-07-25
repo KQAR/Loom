@@ -19,6 +19,8 @@ actor FlowStore {
     /// is excluded. Session-scoped: reset on `clear()` and by a relaunch.
     private var connectedLANIPs: Set<String> = []
     private var deviceCountContinuations: [UUID: AsyncStream<Int>.Continuation] = [:]
+    /// Subscribers to "the capture was discarded" — see `clearedStream()`.
+    private var clearedContinuations: [UUID: AsyncStream<Void>.Continuation] = [:]
 
     /// Layer 2: total in-memory body bytes across the ring, and the ceiling. Over
     /// the ceiling, the oldest *persisted* flows' bodies are dropped from memory
@@ -171,7 +173,25 @@ actor FlowStore {
         bodyBytes = 0
         connectedLANIPs.removeAll()
         for continuation in deviceCountContinuations.values { continuation.yield(0) }
+        for continuation in clearedContinuations.values { continuation.yield(()) }
         persistence?.deleteAll()
+    }
+
+    /// Fires on every `clear()`, so a surface holding its own copy of the flow list
+    /// (the main window) drops it when *anyone* clears — including an agent over
+    /// MCP, which the window would otherwise never hear about.
+    func clearedStream() -> AsyncStream<Void> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            clearedContinuations[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.dropClearedContinuation(id) }
+            }
+        }
+    }
+
+    private func dropClearedContinuation(_ id: UUID) {
+        clearedContinuations[id] = nil
     }
 
     /// Drain the persistence write queue so completed flows saved just before

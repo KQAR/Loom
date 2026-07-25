@@ -124,6 +124,29 @@ import Testing
         }
     }
 
+    /// An agent clearing the capture over MCP must empty the window too — otherwise
+    /// the human supervises a list of flows the engine no longer holds.
+    @Test func flowsClearedExternally_emptiesTheWindow() async {
+        let flow = Fixtures.flow()
+        var initial = AppFeature.State()
+        initial.flows = [flow]
+        initial.selectedFlowID = flow.id
+        initial.selectedFlowDetail = flow
+        initial.status.capturedCount = 1
+        initial.droppedFlowCount = 7
+        let store = TestStore(initialState: initial) { AppFeature() }
+
+        await store.send(.flowsClearedExternally) {
+            $0.flows = []
+            $0.selectedFlowID = nil
+            $0.selectedFlowDetail = nil
+            $0.status.capturedCount = 0
+            $0.droppedFlowCount = 0
+        }
+        // Idempotent: the echo of our own Clear must not be a second state change.
+        await store.send(.flowsClearedExternally)
+    }
+
     @Test func toggleRecording_flips() async {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()

@@ -175,6 +175,49 @@ import LoomSharedModels
         #expect(out.first?["url"] as? String == "https://api.example.com/orders")
     }
 
+    // MARK: Capture control — pause/resume and discard, the isolation primitives.
+
+    @Test func setRecording_forwardsToEngine() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        let out = try json(try await executor.call(name: "set_recording", arguments: ["recording": false]))
+        #expect(out["isRecording"] as? Bool == false)
+        #expect(engine.recording == false)
+        _ = try await executor.call(name: "set_recording", arguments: ["recording": true])
+        #expect(engine.recording)
+    }
+
+    @Test func setRecording_requiresABool() async {
+        await #expect(throws: MCPError.self) {
+            _ = try await makeExecutor().call(name: "set_recording", arguments: ["recording": "yes"])
+        }
+        await #expect(throws: MCPError.self) {
+            _ = try await makeExecutor().call(name: "set_recording", arguments: [:])
+        }
+    }
+
+    @Test func clearFlows_clearsAndReportsTheCount() async throws {
+        let engine = StubEngine()
+        engine.flows = [Fixtures.completedFlow(url: "https://a/1"), Fixtures.completedFlow(url: "https://a/2")]
+        engine.proxyStatus = ProxyStatus(isRunning: true, port: 9090, capturedCount: 2)
+        let out = try json(try await makeExecutor(engine).call(name: "clear_flows", arguments: [:]))
+        #expect(out["cleared"] as? Int == 2)
+        #expect(engine.clearFlowsCallCount == 1)
+        #expect(engine.flows.isEmpty)
+    }
+
+    /// Both are destructive-ish writes, so both must land in the audit trail — the
+    /// human's only record of what the agent did.
+    @Test func captureControlTools_areAudited() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        _ = try await executor.call(name: "clear_flows", arguments: [:])
+        _ = try await executor.call(name: "set_recording", arguments: ["recording": false])
+        #expect(engine.recordedAudits.map(\.tool) == ["clear_flows", "set_recording"])
+        #expect(MCPToolExecutor.writeTools.contains("clear_flows"))
+        #expect(MCPToolExecutor.writeTools.contains("set_recording"))
+    }
+
     @Test func getFlowDetail_includesHTTPVersion() async throws {
         let engine = StubEngine()
         let flow = Fixtures.completedFlow(url: "https://a/1", httpVersion: "HTTP/2")

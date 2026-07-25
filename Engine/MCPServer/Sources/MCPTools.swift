@@ -101,6 +101,33 @@ struct MCPToolExecutor {
                 ],
             ],
             [
+                "name": "set_recording",
+                "description": """
+                Pause or resume recording captured traffic. Paused, the proxy keeps forwarding \
+                (and MITM-decrypting) normally — nothing new is stored, while flows already in \
+                flight still complete. Use it to stop unrelated background traffic from burying \
+                what you are about to trigger. This is a write action.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "recording": ["type": "boolean", "description": "true = record, false = pause."],
+                    ],
+                    "required": ["recording"],
+                ],
+            ],
+            [
+                "name": "clear_flows",
+                "description": """
+                Discard every captured flow, in memory and on disk. Destructive and NOT undoable — \
+                the human's window empties too. The point is isolation: clear, trigger the thing \
+                you are debugging, then get_recent_flows sees only that. Prefer \
+                `get_recent_flows` with `since_seconds` when you don't actually need to destroy \
+                the existing capture. This is a write action.
+                """,
+                "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
+            ],
+            [
                 "name": "get_audit_log",
                 "description": "List recent write actions taken through Loom (replay, rules, breakpoints, ssl-scope), newest first, each with the tool name, arguments, outcome and timestamp. Read tools are never logged. Use this to review what write actions have been taken this or a prior session.",
                 "inputSchema": [
@@ -419,6 +446,8 @@ struct MCPToolExecutor {
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
         "get_audit_log": { ex, args in try await ex.handleGetAuditLog(args) },
+        "set_recording": { ex, args in try await ex.handleSetRecording(args) },
+        "clear_flows": { ex, args in try await ex.handleClearFlows(args) },
         "diff_flows": { ex, args in try await ex.handleDiffFlows(args) },
         "arm_breakpoint": { ex, args in try await ex.handleArmBreakpoint(args) },
         "disarm_breakpoint": { ex, args in try await ex.handleDisarmBreakpoint(args) },
@@ -443,6 +472,8 @@ struct MCPToolExecutor {
     /// a write. `MCPServerTests` asserts this set matches the marked definitions.
     static let writeTools: Set<String> = [
         "replay_flow",
+        "set_recording",
+        "clear_flows",
         "arm_breakpoint",
         "disarm_breakpoint",
         "resume",
@@ -602,6 +633,23 @@ struct MCPToolExecutor {
             maxBytes: max(1, (arguments["max_bytes"] as? Int) ?? Self.defaultBodyBytes),
             webSocketLimit: max(1, (arguments["ws_limit"] as? Int) ?? Self.defaultWebSocketMessages)
         ))
+    }
+
+    private func handleSetRecording(_ arguments: [String: Any]) async throws -> String {
+        guard let recording = arguments["recording"] as? Bool else {
+            throw MCPError.invalidParams("`recording` must be a boolean")
+        }
+        await engine.setRecording(recording)
+        return prettyJSON(["isRecording": recording])
+    }
+
+    /// Destructive: wipes the ring and the durable store. Audited like every write,
+    /// and the engine broadcasts the clear so the human's window empties too rather
+    /// than showing flows that no longer exist.
+    private func handleClearFlows(_ arguments: [String: Any]) async throws -> String {
+        let before = await engine.status().capturedCount
+        await engine.clearFlows()
+        return prettyJSON(["cleared": before])
     }
 
     private func handleGetAuditLog(_ arguments: [String: Any]) async throws -> String {
