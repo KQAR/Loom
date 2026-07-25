@@ -61,6 +61,13 @@ final class FlowPersistence: @unchecked Sendable {
         )
         var handle: OpaquePointer?
         guard sqlite3_open(fileURL.path, &handle) == SQLITE_OK else {
+            // The caller falls back to a ring-only store: captures then vanish on
+            // quit, and nothing else would have said so.
+            Log.store.error("""
+            Could not open the flow database at \(fileURL.path, privacy: .public) \
+            (\(String(cString: sqlite3_errmsg(handle)), privacy: .public)); \
+            captured flows will not persist across launches.
+            """)
             sqlite3_close(handle)
             return nil
         }
@@ -118,7 +125,13 @@ final class FlowPersistence: @unchecked Sendable {
     func save(_ flow: Flow) {
         // Metadata JSON is body-free; the bodies ride in their own BLOB columns so
         // list/boot reads never pay to decode (or base64-inflate) megabyte bodies.
-        guard let data = try? encoder.encode(flow.strippingBodies()) else { return }
+        let data: Data
+        do {
+            data = try encoder.encode(flow.strippingBodies())
+        } catch {
+            Log.store.error("Encoding flow \(flow.id.uuidString, privacy: .public) failed; it will not persist: \(String(describing: error))")
+            return
+        }
         let row = Row(
             id: flow.id.uuidString,
             startedAt: flow.startedAt.timeIntervalSince1970,
@@ -146,14 +159,27 @@ final class FlowPersistence: @unchecked Sendable {
             var flows: [Flow] = []
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, "SELECT json FROM flows ORDER BY startedAt DESC LIMIT ?;", -1, &stmt, nil) == SQLITE_OK
-            else { return [] }
+            else {
+                Log.store.error("Reading recent flows failed: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
+                return []
+            }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int(stmt, 1, Int32(max(0, limit)))
+            var undecodable = 0
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let blob = sqlite3_column_blob(stmt, 0) else { continue }
                 let count = Int(sqlite3_column_bytes(stmt, 0))
                 let data = Data(bytes: blob, count: count)
-                if let flow = try? decoder.decode(Flow.self, from: data) { flows.append(flow) }
+                if let flow = try? decoder.decode(Flow.self, from: data) {
+                    flows.append(flow)
+                } else {
+                    undecodable += 1
+                }
+            }
+            if undecodable > 0 {
+                // Rows that exist but can't be decoded simply vanish from the list —
+                // a capture that looks like it never happened.
+                Log.store.error("Skipped \(undecodable) undecodable flow row(s) while reading history.")
             }
             return flows
         }
@@ -255,6 +281,15 @@ final class FlowPersistence: @unchecked Sendable {
         for row in rows where writeRow(row) { written += 1 }
         exec("COMMIT;")
 
+        if written < rows.count {
+            // Logged once per batch rather than per row: a failing database would
+            // otherwise flood the log at capture rate.
+            Log.store.error("""
+            \(rows.count - written) of \(rows.count) flows failed to persist \
+            (\(String(cString: sqlite3_errmsg(self.db)), privacy: .public)); they remain in \
+            memory only and will be lost on quit.
+            """)
+        }
         rowCount += written
         pruneIfNeeded()
     }

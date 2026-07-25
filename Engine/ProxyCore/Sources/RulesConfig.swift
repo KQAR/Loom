@@ -120,8 +120,19 @@ final class RulesConfig: @unchecked Sendable {
     }
 
     private static func load(from url: URL) -> RulesState? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(RulesState.self, from: data)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil } // first run
+        do {
+            return try JSONDecoder().decode(RulesState.self, from: Data(contentsOf: url))
+        } catch {
+            // Every rule silently disappears: traffic an agent believes is mocked or
+            // re-mapped would quietly hit the real upstream instead.
+            Log.store.error("""
+            Rules file at \(url.path, privacy: .public) could not be read; \
+            starting with no rules — traffic you expect to be mocked/mapped will hit \
+            the real upstream: \(String(describing: error))
+            """)
+            return nil
+        }
     }
 
     /// One-time import of rules saved by an earlier build under UserDefaults key

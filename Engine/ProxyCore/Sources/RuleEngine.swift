@@ -61,13 +61,25 @@ enum RuleEngine {
             case .passthrough:
                 break
             case let .mapRemote(map):
-                if !isExcluded(plan.url, by: map.excludePattern), let mapped = retarget(plan.url, at: map.destination) {
-                    plan.url = mapped
-                    // By default the Host header should follow the new origin; drop it so
-                    // the forwarder derives it from the mapped URL. keepHostHeader leaves
-                    // the original Host in place.
-                    if !map.keepHostHeader {
-                        plan.headers.removeAll { $0.name.lowercased() == "host" }
+                if !isExcluded(plan.url, by: map.excludePattern) {
+                    if let mapped = retarget(plan.url, at: map.destination) {
+                        plan.url = mapped
+                        // By default the Host header should follow the new origin; drop it so
+                        // the forwarder derives it from the mapped URL. keepHostHeader leaves
+                        // the original Host in place.
+                        if !map.keepHostHeader {
+                            plan.headers.removeAll { $0.name.lowercased() == "host" }
+                        }
+                    } else {
+                        // The rule matched and is reported in `appliedRules`, but the
+                        // destination didn't parse, so the request went to the original
+                        // origin after all. Silently that reads as "the map applied" —
+                        // an agent would trust a redirect that never happened.
+                        Log.rules.error("""
+                        Rule \(rule.name, privacy: .public) could not map to \
+                        \(map.destination, privacy: .public) (unparseable destination); \
+                        the request went to its original origin.
+                        """)
                     }
                 }
             case .block:

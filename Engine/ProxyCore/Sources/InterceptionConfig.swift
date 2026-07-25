@@ -47,13 +47,23 @@ final class InterceptionConfig: @unchecked Sendable {
 
     private func persist(_ scope: SSLScope) {
         guard let defaults else { return }
-        if let data = try? JSONEncoder().encode(scope) {
-            defaults.set(data, forKey: storageKey)
+        do {
+            defaults.set(try JSONEncoder().encode(scope), forKey: storageKey)
+        } catch {
+            Log.tls.error("SSL scope persist failed; interception settings may not survive relaunch: \(String(describing: error))")
         }
     }
 
     private static func load(from defaults: UserDefaults, key: String) -> SSLScope? {
         guard let data = defaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(SSLScope.self, from: data)
+        do {
+            return try JSONDecoder().decode(SSLScope.self, from: data)
+        } catch {
+            // Falls back to the default (disabled) scope, i.e. HTTPS stops being
+            // intercepted and nothing gets captured — the user would just see an
+            // empty list, with no hint why.
+            Log.tls.error("Stored SSL scope is undecodable; falling back to interception disabled: \(String(describing: error))")
+            return nil
+        }
     }
 }
