@@ -38,9 +38,26 @@ protocol UpstreamForwarding: Sendable {
     /// and calls buffered `forward`, so test stubs only need `forward`; the NIO
     /// client and the decorators override this with real streaming.
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
+    /// Same, plus **who** is asking — the originating app/device, so a rule or
+    /// breakpoint can be scoped to one client. Only the matching decorators care; the
+    /// default below drops it, which is why the NIO client and test stubs need not
+    /// implement it.
+    ///
+    /// Production always sends through this variant (`CapturedExchange` and replay), so
+    /// an origin-scoped rule sees an origin whenever one is knowable.
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
 }
 
 extension UpstreamForwarding {
+    /// A forwarder that matches on nothing has no use for the origin.
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        forwardStream(method: method, url: url, headers: headers, body: body)
+    }
+
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {

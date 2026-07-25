@@ -117,7 +117,12 @@ enum CapturedExchange {
                 await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
             }
             await StreamRelay.relay(
-                stream: forwarder.forwardStream(method: method, url: routing.url, headers: headers, body: body),
+                // The origin travels with the request, so a rule or breakpoint scoped to
+                // one app/device is evaluated against the client that actually sent it.
+                stream: forwarder.forwardStream(
+                    method: method, url: routing.url, headers: headers, body: body,
+                    origin: RequestOrigin(app: sourceApp, device: sourceDevice)
+                ),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
                 request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
                 store: store, bodyCapture: bodyCapture

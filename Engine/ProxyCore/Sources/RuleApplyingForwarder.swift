@@ -55,6 +55,13 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         return RuleEngine.applyResponseRewrites(plan.matched, to: result)
     }
 
+    /// The origin-less entry point: an exchange whose client Loom couldn't identify.
+    /// Delegates to the one implementation below, so a rule can't apply on one path
+    /// and not the other.
+    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        forwardStream(method: method, url: url, headers: headers, body: body, origin: nil)
+    }
+
     /// Stream the request body straight through when no matched rule needs the whole
     /// body (or the whole response); otherwise buffer it. Buffering is required for a
     /// short-circuit (block/mock/mapLocal — the body is discarded but still drained +
@@ -62,9 +69,13 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     /// substitution (needs the full response). Non-body request edits (method / URL /
     /// headers / mapRemote / URL substitutions) and delay apply on the streaming path
     /// too.
-    func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         let state = rules.snapshot()
-        let matched = state.activeRules.filter { $0.match.matches(method: method, url: url.absoluteString) }
+        let matched = state.activeRules.filter {
+            $0.match.matches(method: method, url: url.absoluteString, origin: origin)
+        }
         let needsBuffering = matched.contains { rule in
             let a = rule.actions
             switch a.route {
@@ -84,7 +95,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                 let task = Task {
                     do {
                         let collected = try await body.collect()
-                        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: collected)
+                        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: collected, origin: origin)
                         // Emit rule hits before running the plan so they survive an
                         // upstream failure (the exchange records what matched even if
                         // the connection never completes).
@@ -104,7 +115,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
 
         // Streaming: plan with no body so only the non-body request edits apply
         // (URL/host/headers/method); the real body streams through untouched.
-        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: nil)
+        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: nil, origin: origin)
         let base = self.base
         let appliedRules = plan.appliedRules
         let delayMs = plan.delayMilliseconds
@@ -120,7 +131,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                     // Emit rule hits before touching the network so they survive an
                     // upstream failure that throws before any response head.
                     if !appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: appliedRules)) }
-                    for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: body) {
+                    for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: body, origin: origin) {
                         // The base (NIO) forwarder carries no rules; forward its events
                         // untouched — the leading `.metadata` above is the rule carrier.
                         continuation.yield(event)

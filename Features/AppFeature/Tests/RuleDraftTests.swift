@@ -104,6 +104,40 @@ import Testing
         #expect(out.query == ["ab_test": "on", "debug": "*"])
     }
 
+    /// A rule an agent scoped to one app or device must survive a human opening it in
+    /// the editor and pressing Save — silently widening "mock this for my app" to
+    /// "mock this for everything" is the worst kind of drop, because the rule still
+    /// looks right.
+    @Test func originScope_roundTrips() {
+        let rule = TrafficRule(
+            name: "app-scoped mock",
+            match: RuleMatch(
+                urlPattern: "https://api.example.com/v1/*",
+                sourceApp: "com.example.MyApp",
+                deviceIP: "192.168.1.9"
+            ),
+            actions: RuleActions(route: .block)
+        )
+        let out = built(rule).match
+        #expect(out.sourceApp == "com.example.MyApp")
+        #expect(out.deviceIP == "192.168.1.9")
+    }
+
+    @Test func blankOriginFields_meanAnyClient() {
+        var draft = RuleDraft(rule: TrafficRule(
+            name: "r",
+            match: RuleMatch(urlPattern: "https://api.example.com/x", sourceApp: "com.example.MyApp"),
+            actions: RuleActions(route: .block)
+        ))
+        draft.sourceApp = "   " // cleared by the human
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(rule.match.sourceApp == nil, "whitespace is not a scope")
+        #expect(!rule.match.constrainsOrigin)
+    }
+
     @Test func enablingRegex_clearsExact() throws {
         var draft = RuleDraft(rule: TrafficRule(
             name: "r",

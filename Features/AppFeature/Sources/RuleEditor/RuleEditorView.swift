@@ -16,8 +16,9 @@ struct RuleEditorView: View {
     @State private var draft: RuleDraft
     @State private var segment: ActionSegment
     @State private var error: String?
-    /// Match-conditions group starts expanded only when host/query are already set,
-    /// so the common URL-only rule stays uncluttered.
+    /// Match-conditions group starts expanded only when host/query/app/device are
+    /// already set, so the common URL-only rule stays uncluttered — and a rule an
+    /// agent scoped to one app opens showing that scope rather than hiding it.
     @State private var showMatchConditions: Bool
 
     private var isNew: Bool { store.isNew }
@@ -28,7 +29,10 @@ struct RuleEditorView: View {
         let initial = RuleDraft(rule: store.rule)
         _draft = State(initialValue: initial)
         _segment = State(initialValue: Self.firstActive(in: initial) ?? .replaceResponse)
-        _showMatchConditions = State(initialValue: !initial.hostPattern.isEmpty || !initial.queryItems.isEmpty)
+        _showMatchConditions = State(
+            initialValue: !initial.hostPattern.isEmpty || !initial.queryItems.isEmpty
+                || !initial.sourceApp.isEmpty || !initial.deviceIP.isEmpty
+        )
     }
 
     var body: some View {
@@ -205,6 +209,16 @@ struct RuleEditorView: View {
                         .textFieldStyle(.roundedBorder)
                         .font(.callout.monospaced())
                 }
+                LabeledField("From app") {
+                    TextField("", text: $draft.sourceApp, prompt: Text("bundle id or name — only this app's requests"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+                }
+                LabeledField("From device") {
+                    TextField("", text: $draft.deviceIP, prompt: Text("device IP — only this device's requests"))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.callout.monospaced())
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Query predicates — value * means any value").font(.caption).foregroundStyle(.secondary)
@@ -242,6 +256,8 @@ struct RuleEditorView: View {
         if !draft.hostPattern.trimmingCharacters(in: .whitespaces).isEmpty { parts.append("host") }
         let queries = draft.queryItems.filter { !$0.key.trimmingCharacters(in: .whitespaces).isEmpty }.count
         if queries > 0 { parts.append("\(queries) query") }
+        if !draft.sourceApp.trimmingCharacters(in: .whitespaces).isEmpty { parts.append("app") }
+        if !draft.deviceIP.trimmingCharacters(in: .whitespaces).isEmpty { parts.append("device") }
         return parts.isEmpty ? "" : " · " + parts.joined(separator: ", ")
     }
 

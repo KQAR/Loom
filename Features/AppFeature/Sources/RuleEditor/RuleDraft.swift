@@ -17,6 +17,10 @@ struct RuleDraft {
     var isExact: Bool
     var hostPattern: String
     var queryItems: [QueryItem]
+    /// Originating app (bundle id or display name) this rule is scoped to; empty = any.
+    var sourceApp: String
+    /// Originating device IP this rule is scoped to; empty = any.
+    var deviceIP: String
 
     var requestSubs: [SubstitutionRule]
     var responseSubs: [SubstitutionRule]
@@ -63,6 +67,8 @@ struct RuleDraft {
         isRegex = rule.match.isRegex
         isExact = rule.match.isExact
         hostPattern = rule.match.hostPattern ?? ""
+        sourceApp = rule.match.sourceApp ?? ""
+        deviceIP = rule.match.deviceIP ?? ""
         // Sort by key so the list has a stable order across edits (query is a dict).
         queryItems = (rule.match.query ?? [:])
             .sorted { $0.key < $1.key }
@@ -186,6 +192,8 @@ struct RuleDraft {
             queryDict[key] = item.value
         }
         let trimmedHost = hostPattern.trimmingCharacters(in: .whitespaces)
+        let trimmedApp = sourceApp.trimmingCharacters(in: .whitespaces)
+        let trimmedDevice = deviceIP.trimmingCharacters(in: .whitespaces)
         let rule = TrafficRule(
             id: id,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -199,7 +207,9 @@ struct RuleDraft {
                 // Regex wins over exact in the matcher; keep the model honest.
                 isExact: isRegex ? false : isExact,
                 hostPattern: trimmedHost.isEmpty ? nil : trimmedHost,
-                query: queryDict.isEmpty ? nil : queryDict
+                query: queryDict.isEmpty ? nil : queryDict,
+                sourceApp: trimmedApp.isEmpty ? nil : trimmedApp,
+                deviceIP: trimmedDevice.isEmpty ? nil : trimmedDevice
             ),
             actions: actions,
             createdAt: createdAt

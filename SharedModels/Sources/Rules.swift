@@ -26,6 +26,17 @@ public struct RuleMatch: Equatable, Codable, Sendable {
     /// equal its value, unless the value is `*` (presence-only). nil/empty = no
     /// query constraint. Order-independent, unlike encoding query into `urlPattern`.
     public var query: [String: String]?
+    /// Optional originating-app predicate: bundle id or display name, compared
+    /// case-insensitively (same vocabulary as `FlowQuery.sourceApp`). This is what
+    /// makes "mock it for my app only, leave the browser alone" expressible.
+    ///
+    /// **Fails closed.** Traffic Loom couldn't attribute to a local process — a LAN
+    /// device has no local pid — does *not* match an app-scoped rule. A rule that
+    /// says "only this app" must never leak onto traffic that might be another.
+    public var sourceApp: String?
+    /// Optional originating-device predicate: the remote IP as seen by the proxy
+    /// (`SourceDevice.groupingKey`, from `list_devices`). Also fails closed.
+    public var deviceIP: String?
 
     public init(
         urlPattern: String,
@@ -33,7 +44,9 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         methods: [String] = [],
         isExact: Bool = false,
         hostPattern: String? = nil,
-        query: [String: String]? = nil
+        query: [String: String]? = nil,
+        sourceApp: String? = nil,
+        deviceIP: String? = nil
     ) {
         self.urlPattern = urlPattern
         self.isRegex = isRegex
@@ -41,6 +54,14 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         self.isExact = isExact
         self.hostPattern = hostPattern
         self.query = query
+        self.sourceApp = sourceApp
+        self.deviceIP = deviceIP
+    }
+
+    /// True when this match constrains *who* made the request, so a caller with no
+    /// origin information knows it cannot evaluate the rule faithfully.
+    public var constrainsOrigin: Bool {
+        !(sourceApp ?? "").isEmpty || !(deviceIP ?? "").isEmpty
     }
 
     // Tolerant decode: rules saved before these fields existed still load.
@@ -52,9 +73,18 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         isExact = try c.decodeIfPresent(Bool.self, forKey: .isExact) ?? false
         hostPattern = try c.decodeIfPresent(String.self, forKey: .hostPattern)
         query = try c.decodeIfPresent([String: String].self, forKey: .query)
+        sourceApp = try c.decodeIfPresent(String.self, forKey: .sourceApp)
+        deviceIP = try c.decodeIfPresent(String.self, forKey: .deviceIP)
     }
 
-    public func matches(method: String, url: String) -> Bool {
+    /// Does this request match?
+    ///
+    /// `origin` is who made it (local app / device). Pass it wherever it is known —
+    /// omitting it on a rule that constrains the origin means the rule cannot match,
+    /// by design: an app-scoped rule that applied to unattributed traffic would be
+    /// acting on requests that might be a different app's.
+    public func matches(method: String, url: String, origin: RequestOrigin? = nil) -> Bool {
+        if !matchesOrigin(origin) { return false }
         if !methods.isEmpty,
            !methods.contains(where: { $0.caseInsensitiveCompare(method) == .orderedSame }) {
             return false
@@ -92,6 +122,19 @@ public struct RuleMatch: Equatable, Codable, Sendable {
             return SSLScope.matches(pattern: urlPattern, host: url)
         }
         return url.lowercased().hasPrefix(urlPattern.lowercased())
+    }
+
+    private func matchesOrigin(_ origin: RequestOrigin?) -> Bool {
+        if let sourceApp, !sourceApp.isEmpty {
+            guard let app = origin?.app,
+                  app.groupingKey.caseInsensitiveCompare(sourceApp) == .orderedSame
+                  || app.name.caseInsensitiveCompare(sourceApp) == .orderedSame
+            else { return false }
+        }
+        if let deviceIP, !deviceIP.isEmpty {
+            guard origin?.device?.groupingKey == deviceIP else { return false }
+        }
+        return true
     }
 
     private static func queryItems(_ components: URLComponents?) -> [String: String] {

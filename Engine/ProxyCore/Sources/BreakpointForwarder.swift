@@ -25,16 +25,24 @@ final class BreakpointForwarder: UpstreamForwarding {
         try await forwardStream(method: method, url: url, headers: headers, body: .bytes(body)).collect()
     }
 
+    /// The origin-less entry point (a client Loom couldn't identify); the real
+    /// implementation is below, so a breakpoint can't hold on one path and not the other.
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        forwardStream(method: method, url: url, headers: headers, body: body, origin: nil)
+    }
+
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         let originalMethod = method
         let originalURL = url.absoluteString
-        let requestBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .request)
-        let responseBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .response)
+        let requestBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .request, origin: origin)
+        let responseBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .response, origin: origin)
 
         // Fast path: no breakpoint touches this exchange — delegate untouched so the
         // request body (and streaming responses) keep streaming chunk-by-chunk.
         guard requestBP != nil || responseBP != nil else {
-            return base.forwardStream(method: method, url: url, headers: headers, body: body)
+            return base.forwardStream(method: method, url: url, headers: headers, body: body, origin: origin)
         }
 
         // A held exchange is buffered (we may edit the request or the whole response),
@@ -68,7 +76,7 @@ final class BreakpointForwarder: UpstreamForwarding {
                     var httpVersion: String?
                     var responseHeaders: [HeaderPair] = []
                     var responseBody = Data()
-                    for try await event in base.forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
+                    for try await event in base.forwardStream(method: method, url: url, headers: headers, body: .bytes(body), origin: origin) {
                         switch event {
                         case let .metadata(rules): continuation.yield(.metadata(appliedRules: rules))
                         case let .head(code, version, hdrs): statusCode = code; httpVersion = version; responseHeaders = hdrs

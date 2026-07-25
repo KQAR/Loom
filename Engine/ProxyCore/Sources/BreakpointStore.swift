@@ -124,11 +124,16 @@ final class BreakpointStore: @unchecked Sendable {
     }
 
     /// The first armed breakpoint that matches this request on `phase`, or nil.
-    /// Matching runs off the *original* request (method/url), exactly like rules.
-    func firstMatch(method: String, url: String, phase: BreakpointPhase) -> Breakpoint? {
+    /// Matching runs off the *original* request (method/url) plus its `origin`,
+    /// exactly like rules — so "break only my app's calls" works, and a breakpoint
+    /// scoped to a client never holds a different client's traffic.
+    func firstMatch(
+        method: String, url: String, phase: BreakpointPhase, origin: RequestOrigin? = nil
+    ) -> Breakpoint? {
         lock.lock(); defer { lock.unlock() }
         return breakpoints.first { bp in
-            (phase == .request ? bp.onRequest : bp.onResponse) && bp.match.matches(method: method, url: url)
+            (phase == .request ? bp.onRequest : bp.onResponse)
+                && bp.match.matches(method: method, url: url, origin: origin)
         }
     }
 

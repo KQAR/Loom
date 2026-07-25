@@ -111,7 +111,9 @@ Loom is built for one cycle — do this, don't just read:
 ### Rules (`set_rule`) — the shape
 
 A rule is a **structured** match + action (no text DSL). Match on a URL
-glob-or-regex + HTTP methods; then one action:
+glob-or-regex + HTTP methods, optionally narrowed by `host_pattern`, `query`, and
+**who sent it** (`source_app` / `device_ip` — unattributed traffic never matches a
+scoped rule); then one action:
 
 - **mock** — return a canned status/headers/body without hitting the network.
 - **map remote** — redirect to another origin (`+exclude`/`keepHostHeader`).
@@ -152,6 +154,11 @@ glob-or-regex + HTTP methods; then one action:
   `body_contains` (or `header_contains` for an auth token / trace header) instead of
   paging `get_flow_detail` over candidates. Narrow it with `host`/`since_seconds` —
   a body search reads through to the on-disk capture.
+- **"Mock it for my app only, don't break my browser."** → put `source_app` (bundle
+  id or name, from a flow's `sourceApp`) or `device_ip` (from `list_devices`) in the
+  rule's `match`. Both also work on `arm_breakpoint`. Traffic Loom can't attribute to
+  a client never matches a scoped rule, so a scope can't leak — and a replay inherits
+  the origin of the flow it re-sends, so a scoped rule still applies on replay.
 - **"Point this API at staging."** → `set_rule` map-remote (set
   `keepHostHeader` only if the upstream needs the original Host). Group related
   redirects so `set_group_enabled` flips the whole scenario at once.

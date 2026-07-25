@@ -523,6 +523,14 @@ struct MCPToolExecutor {
                 "is_exact": ["type": "boolean", "description": "Require url_pattern to equal the full URL exactly, instead of the default prefix/glob match (ignored when is_regex). Default false."],
                 "host_pattern": ["type": "string", "description": "Optional host glob (e.g. *.example.com) matched against the URL host; combines with url_pattern."],
                 "query": ["type": "object", "description": "Optional query predicates: each key must be present and equal its value, or \"*\" to require the key with any value. Order-independent."],
+                "source_app": [
+                    "type": "string",
+                    "description": "Optional originating-app predicate: bundle id or display name (see list_devices / a flow's sourceApp), case-insensitive. This is how you scope a rule to one client — mock it for the app under test and leave the browser alone. Traffic Loom can't attribute to a local process (a LAN device has no local pid) never matches an app-scoped rule.",
+                ],
+                "device_ip": [
+                    "type": "string",
+                    "description": "Optional originating-device predicate: the device's IP as seen by the proxy (see list_devices). Scopes a rule to one phone/machine; unattributed traffic never matches.",
+                ],
                 "methods": [
                     "type": "array",
                     "items": ["type": "string"],
@@ -1698,7 +1706,9 @@ struct MCPToolExecutor {
             methods: (raw["methods"] as? [String]) ?? [],
             isExact: (raw["is_exact"] as? Bool) ?? false,
             hostPattern: (raw["host_pattern"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-            query: (raw["query"] as? [String: String]).flatMap { $0.isEmpty ? nil : $0 }
+            query: (raw["query"] as? [String: String]).flatMap { $0.isEmpty ? nil : $0 },
+            sourceApp: (raw["source_app"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            deviceIP: (raw["device_ip"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -1809,6 +1819,8 @@ struct MCPToolExecutor {
                 if rule.match.isExact { match["isExact"] = true }
                 if let hostPattern = rule.match.hostPattern, !hostPattern.isEmpty { match["hostPattern"] = hostPattern }
                 if let query = rule.match.query, !query.isEmpty { match["query"] = query }
+                if let sourceApp = rule.match.sourceApp, !sourceApp.isEmpty { match["sourceApp"] = sourceApp }
+                if let deviceIP = rule.match.deviceIP, !deviceIP.isEmpty { match["deviceIP"] = deviceIP }
                 if !rule.match.methods.isEmpty { match["methods"] = rule.match.methods }
                 return match
             }(),
@@ -1887,6 +1899,8 @@ struct MCPToolExecutor {
         if match.isExact { out["isExact"] = true }
         if let hostPattern = match.hostPattern, !hostPattern.isEmpty { out["hostPattern"] = hostPattern }
         if let query = match.query, !query.isEmpty { out["query"] = query }
+        if let sourceApp = match.sourceApp, !sourceApp.isEmpty { out["sourceApp"] = sourceApp }
+        if let deviceIP = match.deviceIP, !deviceIP.isEmpty { out["deviceIP"] = deviceIP }
         if !match.methods.isEmpty { out["methods"] = match.methods }
         return out
     }
