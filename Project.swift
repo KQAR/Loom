@@ -228,6 +228,23 @@ let project = Project(
             settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),
 
+        // MARK: SharedModels unit tests (FlowQuery predicates, URLHost parity,
+        // mock-model decoding). These already ran under `swift test` via the root
+        // Package.swift, but were absent from the Tuist graph — so 37 tests were
+        // invisible to Xcode and to any xcodebuild-driven CI.
+        .target(
+            name: "SharedModelsTests",
+            destinations: .macOS,
+            product: .unitTests,
+            bundleId: "com.loom.sharedmodelstests",
+            deploymentTargets: loomDeploymentTargets,
+            infoPlist: .default,
+            sources: ["SharedModels/Tests/**"],
+            dependencies: [
+                .target(name: "LoomSharedModels"),
+            ]
+        ),
+
         // MARK: Privileged-client unit tests (pure logic: QUIC-block scripting)
         .target(
             name: "PrivilegedHelperClientTests",

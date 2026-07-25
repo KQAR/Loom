@@ -222,13 +222,15 @@ import Foundation
 
 // MARK: - Forwarder decorator
 
-private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
+private actor StubUpstream: UpstreamForwarding {
     var callCount = 0
     var lastMethod: String?
     var lastURL: URL?
     var lastHeaders: [HeaderPair] = []
     var lastBody: Data?
     var result = ForwardResult(statusCode: 200, headers: [], body: Data("upstream".utf8))
+
+    func setResult(_ result: ForwardResult) { self.result = result }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         callCount += 1
@@ -261,7 +263,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
     @Test func noRules_passthrough_untouched() async throws {
         let (forwarder, upstream) = makeForwarder([])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
-        #expect(upstream.callCount == 1)
+        #expect(await upstream.callCount == 1)
         #expect(result.body == Data("upstream".utf8))
         #expect(try await appliedRules(forwarder).isEmpty)
     }
@@ -276,7 +278,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
 
-        #expect(upstream.callCount == 0, "a mocked exchange must not reach the upstream")
+        #expect(await upstream.callCount == 0, "a mocked exchange must not reach the upstream")
         #expect(result.statusCode == 200)
         #expect(result.body == Data(#"{"body":"MOCK"}"#.utf8))
         #expect(result.headers.first(where: { $0.name.lowercased() == "content-type" })?.value == "application/json")
@@ -288,7 +290,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
 
-        #expect(upstream.callCount == 0)
+        #expect(await upstream.callCount == 0)
         #expect(result.statusCode == 403)
         #expect(String(decoding: result.body, as: UTF8.self).contains("no analytics"))
     }
@@ -304,8 +306,8 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
 
-        #expect(upstream.lastURL?.absoluteString == "http://127.0.0.1:3001/v1/home")
-        #expect(upstream.lastHeaders.map(\.name) == ["X-Debug"])
+        #expect(await upstream.lastURL?.absoluteString == "http://127.0.0.1:3001/v1/home")
+        #expect(await upstream.lastHeaders.map(\.name) == ["X-Debug"])
         #expect(try await appliedRules(forwarder).map(\.name) == ["to local"])
     }
 
@@ -317,7 +319,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
 
-        #expect(upstream.callCount == 1)
+        #expect(await upstream.callCount == 1)
         #expect(result.statusCode == 503)
         #expect(result.body == Data("upstream".utf8), "body untouched when the rewrite only changes status")
     }
@@ -334,7 +336,7 @@ private final class StubUpstream: UpstreamForwarding, @unchecked Sendable {
         let (forwarder, upstream) = makeForwarder([rule])
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
 
-        #expect(upstream.callCount == 0)
+        #expect(await upstream.callCount == 0)
         #expect(result.body == Data(#"{"mocked":true}"#.utf8))
         #expect(result.headers.first?.value == "application/json")
     }

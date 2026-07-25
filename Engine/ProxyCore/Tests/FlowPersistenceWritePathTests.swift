@@ -9,7 +9,8 @@ import LoomSharedModels
 /// Batching those makes the behaviour observable only through the guarantees
 /// pinned here — a save must still be visible to the very next read, the cap must
 /// still hold, and a quit must not lose a batch still inside its window.
-@Suite final class FlowPersistenceWritePathTests {
+@Suite("Flow persistence write path", .timeLimit(.minutes(1)))
+final class FlowPersistenceWritePathTests {
     private let fileURL: URL
 
     init() {

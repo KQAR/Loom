@@ -6,6 +6,7 @@ import LoomSharedModels
 /// Unit contract for `FlowDiff` — the pure "observe" step. Exercises header
 /// add/remove/change grouping, the LCS line diff, binary/oversized fallbacks,
 /// and the `identical` flag, all without NIO or the MCP layer.
+@MainActor
 @Suite struct FlowDiffTests {
     private func flow(
         method: String = "GET",

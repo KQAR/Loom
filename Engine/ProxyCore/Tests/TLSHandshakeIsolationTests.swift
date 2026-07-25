@@ -8,7 +8,8 @@ import Testing
 /// plain NIO TLS client (trusting our CA) handshakes directly against a NIO TLS
 /// server using `serverContext(for:)`. If this passes, the certificate/key/chain
 /// are valid and any failure elsewhere is in the pipeline or the client.
-@Suite struct TLSHandshakeIsolationTests {
+@Suite("TLS handshake isolation", .timeLimit(.minutes(1)))
+struct TLSHandshakeIsolationTests {
     @Test func serverContext_completesHandshakeWithNIOClient() throws {
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         let serverCtx = try ca.serverContext(for: "example.test")

@@ -4,7 +4,8 @@ import LoomSharedModels
 /// An in-memory `ProxyControlling` for exercising `MCPToolExecutor` without NIO.
 /// Records the last write so tests can assert the executor forwarded correctly,
 /// and holds a mutable rule set so the rule CRUD tools round-trip.
-final class StubEngine: ProxyControlling, @unchecked Sendable {
+@MainActor
+final class StubEngine: ProxyControlling {
     var flows: [Flow] = []
     var rules = RulesState()
     var scope = SSLScope.disabled

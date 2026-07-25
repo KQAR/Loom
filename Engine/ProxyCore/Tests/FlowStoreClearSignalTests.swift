@@ -7,7 +7,8 @@ import LoomSharedModels
 /// of the flow list and only cleared it from its own button. Without a broadcast
 /// the human would keep supervising flows the engine no longer has — a stale view
 /// of what the agent did. The store therefore announces every clear.
-@Suite struct FlowStoreClearSignalTests {
+@Suite("Flow store clear signal", .timeLimit(.minutes(1)))
+struct FlowStoreClearSignalTests {
     private func flow(_ url: String) -> Flow {
         Flow(
             id: UUID(),

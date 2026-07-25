@@ -9,11 +9,12 @@ import LoomSharedModels
 /// map-remote to a dead upstream) applies, the connection then fails before any
 /// response head, and the captured flow must still record `appliedRules` — the
 /// `.metadata` event is emitted before the network call, so it survives the error.
-@Suite struct AppliedRulesOnFailureTests {
+@Suite("Applied rules on failure", .timeLimit(.minutes(1)))
+struct AppliedRulesOnFailureTests {
     private let url = URL(string: "https://api.example.test/v1/home")!
 
     /// A base forwarder that always fails to reach upstream.
-    private final class ThrowingUpstream: UpstreamForwarding, @unchecked Sendable {
+    private struct ThrowingUpstream: UpstreamForwarding {
         struct Boom: Error {}
         func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
             throw Boom()
@@ -130,10 +131,9 @@ import LoomSharedModels
 
     /// A base that emits rule metadata, then fails — i.e. rules matched below the
     /// breakpoint but the upstream is dead.
-    private final class MetadataThenFailUpstream: UpstreamForwarding, @unchecked Sendable {
+    private struct MetadataThenFailUpstream: UpstreamForwarding {
         struct Boom: Error {}
         let rule: AppliedRule
-        init(rule: AppliedRule) { self.rule = rule }
         func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult { throw Boom() }
         func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
             let rule = self.rule
@@ -163,14 +163,19 @@ import LoomSharedModels
             } catch { return (applied, true) }
         }
 
-        // Release the held request unchanged once it parks.
+        // Release the held request unchanged once it parks. If it never parks the
+        // poll must fail loudly — falling through would leave `consume.value` below
+        // waiting on a resume that never comes, hanging the suite instead of failing.
+        var released = false
         for _ in 0..<200 {
             if let pending = store.pending().first {
                 #expect(store.resume(pendingID: pending.id, resolution: .proceed(.none)))
+                released = true
                 break
             }
             try await Task.sleep(nanoseconds: 5_000_000)
         }
+        try #require(released, "the exchange was never held, so it can't be resumed")
 
         let (applied, threw) = await consume.value
         #expect(threw, "a dead upstream must still surface as an error")

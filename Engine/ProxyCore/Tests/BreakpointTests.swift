@@ -32,9 +32,9 @@ import LoomSharedModels
         ))))
 
         _ = try await resultTask
-        #expect(upstream.lastMethod == "POST")
-        #expect(upstream.lastBody == Data("edited".utf8))
-        #expect(upstream.lastHeaders.value(named: "X-Edited") == "1")
+        #expect(await upstream.lastMethod == "POST")
+        #expect(await upstream.lastBody == Data("edited".utf8))
+        #expect(await upstream.lastHeaders.value(named: "X-Edited") == "1")
         #expect(store.pending().isEmpty, "resumed exchange must be dropped from pending")
     }
 
@@ -50,14 +50,14 @@ import LoomSharedModels
 
         let result = try await resultTask
         #expect(result.statusCode == 502)
-        #expect(upstream.callCount == 0, "an aborted request must never reach the upstream")
+        #expect(await upstream.callCount == 0, "an aborted request must never reach the upstream")
     }
 
     // MARK: Response phase
 
     @Test func responseBreakpoint_editsResponse() async throws {
         let upstream = recordingUpstream()
-        upstream.result = ForwardResult(statusCode: 200, headers: [], body: Data("original".utf8))
+        await upstream.setResult(ForwardResult(statusCode: 200, headers: [], body: Data("original".utf8)))
         let store = BreakpointStore()
         let forwarder = BreakpointForwarder(base: upstream, store: store)
         store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: false, onResponse: true))
@@ -71,7 +71,7 @@ import LoomSharedModels
         ))))
 
         let result = try await resultTask
-        #expect(upstream.callCount == 1, "the response phase runs after the real upstream call")
+        #expect(await upstream.callCount == 1, "the response phase runs after the real upstream call")
         #expect(result.statusCode == 503)
         #expect(result.body == Data("MAINTENANCE".utf8))
     }
@@ -85,7 +85,7 @@ import LoomSharedModels
         store.arm(Breakpoint(match: RuleMatch(urlPattern: "https://other.test/*"), onRequest: true))
 
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
-        #expect(upstream.callCount == 1)
+        #expect(await upstream.callCount == 1)
         #expect(result.body == Data("upstream".utf8))
         #expect(store.pending().isEmpty)
     }
@@ -110,8 +110,8 @@ import LoomSharedModels
 
         // No resume call — the timeout must release it unchanged.
         let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: Data("keep".utf8))
-        #expect(upstream.callCount == 1)
-        #expect(upstream.lastBody == Data("keep".utf8))
+        #expect(await upstream.callCount == 1)
+        #expect(await upstream.lastBody == Data("keep".utf8))
         #expect(result.body == Data("upstream".utf8))
     }
 
@@ -147,8 +147,8 @@ import LoomSharedModels
 
         // Released unchanged, without waiting out the timeout.
         let result = try await resultTask
-        #expect(upstream.callCount == 1)
-        #expect(upstream.lastBody == Data("keep".utf8))
+        #expect(await upstream.callCount == 1)
+        #expect(await upstream.lastBody == Data("keep".utf8))
         #expect(result.body == Data("upstream".utf8))
         #expect(store.pending().isEmpty, "disarm must drop the held exchange")
     }
@@ -212,7 +212,7 @@ import LoomSharedModels
         // Well past the 50 ms timeout: had the watchdog survived, it would have
         // resolved `.proceed` and the request would have reached upstream.
         try await Task.sleep(nanoseconds: 200_000_000)
-        #expect(upstream.callCount == 0, "aborted exchange must never reach upstream")
+        #expect(await upstream.callCount == 0, "aborted exchange must never reach upstream")
     }
 
     // MARK: Helpers
@@ -229,13 +229,15 @@ import LoomSharedModels
     }
 }
 
-private final class BPStubUpstream: UpstreamForwarding, @unchecked Sendable {
+private actor BPStubUpstream: UpstreamForwarding {
     var callCount = 0
     var lastMethod: String?
     var lastURL: URL?
     var lastHeaders: [HeaderPair] = []
     var lastBody: Data?
     var result = ForwardResult(statusCode: 200, headers: [], body: Data("upstream".utf8))
+
+    func setResult(_ result: ForwardResult) { self.result = result }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         callCount += 1

@@ -11,7 +11,8 @@ import LoomSharedModels
 /// the proxy (CONNECT), speaks TLS trusting Loom's CA, and sends an HTTP request;
 /// Loom terminates the TLS with a minted leaf, captures the plaintext exchange,
 /// and answers via a stubbed upstream. Fully hermetic — no network, no origin.
-@Suite struct HTTPSInterceptionTests {
+@Suite("HTTPS interception", .timeLimit(.minutes(1)))
+struct HTTPSInterceptionTests {
     @Test func interceptsDecryptsAndCapturesHTTPS() throws {
         let responseBody = #"{"ok":true,"via":"loom-mitm"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
