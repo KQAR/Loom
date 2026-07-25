@@ -35,7 +35,17 @@ actor AuditStore {
         }
         persistence?.save(entry)
         for continuation in continuations.values {
-            continuation.yield(entry)
+            if case .dropped = continuation.yield(entry) {
+                // The durable trail still has it, but this subscriber's live view
+                // (the sidebar Audit panel) just missed a write action — say so.
+                Log.audit.error(
+                    """
+                    Audit stream subscriber is behind; dropped a write-action entry for \
+                    \(entry.tool, privacy: .public). The durable trail on disk is complete — \
+                    re-read it with get_audit_log or reopen the Audit panel.
+                    """
+                )
+            }
         }
     }
 
@@ -60,11 +70,15 @@ actor AuditStore {
         persistence?.flush()
     }
 
-    /// A new live subscription. Every `record` yields here. Unbuffered — a late
-    /// subscriber misses prior entries (seed from `recent`).
+    /// A new live subscription. Every `record` yields here. A late subscriber
+    /// misses prior entries (seed from `recent`).
+    ///
+    /// Bounded like the flow stream: write actions are far rarer than flows, and the
+    /// durable trail on disk is the source of truth — a subscriber that falls this
+    /// far behind can re-read it — but nothing in memory is allowed to be unbounded.
     func stream() -> AsyncStream<AuditEntry> {
         let id = UUID()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingOldest(Self.streamBuffer)) { continuation in
             continuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.dropContinuation(id) }
@@ -75,4 +89,8 @@ actor AuditStore {
     private func dropContinuation(_ id: UUID) {
         continuations[id] = nil
     }
+
+    /// See `FlowStore.streamBuffer`. Smaller because write actions are orders of
+    /// magnitude rarer than captured flows.
+    static let streamBuffer = 128
 }

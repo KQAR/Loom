@@ -56,12 +56,47 @@ actor FlowStore {
     /// Fan a flow out to every live `flowStream()` consumer and the push
     /// observer. The single broadcast point so the stream and the sink can never
     /// diverge.
+    ///
+    /// Each stream buffers a bounded number of emissions (see `streamBuffer`) and
+    /// drops the oldest when a consumer falls behind. A drop is **never silent**:
+    /// it means that subscriber's view of the traffic has a hole, which for a
+    /// debugging proxy is exactly the kind of thing that must be visible rather
+    /// than guessed at.
     private func broadcast(_ flow: Flow) {
-        for continuation in continuations.values {
-            continuation.yield(flow)
+        for (id, continuation) in continuations {
+            if case .dropped = continuation.yield(flow) {
+                noteDrop(subscriber: id)
+            }
         }
         observer?.flowDidUpdate(flow)
     }
+
+    /// Per-subscriber dropped-emission counts, so a slow consumer is reported once
+    /// per burst rather than once per dropped flow (a stalled UI would otherwise
+    /// turn one problem into thousands of log lines).
+    private var droppedEmissions: [UUID: Int] = [:]
+
+    private func noteDrop(subscriber: UUID) {
+        let count = (droppedEmissions[subscriber] ?? 0) + 1
+        droppedEmissions[subscriber] = count
+        // 1, 10, 100, 1000 … — enough to see it start and to see it get worse.
+        if count == 1 || count % 100 == 0 {
+            Log.store.error(
+                """
+                Flow stream subscriber is behind: \(count, privacy: .public) emission(s) dropped \
+                (buffer \(Self.streamBuffer, privacy: .public)). That subscriber's view of \
+                captured traffic has gaps — flows are still in the store, but live updates were lost.
+                """
+            )
+        }
+    }
+
+    /// How many emissions a `flowStream()` subscriber may fall behind before the
+    /// oldest are dropped. Unbounded (the `AsyncStream` default) would let a stalled
+    /// consumer grow the buffer without limit while the whole point of the ring and
+    /// the body budget is that nothing in memory is unbounded. Sized well above a
+    /// UI coalescing window (~100 ms) so normal back-pressure never drops.
+    static let streamBuffer = 512
 
     /// Array index for `id`, or nil when it isn't in the ring. Tolerates a stale
     /// entry (an id evicted without its map entry removed) rather than trusting the
@@ -114,7 +149,9 @@ actor FlowStore {
     /// then yields on each newly-seen device (and on `clear()`).
     func connectedDeviceCountStream() -> AsyncStream<Int> {
         let id = UUID()
-        return AsyncStream { continuation in
+        // A count only ever needs its newest value — an older one is worthless, so
+        // buffering one and replacing it is both bounded and lossless in practice.
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             continuation.yield(connectedLANIPs.count)
             deviceCountContinuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
@@ -222,7 +259,9 @@ actor FlowStore {
     /// MCP, which the window would otherwise never hear about.
     func clearedStream() -> AsyncStream<Void> {
         let id = UUID()
-        return AsyncStream { continuation in
+        // "the capture was discarded" carries no payload, so one pending signal is
+        // as informative as ten.
+        return AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             clearedContinuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.dropClearedContinuation(id) }
@@ -314,7 +353,7 @@ actor FlowStore {
     /// emission contract. Unbuffered — a late subscriber misses prior emissions.
     func stream() -> AsyncStream<Flow> {
         let id = UUID()
-        return AsyncStream { continuation in
+        return AsyncStream(bufferingPolicy: .bufferingOldest(Self.streamBuffer)) { continuation in
             continuations[id] = continuation
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.dropContinuation(id) }
@@ -324,5 +363,6 @@ actor FlowStore {
 
     private func dropContinuation(_ id: UUID) {
         continuations[id] = nil
+        droppedEmissions[id] = nil
     }
 }
