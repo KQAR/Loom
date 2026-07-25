@@ -89,6 +89,7 @@ struct CertificateTrustCard: View {
             }
             .buttonStyle(.borderless)
             .font(.caption2)
+            .accessibilityLabel("Copy the trust command")
             .help("Copy the trust command")
         }
     }

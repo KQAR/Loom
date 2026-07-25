@@ -253,6 +253,8 @@ private struct JSONNode: View {
         switch value {
         case let .object(pairs):
             container(count: pairs.count, open: "{", close: "}") {
+                // `Array(...)` is required, not a leftover: EnumeratedSequence only
+                // conforms to RandomAccessCollection on macOS 26+, and this ships to 14.
                 ForEach(Array(pairs.enumerated()), id: \.offset) { _, pair in
                     JSONNode(key: pair.0, value: pair.1, depth: depth + 1)
                 }
@@ -297,11 +299,14 @@ private struct JSONNode: View {
                     gutterChevron(expanded)
                     indent(depth)
                     if expanded {
-                        keyPrefix + Text(open).foregroundColor(.secondary)
+                        keyPrefix + Text(open).foregroundStyle(.secondary)
                     } else {
                         keyPrefix
-                            + Text("\(open)…\(close)").foregroundColor(.secondary)
-                            + Text("  \(count)").foregroundColor(.init(nsColor: .tertiaryLabelColor))
+                            + Text("\(open)…\(close)").foregroundStyle(.secondary)
+                            // `verbatim:` — a LocalizedStringKey would group the digits,
+                            // so a 1234-element array collapsed to "1,234" (the same
+                            // trap the panel's port display already documents).
+                            + Text(verbatim: "  \(count)").foregroundStyle(Color(nsColor: .tertiaryLabelColor))
                     }
                     Spacer(minLength: 0)
                 }
@@ -314,7 +319,7 @@ private struct JSONNode: View {
                 HStack(spacing: 0) {
                     gutterChevron(nil)
                     indent(depth)
-                    Text(close).foregroundColor(.secondary)
+                    Text(close).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                 }
             }
@@ -333,16 +338,16 @@ private struct JSONNode: View {
 
     private var keyPrefix: Text {
         guard let key else { return Text("") }
-        return Text("\"\(key)\"").foregroundColor(.init(nsColor: .labelColor))
-            + Text(": ").foregroundColor(.secondary)
+        return Text("\"\(key)\"").foregroundStyle(Color(nsColor: .labelColor))
+            + Text(": ").foregroundStyle(.secondary)
     }
 
     private var valueText: Text {
         switch value {
-        case let .string(s): return Text("\"\(s)\"").foregroundColor(.green)
-        case let .number(n): return Text(n).foregroundColor(.orange)
-        case let .bool(b): return Text(b ? "true" : "false").foregroundColor(.purple)
-        case .null: return Text("null").foregroundColor(.secondary)
+        case let .string(s): return Text("\"\(s)\"").foregroundStyle(.green)
+        case let .number(n): return Text(n).foregroundStyle(.orange)
+        case let .bool(b): return Text(b ? "true" : "false").foregroundStyle(.purple)
+        case .null: return Text("null").foregroundStyle(.secondary)
         default: return Text("")
         }
     }

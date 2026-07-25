@@ -11,12 +11,13 @@ import SwiftUI
 /// service that would leak the browsing history. The fetch **bypasses** the
 /// system proxy so it can't loop back into Loom and pollute the capture.
 @MainActor
-final class FaviconLoader: ObservableObject {
+@Observable
+final class FaviconLoader {
     static let shared = FaviconLoader()
 
     /// host → icon. A present-but-nil value means "tried, none available" so we
     /// stop retrying and fall back to the globe.
-    @Published private(set) var icons: [String: NSImage?] = [:]
+    private(set) var icons: [String: NSImage?] = [:]
 
     private var inFlight: Set<String> = []
     private let diskDir: URL?
@@ -97,7 +98,10 @@ final class FaviconLoader: ObservableObject {
 /// A host's favicon, falling back to the system globe until (or unless) one loads.
 struct FaviconView: View {
     let host: String
-    @ObservedObject private var loader = FaviconLoader.shared
+    /// A plain reference, not `@ObservedObject`/`@State`: `@Observable` tracks the
+    /// `icons` read in `body` directly, and the loader is a process-wide singleton
+    /// whose lifetime must not be tied to any one view's.
+    private let loader = FaviconLoader.shared
 
     var body: some View {
         Group {

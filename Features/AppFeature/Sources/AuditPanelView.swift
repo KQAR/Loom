@@ -15,8 +15,11 @@ import SwiftUI
 /// the rule editor) with up/down controls to step through actions in place.
 struct AuditPanelView: View {
     let store: StoreOf<AppFeature>
-    /// The entry whose detail sheet is open, if any.
-    @State private var sheetID: AuditEntry.ID?
+    /// The entry whose detail sheet is open, if any. Held as the entry rather than
+    /// its id so `.sheet(item:)` can own the presentation — a hand-rolled
+    /// `Binding(get:set:)` over an optional id had to fake `isPresented` and then
+    /// unwrap again inside the builder.
+    @State private var sheetEntry: AuditEntry?
     /// Guards the destructive clear behind a confirmation.
     @State private var confirmingClear = false
 
@@ -33,10 +36,8 @@ struct AuditPanelView: View {
             }
         }
         // A sheet, not a popover — a focused modal window like RuleEditorView.
-        .sheet(isPresented: Binding(get: { sheetID != nil }, set: { if !$0 { sheetID = nil } })) {
-            if let sheetID {
-                AuditDetailSheet(entries: store.auditEntries, currentID: sheetID)
-            }
+        .sheet(item: $sheetEntry) { entry in
+            AuditDetailSheet(entries: store.auditEntries, currentID: entry.id)
         }
     }
 
@@ -76,8 +77,10 @@ struct AuditPanelView: View {
     private var list: some View {
         ScrollViewReader { proxy in
             List {
+                // Same macOS 14 constraint as JSONView: EnumeratedSequence isn't a
+                // RandomAccessCollection until macOS 26, so the Array() stays.
                 ForEach(Array(store.auditEntries.enumerated()), id: \.element.id) { idx, entry in
-                    AuditRow(entry: entry, sequence: idx + 1) { sheetID = entry.id }
+                    AuditRow(entry: entry, sequence: idx + 1) { sheetEntry = entry }
                         .id(entry.id)
                         .listRowSeparator(.hidden)
                 }
@@ -85,7 +88,7 @@ struct AuditPanelView: View {
             .listStyle(.inset)
             // Tail-follow: land on the newest (bottom) on entry, and stay there as
             // new actions arrive.
-            .onAppear { scrollToNewest(proxy) }
+            .task { scrollToNewest(proxy) }
             .onChange(of: store.auditEntries.count) { scrollToNewest(proxy) }
         }
     }
@@ -146,8 +149,13 @@ private struct AuditRow: View {
 /// newest, so ▲ = older, ▼ = newer.
 private struct AuditDetailSheet: View {
     let entries: IdentifiedArrayOf<AuditEntry>
-    @State var currentID: AuditEntry.ID
+    @State private var currentID: AuditEntry.ID
     @Environment(\.dismiss) private var dismiss
+
+    init(entries: IdentifiedArrayOf<AuditEntry>, currentID: AuditEntry.ID) {
+        self.entries = entries
+        _currentID = State(initialValue: currentID)
+    }
 
     private var index: Int? { entries.index(id: currentID) }
     private var entry: AuditEntry? { entries[id: currentID] }
@@ -194,9 +202,11 @@ private struct AuditDetailSheet: View {
                     .foregroundStyle(.secondary)
                 Button { step(-1) } label: { Image(systemName: "chevron.up") }
                     .disabled(index == 0)
+                    .accessibilityLabel("Older action")
                     .help("Older action")
                 Button { step(1) } label: { Image(systemName: "chevron.down") }
                     .disabled(index >= entries.count - 1)
+                    .accessibilityLabel("Newer action")
                     .help("Newer action")
             }
             Button("Done") { dismiss() }

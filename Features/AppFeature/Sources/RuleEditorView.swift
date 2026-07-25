@@ -118,6 +118,7 @@ struct RuleEditorView: View {
             }
             .menuStyle(.borderlessButton)
             .frame(width: 22)
+            .accessibilityLabel("Pick an existing group")
             .help("Pick an existing group")
         }
         .frame(width: 200)
@@ -224,6 +225,7 @@ struct RuleEditorView: View {
                                 draft.queryItems.removeAll { $0.id == item.id }
                             } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless).controlSize(.small)
+                            .accessibilityLabel("Remove this match condition")
                         }
                     }
                 }
@@ -340,7 +342,7 @@ struct RuleEditorView: View {
                         .scrollContentBackground(.hidden)
                         .padding(4)
                         .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                        .overlay(RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary))
+                        .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
                 }
             } else {
                 JSONBodyEditor(title: "Body", text: $draft.mockBody)
@@ -505,6 +507,7 @@ private struct SubstitutionRow: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
+                .accessibilityLabel("Remove this substitution")
             }
             TextField("", text: $sub.match, prompt: Text("find (e.g. key=12345)"))
                 .textFieldStyle(.roundedBorder)
@@ -515,7 +518,7 @@ private struct SubstitutionRow: View {
         }
         .padding(LoomTheme.Space.sm)
         .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-        .overlay(RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary))
+        .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
     }
 
     private func iconToggle(_ text: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
@@ -571,7 +574,7 @@ private struct HeaderEditor: View {
                 .scrollContentBackground(.hidden)
                 .padding(4)
                 .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary))
+                .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
         }
     }
 }
@@ -618,7 +621,7 @@ private struct JSONBodyEditor: View {
                 }
                 .frame(minHeight: 120, maxHeight: 260)
                 .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                .overlay(RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary))
+                .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
             } else {
                 TextEditor(text: $text)
                     .font(.callout.monospaced())
@@ -626,7 +629,7 @@ private struct JSONBodyEditor: View {
                     .scrollContentBackground(.hidden)
                     .padding(4)
                     .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                    .overlay(RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary))
+                    .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
             }
         }
     }

@@ -174,6 +174,7 @@ private struct ResponsePane: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
+                .accessibilityLabel("Close detail")
                 .help("Close detail")
             }
             .padding(.horizontal, LoomTheme.Space.md)
@@ -312,6 +313,7 @@ private struct CopyableURLBar: View {
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
+            .accessibilityLabel("Copy URL")
             .help("Copy URL")
         }
         .padding(.horizontal, LoomTheme.Space.md)
@@ -379,12 +381,13 @@ private struct FloatingCopyButton: View {
                 .foregroundStyle(copied ? Color.accentColor : .secondary)
                 .padding(6)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                .overlay(
+                .overlay {
                     RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
                         .stroke(.quaternary, lineWidth: 1)
-                )
+                }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Copy body")
         .help("Copy body")
         .padding(LoomTheme.Space.sm)
     }
