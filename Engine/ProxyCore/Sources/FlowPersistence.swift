@@ -15,14 +15,47 @@ final class FlowPersistence: @unchecked Sendable {
     private var db: OpaquePointer?
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
-    /// Cap rows so the file can't grow forever; pruned oldest-first on write.
+    /// Cap rows so the file can't grow forever; pruned oldest-first.
     private let maxRows: Int
+    /// Prune only once the cap is exceeded by this much, then re-count exactly.
+    /// Pruning per write meant a full index scan (`ORDER BY startedAt` + delete
+    /// attempt) for every captured flow. The trade is explicit: the file may hold
+    /// up to `maxRows + pruneSlack` rows between prunes (2.5% at the default cap).
+    private let pruneSlack: Int
+    /// Upper bound on rows, maintained incrementally and re-read exactly after each
+    /// prune. `INSERT OR REPLACE` can replace rather than add, so this over-counts
+    /// at worst — pruning slightly early is harmless, skipping it would not be.
+    private var rowCount = 0
+
+    /// Rows waiting to be written, and the batching window. Each `save` used to be
+    /// its own transaction (and its own `sqlite3_prepare_v2`); a capture burst now
+    /// costs one transaction per window instead of one per flow. Every read drains
+    /// this first, so batching is invisible to callers.
+    private var pending: [Row] = []
+    private var flushScheduled = false
+    private let batchWindow: TimeInterval = 0.05
+    private let maxBatch = 256
+    /// Reused across writes instead of re-prepared per row.
+    private var insertStatement: OpaquePointer?
+
+    /// One row's worth of already-encoded values, captured off the queue.
+    private struct Row {
+        let id: String
+        let startedAt: Double
+        let host: String?
+        let method: String
+        let status: Int?
+        let json: Data
+        let requestBody: Data?
+        let responseBody: Data?
+    }
 
     // SQLite wants to copy bound bytes, not borrow them.
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init?(fileURL: URL, maxRows: Int = 20_000) {
+    init?(fileURL: URL, maxRows: Int = 20_000, pruneSlack: Int = 500) {
         self.maxRows = maxRows
+        self.pruneSlack = max(0, pruneSlack)
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
@@ -33,6 +66,10 @@ final class FlowPersistence: @unchecked Sendable {
         }
         db = handle
         exec("PRAGMA journal_mode=WAL;")
+        // WAL's standard durability setting: writes still survive a process crash;
+        // only a power loss can lose the last transactions. FULL fsyncs on every
+        // commit, which is a poor trade for captured traffic.
+        exec("PRAGMA synchronous=NORMAL;")
         exec("""
         CREATE TABLE IF NOT EXISTS flows (
             id TEXT PRIMARY KEY, startedAt REAL, host TEXT, method TEXT, status INTEGER,
@@ -46,6 +83,7 @@ final class FlowPersistence: @unchecked Sendable {
         // `recent` decodes whatever the row's json holds, and hydration only
         // overrides when a body column is present.
         migrateAddBodyColumns()
+        rowCount = countRows()
     }
 
     /// Add `reqBody`/`respBody` to an old table that predates body separation.
@@ -62,7 +100,16 @@ final class FlowPersistence: @unchecked Sendable {
         if !existing.contains("respBody") { exec("ALTER TABLE flows ADD COLUMN respBody BLOB;") }
     }
 
-    deinit { sqlite3_close(db) }
+    deinit {
+        // Don't lose a batch that was still inside its window. Called directly, not
+        // via `queue.sync`: a queued closure holds a temporary strong reference
+        // while it runs, so the last release can happen *on* this queue — and
+        // `sync` from the queue it targets deadlocks. `deinit` means no other code
+        // can hold a reference, so exclusive access is already guaranteed.
+        writePending()
+        sqlite3_finalize(insertStatement)
+        sqlite3_close(db)
+    }
 
     static func makeDefault() -> FlowPersistence? {
         FlowPersistence(fileURL: LoomPaths.appSupportFile("flows.sqlite"))
@@ -72,9 +119,21 @@ final class FlowPersistence: @unchecked Sendable {
         // Metadata JSON is body-free; the bodies ride in their own BLOB columns so
         // list/boot reads never pay to decode (or base64-inflate) megabyte bodies.
         guard let data = try? encoder.encode(flow.strippingBodies()) else { return }
-        let requestBody = flow.request.body
-        let responseBody = flow.response?.body
-        queue.async { [weak self] in self?.writeRow(flow, data, requestBody, responseBody) }
+        let row = Row(
+            id: flow.id.uuidString,
+            startedAt: flow.startedAt.timeIntervalSince1970,
+            host: flow.host,
+            method: flow.request.method,
+            status: flow.statusCode,
+            json: data,
+            requestBody: flow.request.body,
+            responseBody: flow.response?.body
+        )
+        // Strong capture on purpose: a save must not be dropped because the store
+        // was released before the queue got to it. This means the last reference can
+        // be released *by the queue*, so `deinit` may run on it — which is why
+        // `deinit` flushes directly instead of via `queue.sync`.
+        queue.async { self.enqueue(row) }
     }
 
     /// Newest-first, like `FlowStore.recent`. Body-free: the JSON metadata blob no
@@ -83,6 +142,7 @@ final class FlowPersistence: @unchecked Sendable {
     /// inline bodies.
     func recent(limit: Int) -> [Flow] {
         queue.sync {
+            writePending() // a batched save must be visible to the very next read
             var flows: [Flow] = []
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, "SELECT json FROM flows ORDER BY startedAt DESC LIMIT ?;", -1, &stmt, nil) == SQLITE_OK
@@ -106,6 +166,7 @@ final class FlowPersistence: @unchecked Sendable {
     /// Nil when there is no such row.
     func flow(id: UUID) -> Flow? {
         queue.sync {
+            writePending()
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, "SELECT json, reqBody, respBody FROM flows WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK
             else { return nil }
@@ -130,6 +191,7 @@ final class FlowPersistence: @unchecked Sendable {
     /// in `json`) return nil columns — the caller's in-memory copy already has them.
     func bodies(id: UUID) -> (request: Data?, response: Data?)? {
         queue.sync {
+            writePending()
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, "SELECT reqBody, respBody FROM flows WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK
             else { return nil }
@@ -148,39 +210,87 @@ final class FlowPersistence: @unchecked Sendable {
     }
 
     func deleteAll() {
-        queue.async { [weak self] in self?.exec("DELETE FROM flows;") }
+        // Strong, like `save`: a dropped delete would leave rows on disk that the
+        // app believes are gone, and they'd reappear on the next launch.
+        queue.async {
+            self.pending.removeAll() // no point writing rows we're about to delete
+            self.exec("DELETE FROM flows;")
+            self.rowCount = 0
+        }
     }
 
-    /// Block until every queued `save`/`deleteAll` has run. `save` is fire-and-
-    /// forget (`queue.async`), so on quit the last few writes may still be sitting
-    /// in the queue — call this from the terminate handler to drain them before
-    /// the process dies. A no-op barrier is enough since the queue is serial.
+    /// Block until every queued `save`/`deleteAll` has run *and* any batched rows
+    /// have hit the file. `save` is fire-and-forget (`queue.async`) and batched, so
+    /// on quit the last few writes may still be queued or inside their window —
+    /// call this from the terminate handler before the process dies.
     func flush() {
-        queue.sync {}
+        queue.sync { writePending() }
     }
 
     // MARK: - Private (queue-confined)
 
-    private func writeRow(_ flow: Flow, _ data: Data, _ requestBody: Data?, _ responseBody: Data?) {
-        var stmt: OpaquePointer?
+    /// Queue a row and arrange for the batch to land. A full batch writes
+    /// immediately so a sustained capture never buffers more than `maxBatch`.
+    private func enqueue(_ row: Row) {
+        pending.append(row)
+        if pending.count >= maxBatch {
+            writePending()
+            return
+        }
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        queue.asyncAfter(deadline: .now() + batchWindow) { [weak self] in self?.writePending() }
+    }
+
+    /// Write every queued row in one transaction, reusing one prepared statement.
+    /// Idempotent and cheap when empty, so reads can call it unconditionally.
+    private func writePending() {
+        flushScheduled = false
+        guard !pending.isEmpty else { return }
+        let rows = pending
+        pending.removeAll(keepingCapacity: true)
+
+        exec("BEGIN IMMEDIATE;")
+        var written = 0
+        for row in rows where writeRow(row) { written += 1 }
+        exec("COMMIT;")
+
+        rowCount += written
+        pruneIfNeeded()
+    }
+
+    /// Bind and step one row on the shared statement. Returns whether it landed.
+    private func writeRow(_ row: Row) -> Bool {
+        guard let stmt = preparedInsert() else { return false }
+        defer {
+            sqlite3_reset(stmt)
+            sqlite3_clear_bindings(stmt)
+        }
+        sqlite3_bind_text(stmt, 1, row.id, -1, transient)
+        sqlite3_bind_double(stmt, 2, row.startedAt)
+        if let host = row.host { sqlite3_bind_text(stmt, 3, host, -1, transient) } else { sqlite3_bind_null(stmt, 3) }
+        sqlite3_bind_text(stmt, 4, row.method, -1, transient)
+        if let status = row.status { sqlite3_bind_int(stmt, 5, Int32(status)) } else { sqlite3_bind_null(stmt, 5) }
+        row.json.withUnsafeBytes { raw in
+            sqlite3_bind_blob(stmt, 6, raw.baseAddress, Int32(row.json.count), transient)
+        }
+        bindBlob(stmt, 7, row.requestBody)
+        bindBlob(stmt, 8, row.responseBody)
+        return sqlite3_step(stmt) == SQLITE_DONE
+    }
+
+    /// The insert statement, prepared once and kept. Re-preparing per row was pure
+    /// overhead on the write path.
+    private func preparedInsert() -> OpaquePointer? {
+        if let insertStatement { return insertStatement }
         let sql = """
         INSERT OR REPLACE INTO flows (id, startedAt, host, method, status, json, reqBody, respBody)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(stmt) }
-        sqlite3_bind_text(stmt, 1, flow.id.uuidString, -1, transient)
-        sqlite3_bind_double(stmt, 2, flow.startedAt.timeIntervalSince1970)
-        if let host = flow.host { sqlite3_bind_text(stmt, 3, host, -1, transient) } else { sqlite3_bind_null(stmt, 3) }
-        sqlite3_bind_text(stmt, 4, flow.request.method, -1, transient)
-        if let status = flow.statusCode { sqlite3_bind_int(stmt, 5, Int32(status)) } else { sqlite3_bind_null(stmt, 5) }
-        data.withUnsafeBytes { raw in
-            sqlite3_bind_blob(stmt, 6, raw.baseAddress, Int32(data.count), transient)
-        }
-        bindBlob(stmt, 7, requestBody)
-        bindBlob(stmt, 8, responseBody)
-        guard sqlite3_step(stmt) == SQLITE_DONE else { return }
-        pruneIfNeeded()
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        insertStatement = stmt
+        return stmt
     }
 
     /// Bind an optional body blob, or NULL when empty. An empty `Data` binds NULL
@@ -192,13 +302,25 @@ final class FlowPersistence: @unchecked Sendable {
         }
     }
 
-    /// Keep at most `maxRows`, dropping the oldest. Cheap: only deletes when over.
+    /// Keep at most `maxRows`, dropping the oldest — but only once the count has
+    /// drifted `pruneSlack` past the cap. This used to run on *every* write: a full
+    /// `ORDER BY startedAt` index scan plus a delete attempt per captured flow.
     private func pruneIfNeeded() {
+        guard rowCount > maxRows + pruneSlack else { return }
         exec("""
         DELETE FROM flows WHERE id IN (
             SELECT id FROM flows ORDER BY startedAt DESC LIMIT -1 OFFSET \(maxRows)
         );
         """)
+        rowCount = countRows() // the estimate was an upper bound; re-anchor it
+    }
+
+    private func countRows() -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM flows;", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(stmt, 0))
     }
 
     private func exec(_ sql: String) {
