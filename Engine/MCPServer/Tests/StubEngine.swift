@@ -75,13 +75,53 @@ final class StubEngine: ProxyControlling {
     func connectedDevices() async -> [DeviceSummary] { devices }
 
     // FlowReplaying
+    private(set) var replayCallCount = 0
+    /// Highest number of replays that were ever in flight at the same moment — how a
+    /// test observes that `concurrency` was actually honored.
+    private(set) var peakConcurrentReplays = 0
+    private var inFlightReplays = 0
+    /// Per-attempt scripting for batch tests: status code, or an error, or a delay.
+    /// Consumed in order; once exhausted, attempts fall back to the plain 200 below.
+    enum ScriptedReplay {
+        case status(Int)
+        case failure(String)
+        /// Succeeds with 200 after suspending, so overlapping attempts are observable.
+        case slow(seconds: Double)
+    }
+
+    var replayScript: [ScriptedReplay] = []
+
     func replay(id: UUID, overrides: ReplayOverrides) async throws -> Flow {
         lastReplay = (id, overrides)
+        replayCallCount += 1
+        inFlightReplays += 1
+        peakConcurrentReplays = max(peakConcurrentReplays, inFlightReplays)
+        defer { inFlightReplays -= 1 }
+
         if let replayError { throw replayError }
         if let replayResult { return replayResult }
-        return Flow(id: UUID(), request: CapturedRequest(method: "GET", url: "https://x/", headers: []),
-                    startedAt: Date(), outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
-                    replayedFrom: id)
+
+        let scripted = replayScript.isEmpty ? ScriptedReplay.status(200) : replayScript.removeFirst()
+        let startedAt = Date()
+        switch scripted {
+        case let .failure(message):
+            throw ProxyControlError.replayFailed(message)
+        case let .slow(seconds):
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            return Self.replayed(of: id, status: 200, startedAt: startedAt)
+        case let .status(code):
+            return Self.replayed(of: id, status: code, startedAt: startedAt)
+        }
+    }
+
+    private static func replayed(of id: UUID, status: Int, startedAt: Date) -> Flow {
+        Flow(
+            id: UUID(), request: CapturedRequest(method: "GET", url: "https://x/", headers: []),
+            startedAt: startedAt,
+            outcome: .completed(CapturedResponse(statusCode: status, headers: []), at: Date()),
+            firstByteAt: startedAt.addingTimeInterval(0.05),
+            replayedFrom: id
+        )
     }
 
     func replay(flow: Flow, overrides: ReplayOverrides) async throws -> Flow {
