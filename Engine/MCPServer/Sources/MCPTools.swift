@@ -472,14 +472,60 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "export_har",
-                "description": "Export captured flows to a HAR 1.2 file (readable by Chrome DevTools / Charles / Proxyman) and return the path. Optionally filter by host and cap the count. This is a write action (writes a file).",
+                "description": """
+                Export captured flows to a HAR 1.2 file (readable by Chrome DevTools / Charles / \
+                Proxyman, and by Loom's own import_har) and return the path. Optionally filter by \
+                host and cap the count.
+
+                Set `redact: true` when the file is going anywhere — a ticket, a chat, a CI \
+                artifact. It replaces credential-bearing header values and query parameters with \
+                `<redacted>` (the header stays, so a reader can tell a scrubbed token from an absent \
+                one), and `redact_bodies: true` drops payloads while keeping their sizes. Redaction \
+                is off by default because a debugging export usually needs the token — that is often \
+                the bug. This is a write action (writes a file).
+                """,
                 "inputSchema": [
                     "type": "object",
                     "properties": [
                         "host": ["type": "string", "description": "Only include flows whose host contains this string."],
                         "limit": ["type": "integer", "description": "Max flows to include (default 1000, newest first)."],
                         "filename": ["type": "string", "description": "Output file name (basename only; a .har suffix is added if missing). Written under ~/Library/Application Support/com.loom/exports/. Defaults to loom-export.har."],
+                        "redact": [
+                            "type": "boolean",
+                            "description": "Scrub credentials: Authorization/Cookie/API-key headers and token-ish query parameters become `<redacted>`.",
+                        ],
+                        "redact_headers": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                            "description": "Extra header names to scrub, on top of the built-in set (implies redact).",
+                        ],
+                        "redact_bodies": [
+                            "type": "boolean",
+                            "description": "Drop request/response bodies entirely, keeping their sizes (implies redact). Use when you can't audit every payload.",
+                        ],
                     ],
+                ],
+            ],
+            [
+                "name": "import_har",
+                "description": """
+                Load a HAR 1.2 file into the capture as flows, so exchanges recorded elsewhere — a \
+                colleague's DevTools export, a CI artifact, a bug report, an earlier Loom export — \
+                can be read, diffed and **replayed** with the same tools as live traffic.
+
+                Imported flows are labelled `importedFrom` (they sit alongside captured traffic, so \
+                they must not be mistaken for it) and get fresh ids, returned in `ids`. An entry the \
+                parser can't use is skipped and reported in `skipped`/`skippedReasons` — never \
+                silently, so "12 of 15" can't read as "all of them". This is a write action (it \
+                changes what the capture contains, and the human's window shows them too).
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "path": ["type": "string", "description": "Path to the .har file (~ is expanded)."],
+                        "label": ["type": "string", "description": "What to record as `importedFrom` (defaults to the file name)."],
+                    ],
+                    "required": ["path"],
                 ],
             ],
             [
@@ -686,6 +732,7 @@ struct MCPToolExecutor {
         "get_ssl_scope": { ex, args in try await ex.handleGetSSLScope(args) },
         "set_ssl_scope": { ex, args in try await ex.handleSetSSLScope(args) },
         "export_har": { ex, args in try await ex.handleExportHAR(args) },
+        "import_har": { ex, args in try await ex.handleImportHAR(args) },
         "list_rules": { ex, args in try await ex.handleListRules(args) },
         "set_rule": { ex, args in try await ex.handleSetRule(args) },
         "delete_rule": { ex, args in try await ex.handleDeleteRule(args) },
@@ -708,6 +755,7 @@ struct MCPToolExecutor {
         "export_ca_certificate",
         "set_ssl_scope",
         "export_har",
+        "import_har",
         "set_rule",
         "delete_rule",
         "set_rules_enabled",
@@ -1447,6 +1495,11 @@ struct MCPToolExecutor {
             let needle = host.lowercased()
             flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
         }
+        // Redaction runs on the way out, over the flows actually being written — so
+        // there is no path where an unredacted flow reaches the file after the caller
+        // asked for a redacted export.
+        let redaction = try Self.redaction(from: arguments)
+        if let redaction { flows = redaction.apply(to: flows) }
         let data = HARExport.encode(flows, appVersion: appVersion)
         // Confine exports to the exports/ directory and take only a basename,
         // so the AI can't overwrite arbitrary user files (~/.zshrc, plists) via
@@ -1469,7 +1522,85 @@ struct MCPToolExecutor {
         } catch {
             throw MCPToolFailure("could not write HAR to \(url.path): \(error.localizedDescription)")
         }
-        return prettyJSON(["path": url.path, "entries": flows.count])
+        var payload: [String: Any] = ["path": url.path, "entries": flows.count]
+        if let redaction {
+            // Say what was scrubbed, so a human asked to attach the file knows what it
+            // does and doesn't still contain.
+            payload["redacted"] = [
+                "headers": redaction.headerNames,
+                "queryKeys": redaction.queryKeys,
+                "bodiesDropped": redaction.dropBodies,
+            ] as [String: Any]
+        }
+        return prettyJSON(payload)
+    }
+
+    /// Parse the redaction arguments of `export_har`, or nil when the caller didn't
+    /// ask for any. Redaction is **opt-in**: a debugging export usually needs the
+    /// tokens (that's often the bug), so scrubbing by default would quietly break the
+    /// primary use. `redact: false` with explicit header names is an error rather than
+    /// a silent no-op — that combination reads as "redact these", and a file that
+    /// still holds credentials must never be the result of a misread argument.
+    static func redaction(from arguments: [String: Any]) throws -> FlowRedaction? {
+        let requested = arguments["redact"] as? Bool
+        let extraHeaders = arguments["redact_headers"] as? [String]
+        let dropBodies = arguments["redact_bodies"] as? Bool
+
+        if requested == false, extraHeaders?.isEmpty == false || dropBodies == true {
+            throw MCPError.invalidParams(
+                "`redact: false` contradicts `redact_headers`/`redact_bodies` — omit `redact` or set it to true"
+            )
+        }
+        guard requested == true || extraHeaders?.isEmpty == false || dropBodies == true else { return nil }
+
+        if let extraHeaders, extraHeaders.contains(where: { $0.trimmingCharacters(in: .whitespaces).isEmpty }) {
+            throw MCPError.invalidParams("`redact_headers` must not contain empty names")
+        }
+        return FlowRedaction(
+            headerNames: FlowRedaction.defaultHeaderNames + (extraHeaders ?? []),
+            dropBodies: dropBodies ?? false
+        )
+    }
+
+    private func handleImportHAR(_ arguments: [String: Any]) async throws -> String {
+        guard let raw = arguments["path"] as? String, !raw.isEmpty else {
+            throw MCPError.invalidParams("`path` must be the path to a .har file")
+        }
+        let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
+        guard let data = try? Data(contentsOf: url) else {
+            throw MCPToolFailure("could not read \(url.path)")
+        }
+        let label = (arguments["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            ?? url.lastPathComponent
+
+        let result: HARImport.Result
+        do {
+            result = try HARImport.decode(data, label: label)
+        } catch HARImport.Failure.notJSON {
+            throw MCPToolFailure("\(url.lastPathComponent) is not JSON, so it isn't a HAR file")
+        } catch HARImport.Failure.notHAR {
+            throw MCPToolFailure("\(url.lastPathComponent) is JSON but has no `log.entries` — not a HAR 1.2 file")
+        }
+        guard !result.flows.isEmpty else {
+            throw MCPToolFailure(
+                "no importable entries in \(url.lastPathComponent)"
+                + (result.skipped > 0 ? " (\(result.skipped) skipped: \(result.reasons.joined(separator: "; ")))" : "")
+            )
+        }
+
+        let imported = await engine.importFlows(result.flows)
+        var payload: [String: Any] = [
+            "imported": imported,
+            "importedFrom": label,
+            "ids": result.flows.map(\.id.uuidString),
+        ]
+        // Never a silent partial import: an entry the parser couldn't use is counted
+        // and explained, so "12 of 15" can't read as "all of them".
+        if result.skipped > 0 {
+            payload["skipped"] = result.skipped
+            payload["skippedReasons"] = result.reasons
+        }
+        return prettyJSON(payload)
     }
 
     /// `list_rules`: all rules (bodies truncated), or — with `id` — one rule with
@@ -1609,6 +1740,9 @@ struct MCPToolExecutor {
         if let ms = flow.receiveMS { out["receiveMS"] = ms }
         if let error = flow.error { out["error"] = error }
         if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
+        // Loaded from a file, not observed here — the one thing that must never be
+        // implicit about an imported flow.
+        if let importedFrom = flow.importedFrom { out["importedFrom"] = importedFrom }
         if let applied = flow.appliedRules { out["appliedRules"] = applied.map(\.name) }
         if let messages = flow.webSocketMessages {
             out["webSocket"] = true

@@ -107,7 +107,8 @@ Loom is built for one cycle — do this, don't just read:
 | `resume` | release a held exchange by its `pending_id`: apply edits (method / url / status_code / set+remove headers / body) and continue, or `abort` with a 502 |
 | `set_ssl_scope` | turn HTTPS interception on/off + set include/exclude host globs |
 | `export_ca_certificate` | write the root CA (PEM) to disk for trusting; returns the path |
-| `export_har` | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
+| `export_har` | export captured flows to a HAR 1.2 file (host filter + limit); returns the path. **`redact: true`** scrubs credential headers + token query params (values become `<redacted>`, the header stays so a reader can tell scrubbed from absent); `redact_bodies: true` drops payloads keeping their sizes; `redact_headers` adds names. Use redaction whenever the file leaves the machine — a ticket, a chat, CI |
+| `import_har` | load a HAR file into the capture as flows (`path`, optional `label`) so an exchange recorded elsewhere can be read, diffed and **replayed** like live traffic. Imported flows are labelled `importedFrom` and get fresh `ids`; unusable entries are reported in `skipped`/`skippedReasons` |
 
 ### Rules (`set_rule`) — the shape
 
@@ -168,7 +169,13 @@ scoped rule); then one action:
   isn't trusted. `export_ca_certificate` returns a PEM; trusting it is a manual
   admin step on the client.
 - **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
-  filter; return the path.
+  filter; return the path. If it's going into a ticket or a chat, add `redact: true`
+  (plus `redact_bodies: true` when you can't audit every payload) and tell the human
+  what was scrubbed.
+- **"Here's a HAR from a colleague / CI — why did that request fail?"** →
+  `import_har`, then work the flows exactly as if they were live: `get_flow_detail`,
+  `diff_flows` against a local one, `replay_flow` to re-send it from here. They stay
+  labelled `importedFrom`, so don't report them as traffic observed on this machine.
 
 ## Honest failure modes (report, don't fabricate)
 

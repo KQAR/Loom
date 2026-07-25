@@ -269,6 +269,15 @@ public struct MainView: View {
                             .font(.caption2)
                             .foregroundStyle(Color.accentColor)
                     }
+                    // Loaded from a file, not seen on this machine's wire. Marked for
+                    // the same reason a replay is: the row would otherwise read as
+                    // something that just happened here.
+                    if let importedFrom = flow.importedFrom {
+                        Image(systemName: "tray.and.arrow.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("Imported from \(importedFrom)")
+                    }
                     if let applied = flow.appliedRules, !applied.isEmpty {
                         Image(systemName: "wand.and.stars")
                             .font(.caption2)
