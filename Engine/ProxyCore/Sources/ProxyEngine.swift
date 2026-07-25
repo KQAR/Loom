@@ -29,6 +29,13 @@ public actor ProxyEngine: ProxyControlling {
     private var ca: CertificateAuthority?
 
     private var running = false
+    /// Set for the duration of `stop()` so a reentrant stop bails instead of
+    /// tearing the server down twice (see `stop()`).
+    private var stopping = false
+    /// Set for the duration of `startPhoneOnboarding()` — it awaits several times
+    /// while creating a provisioning server, and two concurrent calls would each
+    /// build one and race for the same port.
+    private var startingPhoneOnboarding = false
     /// Size of the in-memory flow ring, mirrored here so `start()` restores at
     /// most a ring's worth of persisted flows.
     private let flowCapacity: Int
@@ -171,12 +178,18 @@ public actor ProxyEngine: ProxyControlling {
     }
 
     public func stop() async {
-        guard running else { return }
+        // `running` has to stay true across the awaits below so a reentrant
+        // `start()` still bails at its guard — which means it can't double as the
+        // "already stopping" flag. Claim `stopping` synchronously instead, the
+        // mirror of what `start()` does with `running`.
+        guard running, !stopping else { return }
+        stopping = true
         await provisioning?.stop()
         provisioning = nil
         phoneInfo = nil
         await server.stop()
         running = false
+        stopping = false
         currentBindHost = "127.0.0.1"
     }
 
@@ -293,7 +306,10 @@ public actor ProxyEngine: ProxyControlling {
     }
 
     public func connectedDevices() async -> [DeviceSummary] {
-        let flows = await store.recent(limit: await store.count)
+        // One actor hop, not two: `recent(limit:)` clamps to what's in the ring, so
+        // asking for a ring's worth is the same answer `await store.count` would
+        // have given — without a second hop the store could change across.
+        let flows = await store.recent(limit: flowCapacity)
         var byIP: [String: DeviceSummary] = [:]
         for flow in flows {
             guard let device = flow.sourceDevice else { continue }
@@ -412,6 +428,17 @@ public actor ProxyEngine: ProxyControlling {
     ///   the OS pick one.
     @discardableResult
     public func startPhoneOnboarding(provisioningPort: Int = 0) async throws -> PhoneOnboardingInfo {
+        // Reentrancy guard: the body awaits several times between tearing down the
+        // old provisioning server and publishing the new one. Two concurrent calls
+        // would each stop the old server, each start a new one on the same port
+        // (one failing), and leave `provisioning` pointing at whichever won the
+        // last assignment — possibly an already-stopped server.
+        guard !startingPhoneOnboarding else {
+            throw ProxyControlError.phoneOnboardingUnavailable("phone onboarding is already starting")
+        }
+        startingPhoneOnboarding = true
+        defer { startingPhoneOnboarding = false }
+
         guard let ca = ensureCA() else {
             throw ProxyControlError.certificateUnavailable("root CA could not be generated")
         }

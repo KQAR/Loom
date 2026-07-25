@@ -20,11 +20,22 @@ final class BreakpointStore: @unchecked Sendable {
     private var breakpoints: [Breakpoint] = []
     private var held: [UUID: Held] = [:]
 
-    /// A parked exchange plus the continuation that releases its `await`.
+    /// A parked exchange plus the continuation that releases its `await`, and the
+    /// timeout task watching it — cancelled the moment anything else resolves the
+    /// hold, so a resumed exchange doesn't leave a task sleeping for the full
+    /// timeout.
     private struct Held {
         var info: PendingBreakpoint
         var continuation: CheckedContinuation<BreakpointResolution, Never>
+        var timeout: Task<Void, Never>?
     }
+
+    /// Holds whose task was cancelled *before* `hold` managed to park them. The
+    /// cancellation handler can run concurrently with the body, so it records the
+    /// id here and the body aborts instead of parking — otherwise a cancel that
+    /// lands in that window would be lost and the exchange would wait out the
+    /// whole timeout with nobody listening.
+    private var cancelledBeforePark: Set<UUID> = []
 
     /// How long a held exchange waits before auto-proceeding unchanged, so a client
     /// connection can't hang forever if no operator ever resumes it.
@@ -42,11 +53,24 @@ final class BreakpointStore: @unchecked Sendable {
     }
 
     /// Remove an armed breakpoint; returns false when no such id exists.
+    ///
+    /// Disarming also **releases every exchange this breakpoint is still holding**
+    /// (proceeding unchanged). Without that, an operator who disarms a breakpoint
+    /// leaves the already-parked connections hanging until the timeout expires —
+    /// minutes of a live client connection held open by a breakpoint that no
+    /// longer exists.
     func disarm(id: UUID) -> Bool {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         let before = breakpoints.count
         breakpoints.removeAll { $0.id == id }
-        return breakpoints.count != before
+        let removed = breakpoints.count != before
+        let orphaned = held.values.filter { $0.info.breakpointID == id }.map(\.info.id)
+        lock.unlock()
+
+        for pendingID in orphaned {
+            resolve(pendingID: pendingID, resolution: .proceed(.none))
+        }
+        return removed
     }
 
     func armed() -> [Breakpoint] {
@@ -82,24 +106,67 @@ final class BreakpointStore: @unchecked Sendable {
     /// Park `info` and suspend until `resume` (or the timeout) delivers a decision.
     /// The timeout auto-proceeds unchanged — the least surprising outcome for a
     /// client left waiting on an unattended breakpoint.
+    ///
+    /// Cancellation-aware: if the forwarding task is cancelled while parked (the
+    /// client hung up, so `StreamRelay` tore down the stream), the hold resolves
+    /// as `.abort` immediately instead of waiting out the timeout. Otherwise the
+    /// entry would linger and `list_pending` would keep advertising an exchange
+    /// nobody is waiting on.
     func hold(_ info: PendingBreakpoint) async -> BreakpointResolution {
-        await withCheckedContinuation { (continuation: CheckedContinuation<BreakpointResolution, Never>) in
-            lock.lock()
-            held[info.id] = Held(info: info, continuation: continuation)
-            lock.unlock()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<BreakpointResolution, Never>) in
+                lock.lock()
+                // Cancelled in the window before we got here — don't park at all.
+                if cancelledBeforePark.remove(info.id) != nil {
+                    lock.unlock()
+                    continuation.resume(returning: .abort)
+                    return
+                }
+                held[info.id] = Held(info: info, continuation: continuation, timeout: nil)
+                lock.unlock()
 
-            let id = info.id
-            let timeout = self.timeout
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
-                self?.resolve(pendingID: id, resolution: .proceed(.none))
+                let id = info.id
+                let seconds = self.timeout
+                let task = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                    guard !Task.isCancelled else { return }
+                    self?.resolve(pendingID: id, resolution: .proceed(.none))
+                }
+
+                // Attach the watchdog. A short timeout can already have resolved the
+                // hold by now (tests use 50 ms), in which case there's nothing left
+                // to attach it to and the task is redundant.
+                lock.lock()
+                if held[id] != nil {
+                    held[id]?.timeout = task
+                    lock.unlock()
+                } else {
+                    lock.unlock()
+                    task.cancel()
+                }
             }
+        } onCancel: {
+            cancel(pendingID: info.id)
         }
     }
 
+    /// Resolve a hold as aborted because its task was cancelled. If the body hasn't
+    /// parked yet, leave a marker so it aborts instead of parking.
+    private func cancel(pendingID: UUID) {
+        lock.lock()
+        guard let entry = held.removeValue(forKey: pendingID) else {
+            cancelledBeforePark.insert(pendingID)
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        entry.timeout?.cancel()
+        entry.continuation.resume(returning: .abort)
+    }
+
     /// Remove the held entry and resume its continuation exactly once. The lock
-    /// guarantees only the first caller (resume vs. timeout) wins, so the
-    /// continuation is never resumed twice.
+    /// guarantees only the first caller (resume vs. timeout vs. disarm vs. cancel)
+    /// wins, so the continuation is never resumed twice.
     @discardableResult
     private func resolve(pendingID: UUID, resolution: BreakpointResolution) -> Bool {
         lock.lock()
@@ -108,6 +175,7 @@ final class BreakpointStore: @unchecked Sendable {
             return false
         }
         lock.unlock()
+        entry.timeout?.cancel()
         entry.continuation.resume(returning: resolution)
         return true
     }
