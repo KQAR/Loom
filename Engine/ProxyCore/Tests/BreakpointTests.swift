@@ -130,6 +130,91 @@ import LoomSharedModels
         #expect(!(store.resume(pendingID: UUID(), resolution: .proceed(.none))))
     }
 
+    /// Disarming must release exchanges the breakpoint is already holding. Before
+    /// this, a disarmed breakpoint left its parked connections hanging until the
+    /// (minutes-long) timeout expired.
+    @Test func disarm_releasesExchangesItWasHolding() async throws {
+        let upstream = recordingUpstream()
+        let store = BreakpointStore()
+        let forwarder = BreakpointForwarder(base: upstream, store: store)
+        let bp = Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true)
+        store.arm(bp)
+
+        async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: Data("keep".utf8))
+        _ = try await waitForPending(store)
+
+        #expect(store.disarm(id: bp.id))
+
+        // Released unchanged, without waiting out the timeout.
+        let result = try await resultTask
+        #expect(upstream.callCount == 1)
+        #expect(upstream.lastBody == Data("keep".utf8))
+        #expect(result.body == Data("upstream".utf8))
+        #expect(store.pending().isEmpty, "disarm must drop the held exchange")
+    }
+
+    /// Only the *matching* breakpoint's holds are released; another breakpoint's
+    /// parked exchange keeps waiting.
+    @Test func disarm_leavesOtherBreakpointsHoldsParked() async throws {
+        let store = BreakpointStore()
+        let forwarder = BreakpointForwarder(base: recordingUpstream(), store: store)
+        let mine = Breakpoint(match: RuleMatch(urlPattern: "*/home"), onRequest: true)
+        let other = Breakpoint(match: RuleMatch(urlPattern: "*/other"), onRequest: true)
+        store.arm(mine)
+        store.arm(other)
+
+        async let held = forwarder.forward(
+            method: "GET", url: URL(string: "https://api.example.test/v1/other")!, headers: [], body: nil
+        )
+        let pending = try await waitForPending(store)
+        #expect(pending.breakpointID == other.id)
+
+        #expect(store.disarm(id: mine.id))
+        #expect(store.pending().count == 1, "disarming a different breakpoint must not release this hold")
+
+        store.resume(pendingID: pending.id, resolution: .proceed(.none))
+        _ = try await held
+    }
+
+    /// A cancelled forwarding task (the client hung up) must release the hold as an
+    /// abort straight away. Otherwise the entry lingers and `list_pending` keeps
+    /// advertising an exchange nobody is waiting on.
+    @Test func cancellingTheForwardingTask_releasesTheHold() async throws {
+        let store = BreakpointStore()
+        let forwarder = BreakpointForwarder(base: recordingUpstream(), store: store)
+        store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
+
+        let task = Task { try await forwarder.forward(method: "GET", url: url, headers: [], body: nil) }
+        _ = try await waitForPending(store)
+
+        task.cancel()
+
+        for _ in 0..<200 where !store.pending().isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(store.pending().isEmpty, "a cancelled hold must not stay pending")
+        _ = try? await task.value
+    }
+
+    /// The timeout watchdog is cancelled when something else resolves the hold, so
+    /// a resumed-then-aborted exchange is never also auto-proceeded afterwards.
+    @Test func resolvingAHold_cancelsTheTimeoutWatchdog() async throws {
+        let upstream = recordingUpstream()
+        let store = BreakpointStore(timeout: 0.05)
+        let forwarder = BreakpointForwarder(base: upstream, store: store)
+        store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
+
+        async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+        let pending = try await waitForPending(store)
+        #expect(store.resume(pendingID: pending.id, resolution: .abort))
+        _ = try await resultTask
+
+        // Well past the 50 ms timeout: had the watchdog survived, it would have
+        // resolved `.proceed` and the request would have reached upstream.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(upstream.callCount == 0, "aborted exchange must never reach upstream")
+    }
+
     // MARK: Helpers
 
     /// Poll until the forwarder has parked an exchange (the async `forward` reaches
