@@ -28,8 +28,8 @@ import LoomSharedModels
 
     @Test func resolve_nilPorts_returnsNil() {
         // The NIO convenience must no-op cleanly when a port is missing.
-        #expect(ProcessResolver.resolve(sourcePort: nil, proxyPort: 9090) == nil)
-        #expect(ProcessResolver.resolve(sourcePort: 50000, proxyPort: nil) == nil)
-        #expect(ProcessResolver.resolve(sourcePort: 0, proxyPort: 9090) == nil)
+        #expect(ProcessResolver.resolve(sourcePort: nil, proxyPort: 9090, isLoopbackPeer: true) == nil)
+        #expect(ProcessResolver.resolve(sourcePort: 50000, proxyPort: nil, isLoopbackPeer: true) == nil)
+        #expect(ProcessResolver.resolve(sourcePort: 0, proxyPort: 9090, isLoopbackPeer: true) == nil)
     }
 }
