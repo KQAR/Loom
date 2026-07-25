@@ -90,6 +90,14 @@ public enum ProxyControlError: Error, Equatable, Sendable {
 public protocol FlowProviding: Sendable {
     func status() async -> ProxyStatus
     func recentFlows(limit: Int) async -> [Flow]
+    /// Newest-first flows matching `query`, capped at `limit`.
+    ///
+    /// The filter is applied **before** the limit, over everything retained — the
+    /// whole point is that "the 3 failed calls to api.example.com" can be found
+    /// even when they aren't among the newest `limit` exchanges. A default
+    /// implementation filters `recentFlows`; an implementor holding a store should
+    /// override it so the scan happens next to the data.
+    func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow]
     /// Like `recentFlows`, but with request/response bodies hydrated — for
     /// exports (HAR) that need the full payload, not just summaries. Kept
     /// separate so the common list/summary path stays body-free (cheap).
@@ -127,6 +135,17 @@ public protocol FlowProviding: Sendable {
     /// Distinct devices that have sent traffic through the proxy (this Mac + LAN
     /// devices), with per-device flow counts and last-seen time.
     func connectedDevices() async -> [DeviceSummary]
+}
+
+public extension FlowProviding {
+    /// Fallback for conformers without their own store: pull a generous window and
+    /// filter it here. Correct, but scans only what `recentFlows` returns — an
+    /// implementor with a store should override.
+    func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow] {
+        guard !query.isEmpty else { return await recentFlows(limit: limit) }
+        let candidates = await recentFlows(limit: max(limit, 2_000))
+        return Array(candidates.lazy.filter(query.matches).prefix(max(0, limit)))
+    }
 }
 
 /// Write side of the engine — the differentiator: AI (or the UI) can act.

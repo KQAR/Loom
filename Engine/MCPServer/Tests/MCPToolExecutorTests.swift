@@ -99,6 +99,82 @@ import LoomSharedModels
         #expect(out.first?["url"] as? String == "https://a/1")
     }
 
+    // MARK: Flow filtering — the arguments an agent uses to narrow a capture.
+
+    @Test func getRecentFlows_includesStartedAt() async throws {
+        let engine = StubEngine()
+        engine.flows = [Fixtures.completedFlow(url: "https://a/1")]
+        let out = try jsonArray(try await makeExecutor(engine).call(name: "get_recent_flows", arguments: [:]))
+        // 1970-01-01T00:16:40Z — the fixture's startedAt.
+        #expect(out.first?["startedAt"] as? String == "1970-01-01T00:16:40Z")
+    }
+
+    @Test func flowQuery_parsesEveryFilter() throws {
+        let query = try MCPToolExecutor.flowQuery(from: [
+            "host": "*.example.com",
+            "method": ["post", "put"],
+            "url_contains": "/orders",
+            "status_min": 400,
+            "status_max": 499,
+            "only_errors": true,
+            "device_ip": "192.168.1.9",
+            "source_app": "com.apple.Safari",
+        ])
+        #expect(query.host == "*.example.com")
+        #expect(query.methods == ["post", "put"])
+        #expect(query.urlContains == "/orders")
+        #expect(query.statusMin == 400)
+        #expect(query.statusMax == 499)
+        #expect(query.onlyErrors)
+        #expect(query.deviceIP == "192.168.1.9")
+        #expect(query.sourceApp == "com.apple.Safari")
+    }
+
+    @Test func flowQuery_methodAcceptsASingleString() throws {
+        #expect(try MCPToolExecutor.flowQuery(from: ["method": "get"]).methods == ["get"])
+    }
+
+    @Test func flowQuery_statusAcceptsExactOrClass() throws {
+        let exact = try MCPToolExecutor.flowQuery(from: ["status": 503])
+        #expect(exact.statusMin == 503 && exact.statusMax == 503)
+        let klass = try MCPToolExecutor.flowQuery(from: ["status": "5xx"])
+        #expect(klass.statusMin == 500 && klass.statusMax == 599)
+        let upper = try MCPToolExecutor.flowQuery(from: ["status": "4XX"])
+        #expect(upper.statusMin == 400 && upper.statusMax == 499)
+    }
+
+    @Test func flowQuery_sinceSecondsAndISO8601() throws {
+        let relative = try #require(MCPToolExecutor.flowQuery(from: ["since_seconds": 60]).since)
+        #expect(abs(relative.timeIntervalSinceNow + 60) < 5)
+
+        let absolute = try #require(MCPToolExecutor.flowQuery(from: ["since": "2026-07-25T10:00:00Z"]).since)
+        #expect(absolute == Date(timeIntervalSince1970: 1_784_973_600))
+        // Fractional seconds are what JS clients emit — must parse, not throw.
+        #expect(try MCPToolExecutor.flowQuery(from: ["since": "2026-07-25T10:00:00.123Z"]).since != nil)
+    }
+
+    /// A filter that silently fails to apply is worse than an error: the agent
+    /// receives unfiltered traffic and believes it is filtered.
+    @Test func flowQuery_malformedArguments_areRejected() {
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["status": "abc"]) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["status": true]) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["method": 7]) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["since": "yesterday"]) }
+    }
+
+    @Test func getRecentFlows_appliesTheFilter() async throws {
+        let engine = StubEngine()
+        engine.flows = [
+            Fixtures.completedFlow(url: "https://api.example.com/orders"),
+            Fixtures.completedFlow(url: "https://cdn.example.com/logo.png"),
+        ]
+        let out = try jsonArray(try await makeExecutor(engine).call(
+            name: "get_recent_flows", arguments: ["host": "api.example.com"]
+        ))
+        #expect(out.count == 1)
+        #expect(out.first?["url"] as? String == "https://api.example.com/orders")
+    }
+
     @Test func getFlowDetail_includesHTTPVersion() async throws {
         let engine = StubEngine()
         let flow = Fixtures.completedFlow(url: "https://a/1", httpVersion: "HTTP/2")
