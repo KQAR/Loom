@@ -185,6 +185,39 @@ struct MCPToolExecutor {
                 ],
             ],
             [
+                "name": "get_stats",
+                "description": """
+                Aggregate the capture instead of reading it: per-bucket flow counts, error rates, \
+                and TTFB / duration percentiles, plus the slowest exchanges by id. Answers "which \
+                endpoint is slow", "what share of calls to this host fail", "which app is chatty" \
+                in one call — don't pull flow summaries and do the arithmetic yourself, and note \
+                that a percentile over one page of summaries isn't a percentile.
+
+                Takes the same filters as `get_recent_flows` (so `since_seconds` + `host` scopes it \
+                to what you care about). Aggregates every retained flow that matches, and reports \
+                `flowsConsidered` so you can see the sample size behind the numbers. TTFB is server \
+                think-time; `duration` is the whole exchange. `sizeUnknownFlows` on a bucket means \
+                its byte totals are a floor: those flows' bodies have been evicted from memory, so \
+                their size is no longer known.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": Self.flowFilterProperties.merging([
+                        "group_by": [
+                            "type": "string",
+                            "enum": FlowGrouping.allCases.map(\.rawValue),
+                            "description": """
+                            What to bucket by (default host). `endpoint` = method + path with the \
+                            query dropped and id-shaped segments collapsed to `{id}`, so \
+                            `/orders/1` and `/orders/2` are one endpoint. `none` = a single bucket.
+                            """,
+                        ],
+                        "limit": ["type": "integer", "description": "Max buckets, biggest first (default 10). The rest are counted in `bucketsOmitted`."],
+                        "slowest": ["type": "integer", "description": "How many slowest-by-TTFB exchanges to name, with ids to follow up on (default 3)."],
+                    ]) { current, _ in current },
+                ],
+            ],
+            [
                 "name": "get_flow_detail",
                 "description": "Get full request and response detail for one flow by id, including headers and body. Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.",
                 "inputSchema": [
@@ -575,6 +608,7 @@ struct MCPToolExecutor {
         "get_proxy_status": { ex, args in try await ex.handleGetProxyStatus(args) },
         "list_devices": { ex, args in try await ex.handleListDevices(args) },
         "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
+        "get_stats": { ex, args in try await ex.handleGetStats(args) },
         "wait_for_flow": { ex, args in try await ex.handleWaitForFlow(args) },
         "wait_for_pending": { ex, args in try await ex.handleWaitForPending(args) },
         "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
@@ -694,6 +728,75 @@ struct MCPToolExecutor {
         let query = try Self.flowQuery(from: arguments)
         let flows = await engine.recentFlows(matching: query, limit: limit)
         return prettyJSON(flows.map(Self.flowSummary))
+    }
+
+    /// Upper bound on the flows one `get_stats` call aggregates. Set above the engine's
+    /// in-memory ring capacity so it means "everything retained in memory" rather than
+    /// a page — like `get_recent_flows`, the scan is over the ring, not the whole
+    /// SQLite history.
+    static let statsScanCap = 5_000
+
+    private func handleGetStats(_ arguments: [String: Any]) async throws -> String {
+        let query = try Self.flowQuery(from: arguments)
+        let grouping = try Self.grouping(from: arguments)
+        let limit = (arguments["limit"] as? Int) ?? 10
+        let slowest = (arguments["slowest"] as? Int) ?? 3
+
+        let flows = await engine.recentFlows(matching: query, limit: Self.statsScanCap)
+        let stats = FlowStats.compute(flows: flows, grouping: grouping, limit: limit, slowest: slowest)
+
+        var payload: [String: Any] = [
+            "groupBy": grouping.rawValue,
+            "flowsConsidered": stats.total.flows,
+            "total": Self.statsBucket(stats.total),
+            "buckets": stats.buckets.map(Self.statsBucket),
+            "bucketsOmitted": stats.bucketsOmitted,
+            "slowest": stats.slowest.map { slow in
+                var item: [String: Any] = ["id": slow.id.uuidString, "method": slow.method, "url": slow.url]
+                if let statusCode = slow.statusCode { item["status"] = statusCode }
+                if let ttfbMS = slow.ttfbMS { item["ttfbMS"] = ttfbMS }
+                if let durationMS = slow.durationMS { item["durationMS"] = durationMS }
+                return item
+            },
+        ]
+        if let earliest = stats.earliest { payload["from"] = Self.iso8601.string(from: earliest) }
+        if let latest = stats.latest { payload["to"] = Self.iso8601.string(from: latest) }
+        return prettyJSON(payload)
+    }
+
+    private static func statsBucket(_ bucket: FlowStats.Bucket) -> [String: Any] {
+        var out: [String: Any] = [
+            "key": bucket.key,
+            "flows": bucket.flows,
+            "errors": bucket.errors,
+            // Rounded: three decimals is finer than any capture-sized sample justifies.
+            "errorRate": (bucket.errorRate * 1000).rounded() / 1000,
+            "statusClasses": bucket.statusClasses,
+            "requestBytes": bucket.requestBytes,
+            "responseBytes": bucket.responseBytes,
+        ]
+        if bucket.failed > 0 { out["failed"] = bucket.failed }
+        if bucket.inFlight > 0 { out["inFlight"] = bucket.inFlight }
+        if let ttfb = bucket.ttfb { out["ttfbMS"] = distribution(ttfb) }
+        if let duration = bucket.duration { out["durationMS"] = distribution(duration) }
+        // Only surfaced when it applies — but never omitted when it does, because it is
+        // the difference between "this host sent 4 MB" and "at least 4 MB".
+        if bucket.sizeUnknownFlows > 0 { out["sizeUnknownFlows"] = bucket.sizeUnknownFlows }
+        return out
+    }
+
+    private static func distribution(_ distribution: FlowStats.Distribution) -> [String: Any] {
+        ["p50": distribution.p50, "p95": distribution.p95, "max": distribution.max, "samples": distribution.samples]
+    }
+
+    static func grouping(from arguments: [String: Any]) throws -> FlowGrouping {
+        guard let raw = arguments["group_by"] else { return .host }
+        guard let text = raw as? String, let grouping = FlowGrouping(rawValue: text.lowercased()) else {
+            throw MCPError.invalidParams(
+                "`group_by` must be one of: \(FlowGrouping.allCases.map(\.rawValue).joined(separator: ", "))"
+            )
+        }
+        return grouping
     }
 
     /// How much of an exchange `wait_for_flow` waits for.

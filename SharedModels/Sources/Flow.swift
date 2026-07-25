@@ -245,9 +245,12 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         URLHost.host(ofURLString: request.url)
     }
 
+    /// Rounded, not truncated: a 49.9 ms exchange is 50 ms, not 49 ms. The difference
+    /// is invisible one flow at a time and systematic in aggregate — truncation biases
+    /// every percentile in `FlowStats` downward by up to a millisecond.
     public var durationMS: Int? {
         guard let completedAt else { return nil }
-        return Int(completedAt.timeIntervalSince(startedAt) * 1000)
+        return Int((completedAt.timeIntervalSince(startedAt) * 1000).rounded())
     }
 
     /// Time to first byte: request sent → response head back. This is the part the
@@ -255,12 +258,12 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// link are responsible for.
     public var ttfbMS: Int? {
         guard let firstByteAt else { return nil }
-        return Int(max(0, firstByteAt.timeIntervalSince(startedAt)) * 1000)
+        return Int((max(0, firstByteAt.timeIntervalSince(startedAt)) * 1000).rounded())
     }
 
     /// Response head → last byte: how long the body took to transfer.
     public var receiveMS: Int? {
         guard let firstByteAt, let completedAt else { return nil }
-        return Int(max(0, completedAt.timeIntervalSince(firstByteAt)) * 1000)
+        return Int((max(0, completedAt.timeIntervalSince(firstByteAt)) * 1000).rounded())
     }
 }

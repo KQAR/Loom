@@ -127,6 +127,8 @@ import LoomSharedModels
             "host": "*.example.com",
             "method": ["post", "put"],
             "url_contains": "/orders",
+            "header_contains": "authorization",
+            "body_contains": "AB-9931",
             "status_min": 400,
             "status_max": 499,
             "only_errors": true,
@@ -136,6 +138,8 @@ import LoomSharedModels
         #expect(query.host == "*.example.com")
         #expect(query.methods == ["post", "put"])
         #expect(query.urlContains == "/orders")
+        #expect(query.headerContains == "authorization")
+        #expect(query.bodyContains == "AB-9931")
         #expect(query.statusMin == 400)
         #expect(query.statusMax == 499)
         #expect(query.onlyErrors)

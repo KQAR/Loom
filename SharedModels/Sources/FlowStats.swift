@@ -1,5 +1,74 @@
 import Foundation
 
+/// How big a captured body was — in bytes, or honestly unknown.
+///
+/// Three sources, in order: the recorded wire size (set when the capture kept only a
+/// prefix), the bytes actually in hand, and the `Content-Length` header. The header is
+/// what makes this work at all past the byte budget: it survives body eviction, so a
+/// flow whose payload now lives only in SQLite still reports its size.
+///
+/// When none of the three answers, the message's HTTP framing decides. A GET with no
+/// `Content-Length` and no `Transfer-Encoding` genuinely has no body (RFC 9110 §6.4),
+/// so it is 0 — not a mystery. A chunked response whose body has been evicted really is
+/// unknown, and says so rather than being counted as 0.
+public enum BodySize: Equatable, Sendable {
+    case known(Int)
+    case unknown
+
+    public static func ofRequest(_ request: CapturedRequest) -> BodySize {
+        resolve(
+            body: request.body, fullBytes: request.fullBodyBytes, headers: request.headers,
+            bodylessByFraming: !methodUsuallyCarriesABody(request.method)
+        )
+    }
+
+    public static func ofResponse(_ response: CapturedResponse, requestMethod: String) -> BodySize {
+        // A 1xx / 204 / 304 never carries a body, and neither does the response to a
+        // HEAD — the framing says so regardless of what was captured.
+        let status = response.statusCode
+        let bodyless = status == 204 || status == 304 || (100 ..< 200).contains(status)
+            || requestMethod.caseInsensitiveCompare("HEAD") == .orderedSame
+        return resolve(
+            body: response.body, fullBytes: response.fullBodyBytes, headers: response.headers,
+            bodylessByFraming: bodyless
+        )
+    }
+
+    private static func resolve(
+        body: Data?, fullBytes: Int?, headers: [HeaderPair], bodylessByFraming: Bool
+    ) -> BodySize {
+        if let fullBytes { return .known(fullBytes) } // truncated capture: the wire size
+        if let body { return .known(body.count) }
+        if let declared = contentLength(headers) { return .known(declared) }
+        if bodylessByFraming, !isChunked(headers) { return .known(0) }
+        return .unknown
+    }
+
+    private static func contentLength(_ headers: [HeaderPair]) -> Int? {
+        for header in headers where header.name.caseInsensitiveCompare("content-length") == .orderedSame {
+            return Int(header.value.trimmingCharacters(in: .whitespaces))
+        }
+        return nil
+    }
+
+    private static func isChunked(_ headers: [HeaderPair]) -> Bool {
+        headers.contains {
+            $0.name.caseInsensitiveCompare("transfer-encoding") == .orderedSame
+                && !$0.value.isEmpty
+        }
+    }
+
+    /// Methods that carry a body in practice. GET/HEAD/DELETE/OPTIONS/TRACE may
+    /// technically have one, but only with framing headers — which `resolve` checks
+    /// before trusting this.
+    private static func methodUsuallyCarriesABody(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "POST", "PUT", "PATCH": return true
+        default: return false
+        }
+    }
+}
+
 /// How flows are bucketed by `FlowStats`.
 public enum FlowGrouping: String, Sendable, CaseIterable {
     /// By request host — "which service is failing / slow".
@@ -54,7 +123,7 @@ public struct FlowStats: Equatable, Sendable {
             let sorted = samples.sorted()
             func percentile(_ fraction: Double) -> Int {
                 let rank = Int((fraction * Double(sorted.count)).rounded(.up)) - 1
-                return sorted[min(max(rank, 0), sorted.count - 1)]
+                return sorted[Swift.min(Swift.max(rank, 0), sorted.count - 1)]
             }
             return Distribution(
                 p50: percentile(0.5), p95: percentile(0.95),
@@ -217,7 +286,7 @@ public struct FlowStats: Equatable, Sendable {
     }
 
     private static func isIDLike(_ segment: Substring) -> Bool {
-        guard segment.count >= 2 else { return false }
+        guard !segment.isEmpty else { return false }
         if segment.allSatisfy(\.isNumber) { return true }
         // A UUID, or a long hex/opaque token (session ids, digests).
         if segment.count >= 16, segment.allSatisfy({ $0.isHexDigit || $0 == "-" }) { return true }
@@ -255,32 +324,18 @@ public struct FlowStats: Equatable, Sendable {
             if let ttfbMS = flow.ttfbMS { ttfb.append(ttfbMS) }
             if let durationMS = flow.durationMS { duration.append(durationMS) }
 
-            // A body's size is known from the bytes in hand, or from the recorded wire
-            // size when the capture was truncated. Neither is available for a flow
-            // whose body has been evicted, so that flow is counted, not guessed at.
             var unknown = false
-            switch size(of: flow.request.body, fullBytes: flow.request.fullBodyBytes) {
+            switch BodySize.ofRequest(flow.request) {
             case let .known(bytes): requestBytes += bytes
             case .unknown: unknown = true
             }
             if let response = flow.response {
-                switch size(of: response.body, fullBytes: response.fullBodyBytes) {
+                switch BodySize.ofResponse(response, requestMethod: flow.request.method) {
                 case let .known(bytes): responseBytes += bytes
                 case .unknown: unknown = true
                 }
             }
             if unknown { sizeUnknownFlows += 1 }
-        }
-
-        private enum Size {
-            case known(Int)
-            case unknown
-        }
-
-        private func size(of body: Data?, fullBytes: Int?) -> Size {
-            if let fullBytes { return .known(fullBytes) } // truncated capture: wire size
-            if let body { return .known(body.count) }
-            return .unknown
         }
 
         func bucket(key: String) -> Bucket {
