@@ -49,14 +49,14 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 ### M3 — Write actions, closed loop
 
 - `set_rule` (map local / map remote / block / rewrite header / throttle) — done. `diff_flows` — **done**: structured request/response diff (method/url, header add/remove/change, status, line-level body diff for text); `base` alone diffs a replay against its `replayedFrom` original, closing the capture → modify → replay → diff loop over MCP.
-- Breakpoints — **done**: `arm_breakpoint` (match reuses `RuleMatch`; pause request and/or response) → held exchange surfaces in `list_pending` → `resume` with edits (method/url/status/headers/body) or `abort`. Poll model (MCP has no server push). Implemented as `BreakpointForwarder`, the outermost `UpstreamForwarding` decorator, backed by a lock-based `BreakpointStore` that parks the exchange on a continuation; non-matching traffic (incl. streaming) is delegated untouched, and an unattended hold auto-proceeds after a timeout so a client can't hang forever. Not persisted (a held exchange holds a live connection open).
+- Breakpoints — **done**: `arm_breakpoint` (match reuses `RuleMatch`; pause request and/or response) → held exchange surfaces in `list_pending` → `resume` with edits (method/url/status/headers/body) or `abort`. MCP has no server push, so the *transport* is still request/response — but an agent doesn't poll: `wait_for_pending` blocks until a hold lands (`BreakpointStore.pendingStream()`). Implemented as `BreakpointForwarder`, the outermost `UpstreamForwarding` decorator, backed by a lock-based `BreakpointStore` that parks the exchange on a continuation; non-matching traffic (incl. streaming) is delegated untouched, and an unattended hold auto-proceeds after a timeout so a client can't hang forever. Not persisted (a held exchange holds a live connection open).
 - **Write-action safety**: the MCP control plane binds loopback-only (not the LAN-exposed proxy port) and every write is recorded in a durable audit trail; write tools act directly, with no approval gate (owner decision — see [`INTERACTION.md`](INTERACTION.md)).
 - **Rule-model authoring surfaces — done.** The model has exact-match, host/query predicates, and base64 (binary) mock bodies. The `set_rule` MCP schema exposes `is_exact`/`host_pattern`/`query`/`body_base64`, so agents can author them (round-tripped in `list_rules`). The SwiftUI Rule editor now surfaces the same set: an exact-match (`=`) toggle beside the regex toggle (mutually exclusive), a collapsible **Match conditions** group (host glob + query key/value predicates), and a **Binary (base64)** mock-body mode — all round-tripped through `RuleDraft` so editing an agent-authored rule no longer silently drops them.
 
 ### M4 — Protocol breadth
 
 - HTTP/2 (`swift-nio-http2`), WebSocket frame capture, GraphQL-aware inspector — **done**.
-- Persistent store — **done** (SQLite, not GRDB): completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` and reload on launch; HAR **export** ships (`export_har`). HAR *import* and redacted evidence bundles remain open.
+- Persistent store — **done** (SQLite, not GRDB): completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` and reload on launch; HAR **export** ships (`export_har`), and — M6 — HAR **import** (`import_har`, flows labelled `importedFrom`, unusable entries counted) plus **redacted evidence bundles** (`export_har(redact:)`: credential headers and token query params replaced, never deleted; optional body drop keeping sizes).
 - Stream request bodies — **done**: uploads no longer buffer whole in memory. The request handlers bridge inbound body chunks into a back-pressured async stream (`RequestBodyBridge`, built on `NIOThrowingAsyncSequenceProducer` + a high/low-watermark strategy driving `channel.read()` with `autoRead` paused), and `NIOStreamingForwarder` relays chunks awaiting each flush so a slow upstream back-pressures the client — in-flight bytes stay bounded to the watermark, not the body size. Forwarding starts on the request head (lower latency) instead of after the last byte. A capped `RequestBodyCapture` tees the body for the inspector. Pure passthrough streams; a request-body-mutating rule / short-circuit / matching breakpoint buffers (`RequestBody.collect()`). Applies to **both HTTP/1.1 and HTTP/2** — the stream starts lazily on the first body chunk, so an h2 DATA body with no Content-Length streams too, and the bridge's `read()` replenishes the h2 flow-control window. WebSocket was already streamed (a separate byte-transparent frame splice, never buffered). (There was never a real 413 cap — this replaces unbounded buffering with bounded streaming.)
 
 ### M5 — Operability, quality & correctness (done)
@@ -68,6 +68,39 @@ Hardening the AI-operated loop for sustained real use. The operator is an agent 
 - **Logging & audit trail — done.** The MCP write surface (replay / rules / breakpoints / ssl-scope / har) now records a durable **audit log of write actions** — the choke point is `MCPToolExecutor.call`, entries persist to `audit.sqlite` (row-capped, survives relaunch), and the trail is surfaced to the supervising human in the main-window **sidebar → Audit** panel and to an agent via the `get_audit_log` MCP read tool. Reads are never logged; a test pins the audited set to the "write action"-marked definitions so a write can't slip past. The **fail-open paths now log at error level** (`Log.audit`/`Log.rules` join `proxy`/`tls`/`forward`/`store`/`websocket`): a corrupt or unreadable CA store — which silently regenerates a root CA and invalidates the trusted one — an unopenable flow/audit database, a dropped persistence write or undecodable row, an unreadable rules file (every rule vanishing, so "mocked" traffic quietly hits the real upstream), an undecodable SSL scope (interception silently off), a `mapRemote` whose destination doesn't parse (reported as applied while the request went to the original origin), and an unreadable `mapLocal` file. `os.Logger` stays; a pluggable backend waits until a non-Apple embedder needs it.
 - **CI gate — done.** Until now the only workflow was tag-driven `Release`, which archives and never tests: ~425 tests ran on developer machines and nowhere else. `.github/workflows/ci.yml` now runs on every PR and push to main — the full Tuist graph + all five test bundles, plus `swift build`/`swift test` on the root `Package.swift` so the embeddable-library graph can't rot unnoticed. The gate is **not** xcodebuild's exit code: `scripts/assert-tests-ran.sh` reads the result bundle and fails unless every expected bundle actually executed, because a stale project makes xcodebuild print `** TEST SUCCEEDED **` after running zero tests. **Thread Sanitizer** on `ProxyCoreTests` is blocking and its baseline is clean — 229 instrumented tests, zero races, the first real check on the Swift-5 `@unchecked Sendable` channel handlers. It only runs in CI: TSan's runtime segfaults during its own init on macOS 26, so an incomplete run is reported inconclusive rather than clean.
 - **Correctness guarantees — done.** The five invariants that, if violated, corrupt what the agent believes are now named and pinned in `EngineInvariantTests.swift`, one suite each: **one write path** (a replay obeys the rules and breakpoints armed for live traffic, and stays visible/resumable while held), **body hydration** (the same bytes come back whether a body is live in the ring, slimmed by the byte budget, or evicted to SQLite — and the list read never hydrates while detail/export do), **one rule choke point** (buffered and streaming forwarding reach identical verdicts, including short-circuits), **breakpoints always release** (every exit — resume, abort, disarm, timeout, client hang-up — frees the exchange, and racing resolvers claim it at most once), **replay links its flow** (succeeded, rule-answered or failed, each records exactly one flow pointing back at its source, even while capture is paused). Each was mutation-checked: breaking the invariant in the source makes exactly its test fail, so none of them pass vacuously. Fault injection now also covers the durable stores — an unopenable database, a file SQLite opens but can't use (writes silently dropped), an undecodable row, and the same on the audit trail — alongside the CA / rules / SSL-scope faults already there.
+
+### M6 — Cheaper agent loops (done)
+
+M1–M5 made the loop *possible*; this round made it cheap. The operator is an agent
+paying for every round trip in tokens and latency, so each item here removes a poll
+loop, a guess, or an arithmetic detour:
+
+- **Content search** — `get_recent_flows` gains `header_contains` / `body_contains`
+  (ASCII-folded byte scan, no allocation per flow; a body predicate hydrates only
+  candidates that already passed the cheap predicates, and results stay body-free).
+  "Which request carried this order id" no longer means paging `get_flow_detail`.
+- **Blocking waits** — `wait_for_flow` / `wait_for_pending`: query the retained
+  capture first, subscribe *before* checking so nothing falls in the gap, and treat a
+  timeout as a normal result whose `windowFrom` cursor makes a retry gapless. The
+  default window looks 10 s back, because the natural order is trigger-then-call.
+  Transport-side: dispatch is off the event loop (a held request can't block other
+  calls) and a client disconnect cancels the waiter — which required dropping NIO's
+  pipelining assistance, since it holds back reads and hid the peer's EOF.
+- **Aggregation** — `get_stats` (host / endpoint / status / app / device buckets:
+  counts, error rates, exact TTFB+duration percentiles, slowest exchanges with ids).
+  A percentile over one page of summaries isn't a percentile.
+- **Batch replay** — `replay_flow(count:concurrency:)` for "is it intermittent / does
+  it survive parallel load", with failures reported rather than thrown.
+- **Origin-scoped rules** — `RuleMatch` gains `sourceApp` / `deviceIP`, threaded to
+  the matcher through `forwardStream(…, origin:)`; fail-closed on unattributed
+  traffic, inherited by replays, surfaced in the rule editor so a human's Save can't
+  silently widen an agent's scope.
+- **Routing visibility** — `get_proxy_status` reports `listenHost` / `lanReachable`
+  and a three-valued `systemProxy` (`on`/`off`/`unavailable`), and
+  `set_system_proxy` can fix it, confirmed by reading the state back.
+  `SystemRoutingControlling` is injected by the app, keeping the layering one-way.
+- **HAR both ways** — import (above) and redacted export, so a capture can arrive
+  from a colleague and leave for a ticket.
 
 ## Structured Channel — decided
 
