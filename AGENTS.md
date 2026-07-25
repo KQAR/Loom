@@ -50,9 +50,34 @@ xcodebuild -workspace Loom.xcworkspace -scheme loom-mcp -destination 'platform=m
 
 # Consume the engine as a plain SPM library (no Tuist / Xcode needed):
 swift build                   # builds LoomSharedModels + LoomProxyCore from the root Package.swift
+
+# Run every test bundle exactly the way CI does (all 5 targets, one scheme):
+tuist generate --no-open      # REQUIRED first — see the false-green note below
+xcodebuild test -workspace Loom.xcworkspace -scheme Loom-Workspace -destination 'platform=macOS' \
+  -resultBundlePath /tmp/Tests.xcresult
+scripts/assert-tests-ran.sh /tmp/Tests.xcresult ProxyCoreTests AppFeatureTests MCPServerTests \
+  PrivilegedHelperClientTests SharedModelsTests
 ```
 
 Tuist is pinned to **4.202.5** in `mise.toml` — do not downgrade (see Known Issues).
+
+**Never trust `** TEST SUCCEEDED **` on its own.** `Project.swift` lists sources by glob, and the
+glob is expanded at *generate* time into the `.xcodeproj` — so a test file added since the last
+`tuist generate` isn't in the target, and xcodebuild reports success having run **zero tests**. Same
+if a bundle drops out of the scheme's test action. `scripts/assert-tests-ran.sh` is the actual pass
+condition: it reads the result bundle and fails unless every named bundle ran and nothing failed.
+
+## CI
+
+`.github/workflows/ci.yml` gates every PR and every push to main:
+
+| Job | What it protects |
+|-----|------------------|
+| **Build & test** | The whole Tuist graph compiles; all five test bundles run (`Loom-Workspace` scheme) and pass, verified through `assert-tests-ran.sh`. |
+| **SPM library** | `swift build` + `swift test` on the root `Package.swift` — the embeddable `LoomProxyCore`/`LoomSharedModels` graph resolves without Tuist (this is what Reticle consumes, and it can rot silently otherwise). |
+| **Thread Sanitizer** | `ProxyCoreTests` under TSan — the only check on the Swift-5 `@unchecked Sendable` channel handlers. **Non-blocking until a clean baseline exists**: TSan's runtime segfaults during its own init on macOS 26 (an empty `int main(){}` reproduces it), so a crashed run must never be read as "no races". |
+
+`.github/workflows/release.yml` is separate and tag-driven (see Release & Auto-Update).
 
 ## Scope
 
@@ -162,13 +187,12 @@ the flow-emission contract: **`.claude/skills/embed-engine/SKILL.md`** (lazy-loa
 ## Release & Auto-Update (Sparkle)
 
 Loom self-updates via Sparkle; a `v*` tag drives `.github/workflows/release.yml` all the way to a
-GitHub release with `Loom.dmg` + `appcast.xml`. The full flow, the EdDSA key handling and the one
-pending manual step (the `SPARKLE_EDDSA_KEY` repo secret) live in
+GitHub release with `Loom.dmg` + `appcast.xml`. The full flow and the EdDSA key handling live in
 **`.claude/skills/release/SKILL.md`** (lazy-loaded). See also the Sparkle entry in Known Issues.
 
 ## Known Issues
 
-- **Auto-update (Sparkle): in-app + release plumbing done; the CI secret is the one manual step.** `UpdaterClient`/`UpdaterCoordinator` + the panel footer "Update" button work in-app: a silent probe runs at most once a day (self-gated on `com.loom.lastUpdateCheck` in UserDefaults; `SUEnableAutomaticChecks` is deliberately off so the probe stays UI-less), and a user-initiated tap shows Sparkle's install UI. `SUPublicEDKey` in `Project.swift` is a real EdDSA public key (the matching private key is in this machine's login Keychain). The `Release` workflow builds → DMGs → signs + generates `appcast.xml` → publishes to the GitHub release. **To arm auto-update, set the `SPARKLE_EDDSA_KEY` repo secret** (export with `generate_keys -x`); without it the workflow still ships the DMG but skips the appcast, so nothing self-updates. Full-strength updates additionally want a Developer ID signed + notarized app (the CI archive is ad-hoc `CODE_SIGN_IDENTITY="-"`). Sparkle's transitive framework module must also be listed as an explicit `.external(name: "Sparkle")` dep on any test target that `@testable import`s AppFeature (see `AppFeatureTests`).
+- **Auto-update (Sparkle) is armed end-to-end; only Developer ID signing is still missing.** `UpdaterClient`/`UpdaterCoordinator` + the panel footer "Update" button work in-app: a silent probe runs at most once a day (self-gated on `com.loom.lastUpdateCheck` in UserDefaults; `SUEnableAutomaticChecks` is deliberately off so the probe stays UI-less), and a user-initiated tap shows Sparkle's install UI. `SUPublicEDKey` in `Project.swift` is a real EdDSA public key (the matching private key is in this machine's login Keychain). The `SPARKLE_EDDSA_KEY` repo secret **is set**, so the `Release` workflow builds → DMGs → signs + generates `appcast.xml` → publishes both to the GitHub release (verified: `v0.0.4` carries an `appcast.xml` asset). Remaining gap: full-strength updates want a Developer ID signed + notarized app — the CI archive is ad-hoc (`CODE_SIGN_IDENTITY="-"`). Sparkle's transitive framework module must also be listed as an explicit `.external(name: "Sparkle")` dep on any test target that `@testable import`s AppFeature (see `AppFeatureTests`).
 - **Tuist ≥ 4.202.5 is required.** TCA 1.26 pulls swift-navigation 2.10, which uses SwiftPM *package traits* (`condition: .when(traits:)`). Tuist 4.176's graph loader ignores traits and drops the `CasePathsMacrosSupport` macro edge → `Unable to find module dependency`. 4.202.5's loader handles it. Pinned in `mise.toml`.
 - **NIO modules are Swift 5.** Do not flip `ProxyCore`/`MCPServer` to Swift 6 without reworking the channel handlers off `@unchecked Sendable`. `SystemProxyClient` is also Swift 5 (XPC + continuations).
 - **HTTPS leaf certs must use ≤20-octet serials.** `Certificate.SerialNumber()` can yield 21 octets (RFC 5280 violation) which Secure Transport rejects with `-1015 "cannot decode raw data"` — silently breaking interception for ~half of hosts while browsers (lenient BoringSSL) still work. `CertificateAuthority.makeSerialNumber()` clears the top bit; don't revert to the default initializer.

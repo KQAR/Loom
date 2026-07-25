@@ -38,12 +38,15 @@ The workflow: `tuist install/generate` → `xcodebuild archive` (ad-hoc signed) 
 `scripts/create-dmg.sh` → `sign_update` + `generate_appcast` → `gh release create` with
 `Loom.dmg` + `appcast.xml`.
 
-## One-time setup (still pending)
+## Setup status
 
-Add repo secret **`SPARKLE_EDDSA_KEY`** (the exported private key). Without it the workflow still
-publishes the DMG but omits the appcast, so **auto-update stays dormant**. For Gatekeeper-clean
-installs, additionally sign + notarize with a Developer ID — the CI archive is currently ad-hoc
-(`CODE_SIGN_IDENTITY="-"`).
+Repo secret **`SPARKLE_EDDSA_KEY`** (the exported private key) is **set** — the appcast step runs and
+auto-update is live (`v0.0.4` published an `appcast.xml` asset). If that secret is ever missing or
+rotated badly, the workflow still publishes the DMG but omits the appcast and auto-update goes
+dormant with no error — check the release's assets, not just the workflow's green check.
+
+Still open: for Gatekeeper-clean installs, sign + notarize with a Developer ID — the CI archive is
+currently ad-hoc (`CODE_SIGN_IDENTITY="-"`).
 
 ## Sparkle tools
 

@@ -1,0 +1,195 @@
+name: CI
+
+# Every PR and every push to main must build the whole graph and run all five
+# test bundles. Before this existed the only workflow was Release (tag-driven,
+# archive-only), so ~425 tests ran on developer machines and nowhere else.
+#
+# The pass condition is deliberately NOT xcodebuild's exit code — see
+# scripts/assert-tests-ran.sh for why a green `** TEST SUCCEEDED **` can mean
+# zero tests executed.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push supersedes the in-flight run for the same ref; a full build is
+# ~10 minutes of runner time and the older answer is worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The real gate: the Tuist graph (app + engine + MCP + helper) compiles and
+  # all five test bundles pass.
+  test:
+    name: Build & test
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      # Same shape as the Release workflow's cache, under its own key so the two
+      # don't fight over one entry (Debug vs Release products, first writer wins).
+      - name: Cache SPM & DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            Tuist/.build
+            ${{ runner.temp }}/DerivedData
+          key: ${{ runner.os }}-loom-ci-${{ hashFiles('Tuist/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-loom-ci-
+
+      - name: Install dependencies
+        run: tuist install
+
+      - name: Generate project
+        run: tuist generate --no-open
+
+      # Tuist's "Copy Module Map" phases cp read-only (444) modulemaps into
+      # Build/Products; on a restored cache the next build re-runs them and the
+      # cp fails overwriting its own output with "Permission denied".
+      - name: Make copied module maps writable
+        run: |
+          find "${{ runner.temp }}/DerivedData/Build/Products" -name module.modulemap ! -perm -u+w \
+            -exec chmod u+w {} + 2>/dev/null || true
+
+      - name: Test
+        run: |
+          xcodebuild test \
+            -workspace Loom.xcworkspace \
+            -scheme Loom-Workspace \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "${{ runner.temp }}/DerivedData" \
+            -resultBundlePath "${{ runner.temp }}/Tests.xcresult" \
+            CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES
+
+      # Runs even when xcodebuild failed, so the summary names the failing tests
+      # instead of burying them in build noise.
+      - name: Verify every bundle actually ran
+        if: always()
+        run: |
+          scripts/assert-tests-ran.sh "${{ runner.temp }}/Tests.xcresult" \
+            AppFeatureTests \
+            MCPServerTests \
+            PrivilegedHelperClientTests \
+            ProxyCoreTests \
+            SharedModelsTests
+
+      - name: Upload result bundle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ${{ runner.temp }}/Tests.xcresult
+          retention-days: 7
+
+  # The embeddable-library graph (root Package.swift → LoomSharedModels +
+  # LoomProxyCore) resolves independently of Tuist, so it can rot without the
+  # app build noticing. Reticle consumes exactly this.
+  package:
+    name: SPM library
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SPM
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-loom-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-loom-spm-
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+  # ProxyCore's channel handlers are @unchecked Sendable in Swift 5 language
+  # mode — the compiler checks nothing there, so TSan is the only thing that
+  # does. Scoped to ProxyCoreTests: that's where real channels, sockets and the
+  # actor/NIO boundary actually run.
+  #
+  # Non-blocking on purpose, for now. TSan's runtime segfaults during its own
+  # init on macOS 26 (reproducible with an empty `int main(){}`), so whether it
+  # even starts depends on the runner image — and a broken runtime must not read
+  # as "no races found". Flip continue-on-error off once a run reports a clean
+  # baseline.
+  thread-sanitizer:
+    name: Thread Sanitizer (ProxyCore)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - name: Cache SPM & DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            Tuist/.build
+            ${{ runner.temp }}/DerivedData
+          key: ${{ runner.os }}-loom-tsan-${{ hashFiles('Tuist/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-loom-tsan-
+
+      - name: Install dependencies
+        run: tuist install
+
+      - name: Generate project
+        run: tuist generate --no-open
+
+      - name: Make copied module maps writable
+        run: |
+          find "${{ runner.temp }}/DerivedData/Build/Products" -name module.modulemap ! -perm -u+w \
+            -exec chmod u+w {} + 2>/dev/null || true
+
+      # halt_on_error stays off so one run reports every race, not just the
+      # first. The log is the signal; the exit code is only used to tell a real
+      # failure apart from an inconclusive run.
+      - name: Test under TSan
+        id: tsan
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -workspace Loom.xcworkspace \
+            -scheme ProxyCoreTests \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "${{ runner.temp }}/DerivedData" \
+            -enableThreadSanitizer YES \
+            -resultBundlePath "${{ runner.temp }}/TSan.xcresult" \
+            CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
+            2>&1 | tee "${{ runner.temp }}/tsan.log"
+
+      - name: Report races
+        run: |
+          LOG="${{ runner.temp }}/tsan.log"
+          if grep -q "ThreadSanitizer: data race" "$LOG"; then
+            echo "::error::TSan reported data race(s):"
+            grep -A 40 "WARNING: ThreadSanitizer" "$LOG" || true
+            exit 1
+          fi
+          if [ "${{ steps.tsan.outcome }}" != "success" ]; then
+            echo "::warning::TSan run did not complete — inconclusive, not a clean baseline."
+            tail -40 "$LOG" || true
+            exit 1
+          fi
+          echo "No data races reported."
+
+      - name: Upload TSan log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-log
+          path: ${{ runner.temp }}/tsan.log
+          retention-days: 7
