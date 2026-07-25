@@ -236,6 +236,19 @@ public actor ProxyEngine: ProxyControlling {
         await store.setRecording(recording)
     }
 
+    /// Ingest flows that never crossed this machine's wire (a HAR import).
+    ///
+    /// `force: true` — an import is an explicit action, so it lands even while capture
+    /// is paused, exactly like a replay. Imported flows are labelled
+    /// (`Flow.importedFrom`) and otherwise ordinary: they persist, they appear on
+    /// `flowStream()`, and `replay_flow` / `diff_flows` work on them.
+    public func importFlows(_ flows: [Flow]) async -> Int {
+        for flow in flows {
+            await store.upsert(flow, force: true)
+        }
+        return flows.count
+    }
+
     /// Generate-or-load the CA once. Failure leaves interception unavailable but
     /// keeps plain capture and blind tunneling working.
     private func ensureCA() -> CertificateAuthority? {

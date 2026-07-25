@@ -176,6 +176,12 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// relayed to the peer). Nil when nothing was dropped — so a reader can tell a
     /// complete frame log from a partial one.
     public var webSocketDroppedMessages: Int?
+    /// Set when this flow was loaded from a file (a HAR import) rather than observed
+    /// on the wire, naming where it came from. Imported traffic sits in the same
+    /// store as captured traffic — that's the point, it can be inspected, diffed and
+    /// replayed the same way — so it has to be labelled, or a reader would take
+    /// someone else's capture for something that just happened on this machine.
+    public var importedFrom: String?
 
     public init(
         id: UUID = UUID(),
@@ -188,7 +194,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         sourceDevice: SourceDevice? = nil,
         appliedRules: [AppliedRule]? = nil,
         webSocketMessages: [WebSocketMessage]? = nil,
-        webSocketDroppedMessages: Int? = nil
+        webSocketDroppedMessages: Int? = nil,
+        importedFrom: String? = nil
     ) {
         self.id = id
         self.request = request
@@ -201,6 +208,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.appliedRules = appliedRules
         self.webSocketMessages = webSocketMessages
         self.webSocketDroppedMessages = webSocketDroppedMessages
+        self.importedFrom = importedFrom
     }
 
     // MARK: Read accessors derived from `outcome` (keep call sites terse)

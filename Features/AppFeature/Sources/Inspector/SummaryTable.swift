@@ -17,6 +17,7 @@ struct SummaryTable: View {
             }
             row("Started", flow.startedAt.formatted(date: .abbreviated, time: .standard))
             if flow.replayedFrom != nil { row("Origin", "Replayed") }
+            if let importedFrom = flow.importedFrom { row("Origin", "Imported from \(importedFrom)") }
             if let applied = flow.appliedRules, !applied.isEmpty {
                 row("Rules", applied.map(\.name).joined(separator: ", "), color: .accentColor)
             }

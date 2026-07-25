@@ -141,6 +141,13 @@ final class StubEngine: ProxyControlling {
 
     // CaptureControlling
     func setRecording(_ recording: Bool) async { self.recording = recording }
+    private(set) var importedFlows: [Flow] = []
+    func importFlows(_ flows: [Flow]) async -> Int {
+        importedFlows.append(contentsOf: flows)
+        self.flows.insert(contentsOf: flows.reversed(), at: 0)
+        return flows.count
+    }
+
     private(set) var clearFlowsCallCount = 0
     func clearFlows() async {
         clearFlowsCallCount += 1

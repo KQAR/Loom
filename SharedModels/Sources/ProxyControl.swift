@@ -227,12 +227,25 @@ public protocol FlowReplaying: Sendable {
 /// what's been captured. Pausing never interrupts forwarding — traffic keeps
 /// flowing, it just isn't recorded.
 public protocol CaptureControlling: Sendable {
+    /// Load flows that were not observed on the wire (a HAR import) into the store,
+    /// so they can be inspected, diffed and replayed like captured ones. Returns how
+    /// many landed. Recorded even while capture is paused — an import is an explicit
+    /// action, like a replay.
+    ///
+    /// Default implementation stores nothing and returns 0, for an embedder that owns
+    /// its own retention; the count is the caller's signal, so "nothing was imported"
+    /// is visible rather than assumed.
+    func importFlows(_ flows: [Flow]) async -> Int
     func setRecording(_ recording: Bool) async
     /// Discard every captured flow — the in-memory ring and the durable store.
     /// Destructive and not undoable. Observers learn about it via
     /// `FlowProviding.flowsClearedStream()`, so a surface showing the old flows
     /// doesn't keep presenting them as current.
     func clearFlows() async
+}
+
+public extension CaptureControlling {
+    func importFlows(_ flows: [Flow]) async -> Int { 0 }
 }
 
 /// A push-based sink for flow updates, for an embedder that keeps captured flows
