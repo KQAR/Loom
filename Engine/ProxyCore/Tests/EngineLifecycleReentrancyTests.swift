@@ -75,7 +75,7 @@ struct EngineLifecycleReentrancyTests {
     }
 }
 
-private final class LifecycleStubUpstream: UpstreamForwarding, @unchecked Sendable {
+private struct LifecycleStubUpstream: UpstreamForwarding {
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         ForwardResult(statusCode: 200, headers: [], body: Data())
     }

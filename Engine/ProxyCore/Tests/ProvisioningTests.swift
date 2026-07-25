@@ -3,7 +3,8 @@ import NIOPosix
 import Testing
 @testable import LoomProxyCore
 
-@Suite struct ProvisioningTests {
+@Suite("Provisioning server", .timeLimit(.minutes(1)))
+struct ProvisioningTests {
     private func makeContent() throws -> ProvisioningContent {
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         return ProvisioningContent(

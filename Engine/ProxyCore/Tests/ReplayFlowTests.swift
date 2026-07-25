@@ -28,8 +28,8 @@ import LoomSharedModels
 
         let replayed = try await engine.replay(flow: source, overrides: .none)
 
-        #expect(upstream.callCount == 1)
-        #expect(upstream.lastURL?.absoluteString == source.request.url)
+        #expect(await upstream.callCount == 1)
+        #expect(await upstream.lastURL?.absoluteString == source.request.url)
         #expect(replayed.replayedFrom == source.id)
         #expect(replayed.response?.statusCode == 200)
     }
@@ -43,8 +43,8 @@ import LoomSharedModels
             overrides: ReplayOverrides(method: "POST", body: .replace(Data("hi".utf8)))
         )
 
-        #expect(upstream.lastMethod == "POST")
-        #expect(upstream.lastBody == Data("hi".utf8))
+        #expect(await upstream.lastMethod == "POST")
+        #expect(await upstream.lastBody == Data("hi".utf8))
     }
 
     @Test func replayByID_stillThrowsWhenAgedOut() async throws {
@@ -57,7 +57,7 @@ import LoomSharedModels
     }
 }
 
-private final class ReplayStubUpstream: UpstreamForwarding, @unchecked Sendable {
+private actor ReplayStubUpstream: UpstreamForwarding {
     var callCount = 0
     var lastMethod: String?
     var lastURL: URL?

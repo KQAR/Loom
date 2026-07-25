@@ -12,7 +12,8 @@ import LoomSharedModels
 /// preserved, which is what a keepHostHeader map-remote rule relies on).
 /// A class suite so `init`/`deinit` stand in for setUp/tearDown — a fresh local
 /// server per test.
-@Suite final class NIOStreamingForwarderTests {
+@Suite("NIO streaming forwarder", .timeLimit(.minutes(1)))
+final class NIOStreamingForwarderTests {
     private let group: MultiThreadedEventLoopGroup
     private let server: Channel
     private let recorder: RequestRecorder

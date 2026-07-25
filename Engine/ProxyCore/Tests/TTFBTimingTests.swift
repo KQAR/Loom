@@ -125,7 +125,7 @@ import LoomSharedModels
     }
 }
 
-private final class TimingStubUpstream: UpstreamForwarding, @unchecked Sendable {
+private struct TimingStubUpstream: UpstreamForwarding {
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         ForwardResult(statusCode: 200, headers: [], body: Data("ok".utf8))
     }

@@ -6,9 +6,16 @@ import LoomSharedModels
 /// Behavior contract for `MCPToolExecutor`, pinned before the registry refactor:
 /// every advertised tool is dispatchable, argument validation stays strict, and
 /// the executor forwards writes to the engine and renders results as JSON.
+@MainActor
 @Suite struct MCPToolExecutorTests {
-    private func makeExecutor(_ engine: StubEngine = StubEngine()) -> MCPToolExecutor {
+    // Split rather than defaulted: a default argument expression is evaluated in a
+    // nonisolated context, so `= StubEngine()` can't construct a @MainActor stub.
+    private func makeExecutor(_ engine: StubEngine) -> MCPToolExecutor {
         MCPToolExecutor(engine: engine, appVersion: "9.9", protocolVersion: "2025-06-18")
+    }
+
+    private func makeExecutor() -> MCPToolExecutor {
+        makeExecutor(StubEngine())
     }
 
     private func json(_ string: String) throws -> [String: Any] {

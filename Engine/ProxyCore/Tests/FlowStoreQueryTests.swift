@@ -69,9 +69,9 @@ import LoomSharedModels
         let upstream = QueryStubUpstream()
         let engine = ProxyEngine(forwarder: upstream, caStore: InMemoryCAStore())
 
-        upstream.result = ForwardResult(statusCode: 404, headers: [], body: Data())
+        await upstream.setResult(ForwardResult(statusCode: 404, headers: [], body: Data()))
         _ = try await engine.replay(flow: flow("https://api.example.com/a", at: 1), overrides: .none)
-        upstream.result = ForwardResult(statusCode: 200, headers: [], body: Data())
+        await upstream.setResult(ForwardResult(statusCode: 200, headers: [], body: Data()))
         _ = try await engine.replay(flow: flow("https://api.example.com/b", at: 2), overrides: .none)
 
         let errors = await engine.recentFlows(matching: FlowQuery(onlyErrors: true), limit: 10)
@@ -80,8 +80,10 @@ import LoomSharedModels
     }
 }
 
-private final class QueryStubUpstream: UpstreamForwarding, @unchecked Sendable {
-    var result = ForwardResult(statusCode: 200, headers: [], body: Data())
+private actor QueryStubUpstream: UpstreamForwarding {
+    private var result = ForwardResult(statusCode: 200, headers: [], body: Data())
+
+    func setResult(_ result: ForwardResult) { self.result = result }
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         result
     }

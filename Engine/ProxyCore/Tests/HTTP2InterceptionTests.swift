@@ -10,7 +10,8 @@ import LoomSharedModels
 
 /// End-to-end: an HTTP/2 client (ALPN "h2") through the MITM proxy is decrypted,
 /// demuxed, forwarded, and captured — proving the ALPN branch + h2→h1 stream path.
-@Suite struct HTTP2InterceptionTests {
+@Suite("HTTP/2 interception", .timeLimit(.minutes(1)))
+struct HTTP2InterceptionTests {
     @Test func h2RequestIsDecryptedForwardedAndCaptured() async throws {
         let responseBody = #"{"via":"loom-h2"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
