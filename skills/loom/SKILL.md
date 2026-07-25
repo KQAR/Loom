@@ -76,7 +76,7 @@ Loom is built for one cycle — do this, don't just read:
 | Tool | Purpose |
 | --- | --- |
 | `get_version` | app + MCP protocol version — a cheap readiness ping |
-| `get_proxy_status` | running state, bind port, captured flow count |
+| `get_proxy_status` | running state, listen address (`lanReachable`), captured flow count, recording state, and **`systemProxy`: `on` / `off` / `unavailable`** — whether this Mac's own traffic is actually routed through Loom. Check it first when a capture is empty: "nothing happened" and "nothing was pointed at the proxy" look identical otherwise |
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
 | `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `header_contains`, `body_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
 | `wait_for_flow` | **block** until a flow matching those same filters is captured (default 20 s, max 60), then return it — the tool to use around "trigger the action, then look". Checks the stored capture first, so a match that already arrived comes back immediately. `until` picks how much to wait for: `completed` (default), `response` (status known, body may still stream — use for WebSocket/long downloads), `request` (first sighting). The default window is the last 10 s (so triggering the action *then* calling can't race); widen with `since_seconds`/`since`. A timeout is a normal result (`timedOut: true`) and costs nothing: the flow stays in the store, and retrying with `since` = the reply's `windowFrom` resumes with no gap |
@@ -94,6 +94,7 @@ Loom is built for one cycle — do this, don't just read:
 
 | Tool | Purpose |
 | --- | --- |
+| `set_system_proxy` | route this Mac's HTTP/HTTPS traffic through Loom (`enabled`), or restore the previous settings. Machine-wide, may prompt for an admin password, and also blocks QUIC (UDP 443) so browsers fall back to TCP where a proxy can see them. Turn it off when done (Loom also restores on quit). A phone/other device doesn't need this — point that device at the proxy instead |
 | `set_recording` | pause/resume recording (traffic keeps flowing; nothing new is stored) — use it to keep background noise out of a capture |
 | `clear_flows` | discard every captured flow, in memory and on disk. Destructive and not undoable, and it empties the human's window too — prefer `get_recent_flows` with `since_seconds` unless you really need a clean slate |
 | `replay_flow` | re-send a flow with `overrides` (method / url / set+remove headers / body) → a new flow linked via `replayedFrom`. `count` (max 50) re-sends it N times with `concurrency` (max 10) in flight — for "is this failure intermittent?" / "does it hold up in parallel?"; the reply becomes a batch summary (`succeeded`/`failed`/`statusClasses`/`ttfbMS` + per-attempt ids) and a failing attempt is reported, not thrown. Each attempt is a real request and obeys armed rules/breakpoints |
@@ -174,7 +175,9 @@ scoped rule); then one action:
 - `loom` tools missing / connection refused on `127.0.0.1:9092` → **the Loom app
   isn't running or isn't installed**. Ask the user to install/launch it; don't
   guess at traffic.
-- No flows / empty `get_recent_flows` → nothing has been routed through the proxy
+- No flows / empty `get_recent_flows` → check `get_proxy_status`: if `systemProxy` is
+  `off`, this Mac's traffic isn't routed through Loom (fix with `set_system_proxy`);
+  otherwise nothing has been routed through the proxy
   yet (client not pointed at it, or recording paused). Say so.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with

@@ -11,7 +11,11 @@ struct LoomApp: App {
     private let store = Store(initialState: AppFeature.State()) {
         AppFeature()
     }
-    private let mcp = MCPServer(engine: ProxyEngine.shared, appVersion: appVersion)
+    // `routing` is what lets an agent see *and* fix "nothing is pointed at the
+    // proxy" — client-layer capability the engine can't reach, injected here.
+    private let mcp = MCPServer(
+        engine: ProxyEngine.shared, appVersion: appVersion, routing: SystemRoutingAdapter()
+    )
 
     init() {
         // The proxy is started by AppFeature's one-shot boot effect (fired by the
