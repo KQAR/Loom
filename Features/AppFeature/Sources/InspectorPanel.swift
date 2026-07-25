@@ -512,7 +512,10 @@ private struct WebSocketMessagesView: View {
         if messages.isEmpty {
             Text("No frames yet").foregroundStyle(.secondary)
         } else {
-            VStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
+            // Lazy: a chatty socket records up to 10k frames, and an eager `VStack`
+            // would lay out every one of them on open (AGENTS.md: never render an
+            // unbounded collection eagerly).
+            LazyVStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
                 if let droppedMessages {
                     Label(
                         "Frame log capped — \(droppedMessages) later frames were relayed but not recorded",

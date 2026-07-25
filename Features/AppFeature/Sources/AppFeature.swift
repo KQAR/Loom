@@ -73,6 +73,17 @@ public struct AppFeature: Sendable {
         /// (fed by `connectedDeviceCountStream`), so a phone counts the moment it
         /// connects — even if its HTTPS is blind-tunneled and never captured.
         public var connectedDeviceCount = 0
+        // Sidebar aggregates, maintained incrementally as flows arrive rather than
+        // recomputed by scanning every flow on each render. The scan was four
+        // separate O(n) passes per render (hosts / apps / devices / error count) —
+        // and the host pass parsed 2000 URLs through `URLComponents` every time.
+        var hostCounts: [String: Int] = [:]
+        var appCounts: [String: Int] = [:]
+        var appReps: [String: SourceApp] = [:]
+        var deviceCounts: [String: Int] = [:]
+        var deviceReps: [String: SourceDevice] = [:]
+        /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge.
+        public var errorCount = 0
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
@@ -85,6 +96,14 @@ public struct AppFeature: Sendable {
 
         public init() {}
 
+        /// State already holding `flows`, with the sidebar aggregates in sync.
+        /// Assigning `flows` directly would leave the incremental counts empty, so
+        /// every path that populates the list — live capture, the boot seed, and
+        /// tests — goes through `recordFlow`.
+        public init(flows: [Flow]) {
+            for flow in flows { recordFlow(flow) }
+        }
+
         /// Upsert a flow, then enforce the session display cap by dropping the
         /// oldest overflow (oldest-first storage → `removeFirst`), counting the
         /// drops. An upsert of an existing id doesn't grow the array, so this only
@@ -92,10 +111,18 @@ public struct AppFeature: Sendable {
         mutating func recordFlow(_ flow: Flow) {
             // Store metadata only — bodies for up to 2000 flows would be a large RAM
             // sink; the inspector hydrates the selected flow's body on demand.
-            flows[id: flow.id] = flow.strippingBodies()
+            // An upsert replaces: retract the previous version's contribution to the
+            // aggregates first, or a pending→completed update double-counts.
+            if let previous = flows[id: flow.id] { retract(previous) }
+            let stripped = flow.strippingBodies()
+            flows[id: flow.id] = stripped
+            contribute(stripped)
+
             let overflow = flows.count - Self.displayCap
             if overflow > 0 {
-                let droppedIDs = Set(flows.prefix(overflow).map(\.id))
+                let dropped = flows.prefix(overflow)
+                let droppedIDs = Set(dropped.map(\.id))
+                for flow in dropped { retract(flow) }
                 flows.removeFirst(overflow)
                 droppedFlowCount += overflow
                 if let selected = selectedFlowID, droppedIDs.contains(selected) {
@@ -105,11 +132,72 @@ public struct AppFeature: Sendable {
             status.capturedCount = flows.count
         }
 
+        /// Whether a flow counts as a failure for the Errors category/badge. One
+        /// definition, used by both the count and the list filter.
+        static func isError(_ flow: Flow) -> Bool {
+            (flow.statusCode ?? 0) >= 400 || flow.error != nil
+        }
+
+        /// Fold one flow into the sidebar aggregates.
+        private mutating func contribute(_ flow: Flow) {
+            if Self.isError(flow) { errorCount += 1 }
+            if let host = flow.host { hostCounts[host, default: 0] += 1 }
+            if let app = flow.sourceApp {
+                appCounts[app.groupingKey, default: 0] += 1
+                appReps[app.groupingKey] = app
+            }
+            if let device = flow.sourceDevice {
+                let key = device.groupingKey
+                deviceCounts[key, default: 0] += 1
+                if var existing = deviceReps[key] {
+                    // Keep the richest typing seen across the device's flows.
+                    if existing.platform == nil { existing.platform = device.platform }
+                    if existing.client == nil { existing.client = device.client }
+                    deviceReps[key] = existing
+                } else {
+                    deviceReps[key] = device
+                }
+            }
+        }
+
+        /// Undo `contribute` — for a replaced or evicted flow. A key that reaches
+        /// zero is removed along with its representative, so an emptied host/app/
+        /// device disappears from the sidebar instead of lingering at 0.
+        private mutating func retract(_ flow: Flow) {
+            if Self.isError(flow) { errorCount = max(0, errorCount - 1) }
+            if let host = flow.host { _ = Self.decrement(&hostCounts, key: host) }
+            if let app = flow.sourceApp, Self.decrement(&appCounts, key: app.groupingKey) {
+                appReps[app.groupingKey] = nil
+            }
+            if let device = flow.sourceDevice, Self.decrement(&deviceCounts, key: device.groupingKey) {
+                deviceReps[device.groupingKey] = nil
+            }
+        }
+
+        /// Decrement a count, removing the key at zero. Returns whether it emptied.
+        /// Static so passing one of our own dictionaries `inout` isn't an
+        /// overlapping access to `self`.
+        private static func decrement(_ counts: inout [String: Int], key: String) -> Bool {
+            guard let count = counts[key] else { return false }
+            if count <= 1 {
+                counts[key] = nil
+                return true
+            }
+            counts[key] = count - 1
+            return false
+        }
+
         /// Drop the window's copy of the capture. Used by the Clear button and by
         /// the engine's "cleared" signal (an agent's `clear_flows`), so both paths
         /// leave exactly the same state.
         mutating func forgetCapturedFlows() {
             flows.removeAll()
+            hostCounts.removeAll()
+            appCounts.removeAll()
+            appReps.removeAll()
+            deviceCounts.removeAll()
+            deviceReps.removeAll()
+            errorCount = 0
             selectedFlowID = nil
             selectedFlowDetail = nil
             selectedOriginalDetail = nil
@@ -120,14 +208,22 @@ public struct AppFeature: Sendable {
         /// Requests for the selected category, filtered by search, oldest-first
         /// (chronological — newest at the bottom, like a log/terminal).
         public var displayFlows: [Flow] {
-            var result = Array(flows)
             switch selectedCategory ?? .all {
             case .all:
-                break
-            case .errors:
-                result = result.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }
+                // The whole list, handed over without copying (`elements` is the
+                // backing array) — this is the common case and runs on every render.
+                return flows.elements
             case .rules, .audit:
                 return [] // the rules / audit panel replaces the table
+            default:
+                break
+            }
+            var result = flows.elements
+            switch selectedCategory ?? .all {
+            case .all, .rules, .audit:
+                break
+            case .errors:
+                result = result.filter(Self.isError)
 
             case let .host(host):
                 result = result.filter { $0.host == host }
@@ -140,38 +236,20 @@ public struct AppFeature: Sendable {
         }
 
         /// Distinct devices with counts — LAN devices first (the phone you just
-        /// connected), then by most flows. Mirrors `hosts`/`apps`.
+        /// connected), then by most flows. Reads the incremental aggregates, so this
+        /// sorts a handful of devices instead of scanning every flow.
         public var devices: [(device: SourceDevice, count: Int)] {
-            var reps: [String: SourceDevice] = [:]
-            var counts: [String: Int] = [:]
-            for flow in flows {
-                guard let device = flow.sourceDevice else { continue }
-                let key = device.groupingKey
-                counts[key, default: 0] += 1
-                if var existing = reps[key] {
-                    // Keep the richest typing seen across the device's flows.
-                    if existing.platform == nil { existing.platform = device.platform }
-                    if existing.client == nil { existing.client = device.client }
-                    reps[key] = existing
-                } else {
-                    reps[key] = device
-                }
-            }
-            return counts.sorted { a, b in
-                let da = reps[a.key], db = reps[b.key]
+            deviceCounts.sorted { a, b in
+                let da = deviceReps[a.key], db = deviceReps[b.key]
                 let la = da?.kind == .lan, lb = db?.kind == .lan
                 if la != lb { return la }        // LAN devices float to the top
                 return a.value != b.value ? a.value > b.value : a.key < b.key
-            }.compactMap { key, count in reps[key].map { (device: $0, count: count) } }
+            }.compactMap { key, count in deviceReps[key].map { (device: $0, count: count) } }
         }
 
         /// Distinct hosts with counts — pinned first, then alphabetical.
         public var hosts: [(host: String, count: Int)] {
-            var counts: [String: Int] = [:]
-            for flow in flows {
-                if let host = flow.host { counts[host, default: 0] += 1 }
-            }
-            return counts.sorted { a, b in
+            hostCounts.sorted { a, b in
                 let pa = pinnedHosts.contains(a.key), pb = pinnedHosts.contains(b.key)
                 if pa != pb { return pa }        // pinned rows float to the top
                 return a.key < b.key
@@ -179,28 +257,19 @@ public struct AppFeature: Sendable {
         }
 
         /// Distinct source apps with counts — pinned first, then most-active.
-        /// Keyed by `groupingKey` (bundle id or name); a representative `SourceApp`
-        /// carries the display name + icon path.
+        /// Keyed by `groupingKey` (bundle id or name); the representative carries the
+        /// display name + icon path.
         public var apps: [(app: SourceApp, count: Int)] {
-            var reps: [String: SourceApp] = [:]
-            var counts: [String: Int] = [:]
-            for flow in flows {
-                guard let app = flow.sourceApp else { continue }
-                let key = app.groupingKey
-                reps[key] = app
-                counts[key, default: 0] += 1
-            }
-            return counts
+            appCounts
                 .sorted { a, b in
                     let pa = pinnedApps.contains(a.key), pb = pinnedApps.contains(b.key)
                     if pa != pb { return pa }    // pinned rows float to the top
                     return a.value != b.value ? a.value > b.value : (a.key < b.key)
                 }
-                .compactMap { key, count in reps[key].map { (app: $0, count: count) } }
+                .compactMap { key, count in appReps[key].map { (app: $0, count: count) } }
         }
 
         public var allCount: Int { flows.count }
-        public var errorCount: Int { flows.filter { ($0.statusCode ?? 0) >= 400 || $0.error != nil }.count }
 
         /// Metadata-only selected flow (from the body-free list). The inspector
         /// reads `selectedFlowDetail` for the full payload.
@@ -241,6 +310,11 @@ public struct AppFeature: Sendable {
         /// because it reads the flow store); forwarded to `RulesFeature`.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
         case flowReceived(Flow)
+        /// A coalesced batch of flow updates from the live stream. One action per
+        /// window instead of one per emission: an exchange emits 2-3 times (more when
+        /// streaming, once per WebSocket frame), and each action drove a full reducer
+        /// run plus a SwiftUI invalidation of the table and sidebar.
+        case flowsReceived([Flow])
         /// A write action was recorded (seed at boot + live stream).
         case auditEntryReceived(AuditEntry)
         /// The human cleared the audit trail from the panel.
@@ -276,6 +350,8 @@ public struct AppFeature: Sendable {
 
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.updaterClient) var updaterClient
+    /// Drives the flow-batching window — a dependency so tests can control it.
+    @Dependency(\.continuousClock) var clock
 
     private enum CancelID { case subscription, updates, audit, devices, cleared }
 
@@ -341,12 +417,13 @@ public struct AppFeature: Sendable {
                         await send(.lanEnabledLoaded(lan))
                         if lan { _ = try? await proxyClient.startPhoneOnboarding() }
                         await send(.viewAppeared)
-                        for flow in await proxyClient.recentFlows(200).reversed() {
-                            await send(.flowReceived(flow))
-                        }
-                        for await flow in await proxyClient.flowStream() {
-                            await send(.flowReceived(flow))
-                        }
+                        // Seed history as one batch, not 200 separate actions.
+                        await send(.flowsReceived(await proxyClient.recentFlows(200).reversed()))
+                        await Self.streamFlows(
+                            into: send,
+                            flowStream: { await proxyClient.flowStream() },
+                            clock: clock
+                        )
                     }
                     .cancellable(id: CancelID.subscription, cancelInFlight: true),
                     // Keep the footer button in sync with Sparkle. `.viewAppeared`
@@ -440,6 +517,18 @@ public struct AppFeature: Sendable {
                 state.status.port = port
                 state.setup.port = port          // mirror into the setup feature
                 state.setup.proxyRunning = true
+                return .none
+
+            case let .flowsReceived(flows):
+                for flow in flows {
+                    state.recordFlow(flow)
+                    // The stream copy still carries bodies; if it's the open
+                    // selection, keep the inspector's hydrated copy live (same as
+                    // the single-flow path below).
+                    if flow.id == state.selectedFlowID {
+                        state.selectedFlowDetail = flow
+                    }
+                }
                 return .none
 
             case let .flowReceived(flow):
@@ -590,6 +679,68 @@ public struct AppFeature: Sendable {
         }
         .ifLet(\.$phone, action: \.phone) {
             PhoneOnboardingFeature()
+        }
+    }
+}
+
+
+// MARK: - Flow stream coalescing
+
+/// Buffer between the engine's flow stream and the store. Emissions arrive as fast
+/// as traffic flows (2-3 per exchange, one per WebSocket frame); the UI only needs
+/// to redraw at a human rate. Collecting into an actor and draining on a fixed
+/// window turns a burst of hundreds of actions per second into ~10, each carrying
+/// the batch — so the reducer runs (and SwiftUI invalidates the table + sidebar)
+/// once per window instead of once per packet.
+private actor FlowBatchBuffer {
+    private var flows: [Flow] = []
+
+    func append(_ flow: Flow) {
+        flows.append(flow)
+    }
+
+    /// Take everything buffered so far, leaving the buffer empty.
+    func drain() -> [Flow] {
+        defer { flows.removeAll(keepingCapacity: true) }
+        return flows
+    }
+}
+
+extension AppFeature {
+    /// How often batched flow updates reach the store. Long enough to collapse a
+    /// burst, short enough that the list still feels live.
+    static let flowBatchWindow: Duration = .milliseconds(100)
+
+    /// Consume the engine's flow stream, forwarding it to `send` in windowed
+    /// batches. Two concurrent tasks rather than a time check inside the read loop:
+    /// with only a check-on-arrival, the last few flows of a burst would sit
+    /// unsent until the *next* request arrived — a request that looked like it never
+    /// happened. The drain task fires on the window regardless of traffic.
+    static func streamFlows(
+        into send: Send<Action>,
+        flowStream: @escaping @Sendable () async -> AsyncStream<Flow>,
+        clock: any Clock<Duration>
+    ) async {
+        let buffer = FlowBatchBuffer()
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await flow in await flowStream() {
+                    await buffer.append(flow)
+                }
+            }
+            group.addTask {
+                while !Task.isCancelled {
+                    try? await clock.sleep(for: Self.flowBatchWindow)
+                    let batch = await buffer.drain()
+                    if !batch.isEmpty { await send(.flowsReceived(batch)) }
+                }
+            }
+            // The stream task finishing (engine stopped) ends the drain task too,
+            // after one last flush so nothing buffered is dropped.
+            await group.next()
+            group.cancelAll()
+            let remainder = await buffer.drain()
+            if !remainder.isEmpty { await send(.flowsReceived(remainder)) }
         }
     }
 }

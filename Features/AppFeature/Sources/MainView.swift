@@ -219,7 +219,10 @@ public struct MainView: View {
     }
 
     private var requestTable: some View {
-        Table(store.displayFlows, selection: $store.selectedFlowID.sending(\.flowSelected)) {
+        // Evaluated once per render and reused: `displayFlows` filters the capture,
+        // and the auto-scroll modifier below needs its count too.
+        let rows = store.displayFlows
+        return Table(rows, selection: $store.selectedFlowID.sending(\.flowSelected)) {
             TableColumn("") { flow in
                 StatusDot(flow: flow)
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -288,7 +291,7 @@ public struct MainView: View {
             }
             .width(min: 56, ideal: 70, max: 100)
         }
-        .background(RequestTableAutoScroll(rowCount: store.displayFlows.count, follow: $followTail))
+        .background(RequestTableAutoScroll(rowCount: rows.count, follow: $followTail))
         .contextMenu(forSelectionType: Flow.ID.self) { ids in
             if let id = ids.first, let flow = store.flows[id: id] {
                 Button("Replay", systemImage: "arrow.triangle.2.circlepath") {

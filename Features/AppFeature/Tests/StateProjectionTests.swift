@@ -9,8 +9,7 @@ import Testing
 /// Pure functions of `flows` + selection — no store needed.
 @Suite struct StateProjectionTests {
     private func state(_ flows: [Flow], category: FlowCategory? = .all) -> AppFeature.State {
-        var s = AppFeature.State()
-        s.flows = IdentifiedArray(uniqueElements: flows)
+        var s = AppFeature.State(flows: flows)
         s.selectedCategory = category
         return s
     }
