@@ -13,6 +13,8 @@ Loom is a personal macOS 14+ app: an **AI-operable debugging proxy** that lives 
 
 **Stack**: SwiftUI + TCA, Tuist, Swift 6 (NIO modules Swift 5), SwiftNIO, SPM, macOS 14+.
 
+**Fail-open logging**: the engine fails open by design (a corrupt CA regenerates, an unreadable rules file starts empty, a bad SSL scope disables interception) — but never silently. Those paths log at error level through `Log` (`proxy`/`tls`/`forward`/`store`/`websocket`/`audit`/`rules`); read them with `log stream --predicate 'subsystem == "com.loom"'`.
+
 ## Design System
 
 Three docs govern the product; each wins over code in its domain:

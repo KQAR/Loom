@@ -148,9 +148,10 @@ final class RuleApplyingForwarder: UpstreamForwarding {
 
     /// Serve the mapped file, or an honest 404 naming the missing path — a mock
     /// that silently degrades to the real upstream would be far more confusing.
-    private static func serveLocalFile(_ local: MapLocalAction) -> ForwardResult {
+    static func serveLocalFile(_ local: MapLocalAction) -> ForwardResult {
         let url = URL(fileURLWithPath: local.path)
         guard let data = try? Data(contentsOf: url) else {
+            Log.rules.error("mapLocal could not read \(local.path, privacy: .public); serving 404 instead of the mapped file.")
             return ForwardResult(
                 statusCode: 404,
                 headers: [HeaderPair(name: "Content-Type", value: "text/plain; charset=utf-8")],

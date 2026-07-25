@@ -23,6 +23,13 @@ final class AuditPersistence: @unchecked Sendable {
         )
         var handle: OpaquePointer?
         guard sqlite3_open(fileURL.path, &handle) == SQLITE_OK else {
+            // The audit trail is the human's record of what the agent did; losing
+            // durability silently is the one thing it must not do.
+            Log.audit.error("""
+            Could not open the audit database at \(fileURL.path, privacy: .public) \
+            (\(String(cString: sqlite3_errmsg(handle)), privacy: .public)); \
+            write actions will only be recorded in memory for this session.
+            """)
             sqlite3_close(handle)
             return nil
         }
@@ -43,9 +50,11 @@ final class AuditPersistence: @unchecked Sendable {
         AuditPersistence(fileURL: LoomPaths.appSupportFile("audit.sqlite"))
     }
 
-    /// Fire-and-forget write; drained by `flush()` on quit.
+    /// Fire-and-forget write; drained by `flush()` on quit. Strong capture so a
+    /// queued entry isn't dropped if the store is released first — an unrecorded
+    /// write action is a hole in the trail.
     func save(_ entry: AuditEntry) {
-        queue.async { [weak self] in self?.writeRow(entry) }
+        queue.async { self.writeRow(entry) }
     }
 
     /// Newest-first, like `AuditStore.recent`.
@@ -102,7 +111,10 @@ final class AuditPersistence: @unchecked Sendable {
         INSERT OR REPLACE INTO audit (id, ts, tool, source, succeeded, args, detail)
         VALUES (?, ?, ?, ?, ?, ?, ?);
         """
-        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            Log.audit.error("Audit entry for \(entry.tool, privacy: .public) could not be prepared: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
+            return
+        }
         defer { sqlite3_finalize(stmt) }
         sqlite3_bind_text(stmt, 1, entry.id.uuidString, -1, transient)
         sqlite3_bind_double(stmt, 2, entry.timestamp.timeIntervalSince1970)
@@ -111,7 +123,12 @@ final class AuditPersistence: @unchecked Sendable {
         sqlite3_bind_int(stmt, 5, entry.succeeded ? 1 : 0)
         sqlite3_bind_text(stmt, 6, entry.arguments, -1, transient)
         sqlite3_bind_text(stmt, 7, entry.detail, -1, transient)
-        guard sqlite3_step(stmt) == SQLITE_DONE else { return }
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            // A write action that happened but wasn't recorded — the audit trail's
+            // one unacceptable failure.
+            Log.audit.error("Audit entry for \(entry.tool, privacy: .public) failed to persist: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
+            return
+        }
         pruneIfNeeded()
     }
 

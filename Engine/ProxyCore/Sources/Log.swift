@@ -13,4 +13,10 @@ enum Log {
     static let forward = Logger(subsystem: subsystem, category: "forward")
     static let store = Logger(subsystem: subsystem, category: "store")
     static let ws = Logger(subsystem: subsystem, category: "websocket")
+    /// The write-action trail. Separate from `store` because a gap here is a gap in
+    /// the human's record of what the agent did, not just a lost capture.
+    static let audit = Logger(subsystem: subsystem, category: "audit")
+    /// Rule evaluation/application — a rule that silently fails to apply makes an
+    /// agent believe traffic was mocked or re-mapped when it wasn't.
+    static let rules = Logger(subsystem: subsystem, category: "rules")
 }

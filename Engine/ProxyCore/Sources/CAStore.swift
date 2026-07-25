@@ -85,11 +85,31 @@ final class FileCAStore: CAStore {
     }
 
     func load() throws -> CAMaterial? {
-        guard let data = try? Data(contentsOf: fileURL),
-              let blob = String(data: data, encoding: .utf8)
-        else { return nil }
+        // Absent is normal (first run). Present-but-unreadable is not: returning nil
+        // makes the caller mint a *new* root CA, which silently invalidates the one
+        // the user already trusted — every HTTPS interception then fails until they
+        // trust the new CA. That must not be a silent event.
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
+            Log.tls.error("""
+            CA store unreadable at \(self.fileURL.path, privacy: .public); \
+            a new root CA will be generated and the previously trusted one will stop \
+            working: \(String(describing: error))
+            """)
+            return nil
+        }
+        guard let blob = String(data: data, encoding: .utf8) else {
+            Log.tls.error("CA store at \(self.fileURL.path, privacy: .public) is not UTF-8; regenerating (previously trusted CA will stop working).")
+            return nil
+        }
         let parts = blob.components(separatedBy: Self.separator)
-        guard parts.count == 2 else { return nil }
+        guard parts.count == 2 else {
+            Log.tls.error("CA store at \(self.fileURL.path, privacy: .public) is malformed (\(parts.count) parts); regenerating (previously trusted CA will stop working).")
+            return nil
+        }
         return CAMaterial(certificatePEM: parts[0], privateKeyPEM: parts[1])
     }
 
