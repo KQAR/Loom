@@ -80,6 +80,7 @@ Loom is built for one cycle — do this, don't just read:
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
 | `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `header_contains`, `body_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
 | `wait_for_flow` | **block** until a flow matching those same filters is captured (default 20 s, max 60), then return it — the tool to use around "trigger the action, then look". Checks the stored capture first, so a match that already arrived comes back immediately. `until` picks how much to wait for: `completed` (default), `response` (status known, body may still stream — use for WebSocket/long downloads), `request` (first sighting). The default window is the last 10 s (so triggering the action *then* calling can't race); widen with `since_seconds`/`since`. A timeout is a normal result (`timedOut: true`) and costs nothing: the flow stays in the store, and retrying with `since` = the reply's `windowFrom` resumes with no gap |
+| `get_stats` | aggregate instead of reading: per-bucket flow counts, error rates, TTFB/duration percentiles + the slowest exchanges *with ids*. `group_by`: `host` (default), `endpoint` (method + path, ids collapsed to `{id}`), `status`, `app`, `device`, `none`. Same filters as `get_recent_flows`. Use it for "which endpoint is slow", "what share of these calls fail", "who is chatty" — a percentile over one page of summaries isn't a percentile. `sizeUnknownFlows` on a bucket = its byte totals are a floor (those bodies have been evicted) |
 | `get_flow_detail` | full headers + body for one flow id; adds `webSocket.messages` / `graphQL` blocks when present. Bodies are **bounded**: over `max_bytes` (default 16 KB) you get `{truncated, preview, bytes, offset, nextOffset}` — page with `body_offset: nextOffset`. A non-text body is `{binary, bytes}`, never `""`. WebSocket frames are capped by `ws_limit` (default 100, most recent) and flagged with `messagesTruncated` |
 | `diff_flows` | structured diff of two flows by id (`base` + `compared`, or `base` alone to diff a replay vs its original); reports method/url, header add/remove/change, status, line-level body diff |
 | `get_audit_log` | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, with tool name, arguments, outcome, timestamp; use to review what writes have been made (yours or a prior session's) |
@@ -140,6 +141,10 @@ glob-or-regex + HTTP methods; then one action:
   is holding a live client connection while you think, and an unattended hold
   auto-continues after a timeout, so decide and resume promptly. `disarm_breakpoint`
   when done.
+- **"Why is this screen slow / what's failing?"** → `get_stats` with
+  `since_seconds` (and `group_by: endpoint` once you know the host). Read the error
+  rate and the TTFB p95, then `get_flow_detail` on an id from `slowest` — don't page
+  through summaries computing averages.
 - **"Which request carried this order id / token?"** → `get_recent_flows` with
   `body_contains` (or `header_contains` for an auth token / trace header) instead of
   paging `get_flow_detail` over candidates. Narrow it with `host`/`since_seconds` —
