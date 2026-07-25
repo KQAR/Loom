@@ -116,16 +116,15 @@ jobs:
   # does. Scoped to ProxyCoreTests: that's where real channels, sockets and the
   # actor/NIO boundary actually run.
   #
-  # Non-blocking on purpose, for now. TSan's runtime segfaults during its own
-  # init on macOS 26 (reproducible with an empty `int main(){}`), so whether it
-  # even starts depends on the runner image — and a broken runtime must not read
-  # as "no races found". Flip continue-on-error off once a run reports a clean
-  # baseline.
+  # Blocking: the baseline is clean (229 tests instrumented, zero races). Note
+  # TSan's runtime segfaults during its own init on macOS 26 — reproducible with
+  # an empty `int main(){}`, so it can't be run locally on such a machine, only
+  # here. That's also why "Report races" treats a run that didn't complete as
+  # inconclusive-and-failing: a broken sanitizer must never read as "no races".
   thread-sanitizer:
     name: Thread Sanitizer (ProxyCore)
     runs-on: macos-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -170,6 +169,11 @@ jobs:
             -resultBundlePath "${{ runner.temp }}/TSan.xcresult" \
             CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
             2>&1 | tee "${{ runner.temp }}/tsan.log"
+
+      # Same reason as the test job: a run of zero tests reports zero races.
+      - name: Verify the suite actually ran
+        if: always()
+        run: scripts/assert-tests-ran.sh "${{ runner.temp }}/TSan.xcresult" ProxyCoreTests
 
       - name: Report races
         run: |

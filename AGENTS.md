@@ -75,7 +75,7 @@ condition: it reads the result bundle and fails unless every named bundle ran an
 |-----|------------------|
 | **Build & test** | The whole Tuist graph compiles; all five test bundles run (`Loom-Workspace` scheme) and pass, verified through `assert-tests-ran.sh`. |
 | **SPM library** | `swift build` + `swift test` on the root `Package.swift` — the embeddable `LoomProxyCore`/`LoomSharedModels` graph resolves without Tuist (this is what Reticle consumes, and it can rot silently otherwise). |
-| **Thread Sanitizer** | `ProxyCoreTests` under TSan — the only check on the Swift-5 `@unchecked Sendable` channel handlers. **Non-blocking until a clean baseline exists**: TSan's runtime segfaults during its own init on macOS 26 (an empty `int main(){}` reproduces it), so a crashed run must never be read as "no races". |
+| **Thread Sanitizer** | `ProxyCoreTests` under TSan — the only check on the Swift-5 `@unchecked Sendable` channel handlers. Baseline is clean (229 instrumented tests, zero races). **Can't be reproduced locally on macOS 26**: TSan's runtime segfaults during its own init there (an empty `int main(){}` reproduces it), so the job treats a run that didn't complete as inconclusive-and-failing rather than "no races found". |
 
 `.github/workflows/release.yml` is separate and tag-driven (see Release & Auto-Update).
 
