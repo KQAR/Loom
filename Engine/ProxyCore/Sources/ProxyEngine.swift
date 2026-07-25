@@ -595,6 +595,10 @@ public actor ProxyEngine: ProxyControlling {
         breakpointStore.pending()
     }
 
+    public func pendingBreakpointStream() async -> AsyncStream<PendingBreakpoint> {
+        breakpointStore.pendingStream()
+    }
+
     public func resumeBreakpoint(pendingID: UUID, abort: Bool, edit: BreakpointEdit) async throws {
         let resolution: BreakpointResolution = abort ? .abort : .proceed(edit)
         guard breakpointStore.resume(pendingID: pendingID, resolution: resolution) else {

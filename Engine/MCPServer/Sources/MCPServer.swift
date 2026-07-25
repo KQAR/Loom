@@ -71,8 +71,12 @@ public final class MCPServer: @unchecked Sendable {
     }
 
     /// Starts the server, writes the handshake file, and returns the bound port.
+    ///
+    /// `announce: false` skips the handshake — for a second, ephemeral server (a test)
+    /// that must not overwrite the running app's `{token, port}`, which is the only
+    /// thing telling the `loom-mcp` bridge where the real endpoint is.
     @discardableResult
-    public func start(port: Int = 0) async throws -> Int {
+    public func start(port: Int = 0, announce: Bool = true) async throws -> Int {
         let executor = MCPToolExecutor(engine: engine, appVersion: appVersion, protocolVersion: Self.protocolVersion)
         let dispatcher = MCPDispatcher(executor: executor)
         let token = self.token
@@ -80,7 +84,18 @@ public final class MCPServer: @unchecked Sendable {
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                channel.pipeline.configureHTTPServerPipeline(withErrorHandling: true).flatMap {
+                // `withPipeliningAssistance: false` on purpose. That handler holds back
+                // reads until the current response is written — which means NIO never
+                // reads the socket while a request is being served, and so never sees
+                // the client's EOF. A blocking tool (`wait_for_flow`) can hold a
+                // response for tens of seconds, and a client that gives up in that
+                // window must be noticed, not discovered a minute later. Nothing is
+                // lost by dropping it: every response says `Connection: close` and
+                // closes, so this endpoint never pipelines two requests on one
+                // connection (and `MCPHTTPHandler` rejects an attempt to).
+                channel.pipeline.configureHTTPServerPipeline(
+                    withPipeliningAssistance: false, withErrorHandling: true
+                ).flatMap {
                     channel.pipeline.addHandler(MCPHTTPHandler(dispatcher: dispatcher, token: token))
                 }
             }
@@ -88,7 +103,9 @@ public final class MCPServer: @unchecked Sendable {
         let channel = try await bootstrap.bind(host: "127.0.0.1", port: port).get()
         self.channel = channel
         let boundPort = channel.localAddress?.port ?? port
-        try HandshakeStore.write(MCPHandshake(token: token, port: boundPort))
+        if announce {
+            try HandshakeStore.write(MCPHandshake(token: token, port: boundPort))
+        }
         return boundPort
     }
 
@@ -211,6 +228,11 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     /// Set once we've rejected the request at `.head` (bad method/path/auth) or
     /// mid-body (oversize); remaining parts are then ignored.
     private var rejected = false
+    /// The task running the current tool call, so closing the connection can cancel
+    /// it. Only matters for the blocking tools (`wait_for_flow`, `wait_for_pending`):
+    /// a client that gives up or is interrupted mid-wait would otherwise leave a
+    /// waiter subscribed and parked for its whole duration with nobody left to answer.
+    private var inFlight: Task<Void, Never>?
 
     init(dispatcher: MCPDispatcher, token: String) {
         self.dispatcher = dispatcher
@@ -225,7 +247,14 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             rejected = false
             // Validate method / path / auth up front, before buffering any body,
             // so an unauthorized or wrong-path request is rejected immediately.
-            if head.method != .POST || Self.path(head.uri) != "/mcp" {
+            if inFlight != nil {
+                // A second request on a connection whose first is still being served.
+                // Without pipelining assistance we would answer them out of order, so
+                // say so instead: every response is `Connection: close`, meaning the
+                // client was told not to reuse this connection in the first place.
+                reject(channel: context.channel, status: .serviceUnavailable,
+                       message: "one request per connection; this endpoint closes after each response")
+            } else if head.method != .POST || Self.path(head.uri) != "/mcp" {
                 reject(channel: context.channel, status: .notFound, message: "not found")
             } else if !authorized(head) {
                 reject(channel: context.channel, status: .unauthorized, message: "unauthorized")
@@ -261,16 +290,29 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         writeJSON(channel: channel, status: status, data: Data(#"{"error":"\#(message)"}"#.utf8))
     }
 
+    /// Dispatch off the event loop. A tool call can take a while — a blocking wait
+    /// holds for tens of seconds by design — and the loop must stay free to serve
+    /// other connections meanwhile, which it does because the `await` happens in this
+    /// task rather than on the loop. Each request arrives on its own connection
+    /// (`Connection: close`), so nothing queues behind a held one.
     private func respond(channel: Channel, head: HTTPRequestHead, payload: Data) {
         let dispatcher = self.dispatcher
-        Task {
+        inFlight = Task {
             let response = await dispatcher.handle(requestBody: payload)
+            guard !Task.isCancelled else { return }
             if let response {
                 self.writeJSON(channel: channel, status: .ok, data: response)
             } else {
                 self.writeJSON(channel: channel, status: .accepted, data: Data())
             }
         }
+    }
+
+    /// The client is gone: stop the work it was waiting for.
+    func channelInactive(context: ChannelHandlerContext) {
+        inFlight?.cancel()
+        inFlight = nil
+        context.fireChannelInactive()
     }
 
     private func authorized(_ head: HTTPRequestHead) -> Bool {

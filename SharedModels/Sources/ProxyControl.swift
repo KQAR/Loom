@@ -211,8 +211,8 @@ public protocol FlowObserving: Sendable {
 }
 
 /// Breakpoints: hold matching traffic mid-flight so an operator (AI over MCP or
-/// the UI) can inspect and edit it, then release it. A poll model — MCP has no
-/// server push — so held exchanges surface via `pendingBreakpoints()` and are
+/// the UI) can inspect and edit it, then release it. Held exchanges surface via
+/// `pendingBreakpoints()` (poll) or `pendingBreakpointStream()` (push) and are
 /// released with `resumeBreakpoint`.
 public protocol BreakpointControlling: Sendable {
     /// Arm a breakpoint. Throws `ProxyControlError.invalidBreakpoint` if malformed.
@@ -224,10 +224,28 @@ public protocol BreakpointControlling: Sendable {
     func armedBreakpoints() async -> [Breakpoint]
     /// Exchanges held right now, awaiting a resume decision.
     func pendingBreakpoints() async -> [PendingBreakpoint]
+    /// Fires the moment an exchange is parked, so a waiter doesn't have to poll
+    /// `pendingBreakpoints()` in a loop to notice one. Unbuffered fan-out like
+    /// `flowStream()`: a late subscriber misses prior holds, so subscribe *before*
+    /// checking `pendingBreakpoints()` if a hold must not be missed.
+    ///
+    /// Holds are rare (each pins a live client connection) and short-lived, so
+    /// consumers see a low-rate stream; it exists to make "arm → trigger → wait →
+    /// resume" a wait rather than a poll.
+    func pendingBreakpointStream() async -> AsyncStream<PendingBreakpoint>
     /// Release a held exchange: apply `edit` and continue, or `abort` to fail it
     /// with a 502. Throws `ProxyControlError.pendingBreakpointNotFound` if the id
     /// isn't held (already resumed or timed out).
     func resumeBreakpoint(pendingID: UUID, abort: Bool, edit: BreakpointEdit) async throws
+}
+
+public extension BreakpointControlling {
+    /// Default for conformers that predate the push stream (an embedder driving the
+    /// engine with its own control surface): no pushes, so a waiter falls back to
+    /// the poll path rather than failing to compile.
+    func pendingBreakpointStream() async -> AsyncStream<PendingBreakpoint> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// The write-action audit trail. The MCP server records every write tool call

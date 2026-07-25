@@ -41,6 +41,9 @@ final class BreakpointStore: @unchecked Sendable {
     /// connection can't hang forever if no operator ever resumes it.
     private let timeout: TimeInterval
 
+    /// Live subscribers to "an exchange was just parked" (`pendingBreakpointStream`).
+    private var pendingContinuations: [UUID: AsyncStream<PendingBreakpoint>.Continuation] = [:]
+
     init(timeout: TimeInterval = 300) {
         self.timeout = timeout
     }
@@ -81,6 +84,43 @@ final class BreakpointStore: @unchecked Sendable {
     func pending() -> [PendingBreakpoint] {
         lock.lock(); defer { lock.unlock() }
         return held.values.map(\.info).sorted { $0.heldAt < $1.heldAt }
+    }
+
+    /// A live "just parked" stream, so an operator waiting for a breakpoint to fire
+    /// doesn't poll `pending()`. Bounded like every other stream in the engine; a
+    /// hold pins a live connection, so 64 pending-but-unread holds already means
+    /// something is badly wrong, and a drop is logged rather than swallowed.
+    func pendingStream() -> AsyncStream<PendingBreakpoint> {
+        let id = UUID()
+        return AsyncStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
+            lock.lock()
+            pendingContinuations[id] = continuation
+            lock.unlock()
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                self.pendingContinuations[id] = nil
+                self.lock.unlock()
+            }
+        }
+    }
+
+    /// Fan a newly parked exchange out to the waiters. Called with the lock *not*
+    /// held: `yield` can resume a suspended consumer, and doing that under the lock
+    /// would let a waiter's continuation run while forwarding still owns it.
+    private func broadcast(parked info: PendingBreakpoint) {
+        lock.lock()
+        let continuations = pendingContinuations
+        lock.unlock()
+        for (id, continuation) in continuations {
+            if case .dropped = continuation.yield(info) {
+                Log.proxy.error("""
+                A breakpoint-hold notification was dropped for a subscriber that isn't keeping up \
+                (\(id, privacy: .public)); the exchange \(info.id, privacy: .public) is still held \
+                and still listed by list_pending.
+                """)
+            }
+        }
     }
 
     /// The first armed breakpoint that matches this request on `phase`, or nil.
@@ -124,6 +164,11 @@ final class BreakpointStore: @unchecked Sendable {
                 }
                 held[info.id] = Held(info: info, continuation: continuation, timeout: nil)
                 lock.unlock()
+
+                // Tell the waiters before arming the watchdog: the exchange is
+                // already parked and resumable at this point, and a `wait_for_pending`
+                // caller should hear about it with no polling delay.
+                broadcast(parked: info)
 
                 let id = info.id
                 let seconds = self.timeout

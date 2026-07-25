@@ -35,10 +35,16 @@ import LoomSharedModels
         let names = executor.toolDefinitions.compactMap { $0["name"] as? String }
         #expect(names.count >= 16)
         #expect(Set(names).count == names.count, "tool names must be unique")
+        // The blocking tools would each sit here for their default wait; give them a
+        // deadline instead of skipping them, so they stay covered by this guard.
+        let arguments: [String: [String: Any]] = [
+            "wait_for_flow": ["max_seconds": 0.05],
+            "wait_for_pending": ["max_seconds": 0.05],
+        ]
         for name in names {
             if name == "export_har" { continue } // writes a real file to the app-support dir
             do {
-                _ = try await executor.call(name: name, arguments: [:])
+                _ = try await executor.call(name: name, arguments: arguments[name] ?? [:])
             } catch let error as MCPError {
                 // Missing required args are fine; "unknown tool" means the schema
                 // advertises a tool with no handler — the drift bug we guard against.

@@ -32,7 +32,45 @@ final class StubEngine: ProxyControlling {
     }
     func recentFlowsForExport(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
     func flow(id: UUID) async -> Flow? { flows.first { $0.id == id } }
-    func flowStream() async -> AsyncStream<Flow> { AsyncStream { $0.finish() } }
+
+    /// Live streams the blocking `wait_*` tools subscribe to. A test pushes through
+    /// `emit`/`hold` to stand in for traffic arriving mid-wait; the streams stay open
+    /// so a wait ends on its own deadline rather than on a finished stream.
+    private var flowContinuations: [AsyncStream<Flow>.Continuation] = []
+    private var pendingContinuations: [AsyncStream<PendingBreakpoint>.Continuation] = []
+
+    /// Subscription bookkeeping — the observable trace of a blocking tool call, whose
+    /// only footprint is its stream subscription: opened when the wait starts, ended
+    /// when it finishes or is cancelled.
+    private(set) var flowSubscriptionsOpened = 0
+    private(set) var endedFlowSubscriptions = 0
+
+    func flowStream() async -> AsyncStream<Flow> {
+        AsyncStream { continuation in
+            flowContinuations.append(continuation)
+            flowSubscriptionsOpened += 1
+            continuation.onTermination = { _ in
+                Task { @MainActor [weak self] in self?.endedFlowSubscriptions += 1 }
+            }
+        }
+    }
+
+    func pendingBreakpointStream() async -> AsyncStream<PendingBreakpoint> {
+        AsyncStream { continuation in pendingContinuations.append(continuation) }
+    }
+
+    /// Push a flow to every subscriber, as the store's broadcast would.
+    func emit(_ flow: Flow) {
+        flows.insert(flow, at: 0)
+        for continuation in flowContinuations { continuation.yield(flow) }
+    }
+
+    /// Park an exchange: it becomes visible to `pendingBreakpoints()` *and* is pushed.
+    func hold(_ pending: PendingBreakpoint) {
+        self.pending.append(pending)
+        for continuation in pendingContinuations { continuation.yield(pending) }
+    }
+
     func flowsClearedStream() async -> AsyncStream<Void> { AsyncStream { $0.finish() } }
     func connectedDevices() async -> [DeviceSummary] { devices }
 

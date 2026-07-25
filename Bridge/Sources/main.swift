@@ -4,6 +4,12 @@ import Foundation
 // this binary and speak MCP JSON-RPC over stdio; it forwards each line to the
 // Loom app's local HTTP MCP endpoint and streams the reply back. All logic and
 // data live in the app — this process is intentionally tiny and stateless.
+//
+// One request at a time, on purpose: the read loop blocks on each reply, so a
+// blocking tool (`wait_for_flow`) holds the bridge until it answers. That matches
+// how a client drives it — one JSON-RPC call per turn — and keeps this process free
+// of any state to reconcile. Clients that pipeline should use the HTTP endpoint
+// directly (the app serves those concurrently).
 
 let appSupportDirectoryName = "com.loom"
 
@@ -28,6 +34,13 @@ func post(line: Data, handshake: Handshake) -> Data? {
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(handshake.token)", forHTTPHeaderField: "Authorization")
     request.httpBody = line
+    // URLSession defaults to a 60 s request timeout, which the blocking tools
+    // (`wait_for_flow`, `wait_for_pending`) can legitimately sit inside — a wait that
+    // the app is still holding must not be torn down here as a transport failure. The
+    // app caps its own waits well below this, so a request that actually reaches it
+    // always answers first; this bound only exists so a wedged app can't hang the
+    // bridge forever.
+    request.timeoutInterval = 300
 
     let semaphore = DispatchSemaphore(value: 0)
     var result: Data?
