@@ -151,6 +151,13 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     public var startedAt: Date
     /// Lifecycle + response/error, modeled so illegal states can't occur.
     public var outcome: FlowOutcome
+    /// When the response *head* arrived — the first byte back from upstream.
+    /// Splits the exchange into server think-time (`ttfbMS`) and transfer time
+    /// (`receiveMS`), which a single `durationMS` cannot: "this call is slow" has
+    /// completely different causes depending on which half it lands in. Nil while
+    /// pending, for a flow that failed before any head, and for flows captured
+    /// before this was recorded.
+    public var firstByteAt: Date?
     /// Non-nil when this flow was produced by replaying another flow.
     public var replayedFrom: UUID?
     /// The local app/process that made the request, when it could be resolved.
@@ -175,6 +182,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         request: CapturedRequest,
         startedAt: Date,
         outcome: FlowOutcome = .pending,
+        firstByteAt: Date? = nil,
         replayedFrom: UUID? = nil,
         sourceApp: SourceApp? = nil,
         sourceDevice: SourceDevice? = nil,
@@ -186,6 +194,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.request = request
         self.startedAt = startedAt
         self.outcome = outcome
+        self.firstByteAt = firstByteAt
         self.replayedFrom = replayedFrom
         self.sourceApp = sourceApp
         self.sourceDevice = sourceDevice
@@ -235,5 +244,19 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     public var durationMS: Int? {
         guard let completedAt else { return nil }
         return Int(completedAt.timeIntervalSince(startedAt) * 1000)
+    }
+
+    /// Time to first byte: request sent → response head back. This is the part the
+    /// server is responsible for; `receiveMS` is the part the payload size and the
+    /// link are responsible for.
+    public var ttfbMS: Int? {
+        guard let firstByteAt else { return nil }
+        return Int(max(0, firstByteAt.timeIntervalSince(startedAt)) * 1000)
+    }
+
+    /// Response head → last byte: how long the body took to transfer.
+    public var receiveMS: Int? {
+        guard let firstByteAt, let completedAt else { return nil }
+        return Int(max(0, completedAt.timeIntervalSince(firstByteAt)) * 1000)
     }
 }

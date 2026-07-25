@@ -632,6 +632,7 @@ public actor ProxyEngine: ProxyControlling {
         // error — a replay that fails to connect still records its applied rules.
         var appliedRules: [AppliedRule] = []
         var statusCode = 0
+        var firstByteAt: Date?
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var responseBody = Data()
@@ -639,7 +640,9 @@ public actor ProxyEngine: ProxyControlling {
             for try await event in forwarder.forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
                 switch event {
                 case let .metadata(rules): appliedRules = rules
-                case let .head(code, version, headers): statusCode = code; httpVersion = version; responseHeaders = headers
+                case let .head(code, version, headers):
+                    firstByteAt = Date()
+                    statusCode = code; httpVersion = version; responseHeaders = headers
                 case let .body(chunk): responseBody.append(chunk)
                 case .end: break
                 }
@@ -652,6 +655,7 @@ public actor ProxyEngine: ProxyControlling {
                     CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody),
                     at: Date()
                 ),
+                firstByteAt: firstByteAt,
                 replayedFrom: id,
                 appliedRules: appliedRules.isEmpty ? nil : appliedRules
             )

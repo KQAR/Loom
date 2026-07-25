@@ -978,6 +978,10 @@ struct MCPToolExecutor {
         ]
         if let status = flow.statusCode { out["status"] = status }
         if let ms = flow.durationMS { out["durationMS"] = ms }
+        // Split the duration so "why is this slow" is answerable: ttfb is the
+        // server's share, receive is the payload's.
+        if let ms = flow.ttfbMS { out["ttfbMS"] = ms }
+        if let ms = flow.receiveMS { out["receiveMS"] = ms }
         if let error = flow.error { out["error"] = error }
         if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
         if let applied = flow.appliedRules { out["appliedRules"] = applied.map(\.name) }
