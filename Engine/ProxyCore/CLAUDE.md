@@ -6,6 +6,10 @@
 Read [`FORWARDING.md`](FORWARDING.md) for the exchange-event model and the rationale. This file is
 the working summary of what must stay true when touching the forward path.
 
+The load-bearing properties below are pinned by `Tests/EngineInvariantTests.swift` — one write path,
+body hydration, one rule choke point, breakpoints always release, replay links its flow. If a change
+here is right and one of those fails, the invariant is what needs re-deciding, not the test.
+
 ## One production path
 
 Replay and proxy forwarding use a hand-rolled SwiftNIO upstream client (`NIOStreamingForwarder`,
