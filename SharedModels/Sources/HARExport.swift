@@ -66,7 +66,7 @@ public enum HARExport {
             request = Request(flow.request)
             response = Response(flow)
             cache = Cache()
-            timings = Timings(send: 0, wait: flow.durationMS ?? 0, receive: 0)
+            timings = Timings(flow: flow)
             sourceApp = flow.sourceApp?.name
             let rules = flow.appliedRules?.map(\.name)
             appliedRules = (rules?.isEmpty ?? true) ? nil : rules
@@ -76,10 +76,37 @@ public enum HARExport {
 
     private struct Cache: Encodable {} // HAR requires the key; we don't model cache.
 
+    /// HAR `timings`. `wait` is server think-time (request sent → response head)
+    /// and `receive` is body transfer; previously the whole duration was reported
+    /// as `wait` with `receive: 0`, which told a reader "the server is slow" even
+    /// for a fast endpoint streaming a large payload. `-1` is HAR's "not measured",
+    /// used for the phases Loom doesn't time (`blocked`/`dns`/`connect`/`ssl`) and
+    /// for `wait`/`receive` on a flow captured before TTFB was recorded — better an
+    /// explicit "unknown" than a plausible wrong number.
     private struct Timings: Encodable {
+        let blocked: Int
+        let dns: Int
+        let connect: Int
         let send: Int
         let wait: Int
         let receive: Int
+        let ssl: Int
+
+        init(flow: Flow) {
+            blocked = -1
+            dns = -1
+            connect = -1
+            ssl = -1
+            // Loom writes the request in one go and doesn't time it separately.
+            send = 0
+            if let ttfb = flow.ttfbMS {
+                wait = ttfb
+                receive = flow.receiveMS ?? -1
+            } else {
+                wait = -1
+                receive = -1
+            }
+        }
     }
 
     private struct NameValue: Encodable {

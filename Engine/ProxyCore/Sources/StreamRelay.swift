@@ -63,6 +63,10 @@ enum StreamRelay {
             return request
         }
         var statusCode = 0
+        /// When the response head landed — the TTFB split point (server think-time
+        /// vs body transfer). Nil until a head arrives, so a pre-head failure has no
+        /// TTFB rather than a fabricated one.
+        var firstByteAt: Date?
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var appliedRules: [AppliedRule] = []
@@ -93,6 +97,7 @@ enum StreamRelay {
                     // its applied rules in the flow / UI.
                     appliedRules = rules
                 case let .head(code, version, headers):
+                    firstByteAt = Date()
                     statusCode = code
                     httpVersion = version
                     responseHeaders = headers
@@ -103,6 +108,7 @@ enum StreamRelay {
                     await store.upsert(Flow(
                         id: flowID, request: request(), startedAt: startedAt,
                         outcome: .streaming(CapturedResponse(statusCode: code, httpVersion: version, headers: headers, body: nil)),
+                        firstByteAt: firstByteAt,
                         sourceApp: sourceApp, sourceDevice: sourceDevice,
                         appliedRules: appliedRules.isEmpty ? nil : appliedRules
                     ))
@@ -122,6 +128,7 @@ enum StreamRelay {
             await store.upsert(Flow(
                 id: flowID, request: request(), startedAt: startedAt,
                 outcome: .completed(response(body: capturedBody), at: Date()),
+                firstByteAt: firstByteAt,
                 sourceApp: sourceApp, sourceDevice: sourceDevice,
                 appliedRules: appliedRules.isEmpty ? nil : appliedRules
             ))
@@ -135,6 +142,7 @@ enum StreamRelay {
                         FlowError(error.localizedDescription), at: Date(),
                         partialResponse: response(body: capturedBody)
                     ),
+                    firstByteAt: firstByteAt,
                     sourceApp: sourceApp, sourceDevice: sourceDevice, appliedRules: appliedRules.isEmpty ? nil : appliedRules
                 ))
             } else {

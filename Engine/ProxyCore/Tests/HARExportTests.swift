@@ -131,6 +131,46 @@ import LoomSharedModels
         #expect((entry["response"] as? [String: Any])?["bodySize"] as? Int == 2)
     }
 
+    /// `wait` used to be the whole duration with `receive: 0`, which reads as
+    /// "the server is slow" even for a fast endpoint streaming a big payload.
+    @Test func encode_timings_splitWaitAndReceive() throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let flow = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "https://api.example.test/big", headers: []),
+            startedAt: start,
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: start.addingTimeInterval(3)),
+            firstByteAt: start.addingTimeInterval(0.5)
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "1"))
+        let entry = try #require(((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])?.first)
+        let timings = try #require(entry["timings"] as? [String: Any])
+        #expect(timings["wait"] as? Int == 500, "server think-time")
+        #expect(timings["receive"] as? Int == 2_500, "body transfer")
+        #expect(timings["send"] as? Int == 0)
+        // HAR: `time` is the sum of the measured phases.
+        let measured = ["send", "wait", "receive"].compactMap { timings[$0] as? Int }.filter { $0 >= 0 }.reduce(0, +)
+        #expect(entry["time"] as? Int == measured)
+        // Phases Loom doesn't measure are explicitly -1, not a fabricated 0.
+        for phase in ["blocked", "dns", "connect", "ssl"] {
+            #expect(timings[phase] as? Int == -1, "\(phase) must be reported as not measured")
+        }
+    }
+
+    @Test func encode_timings_withoutTTFB_areNotMeasured() throws {
+        let flow = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "https://a/", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 2))
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "1"))
+        let entry = try #require(((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])?.first)
+        let timings = try #require(entry["timings"] as? [String: Any])
+        #expect(timings["wait"] as? Int == -1, "an unknown phase is -1, never a plausible wrong number")
+        #expect(timings["receive"] as? Int == -1)
+    }
+
     @Test func encode_sortsByStartedAt() throws {
         let older = Flow(id: UUID(), request: CapturedRequest(method: "GET", url: "http://a/", headers: []), startedAt: Date(timeIntervalSince1970: 1))
         let newer = Flow(id: UUID(), request: CapturedRequest(method: "GET", url: "http://b/", headers: []), startedAt: Date(timeIntervalSince1970: 2))

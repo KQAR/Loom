@@ -328,6 +328,11 @@ private struct SummaryTable: View {
             if let code = flow.statusCode { row("Code", "\(code)") }
             if let host = flow.host { row("Host", host) }
             if let ms = flow.durationMS { row("Duration", "\(ms) ms") }
+            // The split that tells you *where* a slow call is slow: waiting on the
+            // server vs transferring the body.
+            if let ttfb = flow.ttfbMS {
+                row("TTFB", "\(ttfb) ms" + (flow.receiveMS.map { " · \($0) ms transfer" } ?? ""))
+            }
             row("Started", flow.startedAt.formatted(date: .abbreviated, time: .standard))
             if flow.replayedFrom != nil { row("Origin", "Replayed") }
             if let applied = flow.appliedRules, !applied.isEmpty {
