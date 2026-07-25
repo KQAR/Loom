@@ -23,7 +23,7 @@ Three docs govern the product; each wins over code in its domain:
 - [`DESIGN.md`](DESIGN.md) — visual system for the **status-bar panel** (the whole human surface) + the optional Detail viewer, derived from Apple's HIG, **not** from existing code
 - [`INTERACTION.md`](INTERACTION.md) — interaction architecture: the AI-operates / human-supervises inversion, the status-bar panel as the one surface, write-action guardrails
 
-**UI is status-bar-first (DESIGN/INTERACTION v2).** The human surface centers on the menu-bar panel — now a compact **config & control console** (`PanelView`): a header with the proxy address + on/off switch and a capture dot (green recording · yellow paused · grey off), state rows (Connect Device, System Proxy, HTTPS, Rules), and a footer (version · wordmark · Quit). The main window (`MainView`) is the working surface — a request table + tabbed inspector — opened at launch. Both are driven by the one `AppFeature` store. Any view that conflicts with the specs is the thing to fix; don't propagate old styling.
+**UI is status-bar-first (DESIGN/INTERACTION v3).** The human surface centers on the menu-bar panel — now a compact **config & control console** (`PanelView`): a header with the proxy address + on/off switch and a capture dot (green recording · yellow paused · grey off), state rows (Connect Device, System Proxy, HTTPS, Rules), and a footer (version · wordmark · Quit). The main window (`MainView`) is the working surface — a request table + tabbed inspector — opened at launch. Both are driven by the one `AppFeature` store. Any view that conflicts with the specs is the thing to fix; don't propagate old styling.
 
 When a current view conflicts with these specs, the view is wrong: refactor toward the spec, never propagate legacy styling. Read DESIGN.md and INTERACTION.md before writing or reviewing any view code.
 
@@ -95,32 +95,9 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 
 ### MCP Tools
 
-| Tool | Kind | Purpose |
-|------|------|---------|
-| `get_version` | read | app + protocol version |
-| `get_proxy_status` | read | running state, port, captured count |
-| `list_devices` | read | devices that sent traffic through the proxy (this Mac + LAN devices), typed from User-Agent, with per-device flow counts + last-seen |
-| `get_recent_flows` | read | newest-first flow summaries (incl. `startedAt`), with server-side filters — `host` (glob), `method`, `url_contains`, `status`/`status_min`/`status_max`, `only_errors`, `since_seconds`/`since`, `device_ip`, `source_app` — ANDed and applied over the whole ring **before** `limit` (`FlowQuery`, matched inside the `FlowStore` actor) |
-| `get_flow_detail` | read | full headers + body for one flow id; bodies are bounded (`max_bytes`, default 16 KB) and page via `body_offset`/`nextOffset`, a non-text body renders as `{binary, bytes}` instead of `""`, and WebSocket frames are capped by `ws_limit` |
-| `get_audit_log` | read | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, each with tool name, arguments, outcome, timestamp; read tools are never logged |
-| `diff_flows` | read | structured diff of two flows (method/url, request+response headers add/remove/change, status, line-level body diff); `base` alone diffs a replay against its `replayedFrom` original |
-| `set_recording` | **write** | pause/resume recording captured traffic (forwarding is unaffected) — quiet the capture before triggering the thing you're debugging |
-| `clear_flows` | **write** | discard every captured flow (ring + SQLite). Destructive; the engine broadcasts the clear (`FlowProviding.flowsClearedStream()`) so the main window empties too instead of showing flows the store no longer has |
-| `replay_flow` | **write** | re-send a flow with overrides → new flow, linked via `replayedFrom` |
-| `arm_breakpoint` | **write** | hold matching traffic mid-flight (request and/or response phase) for inspection/editing; match reuses `RuleMatch` |
-| `disarm_breakpoint` | **write** | remove an armed breakpoint by id |
-| `list_pending` | read | armed breakpoints + exchanges currently held awaiting a resume decision (poll model — MCP has no server push) |
-| `resume` | **write** | release a held exchange by pending id: apply edits (method/url/status/headers/body) and continue, or `abort` with a 502 |
-| `get_certificate_status` | read | MITM root-CA state: generated? trusted? fingerprint, expiry, exported path |
-| `get_ssl_scope` | read | current interception scope (enabled + include/exclude host globs) |
-| `export_ca_certificate` | **write** | write the root CA (PEM) to disk for trusting; returns the path |
-| `set_ssl_scope` | **write** | enable/disable HTTPS interception and set include/exclude host globs |
-| `list_rules` | read | master switch + all traffic rules (long bodies truncated); pass `id` to get one rule with full bodies (absorbs the former `get_rule`) |
-| `set_rule` | **write** | create (omit `id`) or update (`id`) a structured traffic rule — upsert (absorbs `create_rule`+`update_rule`): URL glob/regex + methods → mock / map remote (+exclude/keep-host) / map local / rewrite req+res / find-replace substitutions (request_substitutions/response_substitutions) / block / delay; optional `group`; on update, provided fields replace (per-rule enable/disable, regroup with `group`, `""` ungroups) |
-| `delete_rule` | **write** | remove a rule by id |
-| `set_rules_enabled` | **write** | master switch for the rule engine |
-| `set_group_enabled` | **write** | enable/disable every rule in a group (scenario switching) |
-| `export_har` | **write** | export captured flows to a HAR 1.2 file (host filter + limit); returns the path |
+The full tool list — names, kinds, arguments, and the debug loop they compose into — lives in
+[`skills/loom/SKILL.md`](skills/loom/SKILL.md) (lazy-loaded) and, authoritatively, in the registry
+at `Engine/MCPServer/Sources`. Don't mirror it here; it drifts.
 
 WebSocket flows (ws:// and wss:// via MITM) are captured as a single flow whose frames appear in `get_flow_detail` under `webSocket.messages` (direction/kind/text-or-bytes) and are flagged in `get_recent_flows`. GraphQL POSTs are recognized (`GraphQLParser`); `get_flow_detail` adds a `graphQL` block (kind/operationName/query/variables) and the Inspector shows a GraphQL tab. HTTP/2 is intercepted when the client negotiates ALPN `h2`: the MITM leaf advertises `h2`+`http/1.1`, and each h2 stream is demuxed through the h2↔h1 codec into the same `TLSInterceptHandler` capture path (falls back to http/1.1 otherwise). Completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` (WAL + `synchronous=NORMAL`, row-capped, an order of magnitude larger than the in-memory ring) and reload on launch. Writes are **batched**: rows queue for a 50 ms window (or 256 rows) and land in one transaction through one reused prepared statement, and the row cap is enforced off a counter (`maxRows + pruneSlack`) instead of a full index scan per write; every read drains the pending batch first, so batching is invisible to callers, and `flush()`/`deinit` drain it so a quit can't lose it. Reads **read through** to it: `FlowStore.flow(id:)` falls back to the row when a flow has aged out of the ring (so `get_flow_detail` / `diff_flows` / `replay_flow` still resolve an id an agent legitimately holds), and `recentHydrated` (the HAR export path) tops up from disk rather than silently returning only what's in memory. Every MCP **write** tool call is recorded in a durable **audit trail** (`~/Library/Application Support/com.loom/audit.sqlite`, row-capped, survives relaunch): the choke point is `MCPToolExecutor.call`, which records an `AuditEntry` (tool, arguments, success/failure, detail) for each tool in `MCPToolExecutor.writeTools` — read tools are never logged. The engine owns an `AuditStore` (actor + fan-out, sibling of `FlowStore`) exposed via `AuditControlling` (`recordAudit` / `recentAuditEntries` / `auditStream`); the supervising human reads it in the main-window **sidebar → Audit** panel (`AuditPanelView`, read-only newest-first timeline), and an agent reads it back via `get_audit_log`. `MCPServerTests` asserts `writeTools` matches the "write action"-marked tool definitions so a write can't silently escape auditing.
 
@@ -143,13 +120,6 @@ Write tools are the reason Loom exists. When adding one, it must be scoped and �
 
 ## Architecture
 
-### TCA (The Composable Architecture)
-
-- **Reducer**: `@Reducer` macro with `State`, `Action`, `body`.
-- **State**: `@ObservableState` struct, `Equatable`; flows held in `IdentifiedArrayOf<Flow>`.
-- **View**: SwiftUI with `StoreOf<Feature>`, `@Bindable` store; state→action bindings via `.sending`.
-- **Dependencies**: `@DependencyClient` + `DependencyValues` extension. The engine is reached only through `ProxyClient` — reducers never touch NIO.
-
 ### Layering (dependency direction is one-way)
 
 ```
@@ -161,27 +131,22 @@ Features never depend on each other (M1 keeps a single `AppFeature`; split later
 
 ### Library reuse (SPM)
 
-The capture engine is reusable by **any** Swift host (a CLI, another macOS app, a test harness) — not just this app. A root `Package.swift` exposes the two lowest layers as SPM library products; everything above them (App / Features / Clients / Bridge / MCPServer / PrivilegedHelper) stays out of the package on purpose.
-
-| Product | Target | For a consumer that wants… |
-|---------|--------|----------------------------|
-| `LoomSharedModels` | `SharedModels` | just the value types (`Flow`, `CapturedRequest/Response`, `HeaderPair`, rules, HAR) — Foundation-only, no NIO |
-| `LoomProxyCore` | `ProxyCore` | the full engine: NIO proxy, HTTPS MITM, on-demand CA, traffic rules, replay (pulls in `LoomSharedModels`) |
-
-- **Coexists with Tuist**: `tuist generate` still builds the app from `Project.swift`; `swift build` and external SPM consumers use the root `Package.swift`. The root manifest re-declares `ProxyCore` in **Swift 5 language mode** (same reason as `Project.swift`) and pins the NIO/certificates deps to ranges that include what a typical NIO consumer already resolves, so both graphs share one solution. Consuming it adds `swift-nio-http2` + `swift-nio-extras` to the consumer's tree.
-- **Embed the engine**: construct `ProxyEngine(persistFlows: false)` when the host keeps captured flows in its own store — flows then live only in the in-memory ring and the live `flowStream()`, with no second copy in Loom's SQLite (`ProxyEngine()` keeps the durable store). Then `try await engine.start(port:)`, consume `for await flow in await engine.flowStream()`, and drive HTTPS/rules via `caCertificateDER()` / `exportCACertificate()` / `addRule(_:)`. The host installs the CA into whatever trust store its target needs; Loom's own macOS-keychain trust path is optional and not required to embed.
-  - **Zero-retention embedding**: pass `capacity: 0` (store-less — nothing kept between captures) and/or an `observer: FlowObserving` sink to `ProxyEngine(persistFlows:capacity:observer:)`; the observer is pushed the same sequence as `flowStream()`. Replay a flow the host stored itself with `replay(flow:overrides:)` so replay doesn't depend on Loom's ring. The **emission contract** the stream/observer guarantee (same id emitted on start + each state change, streaming `.streaming` updates, WS per-frame re-emits on one long-lived flow, h2 stream = one flow, replays carry `replayedFrom`, `sourceDevice` from remote IP, late subscribers miss history) is documented on `FlowProviding.flowStream()`.
+The two lowest layers ship as SPM library products (`LoomSharedModels`, `LoomProxyCore`) so any
+Swift host can embed the engine without Tuist or the app; `swift build` builds them from the root
+`Package.swift`, which coexists with `Project.swift`. Embedding details, zero-retention options and
+the flow-emission contract: **`.claude/skills/embed-engine/SKILL.md`** (lazy-loaded).
 
 ### Concurrency
 
 - **App / Features / Clients**: Swift 6 language mode, strict concurrency.
 - **ProxyCore + MCPServer**: **Swift 5 language mode** (`SWIFT_VERSION=5.0` in `Project.swift`). SwiftNIO's channel model fights Swift 6 Sendable; handlers are `@unchecked Sendable`. Keep NIO code in these two modules; do not leak channel types across the client boundary.
 - `ProxyEngine` and `FlowStore` are **actors**; the shared engine is `ProxyEngine.shared`.
-- Replay and proxy forwarding use a hand-rolled SwiftNIO upstream client (`NIOStreamingForwarder`, M4) — Loom owns every request header, so a map-remote rule's `keepHostHeader` is honored (default drops Host so it follows the mapped origin). Responses **stream** chunk-by-chunk: `forwardStream` yields head/body/end events, `StreamRelay` relays them to the client (chunked framing, keep-alive preserved) while capturing a body copy capped at `StreamRelay.captureCap` (SSE/long-poll won't grow the store unbounded). **A capped capture is never silent**: `CapturedRequest`/`CapturedResponse.fullBodyBytes` records the true wire size whenever `body` is only a prefix (`isBodyTruncated`), `Flow.webSocketDroppedMessages` counts frames the WS cap dropped, and the fact surfaces in `get_recent_flows` (`captureTruncated`), `get_flow_detail` (`bodyCaptureTruncated` + `bodyBytesOnWire`, `webSocket.framesNotRecorded`), HAR (`bodySize` = wire size + `_bodyTruncated`) and the Inspector body pane. A rule that rewrites/mocks/blocks the response falls back to buffering (needs the whole body); response-untouched exchanges stream. gzip/deflate is decompressed via `NIOHTTPResponseDecompressor`. `forward` (buffered) is a fold over `forwardStream` (`.collect()`) and replay folds `forwardStream` too, so there is one production path. Applied rules ride a leading `metadata` event emitted **before** the network call, so an exchange that fails before any response head (e.g. map-remote to a dead upstream) still records its rule hits on the flow — see [`Engine/ProxyCore/FORWARDING.md`](Engine/ProxyCore/FORWARDING.md). **Request bodies also stream** (M4), on both HTTP/1.1 and HTTP/2: `forwardStream` takes a `RequestBody` (`.bytes` for replay/buffered, or a back-pressured `.stream`); the request handlers bridge inbound body chunks through `RequestBodyBridge` (a `NIOThrowingAsyncSequenceProducer` with a high/low-watermark strategy whose `produceMore()` drives `channel.read()`, so a fast uploader can't outrun a slow upstream — in-flight bytes stay bounded to the watermark, not the body size; `autoRead` is paused during a body stream). The stream is started **lazily on the first body chunk** (not from the head), so an h2 DATA body carrying no `Content-Length` streams too — and on an h2 stream channel the bridge's `read()` replenishes the flow-control window, so h2 back-pressure works end to end. The `NIOStreamingForwarder` writes chunks awaiting each flush (chaining upstream back-pressure), framed by the client's Content-Length or re-framed chunked. A capped `RequestBodyCapture` tees the body for the flow (`StreamRelay` backfills it — the request finishes before the response head). A rule that mutates the request body / short-circuits (mock/block/mapLocal) or a breakpoint that matches forces buffering (`RequestBody.collect()`); pure passthrough streams. WebSocket was already streamed — a separate byte-transparent frame splice (`WebSocketRelay`/`WebSocketTapHandler`), never buffered.
+- Replay and proxy forwarding use a hand-rolled SwiftNIO upstream client (`NIOStreamingForwarder`, M4) — Loom owns every request header, and `forward` (buffered) plus replay are both **folds over `forwardStream`**, so there is one production path. Requests and responses stream with real back-pressure, bounded in-flight bytes; a rule that must see a whole body (rewrite/mock/block/mapLocal) or a matching breakpoint forces buffering. **A capped capture is never silent** — the true wire size and dropped-frame counts surface in `get_recent_flows` / `get_flow_detail` / HAR / the Inspector. Details: [`Engine/ProxyCore/CLAUDE.md`](Engine/ProxyCore/CLAUDE.md) (auto-loads when working in ProxyCore) and [`Engine/ProxyCore/FORWARDING.md`](Engine/ProxyCore/FORWARDING.md).
 
 ### Conventions
 
 - **Side effects**: always through TCA `Effect` — no async work in views.
+- **Reducers never touch NIO**: the engine is reached only through `ProxyClient` (`@DependencyClient` + a `DependencyValues` extension).
 - **One write path**: UI and MCP both go through `ProxyEngine.shared`. Adding a write must extend `ProxyControlling`, not bypass it.
 - **Bundle prefix**: `com.loom` (personal project — no employer branding anywhere).
 - **UI**: follow [`DESIGN.md`](DESIGN.md) — semantic system colors, text styles, capsule controls. Never inline hex or fixed font sizes.
@@ -194,52 +159,12 @@ The capture engine is reusable by **any** Swift host (a CLI, another macOS app, 
   - **Cheap row bodies.** No per-row allocation of expensive objects (date formatters, regexes, `JSONDecoder`, `URLComponents`) — hoist to a shared static or a direct scan. `Flow.host` goes through `URLHost` (an authority scan that defers to `URLComponents` only for percent-escaped / punycode / malformed URLs), and a host-filtered list compares via `URLHost.hostMatches` so it never materializes a host per row. Hand genuinely large text to AppKit (`NSTextView`), not a SwiftUI `Text`.
   - When adding any new list/table/feed, state in the PR how it stays bounded and lazy.
 
-### Project Structure
-
-```
-Package.swift                     # Root SPM manifest: LoomSharedModels + LoomProxyCore library products (see "Library reuse")
-Project.swift                     # Tuist project manifest (all targets)
-Tuist.swift                       # Tuist config
-Tuist/Package.swift               # SPM dependencies (TCA, swift-nio, swift-nio-ssl, swift-certificates)
-Tuist/ProjectDescriptionHelpers/  # Module() target factory
-App/Sources/                      # LoomApp (MenuBarExtra + boot)
-Features/AppFeature/Sources/      # reducer + MenuBarView + InspectorView
-Clients/ProxyClient/Sources/      # TCA dependency over the engine
-Clients/PrivilegedHelperClient/Sources/ # app-side surface over the helper (scaffold)
-Clients/UpdaterClient/Sources/    # TCA @DependencyClient over Sparkle (auto-update)
-Engine/ProxyCore/Sources/         # NIO proxy, ProxyEngine, FlowStore, MITM (CA, TLS intercept)
-Engine/ProxyCore/Tests/           # unit + HTTPS-interception integration tests
-Engine/MCPServer/Sources/         # MCP server, tools, handshake
-Engine/PrivilegedHelper/Sources/  # LoomHelper root daemon (scaffold); com.loom.helper.plist alongside
-SharedModels/Sources/             # Flow, ReplayOverrides, ProxyControlling, SSLScope, CertificateStatus
-Bridge/Sources/                   # loom-mcp stdio↔HTTP bridge
-.mcp.json                         # plugin MCP config: http → 127.0.0.1:9092/mcp (Claude Code + Cursor)
-.claude-plugin/                   # Claude Code plugin manifest + marketplace
-.cursor-plugin/                   # Cursor plugin manifest + marketplace
-skills/loom/SKILL.md              # skill: how to drive Loom over MCP (tools + debug loop)
-```
-
 ## Release & Auto-Update (Sparkle)
 
-Loom self-updates via [Sparkle](https://sparkle-project.org) (same engine as the reference `looper`). The human sees a footer **"Update"** button in the status-bar panel; the app probes silently once a day and shows Sparkle's install UI on tap.
-
-**In-app pieces**: `UpdaterClient` (TCA dependency) → `UpdaterCoordinator` (owns `SPUStandardUpdaterController`). `AppFeature` subscribes to availability and drives the panel button. Config lives in `Project.swift` infoPlist: `SUFeedURL`, `SUPublicEDKey`, `SUEnableAutomaticChecks: false` (we drive cadence ourselves).
-
-**Keys**: the EdDSA key pair is managed by Sparkle's `generate_keys` (private key in the login Keychain, public key committed as `SUPublicEDKey`). Regenerate only when rotating:
-```
-Tuist/.build/artifacts/sparkle/Sparkle/bin/generate_keys        # show/create the key
-Tuist/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x key # export private key → CI secret
-```
-
-**Release flow** — fully automated by `.github/workflows/release.yml` (triggers on a `v*` tag):
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-The workflow: `tuist install/generate` → `xcodebuild archive` (ad-hoc signed) → `scripts/create-dmg.sh` → `sign_update` + `generate_appcast` → `gh release create` with `Loom.dmg` + `appcast.xml`.
-
-**One-time setup**: add repo secret **`SPARKLE_EDDSA_KEY`** (the exported private key). Without it the workflow still publishes the DMG but omits the appcast, so auto-update stays dormant. For Gatekeeper-clean installs, additionally sign + notarize with a Developer ID (the CI archive is currently ad-hoc, `CODE_SIGN_IDENTITY="-"`).
-
-**Sparkle tools** (fetched by `tuist install` into `Tuist/.build/artifacts/sparkle/Sparkle/bin`): `generate_keys`, `sign_update`, `generate_appcast`.
+Loom self-updates via Sparkle; a `v*` tag drives `.github/workflows/release.yml` all the way to a
+GitHub release with `Loom.dmg` + `appcast.xml`. The full flow, the EdDSA key handling and the one
+pending manual step (the `SPARKLE_EDDSA_KEY` repo secret) live in
+**`.claude/skills/release/SKILL.md`** (lazy-loaded). See also the Sparkle entry in Known Issues.
 
 ## Known Issues
 
