@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SQLite3
 @testable import LoomProxyCore
 import LoomSharedModels
 
@@ -147,5 +148,111 @@ import LoomSharedModels
         let result = RuleApplyingForwarder.serveLocalFile(MapLocalAction(path: missing))
         #expect(result.statusCode == 404)
         #expect(String(decoding: result.body, as: UTF8.self).contains(missing))
+    }
+
+    // MARK: Durable stores — injected faults
+
+    /// A path SQLite cannot open at all (here: a directory). `init?` fails, the
+    /// caller falls back to a ring-only store, and capture keeps working — flows
+    /// just don't survive the quit.
+    @Test func flowPersistence_unopenablePath_isNil_andCaptureContinues() async {
+        #expect(FlowPersistence(fileURL: directory) == nil, "a directory is not a database file")
+
+        // What the app does with that nil: ring-only, still fully functional.
+        let store = FlowStore(persistence: nil)
+        let flow = Self.completedFlow()
+        await store.upsert(flow)
+        #expect(await store.flow(id: flow.id)?.id == flow.id)
+    }
+
+    /// The nastier shape: the file exists and `sqlite3_open` *succeeds*, but it
+    /// isn't a database, so every statement fails (`SQLITE_NOTADB`). Nothing throws
+    /// — writes are dropped and reads come back empty — so the ring keeps serving
+    /// while the durable store is silently a black hole. That's the case the
+    /// batch-level "N of M flows failed to persist" log exists for.
+    @Test func flowPersistence_fileThatIsNotADatabase_dropsWritesWithoutCrashing() async throws {
+        let corrupt = directory.appendingPathComponent("flows.sqlite")
+        try Data("this is definitely not a sqlite database".utf8).write(to: corrupt)
+
+        let persistence = try #require(FlowPersistence(fileURL: corrupt), "sqlite3_open succeeds on any file")
+        let store = FlowStore(capacity: 2, persistence: persistence)
+
+        let flow = Self.completedFlow()
+        await store.upsert(flow)
+        persistence.flush()
+
+        #expect(persistence.recent(limit: 10).isEmpty, "nothing landed")
+        #expect(persistence.flow(id: flow.id) == nil)
+        // The ring is unaffected — capture and detail reads keep working…
+        #expect(await store.flow(id: flow.id)?.id == flow.id)
+        // …until the flow ages out, at which point read-through finds nothing.
+        await store.upsert(Self.completedFlow())
+        await store.upsert(Self.completedFlow())
+        #expect(await store.flow(id: flow.id) == nil,
+                "a broken durable store means an aged-out flow is genuinely gone")
+    }
+
+    /// A row that exists but whose JSON no longer decodes (a schema change shipped
+    /// against old rows) must be skipped, not crash the read and not abort the rest
+    /// of the history.
+    @Test func flowPersistence_undecodableRow_isSkipped_andTheRestSurvive() throws {
+        let fileURL = directory.appendingPathComponent("flows.sqlite")
+        let good = Self.completedFlow()
+        do {
+            let persistence = try #require(FlowPersistence(fileURL: fileURL))
+            persistence.save(good)
+            persistence.flush()
+        }
+
+        // Corrupt one row's JSON behind the store's back.
+        try Self.execSQL("UPDATE flows SET json = X'6E6F7065';", at: fileURL) // "nope"
+
+        let reopened = try #require(FlowPersistence(fileURL: fileURL))
+        #expect(reopened.recent(limit: 10).isEmpty, "the undecodable row is dropped, not surfaced as garbage")
+        #expect(reopened.flow(id: good.id) == nil)
+
+        // A second, intact row still reads back — one bad row doesn't poison the read.
+        let fresh = Self.completedFlow()
+        reopened.save(fresh)
+        reopened.flush()
+        #expect(reopened.recent(limit: 10).map(\.id) == [fresh.id])
+    }
+
+    /// Same fault on the audit trail. Losing it is a supervision failure rather
+    /// than a data one — the human can no longer see what the agent did — so it
+    /// must degrade quietly rather than take a write tool down with it.
+    @Test func auditPersistence_fileThatIsNotADatabase_neverThrows() async throws {
+        let corrupt = directory.appendingPathComponent("audit.sqlite")
+        try Data("nor is this".utf8).write(to: corrupt)
+
+        let persistence = try #require(AuditPersistence(fileURL: corrupt))
+        let store = AuditStore(persistence: persistence)
+        await store.record(AuditEntry(tool: "replay_flow", succeeded: true, arguments: "{}", detail: "ok"))
+        await store.flush()
+
+        #expect(persistence.recent(limit: 10).isEmpty, "nothing landed on disk")
+        // The in-memory trail still serves the UI and `get_audit_log` this session.
+        #expect(await store.recent(limit: 10).count == 1)
+    }
+
+    // MARK: Helpers
+
+    private static func completedFlow() -> Flow {
+        Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "https://api.example.test/x", headers: []),
+            startedAt: Date(),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date())
+        )
+    }
+
+    /// Run one statement against the database file directly, so a test can inject
+    /// damage the store's own API would never produce.
+    private static func execSQL(_ sql: String, at fileURL: URL) throws {
+        var handle: OpaquePointer?
+        defer { sqlite3_close(handle) }
+        try #require(sqlite3_open(fileURL.path, &handle) == SQLITE_OK)
+        try #require(sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK,
+                     "\(String(cString: sqlite3_errmsg(handle)))")
     }
 }
