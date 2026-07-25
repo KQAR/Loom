@@ -103,13 +103,25 @@ import LoomSharedModels
     }
 
     /// Dropping the store without an explicit flush must not lose a batch either.
-    @Test func deinit_writesAPendingBatch() throws {
+    ///
+    /// Polled rather than read once: `save` hands the row to a serial queue, and the
+    /// last release (hence `deinit`, hence the flush) happens whenever that closure
+    /// finishes — so "has it landed yet" is genuinely asynchronous. The assertion is
+    /// "it lands", not "it has already landed by the next statement".
+    @Test func deinit_writesAPendingBatch() async throws {
         do {
             let store = try #require(FlowPersistence(fileURL: fileURL))
             store.save(flow(1))
-        } // deinit here
+        } // release here; deinit flushes once the queued save has run
         let reopened = try #require(FlowPersistence(fileURL: fileURL))
-        #expect(reopened.recent(limit: 10).count == 1)
+
+        var count = 0
+        for _ in 0 ..< 200 {
+            count = reopened.recent(limit: 10).count
+            if count == 1 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(count == 1, "a batch pending at release must still reach the file")
     }
 
     @Test func deleteAll_discardsPendingRowsToo() throws {

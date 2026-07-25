@@ -5,6 +5,18 @@ import LoomSharedModels
 /// Actor-isolated so the NIO handlers and the UI/MCP readers stay race-free.
 actor FlowStore {
     private var flows: [Flow] = []
+    /// `id -> absolute position`, so an upsert is a dictionary lookup instead of a
+    /// linear scan. An exchange upserts at least twice (pending → completed), a
+    /// streaming one more, a WebSocket once per frame — at ring capacity that was a
+    /// 2000-element scan every time, on the actor everything else queues behind.
+    ///
+    /// Positions are *absolute* (`droppedFromFront + arrayIndex`) so evicting from
+    /// the front doesn't invalidate the surviving entries: only the evicted ids are
+    /// removed and the offset moves. Keeping array indices instead would mean
+    /// rewriting every entry on each eviction — trading one linear cost for another.
+    private var positions: [UUID: Int] = [:]
+    /// How many flows have been evicted from the front of the ring, ever.
+    private var droppedFromFront = 0
     private let capacity: Int
     private var continuations: [UUID: AsyncStream<Flow>.Continuation] = [:]
     private var recording = true
@@ -51,6 +63,16 @@ actor FlowStore {
         observer?.flowDidUpdate(flow)
     }
 
+    /// Array index for `id`, or nil when it isn't in the ring. Tolerates a stale
+    /// entry (an id evicted without its map entry removed) rather than trusting the
+    /// map blindly — a wrong index here would corrupt a different flow.
+    private func index(of id: UUID) -> Int? {
+        guard let absolute = positions[id] else { return nil }
+        let index = absolute - droppedFromFront
+        guard flows.indices.contains(index), flows[index].id == id else { return nil }
+        return index
+    }
+
     private func bodySize(of flow: Flow) -> Int {
         (flow.request.body?.count ?? 0) + (flow.response?.body?.count ?? 0)
     }
@@ -61,6 +83,17 @@ actor FlowStore {
         guard !didLoadPersisted, flows.isEmpty, let persistence else { return }
         didLoadPersisted = true
         flows = persistence.recent(limit: limit).reversed() // ring is oldest-first
+        reindex()
+    }
+
+    /// Rebuild `positions` from scratch — only for wholesale replacements of the
+    /// ring (boot load), never on the hot path.
+    private func reindex() {
+        droppedFromFront = 0
+        positions = Dictionary(
+            flows.enumerated().map { ($0.element.id, $0.offset) },
+            uniquingKeysWith: { _, last in last }
+        )
     }
 
     var isRecording: Bool { recording }
@@ -106,17 +139,22 @@ actor FlowStore {
     /// `force` bypasses a capture pause — explicit actions like replay always
     /// record their result.
     func upsert(_ flow: Flow, force: Bool = false) {
-        if let idx = flows.firstIndex(where: { $0.id == flow.id }) {
+        if let idx = index(of: flow.id) {
             bodyBytes += bodySize(of: flow) - bodySize(of: flows[idx])
             flows[idx] = flow
         } else {
             guard recording || force else { return }
+            positions[flow.id] = droppedFromFront + flows.count
             flows.append(flow)
             bodyBytes += bodySize(of: flow)
             if flows.count > capacity {
                 let overflow = flows.count - capacity
-                for evicted in flows.prefix(overflow) { bodyBytes -= bodySize(of: evicted) }
+                for evicted in flows.prefix(overflow) {
+                    bodyBytes -= bodySize(of: evicted)
+                    positions[evicted.id] = nil
+                }
                 flows.removeFirst(overflow)
+                droppedFromFront += overflow
             }
         }
         // Persist only completed exchanges — in-flight flows live in the ring, so
@@ -170,6 +208,8 @@ actor FlowStore {
 
     func clear() {
         flows.removeAll()
+        positions.removeAll()
+        droppedFromFront = 0
         bodyBytes = 0
         connectedLANIPs.removeAll()
         for continuation in deviceCountContinuations.values { continuation.yield(0) }
@@ -228,7 +268,7 @@ actor FlowStore {
     /// lands, slimmed by the ring budget). Detail/replay/diff read through here, so
     /// they always see full bodies without knowing the flow was ever slimmed.
     func flow(id: UUID) -> Flow? {
-        if let inRing = flows.first(where: { $0.id == id }) { return hydrated(inRing) }
+        if let index = index(of: id) { return hydrated(flows[index]) }
         // Not in the ring — but the durable store keeps an order of magnitude more
         // rows, so read through to it. Without this the store is effectively
         // write-only past the ring: `get_flow_detail` / `diff_flows` / `replay`
