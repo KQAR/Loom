@@ -19,6 +19,27 @@ of the package on purpose.
 swift build   # builds LoomSharedModels + LoomProxyCore from the root Package.swift
 ```
 
+## Depending on it
+
+Pin a released tag rather than a path or a branch:
+
+```swift
+.package(url: "https://github.com/KQAR/Loom.git", from: "0.0.5"),
+// then, per target:
+.product(name: "LoomProxyCore", package: "Loom"),
+```
+
+The `v*` tags that drive the app's release workflow **are** the library's SemVer tags (SwiftPM
+strips the leading `v`) — engine and app ship from one commit, so a second version line would only
+drift. While `0.0.x`, treat every release as potentially breaking: SemVer gives no compatibility
+promise below 1.0, so `exact:` is the honest pin for a consumer that wants stability.
+
+The root **`Package.resolved` is deliberately not committed** (it's gitignored). This package is a
+library: pinning transitive versions here would fight the consumer's own resolution, and the version
+*ranges* in `Package.swift` are the real contract — chosen wide enough to co-resolve with what a
+typical NIO consumer already has. `Tuist/Package.resolved` is committed for the opposite reason: it
+pins the app's own build.
+
 ## Coexists with Tuist
 
 `tuist generate` still builds the app from `Project.swift`; `swift build` and external SPM consumers

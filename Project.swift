@@ -25,8 +25,8 @@ let project = Project(
                 "LSUIElement": true, // agent app: no Dock icon, status bar only
                 "CFBundleDisplayName": "Loom",
                 "CFBundleIconName": "AppIcon", // resolves to the asset-catalog icon set
-                "CFBundleShortVersionString": "0.0.4", // marketing version
-                "CFBundleVersion": "4",                // build number
+                "CFBundleShortVersionString": "0.0.5", // marketing version
+                "CFBundleVersion": "5",                // build number
                 // Sparkle auto-update. The feed is the signed appcast attached to
                 // each GitHub release. We drive the once-a-day check ourselves
                 // (silent probe → panel "Update" button), so leave Sparkle's own
