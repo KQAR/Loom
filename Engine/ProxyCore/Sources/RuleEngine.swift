@@ -33,19 +33,23 @@ enum RuleEngine {
         var appliedRules: [AppliedRule] { matched.map { AppliedRule(id: $0.id, name: $0.name) } }
     }
 
+    /// `origin` (who sent the request) participates in matching, so a rule can be
+    /// scoped to one app or device; nil means "unknown client", which an
+    /// origin-scoped rule deliberately never matches.
     static func planRequest(
         state: RulesState,
         method: String,
         url: URL,
         headers: [HeaderPair],
-        body: Data?
+        body: Data?,
+        origin: RequestOrigin? = nil
     ) -> RequestPlan {
         var plan = RequestPlan(
             method: method, url: url, headers: headers, body: body,
             shortCircuit: nil, delayMilliseconds: 0, matched: []
         )
         let urlString = url.absoluteString
-        let matched = state.activeRules.filter { $0.match.matches(method: method, url: urlString) }
+        let matched = state.activeRules.filter { $0.match.matches(method: method, url: urlString, origin: origin) }
         guard !matched.isEmpty else { return plan }
         plan.matched = matched
 

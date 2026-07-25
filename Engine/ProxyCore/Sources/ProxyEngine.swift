@@ -668,7 +668,13 @@ public actor ProxyEngine: ProxyControlling {
         var responseHeaders: [HeaderPair] = []
         var responseBody = Data()
         do {
-            for try await event in forwarder.forwardStream(method: method, url: url, headers: headers, body: .bytes(body)) {
+            // A replay inherits the origin of the flow it re-sends: replaying an app's
+            // request should behave like that app's request, including for rules and
+            // breakpoints scoped to it.
+            for try await event in forwarder.forwardStream(
+                method: method, url: url, headers: headers, body: .bytes(body),
+                origin: RequestOrigin(flow: source)
+            ) {
                 switch event {
                 case let .metadata(rules): appliedRules = rules
                 case let .head(code, version, headers):
