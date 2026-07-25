@@ -60,6 +60,26 @@ struct MCPToolExecutor {
                             ],
                         ],
                         "url_contains": ["type": "string", "description": "Case-insensitive substring of the full URL (path, query, …)."],
+                        "header_contains": [
+                            "type": "string",
+                            "description": """
+                            Case-insensitive substring of any request or response header. Plain text \
+                            matches a header name or value (`authorization`, `Bearer ey`); with a colon \
+                            it means `name: value` and both halves must hit the same header \
+                            (`x-env: staging`, or `set-cookie:` for "has this header at all").
+                            """,
+                        ],
+                        "body_contains": [
+                            "type": "string",
+                            "description": """
+                            Case-insensitive substring of the captured request or response body — the \
+                            "which exchange carried this id/token/error string" filter. Matched over raw \
+                            bytes, so non-UTF-8 payloads are searched too. Combine with `host` / \
+                            `url_contains` / `since_seconds` to keep the scan narrow, and note a flow \
+                            with `captureTruncated: true` holds only a body prefix, so a miss on one of \
+                            those isn't proof.
+                            """,
+                        ],
                         "status": [
                             "description": "Status code: an exact number (500) or a class as a string (\"5xx\", \"4xx\").",
                             "oneOf": [
@@ -572,6 +592,8 @@ struct MCPToolExecutor {
         query.urlContains = arguments["url_contains"] as? String
         query.deviceIP = arguments["device_ip"] as? String
         query.sourceApp = arguments["source_app"] as? String
+        query.headerContains = arguments["header_contains"] as? String
+        query.bodyContains = arguments["body_contains"] as? String
         query.onlyErrors = (arguments["only_errors"] as? Bool) ?? false
 
         switch arguments["method"] {

@@ -231,14 +231,24 @@ actor FlowStore {
     /// `limit` matches are found — so a narrow filter over a full ring costs a
     /// partial walk and copies only what it returns, instead of handing the caller
     /// every flow to sift.
+    ///
+    /// A body predicate (`FlowQuery.needsBodies`) is the one that can touch disk: a
+    /// candidate is hydrated *only after* it has passed every cheap predicate, and
+    /// the returned flow is the ring's own (body-free) copy either way — so the list
+    /// read's "never hydrate" contract (invariant I2) holds and a body search still
+    /// sees flows the ring has slimmed. Narrow it with `host`/`url_contains`/`since`
+    /// to keep the number of hydrations small.
     func recent(matching query: FlowQuery, limit: Int) -> [Flow] {
         guard !query.isEmpty else { return recent(limit: limit) }
         let limit = max(0, limit)
+        let needsBodies = query.needsBodies
         var matches: [Flow] = []
         matches.reserveCapacity(min(limit, 64))
         for flow in flows.reversed() {
             guard matches.count < limit else { break }
-            if query.matches(flow) { matches.append(flow) }
+            guard query.matchesMetadata(flow) else { continue }
+            if needsBodies, !query.matchesBodies(hydrated(flow)) { continue }
+            matches.append(flow)
         }
         return matches
     }

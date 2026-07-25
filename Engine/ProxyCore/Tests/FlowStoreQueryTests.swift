@@ -62,6 +62,73 @@ import LoomSharedModels
         #expect(matches.isEmpty)
     }
 
+    /// A body predicate has to see bodies the ring no longer holds — that's the
+    /// whole point of searching a capture rather than the newest few exchanges. The
+    /// budget here slims every flow the moment it lands, so a naive implementation
+    /// (match the ring copy) finds nothing at all.
+    @Test func bodyPredicate_findsAFlowWhoseBodyWasSlimmedToDisk() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-bodyquery-\(UUID())", isDirectory: true)
+            .appendingPathComponent("flows.sqlite")
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        // Budget of 1 byte: bodies live in memory for exactly one upsert.
+        let store = FlowStore(capacity: 10, bodyBudget: 1, persistence: persistence)
+
+        let subject = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "POST", url: "https://api.example.com/orders", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1),
+            outcome: .completed(
+                CapturedResponse(statusCode: 500, headers: [], body: Data(#"{"error":"INSUFFICIENT_FUNDS"}"#.utf8)),
+                at: Date(timeIntervalSince1970: 1.1)
+            )
+        )
+        await store.upsert(subject)
+        await store.upsert(flow("https://cdn.example.com/asset.png", at: 2)) // forces the slim
+
+        let ringCopy = await store.recent(limit: 10).first { $0.id == subject.id }
+        #expect(ringCopy?.response?.body == nil, "precondition: the ring no longer holds the body")
+
+        let matches = await store.recent(matching: FlowQuery(bodyContains: "insufficient_funds"), limit: 10)
+        #expect(matches.map(\.id) == [subject.id])
+        #expect(matches.first?.response?.body == nil,
+                "a filtered list read still hands back body-free flows (invariant I2)")
+
+        #expect(await store.recent(matching: FlowQuery(bodyContains: "no_such_string"), limit: 10).isEmpty)
+    }
+
+    /// A body predicate ANDs with the cheap ones rather than overriding them: a
+    /// matching body on the wrong host is not a match. (It also gates the expensive
+    /// half — `recent(matching:)` only hydrates a flow that already passed metadata —
+    /// which is structural in the scan loop, not observable from out here.)
+    @Test func bodyPredicate_stillANDsWithTheCheapPredicates() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-bodyquery-\(UUID())", isDirectory: true)
+            .appendingPathComponent("flows.sqlite")
+        defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        let store = FlowStore(capacity: 10, bodyBudget: 1, persistence: persistence)
+
+        let payload = Data(#"{"trace":"T-42"}"#.utf8)
+        for host in ["api.example.com", "cdn.example.com"] {
+            await store.upsert(Flow(
+                id: UUID(),
+                request: CapturedRequest(method: "GET", url: "https://\(host)/x", headers: [], body: payload),
+                startedAt: Date(timeIntervalSince1970: 1),
+                outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 2))
+            ))
+        }
+
+        let both = await store.recent(matching: FlowQuery(bodyContains: "t-42"), limit: 10)
+        #expect(both.count == 2, "precondition: both flows carry the needle")
+
+        let narrowed = await store.recent(
+            matching: FlowQuery(host: "api.example.com", bodyContains: "t-42"), limit: 10
+        )
+        #expect(narrowed.map(\.host) == ["api.example.com"])
+    }
+
     /// The engine's own delegation, exercised through its public surface: two
     /// replays land in the store (one 404, one 200) and the filtered read returns
     /// only the failure.
