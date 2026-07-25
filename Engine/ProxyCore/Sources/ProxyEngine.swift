@@ -272,6 +272,12 @@ public actor ProxyEngine: ProxyControlling {
     /// for the emission contract (same id emitted on start + each state change,
     /// WS per-frame re-emits, replays carry `replayedFrom`, late subscribers miss
     /// history). `FlowObserving` delivers the identical sequence, pushed.
+    /// Fires when the captured set is discarded, by whoever asked. See
+    /// `FlowProviding.flowsClearedStream()`.
+    public func flowsClearedStream() async -> AsyncStream<Void> {
+        await store.clearedStream()
+    }
+
     public func flowStream() async -> AsyncStream<Flow> {
         await store.stream()
     }

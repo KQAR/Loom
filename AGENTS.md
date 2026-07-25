@@ -102,6 +102,8 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 | `get_flow_detail` | read | full headers + body for one flow id; bodies are bounded (`max_bytes`, default 16 KB) and page via `body_offset`/`nextOffset`, a non-text body renders as `{binary, bytes}` instead of `""`, and WebSocket frames are capped by `ws_limit` |
 | `get_audit_log` | read | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, each with tool name, arguments, outcome, timestamp; read tools are never logged |
 | `diff_flows` | read | structured diff of two flows (method/url, request+response headers add/remove/change, status, line-level body diff); `base` alone diffs a replay against its `replayedFrom` original |
+| `set_recording` | **write** | pause/resume recording captured traffic (forwarding is unaffected) — quiet the capture before triggering the thing you're debugging |
+| `clear_flows` | **write** | discard every captured flow (ring + SQLite). Destructive; the engine broadcasts the clear (`FlowProviding.flowsClearedStream()`) so the main window empties too instead of showing flows the store no longer has |
 | `replay_flow` | **write** | re-send a flow with overrides → new flow, linked via `replayedFrom` |
 | `arm_breakpoint` | **write** | hold matching traffic mid-flight (request and/or response phase) for inspection/editing; match reuses `RuleMatch` |
 | `disarm_breakpoint` | **write** | remove an armed breakpoint by id |

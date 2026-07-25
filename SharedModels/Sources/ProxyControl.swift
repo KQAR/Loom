@@ -135,9 +135,23 @@ public protocol FlowProviding: Sendable {
     /// Distinct devices that have sent traffic through the proxy (this Mac + LAN
     /// devices), with per-device flow counts and last-seen time.
     func connectedDevices() async -> [DeviceSummary]
+    /// Fires whenever the captured set is discarded (`clearFlows`), whoever asked
+    /// — the human's Clear button or an agent's `clear_flows` tool.
+    ///
+    /// `flowStream()` can't carry this: it emits flows, and "everything is gone"
+    /// isn't a flow. Without the signal, a surface that clears its own list only
+    /// on its own button keeps displaying flows the store no longer has after an
+    /// agent clears — the human would be supervising a stale view.
+    func flowsClearedStream() async -> AsyncStream<Void>
 }
 
 public extension FlowProviding {
+    /// Conformers that never clear (or don't care) get a stream that simply never
+    /// fires, so this stays an additive requirement for embedders.
+    func flowsClearedStream() async -> AsyncStream<Void> {
+        AsyncStream { $0.finish() }
+    }
+
     /// Fallback for conformers without their own store: pull a generous window and
     /// filter it here. Correct, but scans only what `recentFlows` returns — an
     /// implementor with a store should override.
@@ -166,10 +180,16 @@ public protocol FlowReplaying: Sendable {
     func replay(flow: Flow, overrides: ReplayOverrides) async throws -> Flow
 }
 
-/// Capture gating: pause/resume storing observed traffic as flows. Pausing
-/// never interrupts forwarding — traffic keeps flowing, it just isn't recorded.
+/// Capture gating: pause/resume storing observed traffic as flows, and discard
+/// what's been captured. Pausing never interrupts forwarding — traffic keeps
+/// flowing, it just isn't recorded.
 public protocol CaptureControlling: Sendable {
     func setRecording(_ recording: Bool) async
+    /// Discard every captured flow — the in-memory ring and the durable store.
+    /// Destructive and not undoable. Observers learn about it via
+    /// `FlowProviding.flowsClearedStream()`, so a surface showing the old flows
+    /// doesn't keep presenting them as current.
+    func clearFlows() async
 }
 
 /// A push-based sink for flow updates, for an embedder that keeps captured flows
