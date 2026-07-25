@@ -250,6 +250,13 @@ public actor ProxyEngine: ProxyControlling {
         await store.recent(limit: limit)
     }
 
+    /// Filtered read — the scan runs inside the store actor over everything
+    /// retained, then the limit applies, so a match older than the newest `limit`
+    /// exchanges is still findable.
+    public func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow] {
+        await store.recent(matching: query, limit: limit)
+    }
+
     /// Recent flows with bodies hydrated from disk — for HAR export and any other
     /// consumer that needs the full payload, not just summaries. `recentFlows`
     /// stays body-free so list/summary reads don't pay to load bodies.

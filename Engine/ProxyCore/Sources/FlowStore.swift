@@ -149,6 +149,23 @@ actor FlowStore {
         Array(flows.suffix(max(0, limit)).reversed())
     }
 
+    /// Newest-first flows matching `query`, capped at `limit`. The scan runs here,
+    /// inside the actor, walking the ring newest-first and stopping as soon as
+    /// `limit` matches are found — so a narrow filter over a full ring costs a
+    /// partial walk and copies only what it returns, instead of handing the caller
+    /// every flow to sift.
+    func recent(matching query: FlowQuery, limit: Int) -> [Flow] {
+        guard !query.isEmpty else { return recent(limit: limit) }
+        let limit = max(0, limit)
+        var matches: [Flow] = []
+        matches.reserveCapacity(min(limit, 64))
+        for flow in flows.reversed() {
+            guard matches.count < limit else { break }
+            if query.matches(flow) { matches.append(flow) }
+        }
+        return matches
+    }
+
     func clear() {
         flows.removeAll()
         bodyBytes = 0

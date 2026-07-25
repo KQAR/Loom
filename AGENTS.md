@@ -98,7 +98,7 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 | `get_version` | read | app + protocol version |
 | `get_proxy_status` | read | running state, port, captured count |
 | `list_devices` | read | devices that sent traffic through the proxy (this Mac + LAN devices), typed from User-Agent, with per-device flow counts + last-seen |
-| `get_recent_flows` | read | newest-first flow summaries |
+| `get_recent_flows` | read | newest-first flow summaries (incl. `startedAt`), with server-side filters — `host` (glob), `method`, `url_contains`, `status`/`status_min`/`status_max`, `only_errors`, `since_seconds`/`since`, `device_ip`, `source_app` — ANDed and applied over the whole ring **before** `limit` (`FlowQuery`, matched inside the `FlowStore` actor) |
 | `get_flow_detail` | read | full headers + body for one flow id; bodies are bounded (`max_bytes`, default 16 KB) and page via `body_offset`/`nextOffset`, a non-text body renders as `{binary, bytes}` instead of `""`, and WebSocket frames are capped by `ws_limit` |
 | `get_audit_log` | read | recent write actions taken through Loom (replay/rules/breakpoints/ssl-scope/har), newest-first, each with tool name, arguments, outcome, timestamp; read tools are never logged |
 | `diff_flows` | read | structured diff of two flows (method/url, request+response headers add/remove/change, status, line-level body diff); `base` alone diffs a replay against its `replayedFrom` original |
@@ -126,7 +126,7 @@ Write tools are the reason Loom exists. When adding one, it must be scoped and �
 
 | Module | Layer | Responsibility |
 |--------|-------|----------------|
-| **SharedModels** | base | `Flow`, `ReplayOverrides`, `ProxyControlling`, `SSLScope`, `CertificateStatus`, helper XPC protocol + `HelperIdentity`, `ProxyBackup`/`SystemProxyParsing` — no deps |
+| **SharedModels** | base | `Flow`, `ReplayOverrides`, `FlowQuery`, `ProxyControlling`, `SSLScope`, `CertificateStatus`, helper XPC protocol + `HelperIdentity`, `ProxyBackup`/`SystemProxyParsing` — no deps |
 | **ProxyCore** | engine | SwiftNIO proxy, `ProxyEngine` actor, `FlowStore`, CONNECT tunnel, **MITM** (`CertificateAuthority`, `TLSInterceptHandler`, `CAStore`, `InterceptionConfig`), `UpstreamForwarding` |
 | **MCPServer** | engine | loopback JSON-RPC HTTP server (fixed port 9092, loopback token-optional), tool registry, handshake writer |
 | **ProxyClient** | client | `@DependencyClient` wrapping `ProxyEngine.shared` for TCA |

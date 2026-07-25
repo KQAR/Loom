@@ -12,6 +12,13 @@ struct MCPToolExecutor {
     /// `ISO8601DateFormatter` is expensive to allocate; render every timestamp
     /// through one shared instance.
     private static let iso8601 = ISO8601DateFormatter()
+    /// Parse-only companion: agents (and JS clients) routinely send fractional
+    /// seconds, which the default formatter rejects.
+    private static let iso8601Fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 
     /// JSON metadata advertised by `tools/list`.
     var toolDefinitions: [[String: Any]] {
@@ -33,11 +40,40 @@ struct MCPToolExecutor {
             ],
             [
                 "name": "get_recent_flows",
-                "description": "List recently captured HTTP flows, newest first, with method, url, status and timing.",
+                "description": """
+                List captured HTTP flows, newest first, with method, url, status, timing and startedAt. \
+                Filters (all optional, ANDed) are applied across every retained flow BEFORE `limit`, \
+                so a match that isn't among the newest exchanges is still found — prefer filtering here \
+                over pulling a big list and scanning it yourself. `captureTruncated: true` on a summary \
+                means the recorded body/frame log is only a prefix of what actually flowed.
+                """,
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "limit": ["type": "integer", "description": "Max flows to return (default 20)."],
+                        "limit": ["type": "integer", "description": "Max flows to return after filtering (default 20)."],
+                        "host": ["type": "string", "description": "Host, exact or glob: `api.example.com`, `*.example.com`."],
+                        "method": [
+                            "description": "HTTP method(s) to include, case-insensitive. A string or an array of strings.",
+                            "oneOf": [
+                                ["type": "string"],
+                                ["type": "array", "items": ["type": "string"]],
+                            ],
+                        ],
+                        "url_contains": ["type": "string", "description": "Case-insensitive substring of the full URL (path, query, …)."],
+                        "status": [
+                            "description": "Status code: an exact number (500) or a class as a string (\"5xx\", \"4xx\").",
+                            "oneOf": [
+                                ["type": "integer"],
+                                ["type": "string"],
+                            ],
+                        ],
+                        "status_min": ["type": "integer", "description": "Lowest status code to include (inclusive)."],
+                        "status_max": ["type": "integer", "description": "Highest status code to include (inclusive)."],
+                        "only_errors": ["type": "boolean", "description": "Only failures: a transport error or status >= 400 (in-flight flows are excluded)."],
+                        "since_seconds": ["type": "number", "description": "Only flows started within the last N seconds — the usual way to isolate \"what I just triggered\"."],
+                        "since": ["type": "string", "description": "Only flows started at/after this ISO-8601 timestamp (alternative to `since_seconds`)."],
+                        "device_ip": ["type": "string", "description": "Only traffic from this device IP (see list_devices)."],
+                        "source_app": ["type": "string", "description": "Only traffic from this local app, by bundle id or display name."],
                     ],
                 ],
             ],
@@ -491,8 +527,66 @@ struct MCPToolExecutor {
 
     private func handleGetRecentFlows(_ arguments: [String: Any]) async throws -> String {
         let limit = (arguments["limit"] as? Int) ?? 20
-        let flows = await engine.recentFlows(limit: limit)
+        let query = try Self.flowQuery(from: arguments)
+        let flows = await engine.recentFlows(matching: query, limit: limit)
         return prettyJSON(flows.map(Self.flowSummary))
+    }
+
+    /// Parse the `get_recent_flows` filter arguments. Malformed input is rejected
+    /// rather than silently ignored: a filter that quietly doesn't apply would hand
+    /// an agent unfiltered traffic it believes is filtered — worse than an error.
+    static func flowQuery(from arguments: [String: Any]) throws -> FlowQuery {
+        var query = FlowQuery()
+        query.host = arguments["host"] as? String
+        query.urlContains = arguments["url_contains"] as? String
+        query.deviceIP = arguments["device_ip"] as? String
+        query.sourceApp = arguments["source_app"] as? String
+        query.onlyErrors = (arguments["only_errors"] as? Bool) ?? false
+
+        switch arguments["method"] {
+        case let single as String: query.methods = [single]
+        case let many as [String]: query.methods = many
+        case nil: break
+        default: throw MCPError.invalidParams("`method` must be a string or an array of strings")
+        }
+
+        query.statusMin = arguments["status_min"] as? Int
+        query.statusMax = arguments["status_max"] as? Int
+        switch arguments["status"] {
+        case let exact as Int:
+            query.statusMin = exact
+            query.statusMax = exact
+        case let text as String:
+            guard let range = Self.statusClass(text) else {
+                throw MCPError.invalidParams("`status` must be a number (500) or a class like \"5xx\"")
+            }
+            query.statusMin = range.lowerBound
+            query.statusMax = range.upperBound
+        case nil: break
+        default: throw MCPError.invalidParams("`status` must be a number or a string like \"5xx\"")
+        }
+
+        if let seconds = arguments["since_seconds"] as? Double {
+            query.since = Date().addingTimeInterval(-abs(seconds))
+        } else if let seconds = arguments["since_seconds"] as? Int {
+            query.since = Date().addingTimeInterval(-abs(Double(seconds)))
+        }
+        if let raw = arguments["since"] as? String {
+            guard let date = Self.iso8601.date(from: raw) ?? Self.iso8601Fractional.date(from: raw) else {
+                throw MCPError.invalidParams("`since` must be an ISO-8601 timestamp")
+            }
+            query.since = date
+        }
+        return query
+    }
+
+    /// `"5xx"` → 500...599. Accepts any single leading digit; anything else is nil.
+    private static func statusClass(_ text: String) -> ClosedRange<Int>? {
+        let lowered = text.lowercased()
+        guard lowered.count == 3, lowered.hasSuffix("xx"),
+              let digit = lowered.first?.wholeNumberValue, (1 ... 5).contains(digit)
+        else { return nil }
+        return (digit * 100) ... (digit * 100 + 99)
     }
 
     private func handleGetFlowDetail(_ arguments: [String: Any]) async throws -> String {
@@ -830,6 +924,9 @@ struct MCPToolExecutor {
             "id": flow.id.uuidString,
             "method": flow.request.method,
             "url": flow.request.url,
+            // When it happened — without this an agent can't tell a flow from three
+            // hours ago from the one it just triggered, nor order across calls.
+            "startedAt": iso8601.string(from: flow.startedAt),
         ]
         if let status = flow.statusCode { out["status"] = status }
         if let ms = flow.durationMS { out["durationMS"] = ms }
