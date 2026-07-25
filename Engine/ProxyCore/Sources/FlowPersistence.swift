@@ -99,6 +99,32 @@ final class FlowPersistence: @unchecked Sendable {
         }
     }
 
+    /// One flow by id, bodies attached — the read that makes the durable store
+    /// reachable, not just writable. The table keeps far more rows than the
+    /// in-memory ring, so an id a caller legitimately holds (from an earlier list,
+    /// a `replayedFrom` link, an exported HAR) resolves after the flow has aged out.
+    /// Nil when there is no such row.
+    func flow(id: UUID) -> Flow? {
+        queue.sync {
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "SELECT json, reqBody, respBody FROM flows WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK
+            else { return nil }
+            defer { sqlite3_finalize(stmt) }
+            sqlite3_bind_text(stmt, 1, id.uuidString, -1, transient)
+            guard sqlite3_step(stmt) == SQLITE_ROW,
+                  let blob = sqlite3_column_blob(stmt, 0)
+            else { return nil }
+            let json = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
+            guard let flow = try? decoder.decode(Flow.self, from: json) else { return nil }
+            let request = Self.blob(stmt, 1)
+            let response = Self.blob(stmt, 2)
+            // A legacy row carries its bodies inline in `json` and null columns —
+            // leave those alone rather than blanking them.
+            guard request != nil || response != nil else { return flow }
+            return flow.attachingBodies(request: request, response: response)
+        }
+    }
+
     /// The stored request/response bodies for one flow, or nil if the row is gone.
     /// Each side is nil when that body was empty. Legacy rows (bodies still inline
     /// in `json`) return nil columns — the caller's in-memory copy already has them.
@@ -110,13 +136,15 @@ final class FlowPersistence: @unchecked Sendable {
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, id.uuidString, -1, transient)
             guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            func blob(_ column: Int32) -> Data? {
-                guard let raw = sqlite3_column_blob(stmt, column) else { return nil }
-                let count = Int(sqlite3_column_bytes(stmt, column))
-                return count > 0 ? Data(bytes: raw, count: count) : nil
-            }
-            return (blob(0), blob(1))
+            return (Self.blob(stmt, 0), Self.blob(stmt, 1))
         }
+    }
+
+    /// A BLOB column as `Data`, or nil when NULL/empty.
+    private static func blob(_ stmt: OpaquePointer?, _ column: Int32) -> Data? {
+        guard let raw = sqlite3_column_blob(stmt, column) else { return nil }
+        let count = Int(sqlite3_column_bytes(stmt, column))
+        return count > 0 ? Data(bytes: raw, count: count) : nil
     }
 
     func deleteAll() {

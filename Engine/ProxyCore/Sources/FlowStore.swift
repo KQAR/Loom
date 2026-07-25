@@ -228,13 +228,32 @@ actor FlowStore {
     /// lands, slimmed by the ring budget). Detail/replay/diff read through here, so
     /// they always see full bodies without knowing the flow was ever slimmed.
     func flow(id: UUID) -> Flow? {
-        flows.first { $0.id == id }.map(hydrated)
+        if let inRing = flows.first(where: { $0.id == id }) { return hydrated(inRing) }
+        // Not in the ring — but the durable store keeps an order of magnitude more
+        // rows, so read through to it. Without this the store is effectively
+        // write-only past the ring: `get_flow_detail` / `diff_flows` / `replay`
+        // answer "no flow with id X" for a flow Loom still has on disk, and an
+        // agent holding a legitimate id (from an earlier list, a `replayedFrom`
+        // link, an exported HAR) concludes the exchange never happened.
+        return persistence?.flow(id: id)
     }
 
     /// Recent flows with bodies re-attached — for exports (HAR) that need the full
     /// payload. The plain `recent` stays body-free for cheap list/summary reads.
+    ///
+    /// Tops up from the durable store when the ring holds fewer than `limit`:
+    /// "export the last 5000" must not quietly hand back the 2000 that happen to
+    /// be in memory while the rest sit on disk.
     func recentHydrated(limit: Int) -> [Flow] {
-        recent(limit: limit).map(hydrated)
+        let fromRing = recent(limit: limit).map(hydrated)
+        guard let persistence, fromRing.count < limit else { return fromRing }
+        let seen = Set(fromRing.map(\.id))
+        let older = persistence.recent(limit: limit)
+            .lazy
+            .filter { !seen.contains($0.id) }
+            .map(hydrated)
+            .prefix(limit - fromRing.count)
+        return fromRing + older
     }
 
     /// Re-attach persisted bodies when the in-memory flow carries none. A live
