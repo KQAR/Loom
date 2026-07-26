@@ -73,7 +73,11 @@ struct HTTP2InterceptionTests {
     /// as our read()-driven bridge consumes it — proving h2 back-pressure works.
     ///
     /// Instrumented on purpose (issue #99): this test hangs its full time limit on CI
-    /// every so often and has never reproduced locally, so every step is staged and
+    /// roughly 1 % of the time. That stall is **not Loom's bug** — `Tools/h2-stall-repro/`
+    /// reproduces it with SwiftNIO alone — so this instrumentation exists to tell that
+    /// known flake apart from a real regression: a stall reads `upstream bytes
+    /// consumed = 65535` (exactly one h2 flow-control window). Anything else is new.
+    /// Every step is staged and
     /// counted and nothing is awaited with a blocking `wait()`. A stall now fails at
     /// `Self.uploadTimeout` with the stage it reached, how many bytes each side moved
     /// (client-flushed vs. upstream-consumed, sampled over the wait so a crawl is

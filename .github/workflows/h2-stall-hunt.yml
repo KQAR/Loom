@@ -13,9 +13,9 @@ name: H2 stall hunt
 # parallel shards until a shard stalls. Each shard stops at its first failure and
 # uploads the log, because one report is all we need.
 #
-# Reference signature to compare against (a consumer that never pulls):
-# `client bytes flushed = 98304` (96 KiB) with 0 consumed. A different byte count,
-# or bytes consumed > 0, means a different mechanism.
+# The stall is upstream's, not Loom's: `Tools/h2-stall-repro/` reproduces it with
+# SwiftNIO alone. Signature of the known flake — `upstream bytes consumed = 65535`,
+# exactly one h2 flow-control window. Any other counters mean a different bug.
 on:
   workflow_dispatch:
     inputs:
