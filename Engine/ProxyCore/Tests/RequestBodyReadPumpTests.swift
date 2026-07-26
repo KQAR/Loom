@@ -2,8 +2,6 @@ import Testing
 import Foundation
 import NIOCore
 import NIOEmbedded
-import NIOPosix
-import NIOHTTP1
 @testable import LoomProxyCore
 import LoomSharedModels
 
@@ -19,6 +17,14 @@ import LoomSharedModels
 /// went through real sockets, TLS and h2, where a stall says nothing about which link
 /// broke. These run on an `EmbeddedChannel`, so a pump regression fails here with a
 /// specific expectation rather than as a socket suite that stops.
+///
+/// Scope, learned the hard way from a TSan failure on main: an `EmbeddedChannel` may
+/// only be touched by one thread, so these tests keep **every** channel interaction on
+/// the test thread and detach the delegate before any async consumption. A first version
+/// also drove `ProxyHandler` end-to-end on one, which raced immediately — the handler's
+/// exchange runs on a `Task`, and `StreamRelay` then writes to the channel from that
+/// thread. Anything covering the handler needs a real channel (see
+/// `HTTPSInterceptionTests`) or `NIOAsyncTestingChannel`.
 ///
 /// One thing the chase did establish, worth keeping in mind before touching this code:
 /// on an HTTP/2 stream channel `read()` can deliver already-buffered frames
@@ -52,7 +58,10 @@ import LoomSharedModels
         bridge.yield(Data("two".utf8))
         #expect(counter.reads >= 2, "a yield the consumer has room for asks for more")
 
-        // And the bytes are what the consumer sees, in order.
+        // Detach before consuming: `produceMore` can fire from whichever thread the
+        // consumer resumes on, and an `EmbeddedChannel` may only be touched by one.
+        // (The three assertions above already covered the reads.)
+        bridge.delegate.didTerminate()
         bridge.finish()
         var collected = Data()
         for try await chunk in bridge.chunks { collected.append(chunk) }
@@ -81,53 +90,5 @@ import LoomSharedModels
         #expect(counter.reads == before, "no reads once the consumer is gone")
 
         _ = try channel.finish()
-    }
-
-    /// End to end through the real handler: a streamed upload whose body is larger than
-    /// the watermark completes, with the whole body reaching upstream. This is the plain
-    /// HTTP shape of what the h2 test exercises — same pump, no TLS or h2 in the way.
-    @Test func aStreamedUploadLargerThanTheWatermarkCompletes() async throws {
-        let upstream = PumpStubUpstream()
-        let store = FlowStore(persistence: nil)
-        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
-        let channel = EmbeddedChannel()
-        try channel.pipeline.addHandler(ProxyHandler(
-            store: store, group: group, forwarder: upstream, ca: nil,
-            config: InterceptionConfig(defaults: nil)
-        )).wait()
-
-        var head = HTTPRequestHead(version: .http1_1, method: .POST, uri: "http://api.example.test/upload")
-        head.headers.add(name: "Host", value: "api.example.test")
-        try channel.writeInbound(HTTPServerRequestPart.head(head))
-
-        // Ten chunks — more than the bridge's high watermark, so the upload only
-        // finishes if each consumed chunk pulls the next read.
-        var expected = Data()
-        for index in 0 ..< 10 {
-            let chunk = Data(repeating: UInt8(index), count: 1_024)
-            expected.append(chunk)
-            var buffer = channel.allocator.buffer(capacity: chunk.count)
-            buffer.writeBytes(chunk)
-            try channel.writeInbound(HTTPServerRequestPart.body(buffer))
-        }
-        try channel.writeInbound(HTTPServerRequestPart.end(nil))
-
-        // The forwarder runs on a Task; give it a bounded chance to drain rather than
-        // hanging the suite if the pump stalls.
-        for _ in 0 ..< 200 where await upstream.lastBody == nil {
-            try await Task.sleep(nanoseconds: 10_000_000)
-        }
-        #expect(await upstream.lastBody == expected, "every chunk must reach upstream, in order")
-        _ = try? channel.finish()
-    }
-}
-
-private actor PumpStubUpstream: UpstreamForwarding {
-    private(set) var lastBody: Data?
-
-    func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        lastBody = body
-        return ForwardResult(statusCode: 200, headers: [], body: Data("ok".utf8))
     }
 }
