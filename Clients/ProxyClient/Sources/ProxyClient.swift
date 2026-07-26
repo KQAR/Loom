@@ -13,7 +13,15 @@ public struct ProxyClient: Sendable {
         ProxyStatus(isRunning: false, port: 0, capturedCount: 0)
     }
     public var recentFlows: @Sendable (_ limit: Int) async -> [Flow] = { _ in [] }
+    /// Filtered read — the scan happens inside the engine's store over everything
+    /// retained, so a match older than the newest `limit` exchanges is still
+    /// findable. The agent has had this since M6 (`get_recent_flows` filters);
+    /// without it the human surface could only ever look at the newest N.
+    public var recentFlowsMatching: @Sendable (_ query: FlowQuery, _ limit: Int) async -> [Flow] = { _, _ in [] }
     public var flow: @Sendable (_ id: UUID) async -> Flow? = { _ in nil }
+    /// Devices that have sent traffic through the proxy, with per-device counts.
+    /// Flow-derived (unlike `connectedDeviceCountStream`, which is connection-derived).
+    public var connectedDevices: @Sendable () async -> [DeviceSummary] = { [] }
     public var flowStream: @Sendable () async -> AsyncStream<Flow> = { AsyncStream { $0.finish() } }
     /// Fires when the capture is discarded by anyone — the window's own Clear or an
     /// agent's `clear_flows` — so the list never shows flows the store dropped.
@@ -50,6 +58,28 @@ public struct ProxyClient: Sendable {
     public var clearAudit: @Sendable () async -> Void = {}
     /// Live count of LAN devices connected to the proxy (excludes this Mac).
     public var connectedDeviceCountStream: @Sendable () async -> AsyncStream<Int> = { AsyncStream { $0.finish() } }
+
+    // MARK: Breakpoints
+    //
+    // The supervision half of breakpoints. An armed breakpoint parks a *live client
+    // connection* until someone resumes it, so an agent holding traffic that the
+    // human's surface cannot see or release is the one write action where the
+    // "human supervises" half of the contract genuinely breaks. These endpoints
+    // exist so it can be built; see `ProxyCapability`.
+
+    /// Arm a breakpoint. Throws `ProxyControlError.invalidBreakpoint` if malformed.
+    public var armBreakpoint: @Sendable (_ breakpoint: Breakpoint) async throws -> Void
+    /// Remove an armed breakpoint (exchanges it already holds still need a resume).
+    public var disarmBreakpoint: @Sendable (_ id: UUID) async throws -> Void
+    public var armedBreakpoints: @Sendable () async -> [Breakpoint] = { [] }
+    /// Exchanges held right now, awaiting a resume decision.
+    public var pendingBreakpoints: @Sendable () async -> [PendingBreakpoint] = { [] }
+    /// Fires the moment an exchange is parked, so a surface showing held traffic
+    /// doesn't have to poll. Unbuffered fan-out: subscribe before reading
+    /// `pendingBreakpoints` if a hold must not be missed.
+    public var pendingBreakpointStream: @Sendable () async -> AsyncStream<PendingBreakpoint> = { AsyncStream { $0.finish() } }
+    /// Release a held exchange: apply `edit` and continue, or abort it with a 502.
+    public var resumeBreakpoint: @Sendable (_ pendingID: UUID, _ abort: Bool, _ edit: BreakpointEdit) async throws -> Void
 }
 
 extension ProxyClient: DependencyKey {
@@ -60,7 +90,9 @@ extension ProxyClient: DependencyKey {
             stop: { await engine.stop() },
             status: { await engine.status() },
             recentFlows: { await engine.recentFlows(limit: $0) },
+            recentFlowsMatching: { await engine.recentFlows(matching: $0, limit: $1) },
             flow: { await engine.flow(id: $0) },
+            connectedDevices: { await engine.connectedDevices() },
             flowStream: { await engine.flowStream() },
             flowsClearedStream: { await engine.flowsClearedStream() },
             replay: { try await engine.replay(id: $0, overrides: $1) },
@@ -84,7 +116,13 @@ extension ProxyClient: DependencyKey {
             recentAuditEntries: { await engine.recentAuditEntries(limit: $0) },
             auditStream: { await engine.auditStream() },
             clearAudit: { await engine.clearAudit() },
-            connectedDeviceCountStream: { await engine.connectedDeviceCountStream() }
+            connectedDeviceCountStream: { await engine.connectedDeviceCountStream() },
+            armBreakpoint: { try await engine.armBreakpoint($0) },
+            disarmBreakpoint: { try await engine.disarmBreakpoint(id: $0) },
+            armedBreakpoints: { await engine.armedBreakpoints() },
+            pendingBreakpoints: { await engine.pendingBreakpoints() },
+            pendingBreakpointStream: { await engine.pendingBreakpointStream() },
+            resumeBreakpoint: { try await engine.resumeBreakpoint(pendingID: $0, abort: $1, edit: $2) }
         )
     }()
 
