@@ -105,7 +105,9 @@ final class RequestBodyBridge: @unchecked Sendable {
 
     let capture: RequestBodyCapture
     private let source: Producer.Source
-    private let delegate: Delegate
+    /// Internal rather than private so `RequestBodyReadPumpTests` can drive its
+    /// lifecycle (`didTerminate`) without a live consumer.
+    let delegate: Delegate
 
     /// The sequence the forwarder consumes. Held by `RequestBody.stream`, never by
     /// this bridge, so the producer's deinit-teardown contract isn't violated.
