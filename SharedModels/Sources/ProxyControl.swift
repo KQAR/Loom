@@ -323,3 +323,64 @@ public protocol AuditControlling: Sendable {
 }
 
 public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling & AuditControlling
+
+/// Every requirement of `ProxyControlling`, enumerated as a value.
+///
+/// Why this exists: the engine's control surface has *two* consumers — the MCP
+/// server (which reaches it directly, so the compiler keeps it complete) and the
+/// human's TCA `ProxyClient` (a hand-written mirror, which the compiler does
+/// **not** check). Nothing forced the mirror to keep up, and it didn't: an agent
+/// could hold real traffic on a breakpoint with no way for the supervising human
+/// to see or release it, because `ProxyClient` simply had no such field. That is
+/// not a missing feature, it's a missing invariant — "AI operates, human
+/// supervises" only holds if the human surface can reach what the AI can.
+///
+/// So: **adding a requirement to any of the protocols above means adding a case
+/// here.** `ProxyClientParityTests` switches over `allCases` exhaustively, so a
+/// new case fails to compile until it is either wired to a `ProxyClient`
+/// endpoint or recorded as a deliberate omission *with a reason*. Silence is no
+/// longer an option — the same trick `MCPToolExecutor.writeTools` uses to keep
+/// audit coverage honest.
+public enum ProxyCapability: String, CaseIterable, Sendable {
+    // FlowProviding
+    case status
+    case recentFlows
+    case recentFlowsMatching
+    case recentFlowsForExport
+    case flowByID
+    case flowStream
+    case connectedDevices
+    case flowsClearedStream
+    // FlowReplaying
+    case replayByID
+    case replayFlow
+    // TLSInterceptControlling
+    case certificateStatus
+    case exportCACertificate
+    case sslScope
+    case setSSLScope
+    // CaptureControlling
+    case importFlows
+    case setRecording
+    case clearFlows
+    // RulesControlling
+    case rulesState
+    case setRulesEnabled
+    case addRule
+    case updateRule
+    case deleteRule
+    case setRules
+    case setGroupEnabled
+    // BreakpointControlling
+    case armBreakpoint
+    case disarmBreakpoint
+    case armedBreakpoints
+    case pendingBreakpoints
+    case pendingBreakpointStream
+    case resumeBreakpoint
+    // AuditControlling
+    case recordAudit
+    case recentAuditEntries
+    case auditStream
+    case clearAudit
+}
