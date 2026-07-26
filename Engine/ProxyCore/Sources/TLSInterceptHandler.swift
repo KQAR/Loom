@@ -75,6 +75,26 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
         }
     }
 
+    /// A body stream still in flight when the connection goes away has to be
+    /// terminated here — nothing else will. See `RequestBodyBridge.abort(reason:)`
+    /// for why letting it deinit unfinished is fatal.
+    func channelInactive(context: ChannelHandlerContext) {
+        abortBodyStream(reason: "connection closed")
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        abortBodyStream(reason: "\(error)")
+        context.fireErrorCaught(error)
+    }
+
+    private func abortBodyStream(reason: String) {
+        guard let bridge = bodyBridge else { return }
+        bodyBridge = nil
+        resetRequest()
+        bridge.abort(reason: reason)
+    }
+
     private func resetRequest() {
         requestHead = nil; requestURL = nil; requestAbsolute = nil
     }

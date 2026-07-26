@@ -106,6 +106,27 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         }
     }
 
+    /// A body stream still in flight when the connection goes away has to be
+    /// terminated here — nothing else will. See `RequestBodyBridge.abort(reason:)`
+    /// for why letting it deinit unfinished is fatal.
+    func channelInactive(context: ChannelHandlerContext) {
+        abortBodyStream(reason: "connection closed")
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        abortBodyStream(reason: "\(error)")
+        context.fireErrorCaught(error)
+    }
+
+    private func abortBodyStream(reason: String) {
+        guard let bridge = bodyBridge else { return }
+        bodyBridge = nil
+        requestHead = nil
+        requestURL = nil
+        bridge.abort(reason: reason)
+    }
+
     // MARK: - Plain HTTP forwarding
 
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, body: RequestBody, capture: RequestBodyCapture?) {

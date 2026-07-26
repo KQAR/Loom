@@ -36,6 +36,15 @@ enum RequestBody: Sendable {
     }
 }
 
+/// The client went away — connection closed or errored — before its request body
+/// was complete. The stream is *failed* rather than finished so the forwarder can't
+/// mistake a truncated upload for a whole one, and so the exchange records an error
+/// instead of a plausible-looking short request.
+struct RequestBodyAborted: Error, CustomStringConvertible {
+    let reason: String
+    var description: String { "the client aborted the request body: \(reason)" }
+}
+
 /// Type-eraser over the producer's async sequence so `RequestBody` doesn't carry
 /// the producer's heavy generic signature everywhere.
 struct RequestChunks: AsyncSequence, Sendable {
@@ -142,6 +151,13 @@ final class RequestBodyBridge: @unchecked Sendable {
 
     func finish() { source.finish() }
     func fail(_ error: Error) { source.finish(error) }
+
+    /// Terminate a body stream whose client vanished mid-upload. **Not optional
+    /// housekeeping**: the producer's `Source` is built with `finishOnDeinit: false`,
+    /// so deiniting one that was never finished is a `preconditionFailure` inside
+    /// NIOCore — an aborted upload would take the whole process down. Every handler
+    /// that owns a bridge must call this from `channelInactive` and `errorCaught`.
+    func abort(reason: String) { fail(RequestBodyAborted(reason: reason)) }
 
     /// Drives `channel.read()` from producer demand. `Channel.read()` is safe to
     /// call from any thread (it hops to the event loop internally).
