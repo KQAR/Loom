@@ -1,0 +1,141 @@
+name: H2 stall hunt
+
+# Manual-only flake hunt for issue #99: HTTP2InterceptionTests's h2 upload test
+# hangs its time limit on CI every so often and has never reproduced locally
+# (9/9 pass in ~0.05 s, including with every core pinned). The test carries its
+# own stall diagnostics now — stage timeline, client-flushed vs. upstream-consumed
+# byte counters, a stack sample — so all that's missing is a reproduction to read
+# them from.
+#
+# This is NOT part of the PR gate: it never runs on push or pull_request. Dispatch
+# it (Actions → H2 stall hunt → Run workflow, or `gh workflow run h2-stall-hunt.yml
+# --ref <branch>`) and it builds once, then re-runs the one test in a loop across
+# parallel shards until a shard stalls. Each shard stops at its first failure and
+# uploads the log, because one report is all we need.
+#
+# Reference signature to compare against (a consumer that never pulls):
+# `client bytes flushed = 98304` (96 KiB) with 0 consumed. A different byte count,
+# or bytes consumed > 0, means a different mechanism.
+on:
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: "Test runs per shard"
+        required: false
+        default: "40"
+      only_testing:
+        description: "-only-testing identifier (widen to the whole bundle to add contention)"
+        required: false
+        default: "ProxyCoreTests/HTTP2InterceptionTests/h2RequestBodyStreamsThroughAndIsCaptured()"
+      cpu_hogs:
+        description: "Background busy loops per shard, to imitate a saturated 3-core runner (0 = none)"
+        required: false
+        default: "0"
+
+jobs:
+  hunt:
+    name: Hunt (shard ${{ matrix.shard }})
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      # Every shard keeps hunting after another one finds it — a second report
+      # from a different scheduling is worth having, not worth cancelling.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      # Shares the CI job's cache key so a hunt starts from its warm SPM +
+      # DerivedData state instead of paying a cold resolve per shard.
+      - name: Cache SPM & DerivedData
+        uses: actions/cache@v4
+        with:
+          path: |
+            Tuist/.build
+            ${{ runner.temp }}/DerivedData
+          key: ${{ runner.os }}-loom-ci-${{ hashFiles('Tuist/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-loom-ci-
+
+      - name: Install dependencies
+        run: tuist install
+
+      - name: Generate project
+        run: tuist generate --no-open
+
+      # Same restored-cache hazard as the CI job: Tuist's "Copy Module Map" phase
+      # cp's read-only modulemaps over their own output.
+      - name: Make copied module maps writable
+        run: |
+          find "${{ runner.temp }}/DerivedData/Build/Products" -name module.modulemap ! -perm -u+w \
+            -exec chmod u+w {} + 2>/dev/null || true
+
+      # Build once; the loop below only runs. Without this every repetition pays
+      # a full incremental build check and the hunt manages a handful of attempts
+      # instead of dozens.
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing \
+            -workspace Loom.xcworkspace \
+            -scheme Loom-Workspace \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "${{ runner.temp }}/DerivedData" \
+            CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES
+
+      - name: Hunt
+        env:
+          REPETITIONS: ${{ inputs.repetitions }}
+          ONLY_TESTING: ${{ inputs.only_testing }}
+          CPU_HOGS: ${{ inputs.cpu_hogs }}
+          LOG_DIR: ${{ runner.temp }}/hunt-logs
+        run: |
+          set -uo pipefail
+          mkdir -p "$LOG_DIR"
+
+          if [ "${CPU_HOGS}" -gt 0 ] 2>/dev/null; then
+            echo "Starting ${CPU_HOGS} busy loops to imitate runner contention"
+            for _ in $(seq 1 "${CPU_HOGS}"); do yes > /dev/null & done
+            trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
+          fi
+
+          for attempt in $(seq 1 "${REPETITIONS}"); do
+            log="$LOG_DIR/attempt-${attempt}.log"
+            echo "::group::attempt ${attempt}/${REPETITIONS}"
+            xcodebuild test-without-building \
+              -workspace Loom.xcworkspace \
+              -scheme Loom-Workspace \
+              -configuration Debug \
+              -destination 'platform=macOS' \
+              -derivedDataPath "${{ runner.temp }}/DerivedData" \
+              -only-testing:"${ONLY_TESTING}" \
+              > "$log" 2>&1
+            status=$?  # must be read before anything else runs, echo included
+            echo "::endgroup::"
+
+            if [ $status -ne 0 ]; then
+              echo "::error::Reproduced on attempt ${attempt} — stall report follows"
+              # The test writes its stage timeline, counters and stack sample to
+              # stderr, which xcodebuild folds into this log.
+              cat "$log"
+              exit 1
+            fi
+
+            # Keep only the failing log; 40 passing xcodebuild logs per shard is
+            # noise, and the artifact upload has to stay small.
+            rm -f "$log"
+          done
+
+          echo "No stall in ${REPETITIONS} attempts on this shard."
+
+      - name: Upload the stall log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-stall-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/hunt-logs
+          retention-days: 14
+          if-no-files-found: ignore
