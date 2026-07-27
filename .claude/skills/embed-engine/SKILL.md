@@ -24,7 +24,7 @@ swift build   # builds LoomSharedModels + LoomProxyCore from the root Package.sw
 Pin a released tag rather than a path or a branch:
 
 ```swift
-.package(url: "https://github.com/KQAR/Loom.git", from: "0.0.5"),
+.package(url: "https://github.com/KQAR/Loom.git", from: "0.0.6"),
 // then, per target:
 .product(name: "LoomProxyCore", package: "Loom"),
 ```

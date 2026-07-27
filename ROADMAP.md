@@ -102,6 +102,58 @@ loop, a guess, or an arithmetic detour:
 - **HAR both ways** — import (above) and redacted export, so a capture can arrive
   from a colleague and leave for a ticket.
 
+### M7 — Cross-surface parity (next)
+
+M1–M6 grew the agent's surface. This round audited the architecture behind both
+surfaces and fixed what had rotted; what it *found* is the phase.
+
+**Done — the drift is now caught by the compiler or by a test** (PRs #103–#110):
+
+- **`ProxyCapability` + `ProxyClientParityTests`** — every `ProxyControlling`
+  requirement must be reachable from the human's `ProxyClient` or recorded as a
+  deliberate omission with a reason. It found the real one: every breakpoint
+  capability was reachable over MCP and absent from the client, so an agent could
+  park a live client connection with nothing in the human's surface able to see
+  it or let it go. Plumbing closed; **the panel is still missing** (below).
+- **`RuleCodecParityTests`** — a rule exists four times (model, `set_rule` schema,
+  `list_rules` render, the editor's `RuleDraft`) and only the model is
+  compiler-checked. A reflection census now fails when a field stops being
+  settable or readable on any of the other three.
+- **`FlowComparison`** — `diff_flows` and the Inspector's diff pane computed
+  *different diffs*: the tool reported response headers and a line-level body
+  diff, the pane reported `body: changed` and no response headers. One semantics
+  now, rendered two ways. A human comparing notes with an agent was previously
+  comparing two different answers.
+- **Structure**: one designated `ProxyEngine` initializer behind
+  `EngineConfiguration` (three hand-mirrored wirings, held together by a comment);
+  the 730-line engine façade and the 2256-line MCP tool registry split by
+  protocol/concern; the privileged-helper XPC contract moved out of the published
+  `LoomSharedModels` product into `LoomHelperProtocol`; `SetupFeature`'s view of
+  the proxy projected from `status` instead of copied into it at three call sites.
+
+**Open — the phase itself.** Adding a capability the *engine* needs is cheap: the
+decorator chain and the single choke point absorb it. Adding one that **both the
+agent and the human** need is still expensive, and that asymmetry is what M7 is
+about:
+
+1. **Breakpoint supervision has no UI.** `BreakpointControlling` is complete in the
+   engine, reachable over MCP, and now exposed on `ProxyClient` — but no
+   `AppFeature` state or view consumes it. An agent can hold real traffic with
+   nothing in the human's panel showing it or releasing it. This is the largest
+   standing violation of value #2 (*the human stays in control of risk*), and it is
+   UI work, not plumbing.
+2. **The parity guard records four deliberate omissions that are really UI gaps** —
+   HAR import/export and wholesale `setRules` are agent-only because the window has
+   no affordance for them, not because the human shouldn't have them.
+3. **A cross-surface capability still costs ~5 edits**: protocol → engine →
+   `ProxyClient` field → `liveValue` wiring → feature/view. The guards make a miss
+   *loud* rather than silent; they don't make the work smaller. Worth deciding
+   whether `ProxyClient` should wrap `any ProxyControlling` directly (losing some
+   `@DependencyClient` test ergonomics) before the surface grows again.
+4. **Rule authoring still has four representations.** The census keeps them honest;
+   it doesn't merge them. If a fifth surface appears (a rule-import format, a
+   config file), collapse the codec first.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:

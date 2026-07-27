@@ -17,7 +17,7 @@ claude plugin install loom@loom
 ```
 
 然后**启动 Loom App**(插件通过 `http://127.0.0.1:9092/mcp` 与它通信)。重启 Claude Code
-让 `loom` MCP 服务连上;之后 Agent 即可使用 18 个工具,以及讲解用法的 `loom` skill。
+让 `loom` MCP 服务连上;之后 Agent 即可使用 29 个工具,以及讲解用法的 `loom` skill。
 
 > Cursor:本仓库同时是 Cursor 插件(`.cursor-plugin/`)——在 Cursor 的插件设置里把
 > `KQAR/Loom` 添加为插件 marketplace 即可。
@@ -28,8 +28,11 @@ claude plugin install loom@loom
 的手机扫面板二维码),再由 Agent 驱动:
 
 - **读** — `get_recent_flows`、`get_flow_detail`、`list_devices`、`list_rules` …
-- **写** — `replay_flow`(带改写重放)、`create_rule`(mock / 映射 / 改写 / 拦截 / 延迟)、
-  `set_ssl_scope`、`export_har` …
+- **写** — `replay_flow`(带改写重放)、`set_rule`(mock / 映射 / 改写 / 拦截 / 延迟)、
+  `arm_breakpoint` + `resume`(中途挂住流量并改写)、`set_ssl_scope`、
+  `import_har` / `export_har` …
+- **阻塞等待,不要轮询** — `wait_for_flow` / `wait_for_pending` 会一直等到你触发的
+  流量真正到达。
 
 若工具连不上,说明 Loom App 没有运行——启动它即可。
 
@@ -38,10 +41,13 @@ claude plugin install loom@loom
 需要 [Tuist](https://tuist.io)(版本锁定在 `mise.toml`)和 Xcode(macOS 14+)。
 
 ```bash
-tuist install     # 解析 SPM 依赖
-tuist generate    # 生成 Loom.xcworkspace
-tuist build Loom  # 构建 App
+tuist install                 # 解析 SPM 依赖
+tuist generate                # 生成 Loom.xcworkspace
+tuist xcodebuild -workspace Loom.xcworkspace -scheme Loom \
+  -configuration Debug -destination 'platform=macOS' build
 ```
+
+`-workspace` 是必需的:只给 `-scheme` 时 xcodebuild 会选错 project,导致 SPM 模块解析失败。
 
 ## 许可证
 
