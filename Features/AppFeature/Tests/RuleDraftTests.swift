@@ -1,3 +1,4 @@
+import Foundation
 import LoomSharedModels
 import Testing
 
@@ -83,6 +84,136 @@ import Testing
         let out = built(rule).actions.requestSubstitutions
         #expect(out.count == 1)
         #expect(out.first?.match == "foo")
+    }
+
+    // MARK: The whole model at once
+
+    /// A rule with *every* field populated, opened in the editor and saved
+    /// untouched, must come back byte-identical. The per-field tests above each
+    /// prove one carried field; this proves nothing else was quietly lost along
+    /// the way — the failure mode `RuleDraft`'s `carried*` fields exist for.
+    @Test func maximalRule_roundTripsUnchanged() {
+        let rule = TrafficRule(
+            name: "maximal",
+            comment: "why this rule exists",
+            group: "scenario-a",
+            isEnabled: false,
+            match: RuleMatch(
+                urlPattern: "https://api.example.com/v1/*",
+                isRegex: false,
+                methods: ["GET", "POST"],
+                isExact: false,
+                hostPattern: "*.example.com",
+                query: ["ab_test": "on"],
+                sourceApp: "com.example.MyApp",
+                deviceIP: "192.168.1.9"
+            ),
+            actions: RuleActions(
+                route: .mock(MockResponseAction(
+                    statusCode: 418,
+                    headers: [HeaderPair(name: "X-Mock", value: "yes")],
+                    bodyText: #"{"ok":true}"#,
+                    contentType: "application/json"
+                )),
+                rewriteRequest: RequestRewriteAction(
+                    method: "PUT",
+                    setHeaders: [HeaderPair(name: "X-Req", value: "1")],
+                    removeHeaders: ["Cookie"],
+                    bodyText: "req-body"
+                ),
+                rewriteResponse: ResponseRewriteAction(
+                    statusCode: 503,
+                    setHeaders: [HeaderPair(name: "X-Res", value: "2")],
+                    removeHeaders: ["Set-Cookie"],
+                    bodyText: "res-body"
+                ),
+                requestSubstitutions: [SubstitutionRule(field: .url, match: "a", replacement: "b", caseSensitive: true)],
+                responseSubstitutions: [SubstitutionRule(field: .body, match: "c", replacement: "d", isRegex: true)],
+                delayMilliseconds: 250
+            )
+        )
+        #expect(built(rule) == rule)
+    }
+
+    /// Pins the *shape* of the model the editor mirrors.
+    ///
+    /// The fixture above is hand-written, so a newly added `TrafficRule` field would
+    /// simply take its default there and the round-trip would still pass while the
+    /// editor silently dropped the field on save. This census is reflection-based, so
+    /// a new field breaks it immediately — and the fix is to decide, deliberately,
+    /// whether `RuleDraft` surfaces it or carries it.
+    @Test func modelShape_isPinnedSoNewFieldsAreNoticed() {
+        let expected: Set<String> = [
+            // TrafficRule
+            "id", "name", "comment", "group", "isEnabled", "match", "actions", "createdAt",
+            // RuleMatch
+            "urlPattern", "isRegex", "methods", "isExact", "hostPattern", "query",
+            "sourceApp", "deviceIP",
+            // RuleActions
+            "route", "rewriteRequest", "rewriteResponse",
+            "requestSubstitutions", "responseSubstitutions", "delayMilliseconds",
+            // Route payloads (mock shown here; the others are covered by the
+            // per-route tests above, and adding a Route case is a compile error in
+            // MCPServerTests' RuleCodecParityTests)
+            "mock", "statusCode", "headers", "bodyText", "bodyBase64", "contentType",
+            // Rewrites
+            "method", "setHeaders", "removeHeaders",
+            // SubstitutionRule
+            "field", "replacement", "caseSensitive",
+        ]
+        let actual = Self.fieldNames(of: maximalRuleForCensus)
+        let added = actual.subtracting(expected)
+        let removed = expected.subtracting(actual)
+        #expect(added.isEmpty, """
+        New TrafficRule field(s) \(added.sorted()): decide whether RuleDraft surfaces \
+        them in the editor or carries them through untouched (see the `carried*` \
+        fields), add a round-trip assertion, then add them here. The MCP schema and \
+        render need the same treatment — see RuleCodecParityTests.
+        """)
+        #expect(removed.isEmpty, "field(s) \(removed.sorted()) are gone from the model; drop them here too")
+    }
+
+    private var maximalRuleForCensus: TrafficRule {
+        TrafficRule(
+            name: "census",
+            comment: "c",
+            group: "g",
+            match: RuleMatch(urlPattern: "x", hostPattern: "h", query: ["q": "1"], sourceApp: "a", deviceIP: "1.2.3.4"),
+            actions: RuleActions(
+                route: .mock(MockResponseAction(bodyText: "b", bodyBase64: "Yg==", contentType: "text/plain")),
+                rewriteRequest: RequestRewriteAction(method: "GET", bodyText: "b"),
+                rewriteResponse: ResponseRewriteAction(statusCode: 200, bodyText: "b"),
+                requestSubstitutions: [SubstitutionRule(field: .url, match: "m", replacement: "r")],
+                responseSubstitutions: [SubstitutionRule(field: .body, match: "m", replacement: "r")],
+                delayMilliseconds: 1
+            )
+        )
+    }
+
+    /// Stored-property names of a value and everything it holds. `Mirror`, not the
+    /// Codable encoding: an encoding omits a nil optional entirely, which would make
+    /// the census bless a newly added optional field — the exact drift it guards.
+    private static func fieldNames(of value: Any) -> Set<String> {
+        if value is String || value is Int || value is Bool || value is Double
+            || value is UUID || value is Date || value is Data { return [] }
+        var names: Set<String> = []
+        let mirror = Mirror(reflecting: value)
+        switch mirror.displayStyle {
+        case .dictionary:
+            return [] // free-form data: keys are values, not fields
+        case .optional:
+            if let wrapped = mirror.children.first?.value { names.formUnion(fieldNames(of: wrapped)) }
+        default:
+            for child in mirror.children {
+                guard let label = child.label, !label.isEmpty else {
+                    names.formUnion(fieldNames(of: child.value)) // collection element
+                    continue
+                }
+                names.insert(label)
+                names.formUnion(fieldNames(of: child.value))
+            }
+        }
+        return names
     }
 
     // MARK: New match fields (isExact / hostPattern / query) round-trip
