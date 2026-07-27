@@ -1,5 +1,5 @@
 import Foundation
-import LoomSharedModels
+import LoomHelperProtocol
 import os
 
 /// The object exported over XPC. Implements the privileged operations and owns

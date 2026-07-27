@@ -1,5 +1,5 @@
 import Foundation
-import LoomSharedModels
+import LoomHelperProtocol
 import os
 
 /// Accepts only XPC connections that pass caller validation, then wires the

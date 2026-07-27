@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import ServiceManagement
+import LoomHelperProtocol
 import LoomSharedModels
 
 /// Result of a privileged-helper operation, surfaced to the human.

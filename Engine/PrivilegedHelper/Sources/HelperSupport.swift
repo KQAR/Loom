@@ -1,5 +1,5 @@
 import Foundation
-import LoomSharedModels
+import LoomHelperProtocol
 
 /// Absolute paths and a validated subprocess runner shared across the helper.
 enum HelperPaths {
