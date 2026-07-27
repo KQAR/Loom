@@ -18,7 +18,7 @@ claude plugin install loom@loom
 ```
 
 Then **launch the Loom app** (the plugin talks to it over `http://127.0.0.1:9092/mcp`).
-Restart Claude Code so the `loom` MCP server connects; the agent then has 18
+Restart Claude Code so the `loom` MCP server connects; the agent then has 29
 tools plus the `loom` skill explaining them.
 
 > Cursor: the repo is also a Cursor plugin (`.cursor-plugin/`) — add
@@ -31,8 +31,11 @@ proxy, or a phone on the same Wi-Fi via the panel's QR), then drive it from the
 agent:
 
 - **Read** — `get_recent_flows`, `get_flow_detail`, `list_devices`, `list_rules`, …
-- **Write** — `replay_flow` (re-send with overrides), `create_rule` (mock / map /
-  rewrite / block / delay), `set_ssl_scope`, `export_har`, …
+- **Write** — `replay_flow` (re-send with overrides), `set_rule` (mock / map /
+  rewrite / block / delay), `arm_breakpoint` + `resume` (hold traffic mid-flight
+  and edit it), `set_ssl_scope`, `import_har` / `export_har`, …
+- **Wait, don't poll** — `wait_for_flow` / `wait_for_pending` block until the
+  traffic you triggered actually arrives.
 
 If the tools are unreachable, the Loom app isn't running — launch it.
 
@@ -41,10 +44,14 @@ If the tools are unreachable, the Loom app isn't running — launch it.
 Requires [Tuist](https://tuist.io) (pinned in `mise.toml`) and Xcode (macOS 14+).
 
 ```bash
-tuist install     # resolve SPM dependencies
-tuist generate    # generate Loom.xcworkspace
-tuist build Loom  # build the app
+tuist install                 # resolve SPM dependencies
+tuist generate                # generate Loom.xcworkspace
+tuist xcodebuild -workspace Loom.xcworkspace -scheme Loom \
+  -configuration Debug -destination 'platform=macOS' build
 ```
+
+The `-workspace` flag is required: with only `-scheme`, xcodebuild picks the
+wrong project and fails to resolve the SPM modules.
 
 ## License
 
