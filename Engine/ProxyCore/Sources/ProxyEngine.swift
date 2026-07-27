@@ -50,39 +50,16 @@ public actor ProxyEngine: ProxyControlling {
     private var provisioning: ProvisioningServer?
     private var phoneInfo: PhoneOnboardingInfo?
 
+    /// The default engine: durable SQLite flow + audit stores, persisted rules and
+    /// SSL scope, file-backed CA. What `ProxyEngine.shared` is.
     public init() {
-        // Durable flow store (SQLite) so captures survive relaunch.
-        self.flowCapacity = 2000
-        self.store = FlowStore(persistence: FlowPersistence.makeDefault())
-        let rulesConfig = RulesConfig() // persisted across launches (JSON file in App Support)
-        self.rulesConfig = rulesConfig
-        // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
-        // this one forwarder, so decorating it applies traffic rules everywhere.
-        // M4: a hand-rolled SwiftNIO client (owns the Host header, originates its
-        // own TLS) replaces URLSession as the upstream leg.
-        let breakpointStore = BreakpointStore()
-        self.breakpointStore = breakpointStore
-        self.forwarder = BreakpointForwarder(
-            base: RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig),
-            store: breakpointStore
-        )
-        // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
-        // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
-        // launch. One-time migration preserves an already-trusted Keychain CA.
-        self.caStore = Self.migratedCAStore()
-        self.config = InterceptionConfig() // persisted across launches (UserDefaults)
-        self.auditStore = AuditStore(persistence: AuditPersistence.makeDefault())
-        self.caExportURL = Self.defaultCAExportURL
+        self.init(configuration: .default)
     }
 
     /// Host-embeddable init for any Swift consumer that drives the engine as a
     /// library and keeps captured flows in its own store. Pass `persistFlows:
     /// false` to keep flows only in the in-memory ring and the live
     /// `flowStream()`, so there is no second on-disk copy in Loom's SQLite store.
-    /// Forwarder, CA, and rules match `init()`.
-    /// Kept as a sibling designated init (not a delegating convenience init) so
-    /// `FlowPersistence` stays internal to the module. Mirror any change to the
-    /// forwarder/CA/config wiring in `init()` above.
     ///
     /// - Parameters:
     ///   - capacity: size of the in-memory flow ring. An embedder that owns its
@@ -94,22 +71,69 @@ public actor ProxyEngine: ProxyControlling {
     ///   - observer: an optional push sink delivered every flow insert/update,
     ///     the same payload as `flowStream()` but pushed. See `FlowObserving`.
     public init(persistFlows: Bool, capacity: Int = 2000, observer: FlowObserving? = nil) {
-        self.flowCapacity = capacity
-        self.store = FlowStore(capacity: capacity, persistence: persistFlows ? FlowPersistence.makeDefault() : nil, observer: observer)
-        let rulesConfig = RulesConfig()
+        self.init(configuration: EngineConfiguration(
+            flowCapacity: capacity,
+            // The audit trail follows the flow store: persist only when the
+            // embedder lets Loom own storage.
+            persistence: persistFlows ? .durable : .inMemory,
+            flowObserver: observer
+        ))
+    }
+
+    /// Test seam: inject a deterministic forwarder and an in-memory CA store so
+    /// interception can be exercised without the network or the Keychain. Nothing
+    /// touches disk, UserDefaults, or the user's exported CA file.
+    init(forwarder: UpstreamForwarding, caStore: CAStore) {
+        self.init(configuration: EngineConfiguration(
+            persistence: .inMemory,
+            caStore: caStore,
+            upstream: forwarder,
+            // Hermetic: never let a test clobber the user's real exported CA file.
+            caExportURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("loom-ca-test-\(UUID()).pem")
+        ))
+    }
+
+    /// The one place the engine is wired together.
+    ///
+    /// There used to be three initializers — app, embedder, test — each assembling
+    /// the same forwarder decorator chain, CA store, configs and audit store by
+    /// hand, with a comment asking the next person to mirror any change into the
+    /// other two. A comment is not an invariant. Everything variable now lives in
+    /// `EngineConfiguration`, and every entry point funnels through here, so the
+    /// chain that production runs is the chain tests run.
+    private init(configuration: EngineConfiguration) {
+        self.flowCapacity = configuration.flowCapacity
+        let durable = configuration.persistence == .durable
+        self.store = FlowStore(
+            capacity: configuration.flowCapacity,
+            persistence: durable ? FlowPersistence.makeDefault() : nil,
+            observer: configuration.flowObserver
+        )
+        self.auditStore = AuditStore(persistence: durable ? AuditPersistence.makeDefault() : nil)
+        // Rules and SSL scope persist across launches for the app; a test-seam
+        // engine gets non-persisting ones so it can't read or clobber the real set.
+        let rulesConfig = durable ? RulesConfig() : RulesConfig(fileURL: nil)
         self.rulesConfig = rulesConfig
+        self.config = durable ? InterceptionConfig() : InterceptionConfig(defaults: nil)
+
+        // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
+        // this one forwarder, so decorating it applies breakpoints and traffic
+        // rules everywhere. M4: a hand-rolled SwiftNIO client (owns the Host
+        // header, originates its own TLS) is the upstream leg.
         let breakpointStore = BreakpointStore()
         self.breakpointStore = breakpointStore
+        let upstream = configuration.upstream ?? NIOStreamingForwarder(group: group)
         self.forwarder = BreakpointForwarder(
-            base: RuleApplyingForwarder(base: NIOStreamingForwarder(group: group), rules: rulesConfig),
+            base: RuleApplyingForwarder(base: upstream, rules: rulesConfig),
             store: breakpointStore
         )
-        self.caStore = Self.migratedCAStore()
-        self.config = InterceptionConfig()
-        // Persist the audit trail only when the embedder lets Loom own storage —
-        // matches `persistFlows` for the flow store.
-        self.auditStore = AuditStore(persistence: persistFlows ? AuditPersistence.makeDefault() : nil)
-        self.caExportURL = Self.defaultCAExportURL
+
+        // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
+        // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
+        // launch. One-time migration preserves an already-trusted Keychain CA.
+        self.caStore = configuration.caStore ?? Self.migratedCAStore()
+        self.caExportURL = configuration.caExportURL ?? Self.defaultCAExportURL
     }
 
     /// Return the file store, first migrating a legacy Keychain CA into it if the
@@ -122,28 +146,6 @@ public actor ProxyEngine: ProxyControlling {
             try? fileStore.save(legacy)
         }
         return fileStore
-    }
-
-    /// Test seam: inject a deterministic forwarder and an in-memory CA store so
-    /// interception can be exercised without the network or the Keychain. The
-    /// config is non-persisting so tests never read or clobber the real scope.
-    init(forwarder: UpstreamForwarding, caStore: CAStore) {
-        self.flowCapacity = 2000
-        self.store = FlowStore(persistence: nil) // no disk in tests
-        let rulesConfig = RulesConfig(fileURL: nil)
-        self.rulesConfig = rulesConfig
-        let breakpointStore = BreakpointStore()
-        self.breakpointStore = breakpointStore
-        self.forwarder = BreakpointForwarder(
-            base: RuleApplyingForwarder(base: forwarder, rules: rulesConfig),
-            store: breakpointStore
-        )
-        self.caStore = caStore
-        self.config = InterceptionConfig(defaults: nil)
-        self.auditStore = AuditStore(persistence: nil) // no disk in tests
-        // Hermetic: never let a test clobber the user's real exported CA file.
-        self.caExportURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("loom-ca-test-\(UUID()).pem")
     }
 
     // MARK: - Lifecycle
