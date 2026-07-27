@@ -55,8 +55,35 @@ public struct AppFeature: Sendable {
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
         /// The M2 setup surface (system proxy, SSL interception, CA trust) — split
-        /// into its own feature. It mirrors `status.port`/`isRunning`.
-        public var setup = SetupFeature.State()
+        /// into its own feature.
+        ///
+        /// **Projected, not mirrored.** The child needs the proxy's port and
+        /// running state, which the parent owns in `status`. Those two used to be
+        /// copied into the child by hand at each place the proxy started, stopped
+        /// or failed to start. Those copies were in step — but only because three
+        /// separate call sites remembered to write them, and the next path added
+        /// would have had to remember too. A stale `proxyRunning` shows the human
+        /// a panel offering to route the whole machine at a proxy that isn't
+        /// listening, so the cost of forgetting is not cosmetic.
+        ///
+        /// Filling them in on read from the single source of truth means there is
+        /// nothing left to keep in sync.
+        public var setup: SetupFeature.State {
+            get {
+                var setup = setupState
+                setup.port = status.port
+                setup.proxyRunning = status.isRunning
+                return setup
+            }
+            set {
+                // The projected fields are the parent's to own; whatever the child
+                // hands back for them is ignored on the next read.
+                setupState = newValue
+            }
+        }
+
+        /// Backing storage for `setup`. Everything the setup feature genuinely owns.
+        var setupState = SetupFeature.State()
         /// The traffic-rules surface (rule set, editor, writes) — split into its
         /// own feature. Flow capture/selection/pins stay in the parent.
         public var rules = RulesFeature.State()
@@ -484,14 +511,12 @@ public struct AppFeature: Sendable {
 
             case let .proxyStartFailed(message):
                 state.status.isRunning = false
-                state.setup.proxyRunning = false
                 state.setup.systemProxyMessage = "Proxy failed to start: \(message)"
                 return .none
 
             case .toggleProxyTapped:
                 if state.status.isRunning {
                     state.status.isRunning = false
-                    state.setup.proxyRunning = false
                     return .run { _ in await proxyClient.stop() }
                 }
                 return .run { send in
@@ -517,8 +542,6 @@ public struct AppFeature: Sendable {
             case let .proxyStarted(port):
                 state.status.isRunning = true
                 state.status.port = port
-                state.setup.port = port          // mirror into the setup feature
-                state.setup.proxyRunning = true
                 return .none
 
             case let .flowsReceived(flows):

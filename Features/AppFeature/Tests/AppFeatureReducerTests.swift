@@ -136,6 +136,50 @@ import Testing
         await store.send(.flowsClearedExternally)
     }
 
+    // MARK: The setup child's view of the proxy is projected, never mirrored
+
+    /// `SetupFeature` decides whether the human may flip the system proxy, using
+    /// the proxy's port and running state. Those live in the parent's `status`;
+    /// the child reads a projection of them. Every path that moves `status` must
+    /// therefore move the child's view with it, with nothing to remember.
+    @Test func setupSeesTheProxyState_withoutAnyoneCopyingIt() async {
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.proxyClient.stop = {}
+        }
+        #expect(store.state.setup.proxyRunning == false)
+
+        await store.send(.proxyStarted(port: 9191)) {
+            $0.status.isRunning = true
+            $0.status.port = 9191
+        }
+        #expect(store.state.setup.proxyRunning, "started proxy, stale child")
+        #expect(store.state.setup.port == 9191, "rebound port, stale child")
+
+        await store.send(.toggleProxyTapped) {
+            $0.status.isRunning = false
+        }
+        #expect(store.state.setup.proxyRunning == false, "stopped proxy, stale child")
+
+        await store.send(.proxyStartFailed("port in use")) {
+            $0.setup.systemProxyMessage = "Proxy failed to start: port in use"
+        }
+        #expect(store.state.setup.proxyRunning == false)
+    }
+
+    /// The child owns everything else in its state: a write from the child's own
+    /// reducer must survive the projection.
+    @Test func setupKeepsItsOwnState_throughTheProjection() async {
+        var initial = AppFeature.State()
+        initial.status.isRunning = true
+        let store = TestStore(initialState: initial) { AppFeature() }
+        await store.send(.setup(.systemProxyStateLoaded(true))) {
+            $0.setup.isSystemProxy = true
+        }
+        #expect(store.state.setup.proxyRunning, "projection must not clobber the child's own fields")
+    }
+
     @Test func toggleRecording_flips() async {
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
