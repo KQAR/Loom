@@ -1,5 +1,5 @@
 import Foundation
-import LoomSharedModels
+import LoomHelperProtocol
 import Security
 import os
 

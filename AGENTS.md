@@ -143,7 +143,8 @@ Write tools are the reason Loom exists. When adding one, it must be scoped and �
 
 | Module | Layer | Responsibility |
 |--------|-------|----------------|
-| **SharedModels** | base | `Flow`, `ReplayOverrides`, `FlowQuery`, `ProxyControlling`, `SSLScope`, `CertificateStatus`, helper XPC protocol + `HelperIdentity`, `ProxyBackup`/`SystemProxyParsing` — no deps |
+| **SharedModels** | base | `Flow`, `ReplayOverrides`, `FlowQuery`, `FlowComparison`, `ProxyControlling` + `ProxyCapability`, `SSLScope`, `CertificateStatus`, HAR — pure value types, no deps. Ships as a public SPM product, so **keep app-deployment detail out of it** |
+| **HelperProtocol** | base | The app ⇄ root-daemon contract only: `LoomPrivilegedHelperProtocol` (XPC), `HelperIdentity` (launchd label, Mach service, caller code requirement), `ProxyServiceState`/`ProxyBackup`/`SystemProxyParsing`. Depended on by `PrivilegedHelperClient` and `LoomHelper` — and by nothing else |
 | **ProxyCore** | engine | SwiftNIO proxy, `ProxyEngine` actor, `FlowStore`, CONNECT tunnel, **MITM** (`CertificateAuthority`, `TLSInterceptHandler`, `CAStore`, `InterceptionConfig`), `UpstreamForwarding` |
 | **MCPServer** | engine | loopback JSON-RPC HTTP server (fixed port 9092, loopback token-optional), tool registry, handshake writer |
 | **ProxyClient** | client | `@DependencyClient` wrapping `ProxyEngine.shared` for TCA |

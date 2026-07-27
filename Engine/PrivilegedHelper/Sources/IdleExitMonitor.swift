@@ -1,5 +1,5 @@
 import Foundation
-import LoomSharedModels
+import LoomHelperProtocol
 import os
 
 /// Exits the on-demand daemon after a spell of no XPC activity, so a root process

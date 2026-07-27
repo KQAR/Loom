@@ -132,6 +132,19 @@ let project = Project(
             sources: ["SharedModels/Sources/**"]
         ),
 
+        // MARK: Privileged-helper contract (app ⇄ root daemon)
+        //
+        // Deliberately NOT part of LoomSharedModels. That module ships as a public
+        // SPM product ("pure value types … a consumer that just wants to map Loom's
+        // models"), and an embedder has no use for our XPC protocol, launchd label,
+        // code-signing requirement or `networksetup` state — it is Loom-app
+        // deployment detail, not domain model. Both sides of the contract (the
+        // app-side client and the daemon) depend on this instead.
+        .module(
+            name: "LoomHelperProtocol",
+            sources: ["HelperProtocol/Sources/**"]
+        ),
+
         // MARK: Privileged-helper client (M2, scaffold — app-side surface over the
         // root helper: SMAppService lifecycle + XPC for system proxy & CA trust).
         .module(
@@ -140,6 +153,7 @@ let project = Project(
             dependencies: [
                 .external(name: "ComposableArchitecture"),
                 .target(name: "LoomSharedModels"),
+                .target(name: "LoomHelperProtocol"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // XPC + continuations vs Swift 6 Sendable
         ),
@@ -161,7 +175,8 @@ let project = Project(
             bundleIdSuffix: "helper",
             sources: ["Engine/PrivilegedHelper/Sources/**"],
             dependencies: [
-                .target(name: "LoomSharedModels"),
+                // The daemon needs only the contract, not the domain models.
+                .target(name: "LoomHelperProtocol"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // XPC daemon: shared mutable state + locks
         ),
@@ -257,6 +272,7 @@ let project = Project(
             dependencies: [
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "LoomSharedModels"),
+                .target(name: "LoomHelperProtocol"),
             ],
             settings: .settings(base: ["SWIFT_VERSION": "5.0"])
         ),
