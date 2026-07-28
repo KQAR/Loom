@@ -263,6 +263,47 @@ import LoomSharedModels
         _ = try await resultTask
     }
 
+    /// `cancel` writes a "cancelled before it parked" marker whenever it finds no
+    /// held entry — but "no held entry" has a second meaning it cannot tell apart:
+    /// *already resolved*, by resume, disarm or the watchdog. A marker written then
+    /// has no consumer, because the `hold` that would have eaten it is already past
+    /// the point where it looks, so the id stays for the life of the process. The
+    /// pairing that produces it — a client hanging up just as an operator resumes —
+    /// is ordinary for a hold that pins a live connection, and this is the engine's
+    /// one uncapped collection.
+    ///
+    /// The window is narrow, so hammer it rather than trying to hit it once.
+    @Test func cancellingAroundAResolution_leavesNoMarkerBehind() async throws {
+        let store = BreakpointStore(timeout: 300)
+
+        for _ in 0..<500 {
+            let info = PendingBreakpoint(
+                breakpointID: UUID(), phase: .request,
+                method: "GET", url: url.absoluteString, requestHeaders: []
+            )
+            let holding = Task { await store.hold(info) }
+
+            var parked = false
+            for _ in 0..<2000 where !parked {
+                if store.pending().contains(where: { $0.id == info.id }) {
+                    parked = true
+                } else {
+                    await Task.yield()
+                }
+            }
+            try #require(parked, "the exchange never parked")
+
+            // Resolve and cancel back to back, so the cancellation lands while
+            // `hold` is on its way out and `held` no longer holds the entry.
+            store.resume(pendingID: info.id, resolution: .abort)
+            holding.cancel()
+            _ = await holding.value
+        }
+
+        #expect(store.cancelledBeforeParkCount == 0,
+                "a cancelled-before-park marker outlived the hold that owned it")
+    }
+
     // MARK: Helpers
 
     /// The first exchange announced as parked, or nil if none arrives in time.
