@@ -320,12 +320,22 @@ struct BreakpointReleaseInvariantTests {
         let breakpoint = Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true)
         store.arm(breakpoint)
 
+        // Subscribe *before* forwarding. `pending()` is a snapshot, and the 50 ms
+        // watchdog can empty it before a poll ever looks — a race this test created
+        // for itself, and the flake in #116. The announcement stream buffers, so the
+        // observation cannot be outrun however slow the machine is.
+        //
+        // If the watchdog then wins the race below, that is a legitimate outcome and
+        // not a failure: the invariant is that *exactly one* resolver claims the
+        // hold and the exchange is released once — not that `resume` is the winner.
+        var parked = store.pendingStream().makeAsyncIterator()
+
         let done = Signal()
         let forwarding = Task { () -> ForwardResult in
             defer { done.signal() }
             return try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
         }
-        let pending = try #require(await Self.waitForPending(store))
+        let pending = try #require(await parked.next(), "the exchange never parked")
 
         // Three racing resolvers plus the watchdog already ticking. `disarm` joins
         // the race but isn't counted: its Bool answers "was a breakpoint removed",
@@ -342,6 +352,12 @@ struct BreakpointReleaseInvariantTests {
         forwarding.cancel()
     }
 
+    /// Poll for a parked exchange.
+    ///
+    /// Only safe when the store's watchdog **cannot** outrun the poll — `pending()`
+    /// is a snapshot, so a short timeout can release the hold before this ever sees
+    /// it (#116). Callers with a short watchdog must subscribe to `pendingStream()`
+    /// before forwarding instead; the announcement is buffered and cannot be missed.
     private static func waitForPending(_ store: BreakpointStore) async -> PendingBreakpoint? {
         for _ in 0..<200 {
             if let first = store.pending().first { return first }

@@ -200,18 +200,26 @@ import LoomSharedModels
     /// a resumed-then-aborted exchange is never also auto-proceeded afterwards.
     @Test func resolvingAHold_cancelsTheTimeoutWatchdog() async throws {
         let upstream = recordingUpstream()
-        let store = BreakpointStore(timeout: 0.05)
+        // This test needs the abort to beat the watchdog, then needs to outlive the
+        // watchdog to prove it was cancelled. 50 ms was too tight for the first half
+        // on a loaded CI machine (#116) — the watchdog won, the abort returned false,
+        // and the failure read as if the watchdog had survived. 500 ms leaves a
+        // ~100× margin over the microseconds a buffered announcement + resume take.
+        let store = BreakpointStore(timeout: 0.5)
         let forwarder = BreakpointForwarder(base: upstream, store: store)
         store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
 
+        // Subscribe before forwarding: `pending()` is a snapshot the watchdog can
+        // empty first, the announcement stream is buffered and cannot be missed.
+        var parked = store.pendingStream().makeAsyncIterator()
         async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
-        let pending = try await waitForPending(store)
+        let pending = try #require(await parked.next(), "the exchange never parked")
         #expect(store.resume(pendingID: pending.id, resolution: .abort))
         _ = try await resultTask
 
-        // Well past the 50 ms timeout: had the watchdog survived, it would have
+        // Well past the 500 ms watchdog: had it survived the abort, it would have
         // resolved `.proceed` and the request would have reached upstream.
-        try await Task.sleep(nanoseconds: 200_000_000)
+        try await Task.sleep(nanoseconds: 800_000_000)
         #expect(await upstream.callCount == 0, "aborted exchange must never reach upstream")
     }
 
@@ -259,6 +267,12 @@ import LoomSharedModels
 
     /// Poll until the forwarder has parked an exchange (the async `forward` reaches
     /// its `hold` on another task). Fails fast rather than hanging the suite.
+    /// Poll for a parked exchange.
+    ///
+    /// Only safe when the store's watchdog **cannot** outrun the poll — every caller
+    /// here uses the default 300 s timeout. `pending()` is a snapshot, so a short
+    /// timeout can release the hold before this ever sees it (#116); a test with a
+    /// short watchdog must subscribe to `pendingStream()` before forwarding instead.
     private func waitForPending(_ store: BreakpointStore) async throws -> PendingBreakpoint {
         for _ in 0..<200 {
             if let first = store.pending().first { return first }
