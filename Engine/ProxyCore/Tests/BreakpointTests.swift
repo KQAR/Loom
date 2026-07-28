@@ -211,9 +211,9 @@ import LoomSharedModels
 
         // Subscribe before forwarding: `pending()` is a snapshot the watchdog can
         // empty first, the announcement stream is buffered and cannot be missed.
-        var parked = store.pendingStream().makeAsyncIterator()
+        let announcements = store.pendingStream()
         async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
-        let pending = try #require(await parked.next(), "the exchange never parked")
+        let pending = try #require(await firstParked(announcements), "the exchange never parked")
         #expect(store.resume(pendingID: pending.id, resolution: .abort))
         _ = try await resultTask
 
@@ -267,12 +267,39 @@ import LoomSharedModels
 
     /// Poll until the forwarder has parked an exchange (the async `forward` reaches
     /// its `hold` on another task). Fails fast rather than hanging the suite.
+    /// The first exchange announced as parked, or nil if none arrives in time.
+    ///
+    /// `stream` must be obtained *before* the forward starts: `pending()` is a
+    /// snapshot a short watchdog can empty before a poll ever looks, while the
+    /// announcement is buffered and so cannot be outrun (#116).
+    ///
+    /// Bounded on purpose. Awaiting the stream alone suspends forever when the
+    /// exchange never parks — and this suite has no time limit, so that would hang
+    /// the whole run rather than fail a test.
+    private func firstParked(
+        _ stream: AsyncStream<PendingBreakpoint>, within seconds: Double = 2
+    ) async -> PendingBreakpoint? {
+        await withTaskGroup(of: PendingBreakpoint?.self) { group in
+            group.addTask {
+                for await parked in stream { return parked }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
     /// Poll for a parked exchange.
     ///
     /// Only safe when the store's watchdog **cannot** outrun the poll — every caller
     /// here uses the default 300 s timeout. `pending()` is a snapshot, so a short
     /// timeout can release the hold before this ever sees it (#116); a test with a
-    /// short watchdog must subscribe to `pendingStream()` before forwarding instead.
+    /// short watchdog must use `firstParked` instead.
     private func waitForPending(_ store: BreakpointStore) async throws -> PendingBreakpoint {
         for _ in 0..<200 {
             if let first = store.pending().first { return first }
