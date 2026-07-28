@@ -5,7 +5,7 @@ import LoomSharedModels
 
 /// `upsert` is the hottest thing on the capture path — an exchange upserts at
 /// least twice (pending → completed), a streaming one more, a WebSocket once per
-/// frame — and it used to locate the existing flow with a linear scan of the ring.
+/// coalesce window — and it used to locate the existing flow with a linear scan.
 /// It's now an id→position map, with positions kept *absolute* so front eviction
 /// doesn't invalidate them. These tests pin the invariants that indirection can
 /// break: identity, ordering, eviction, and the byte accounting that rides along.

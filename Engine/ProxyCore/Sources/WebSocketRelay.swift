@@ -69,7 +69,8 @@ enum WebSocketRelay {
         startedAt: Date, sourceApp: SourceApp?, sourceDevice: SourceDevice?, store: FlowStore
     ) {
         let sink = WebSocketCaptureSink(
-            flowID: flowID, request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
+            flowID: flowID, request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
+            eventLoop: client.eventLoop, store: store
         )
         // Client→server bytes start with frames (the GET was already consumed);
         // server→client bytes start with the 101 handshake, which the tap skips.
@@ -142,9 +143,18 @@ enum WebSocketRelay {
 /// un-completed. Captured messages are also capped so a chatty socket can't grow
 /// the store without bound (the relay still forwards every byte; only the
 /// recorded copy stops).
+///
+/// Upserts are also **coalesced**: recording a frame schedules one trailing flush
+/// on the shared event loop rather than upserting per frame. A 1000-frame/s socket
+/// used to mean 1000 `FlowStore` actor hops a second — serialized against every
+/// other capture and every UI/MCP read — to publish snapshots no reader could tell
+/// apart. Same window as `FlowPersistence`'s write batching and `AppFeature`'s
+/// stream batching, for the same reason.
 final class WebSocketCaptureSink: @unchecked Sendable {
     static let maxMessages = 10_000
     static let maxCapturedBytes = 5_000_000
+    /// Trailing-flush window for coalesced frame upserts.
+    static let coalesceWindow = TimeAmount.milliseconds(100)
 
     private let flowID: UUID
     private let request: CapturedRequest
@@ -159,13 +169,18 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     private var dropped = 0
     private var finished = false
     private let continuation: AsyncStream<Flow>.Continuation
+    /// Client and upstream share one loop, so scheduled flushes land on the same
+    /// thread as `record` — the message list still needs no locking.
+    private let eventLoop: EventLoop
+    private var flushScheduled = false
 
-    init(flowID: UUID, request: CapturedRequest, startedAt: Date, sourceApp: SourceApp?, sourceDevice: SourceDevice?, store: FlowStore) {
+    init(flowID: UUID, request: CapturedRequest, startedAt: Date, sourceApp: SourceApp?, sourceDevice: SourceDevice?, eventLoop: EventLoop, store: FlowStore) {
         self.flowID = flowID
         self.request = request
         self.startedAt = startedAt
         self.sourceApp = sourceApp
         self.sourceDevice = sourceDevice
+        self.eventLoop = eventLoop
 
         let (stream, continuation) = AsyncStream.makeStream(of: Flow.self)
         self.continuation = continuation
@@ -197,14 +212,30 @@ final class WebSocketCaptureSink: @unchecked Sendable {
             timestamp: Date()
         ))
         capturedBytes += frame.payload.count
-        enqueue(completed: false)
+        scheduleFlush()
     }
 
     func finish() {
         guard !finished else { return }
         finished = true
+        // Unconditional, not coalesced: this is the snapshot that completes the
+        // flow, and a pending trailing flush would be dropped by the guard below.
         enqueue(completed: true)
         continuation.finish()
+    }
+
+    /// Publish the accumulated frames once per window. Re-entrant calls within the
+    /// window are free — the flush already pending will pick up everything recorded
+    /// since, because `enqueue` snapshots the list at fire time.
+    private func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        eventLoop.scheduleTask(in: Self.coalesceWindow) { [weak self] in
+            guard let self else { return }
+            self.flushScheduled = false
+            guard !self.finished else { return }
+            self.enqueue(completed: false)
+        }
     }
 
     private func enqueue(completed: Bool) {
