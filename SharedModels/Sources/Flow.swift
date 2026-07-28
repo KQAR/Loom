@@ -28,6 +28,24 @@ public extension [HeaderPair] {
     func contains(named name: String) -> Bool {
         contains { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
+
+    /// Drop every header whose name matches `name` case-insensitively — repeats
+    /// included, since headers are an ordered list that can carry the same name
+    /// twice. Uses `caseInsensitiveCompare` rather than `lowercased() ==` so a
+    /// removal doesn't allocate a folded `String` per comparison.
+    mutating func removeAll(named name: String) {
+        removeAll { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+    }
+
+    /// Drop every header whose name matches any of `names` case-insensitively.
+    /// Linear in `names` per header, which beats hashing a lowercased copy of every
+    /// header name for the handful of names a rule or breakpoint edit removes.
+    mutating func removeAll(namedAnyOf names: [String]) {
+        guard !names.isEmpty else { return }
+        removeAll { header in
+            names.contains { $0.caseInsensitiveCompare(header.name) == .orderedSame }
+        }
+    }
 }
 
 public struct CapturedRequest: Equatable, Codable, Sendable {

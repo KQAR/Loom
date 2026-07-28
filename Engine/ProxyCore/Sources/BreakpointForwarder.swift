@@ -142,13 +142,13 @@ final class BreakpointForwarder: UpstreamForwarding {
     }
 
     /// Remove-by-name (case-insensitive) then set/overwrite, matching how replay
-    /// and rule rewrites treat header edits.
+    /// and rule rewrites treat header edits — except that a set header keeps the
+    /// position of the one it replaces here, rather than moving to the end. Kept
+    /// separate from `RuleEngine.applyHeaderEdits` for that reason; the shared part
+    /// is `[HeaderPair]`'s header-name equality.
     private static func applyHeaderEdits(_ headers: [HeaderPair], set: [HeaderPair]?, remove: [String]?) -> [HeaderPair] {
         var result = headers
-        if let remove, !remove.isEmpty {
-            let drop = Set(remove.map { $0.lowercased() })
-            result.removeAll { drop.contains($0.name.lowercased()) }
-        }
+        result.removeAll(namedAnyOf: remove ?? [])
         for header in set ?? [] {
             if let index = result.firstIndex(where: { $0.name.caseInsensitiveCompare(header.name) == .orderedSame }) {
                 result[index] = header
