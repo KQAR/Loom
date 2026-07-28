@@ -86,6 +86,15 @@ final class BreakpointStore: @unchecked Sendable {
         return held.values.map(\.info).sorted { $0.heldAt < $1.heldAt }
     }
 
+    /// Test seam: `cancelledBeforePark` must never retain an id past the `hold`
+    /// that owns it. Anything left behind is a leak that grows for the life of the
+    /// process, and this is the only collection in the engine without a cap —
+    /// it's meant to be transient, so the assertion is "empty", not "bounded".
+    var cancelledBeforeParkCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return cancelledBeforePark.count
+    }
+
     /// A live "just parked" stream, so an operator waiting for a breakpoint to fire
     /// doesn't poll `pending()`. Bounded like every other stream in the engine; a
     /// hold pins a live connection, so 64 pending-but-unread holds already means
@@ -158,7 +167,22 @@ final class BreakpointStore: @unchecked Sendable {
     /// entry would linger and `list_pending` would keep advertising an exchange
     /// nobody is waiting on.
     func hold(_ info: PendingBreakpoint) async -> BreakpointResolution {
-        await withTaskCancellationHandler {
+        // The marker below is only ever meaningful to *this* call, so clear it on
+        // the way out. `cancel` writes one whenever it finds no held entry, and
+        // "no held entry" has a second meaning it can't distinguish: not *yet*
+        // parked (the marker gets consumed) versus *already resolved* by resume,
+        // disarm or the watchdog — in which case nothing would ever consume it and
+        // the id stays in the set for the life of the process. That second case is
+        // reachable whenever a client hangs up at the same moment an operator
+        // resumes, which is an ordinary pairing for a hold that pins a live
+        // connection. `withTaskCancellationHandler` has deregistered its handler by
+        // the time it returns, so no insert can follow this defer.
+        defer {
+            lock.lock()
+            cancelledBeforePark.remove(info.id)
+            lock.unlock()
+        }
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<BreakpointResolution, Never>) in
                 lock.lock()
                 // Cancelled in the window before we got here — don't park at all.
