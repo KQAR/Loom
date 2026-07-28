@@ -14,6 +14,9 @@ public enum FlowCategory: Hashable, Sendable {
     case rules
     /// Not a flow filter: swaps the detail area for the write-action audit trail.
     case audit
+    /// Not a flow filter: swaps the detail area for held/armed breakpoints — the
+    /// one write action that parks a live connection, so it needs a human surface.
+    case breakpoints
     case host(String)
     case app(String)
     /// Group by originating device (keyed on remote IP): this Mac or a LAN device.
@@ -87,6 +90,9 @@ public struct AppFeature: Sendable {
         /// The traffic-rules surface (rule set, editor, writes) — split into its
         /// own feature. Flow capture/selection/pins stay in the parent.
         public var rules = RulesFeature.State()
+        /// Breakpoint supervision (held exchanges + armed breakpoints) — split into
+        /// its own feature. Mirrored from the engine; nothing here is persisted.
+        public var breakpoints = BreakpointsFeature.State()
         /// Phone-onboarding popover (QR + proxy address + the LAN switch). Non-nil
         /// while shown. Presenting no longer toggles LAN — that's `lanEnabled`.
         @Presents public var phone: PhoneOnboardingFeature.State?
@@ -240,14 +246,14 @@ public struct AppFeature: Sendable {
                 // The whole list, handed over without copying (`elements` is the
                 // backing array) — this is the common case and runs on every render.
                 return flows.elements
-            case .rules, .audit:
-                return [] // the rules / audit panel replaces the table
+            case .rules, .audit, .breakpoints:
+                return [] // the rules / audit / breakpoints panel replaces the table
             default:
                 break
             }
             var result = flows.elements
             switch selectedCategory ?? .all {
-            case .all, .rules, .audit:
+            case .all, .rules, .audit, .breakpoints:
                 break
             case .errors:
                 result = result.filter(Self.isError)
@@ -317,6 +323,8 @@ public struct AppFeature: Sendable {
         case setup(SetupFeature.Action)
         /// The traffic-rules child feature (rule CRUD, editor, master switch).
         case rules(RulesFeature.Action)
+        /// The breakpoint-supervision child feature (held exchanges, arm/disarm).
+        case breakpoints(BreakpointsFeature.Action)
         /// Open the phone-onboarding popover (QR + proxy address). Does not change
         /// LAN connection — that's the popover's own switch.
         case phoneButtonTapped(PhoneOnboardingOrigin)
@@ -394,9 +402,12 @@ public struct AppFeature: Sendable {
         Scope(state: \.rules, action: \.rules) {
             RulesFeature()
         }
+        Scope(state: \.breakpoints, action: \.breakpoints) {
+            BreakpointsFeature()
+        }
         Reduce { state, action in
             switch action {
-            case .binding, .setup, .rules:
+            case .binding, .setup, .rules, .breakpoints:
                 return .none
 
             case let .phoneButtonTapped(origin):
@@ -492,7 +503,11 @@ public struct AppFeature: Sendable {
                             await send(.flowsClearedExternally)
                         }
                     }
-                    .cancellable(id: CancelID.cleared, cancelInFlight: true)
+                    .cancellable(id: CancelID.cleared, cancelInFlight: true),
+                    // Breakpoint supervision: seed armed/held state and follow the
+                    // hold stream. Owned by the child so its cancellation and its
+                    // held-poll stay in one place.
+                    .send(.breakpoints(.task))
                 )
 
             case let .connectedDeviceCountChanged(count):
@@ -505,6 +520,7 @@ public struct AppFeature: Sendable {
                 return .merge(
                     .send(.setup(.refresh)),
                     .send(.rules(.refreshRules)),
+                    .send(.breakpoints(.refresh)),
                     // Silent, self-gated to once a day — cheap to call on every open.
                     .run { _ in await updaterClient.checkInBackgroundIfDue() }
                 )
