@@ -52,11 +52,36 @@ import LoomSharedModels
     }
 
     @Test func persistence_prunesOldestOverCap() throws {
-        let store = try #require(AuditPersistence(fileURL: fileURL, maxRows: 3))
+        let store = try #require(AuditPersistence(fileURL: fileURL, maxRows: 3, pruneSlack: 0))
         for n in 1...6 { store.save(entry(n)) }
         let recent = store.recent(limit: 100)
         #expect(recent.count == 3, "capped to maxRows")
         #expect(recent.map(\.arguments) == [#"{"n":6}"#, #"{"n":5}"#, #"{"n":4}"#], "oldest dropped")
+    }
+
+    /// With slack, the file may drift above the cap between prunes — but only by
+    /// the slack, never unboundedly. That drift is the price of not scanning the
+    /// table on every write-tool call, so it is stated rather than assumed.
+    @Test func persistence_withSlack_staysWithinCapPlusSlack() throws {
+        let store = try #require(AuditPersistence(fileURL: fileURL, maxRows: 10, pruneSlack: 20))
+        for n in 1...500 { store.save(entry(n)) }
+        let count = store.recent(limit: 1_000).count
+        #expect(count <= 30, "bounded by cap + slack (got \(count))")
+    }
+
+    /// A reopened store must re-anchor its row count from the file, or the first
+    /// prune after a relaunch would be mis-timed and the cap would drift.
+    @Test func persistence_capHoldsAcrossReopen() throws {
+        do {
+            let store = try #require(AuditPersistence(fileURL: fileURL, maxRows: 3, pruneSlack: 0))
+            for n in 1...6 { store.save(entry(n)) }
+            store.flush()
+        }
+        let reopened = try #require(AuditPersistence(fileURL: fileURL, maxRows: 3, pruneSlack: 0))
+        for n in 7...10 { reopened.save(entry(n)) }
+        let recent = reopened.recent(limit: 100)
+        #expect(recent.count == 3)
+        #expect(recent.first?.arguments == #"{"n":10}"#, "the newest survive")
     }
 
     @Test func persistence_survivesReopen() throws {

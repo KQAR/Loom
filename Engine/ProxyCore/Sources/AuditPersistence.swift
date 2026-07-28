@@ -12,12 +12,20 @@ final class AuditPersistence: @unchecked Sendable {
     private var db: OpaquePointer?
     /// Cap rows so the file can't grow forever; pruned oldest-first on write.
     private let maxRows: Int
+    /// How far the count may drift past `maxRows` before a prune runs, so the
+    /// prune query is amortized instead of paid per write (as `FlowPersistence`
+    /// does for the same reason).
+    private let pruneSlack: Int
+    /// Row count tracked incrementally so `pruneIfNeeded` is an integer compare,
+    /// not an index scan. An upper bound between prunes; re-anchored after each.
+    private var rowCount = 0
 
     // SQLite wants to copy bound bytes, not borrow them.
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init?(fileURL: URL, maxRows: Int = 10_000) {
+    init?(fileURL: URL, maxRows: Int = 10_000, pruneSlack: Int = 250) {
         self.maxRows = maxRows
+        self.pruneSlack = max(0, pruneSlack)
         try? FileManager.default.createDirectory(
             at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
@@ -42,6 +50,7 @@ final class AuditPersistence: @unchecked Sendable {
         );
         """)
         exec("CREATE INDEX IF NOT EXISTS audit_ts ON audit(ts);")
+        rowCount = countRows()
     }
 
     deinit { sqlite3_close(db) }
@@ -75,7 +84,10 @@ final class AuditPersistence: @unchecked Sendable {
     }
 
     func deleteAll() {
-        queue.async { [weak self] in self?.exec("DELETE FROM audit;") }
+        queue.async { [weak self] in
+            self?.exec("DELETE FROM audit;")
+            self?.rowCount = 0
+        }
     }
 
     /// Block until every queued `save`/`deleteAll` has run — call from the quit
@@ -129,16 +141,31 @@ final class AuditPersistence: @unchecked Sendable {
             Log.audit.error("Audit entry for \(entry.tool, privacy: .public) failed to persist: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
             return
         }
+        rowCount += 1
         pruneIfNeeded()
     }
 
-    /// Keep at most `maxRows`, dropping the oldest. Cheap: only deletes when over.
+    /// Keep at most `maxRows`, dropping the oldest — but only once the count has
+    /// drifted `pruneSlack` past the cap. This used to run on *every* write, which
+    /// meant every write-tool call (`replay_flow`, `set_rule`, `resume`, …) paid an
+    /// `ORDER BY ts` scan plus a delete subquery, despite the comment here claiming
+    /// it only deleted when over. `FlowPersistence` already amortizes it this way.
     private func pruneIfNeeded() {
+        guard rowCount > maxRows + pruneSlack else { return }
         exec("""
         DELETE FROM audit WHERE id IN (
             SELECT id FROM audit ORDER BY ts DESC LIMIT -1 OFFSET \(maxRows)
         );
         """)
+        rowCount = countRows() // the running count was an upper bound; re-anchor it
+    }
+
+    private func countRows() -> Int {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM audit;", -1, &stmt, nil) == SQLITE_OK else { return 0 }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(stmt, 0))
     }
 
     private func exec(_ sql: String) {
