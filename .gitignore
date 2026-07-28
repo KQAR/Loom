@@ -15,3 +15,8 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Claude Code — per-machine permission allowlist only. The skills under
+# .claude/skills are project docs (CLAUDE.md delegates the release and
+# engine-embedding procedures to them), so they stay tracked.
+.claude/settings.local.json
