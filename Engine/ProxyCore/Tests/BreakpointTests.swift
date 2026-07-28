@@ -265,8 +265,6 @@ import LoomSharedModels
 
     // MARK: Helpers
 
-    /// Poll until the forwarder has parked an exchange (the async `forward` reaches
-    /// its `hold` on another task). Fails fast rather than hanging the suite.
     /// The first exchange announced as parked, or nil if none arrives in time.
     ///
     /// `stream` must be obtained *before* the forward starts: `pending()` is a
