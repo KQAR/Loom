@@ -33,9 +33,22 @@ enum RuleEngine {
         var appliedRules: [AppliedRule] { matched.map { AppliedRule(id: $0.id, name: $0.name) } }
     }
 
+    /// Which active rules match this request, in list order. The one place matching
+    /// happens, so a caller that needs the matches *before* planning (to decide
+    /// whether the body must be buffered) doesn't have to re-derive them — running
+    /// every rule's predicate twice per exchange is the whole reason this is
+    /// separate from `planRequest`.
+    ///
     /// `origin` (who sent the request) participates in matching, so a rule can be
     /// scoped to one app or device; nil means "unknown client", which an
     /// origin-scoped rule deliberately never matches.
+    static func matchingRules(
+        state: RulesState, method: String, url: URL, origin: RequestOrigin? = nil
+    ) -> [TrafficRule] {
+        let urlString = url.absoluteString
+        return state.activeRules.filter { $0.match.matches(method: method, url: urlString, origin: origin) }
+    }
+
     static func planRequest(
         state: RulesState,
         method: String,
@@ -44,12 +57,26 @@ enum RuleEngine {
         body: Data?,
         origin: RequestOrigin? = nil
     ) -> RequestPlan {
+        planRequest(
+            matched: matchingRules(state: state, method: method, url: url, origin: origin),
+            method: method, url: url, headers: headers, body: body
+        )
+    }
+
+    /// Plan from already-matched rules. Matching against the *original* request is
+    /// what makes this safe to hand in: the plan's own mutations never feed back
+    /// into which rules apply.
+    static func planRequest(
+        matched: [TrafficRule],
+        method: String,
+        url: URL,
+        headers: [HeaderPair],
+        body: Data?
+    ) -> RequestPlan {
         var plan = RequestPlan(
             method: method, url: url, headers: headers, body: body,
             shortCircuit: nil, delayMilliseconds: 0, matched: []
         )
-        let urlString = url.absoluteString
-        let matched = state.activeRules.filter { $0.match.matches(method: method, url: urlString, origin: origin) }
         guard !matched.isEmpty else { return plan }
         plan.matched = matched
 
@@ -156,15 +183,15 @@ enum RuleEngine {
     }
 
     /// Removals first, then sets (a set of the same name replaces, not duplicates) —
-    /// the same composition `ReplayOverrides` uses.
+    /// the same composition `ReplayOverrides` uses. A set header lands at the end of
+    /// the list, which is what distinguishes this from `BreakpointForwarder`'s
+    /// edit-in-place variant; both go through `[HeaderPair]`'s one definition of
+    /// header-name equality rather than folding case by hand.
     static func applyHeaderEdits(_ headers: [HeaderPair], set: [HeaderPair], remove: [String]) -> [HeaderPair] {
         var headers = headers
-        if !remove.isEmpty {
-            let lowered = Set(remove.map { $0.lowercased() })
-            headers.removeAll { lowered.contains($0.name.lowercased()) }
-        }
+        headers.removeAll(namedAnyOf: remove)
         for header in set {
-            headers.removeAll { $0.name.lowercased() == header.name.lowercased() }
+            headers.removeAll(named: header.name)
             headers.append(header)
         }
         return headers

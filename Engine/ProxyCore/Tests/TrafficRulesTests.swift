@@ -80,6 +80,54 @@ import Foundation
         RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: body)
     }
 
+    /// `RuleApplyingForwarder` matches once and hands the result to `planRequest`,
+    /// instead of letting it re-filter the same rules against the same request. The
+    /// two entry points must therefore produce the same plan, or the buffering
+    /// decision and the plan actually run could disagree.
+    @Test func planFromPrematchedRules_matchesPlanningFromState() {
+        let rewrite = TrafficRule(
+            name: "auth", match: RuleMatch(urlPattern: "*/v1/*"),
+            actions: RuleActions(rewriteRequest: RequestRewriteAction(setHeaders: [HeaderPair(name: "Authorization", value: "Bearer x")]))
+        )
+        let unrelated = TrafficRule(
+            name: "other", match: RuleMatch(urlPattern: "*/nope/*"), actions: RuleActions(delayMilliseconds: 50)
+        )
+        let state = state(rewrite, unrelated)
+        let headers = [HeaderPair(name: "Accept", value: "*/*")]
+
+        let fromState = RuleEngine.planRequest(state: state, method: "GET", url: url, headers: headers, body: nil)
+        let matched = RuleEngine.matchingRules(state: state, method: "GET", url: url)
+        let fromMatched = RuleEngine.planRequest(matched: matched, method: "GET", url: url, headers: headers, body: nil)
+
+        #expect(matched.map(\.name) == ["auth"], "only the matching rule, and only once")
+        #expect(fromMatched.headers == fromState.headers)
+        #expect(fromMatched.url == fromState.url)
+        #expect(fromMatched.method == fromState.method)
+        #expect(fromMatched.delayMilliseconds == fromState.delayMilliseconds)
+        #expect(fromMatched.appliedRules.map(\.name) == fromState.appliedRules.map(\.name))
+    }
+
+    /// Header edits fold case without allocating a lowercased copy per comparison
+    /// now; the semantics they had must not move — removals are case-insensitive and
+    /// take repeats, and a set header replaces every same-named one and lands last.
+    @Test func headerEdits_removeRepeatsCaseInsensitively_andSetAppendsLast() {
+        let headers = [
+            HeaderPair(name: "X-Trace", value: "1"),
+            HeaderPair(name: "Accept", value: "*/*"),
+            HeaderPair(name: "x-trace", value: "2"),
+            HeaderPair(name: "Authorization", value: "old"),
+        ]
+        let edited = RuleEngine.applyHeaderEdits(
+            headers,
+            set: [HeaderPair(name: "AUTHORIZATION", value: "new")],
+            remove: ["x-TRACE"]
+        )
+        #expect(edited == [
+            HeaderPair(name: "Accept", value: "*/*"),
+            HeaderPair(name: "AUTHORIZATION", value: "new"),
+        ], "both X-Trace repeats dropped; the set header replaced Authorization at the end")
+    }
+
     @Test func masterSwitchOff_appliesNothing() {
         let rule = TrafficRule(name: "block", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
         let plan = plan(state(rule, enabled: false))

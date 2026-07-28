@@ -72,10 +72,11 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
-        let state = rules.snapshot()
-        let matched = state.activeRules.filter {
-            $0.match.matches(method: method, url: url.absoluteString, origin: origin)
-        }
+        // Matched once and threaded into the plan below: this used to filter here to
+        // decide `needsBuffering` and then let `planRequest` filter the same rules
+        // against the same request all over again, so every active rule's predicate
+        // ran twice per exchange.
+        let matched = RuleEngine.matchingRules(state: rules.snapshot(), method: method, url: url, origin: origin)
         let needsBuffering = matched.contains { rule in
             let a = rule.actions
             switch a.route {
@@ -95,7 +96,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                 let task = Task {
                     do {
                         let collected = try await body.collect()
-                        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: collected, origin: origin)
+                        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: collected)
                         // Emit rule hits before running the plan so they survive an
                         // upstream failure (the exchange records what matched even if
                         // the connection never completes).
@@ -115,7 +116,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
 
         // Streaming: plan with no body so only the non-body request edits apply
         // (URL/host/headers/method); the real body streams through untouched.
-        let plan = RuleEngine.planRequest(state: state, method: method, url: url, headers: headers, body: nil, origin: origin)
+        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: nil)
         let base = self.base
         let appliedRules = plan.appliedRules
         let delayMs = plan.delayMilliseconds
