@@ -42,6 +42,65 @@ public enum URLHost {
         }
     }
 
+    /// Path + query as a request line reads it (`/v1/home?x=1`), for the same
+    /// reason `host(ofURLString:)` exists: the flow table renders it per visible
+    /// row, and `URLComponents` parses the whole URL to hand back one substring.
+    ///
+    /// Matches `URLComponents`' answer — an empty path reads as `/`, the fragment
+    /// is excluded, and the query is left exactly as sent. Anything with a
+    /// percent-escape or a non-ASCII byte routes to Foundation, because
+    /// `URLComponents.path` percent-*decodes* and a byte scan must not guess at
+    /// that. Returns the input unchanged when it isn't a URL at all, which is what
+    /// a debugger should show rather than an empty cell.
+    public static func pathAndQuery(ofURLString string: String) -> String {
+        switch pathRange(in: string) {
+        case let .range(bounds):
+            let slice = string.utf8[bounds]
+            guard !slice.isEmpty else { return "/" }
+            let text = String(decoding: slice, as: UTF8.self)
+            // A query with no path (`https://h?x=1`) reads as `/?x=1`, matching
+            // `URLComponents`' empty-path-is-"/" convention.
+            return slice.first == .slash ? text : "/" + text
+        case .needsFoundation:
+            return foundationPathAndQuery(string)
+        }
+    }
+
+    private static func pathRange(in string: String) -> ScanResult {
+        let bytes = string.utf8
+        guard let authorityStart = authorityStart(in: bytes) else { return .needsFoundation }
+
+        // The path starts at the first '/', '?' or '#' after the authority; a '#'
+        // means there is no path or query at all.
+        var cursor = authorityStart
+        var start: String.UTF8View.Index?
+        while cursor < bytes.endIndex {
+            let byte = bytes[cursor]
+            if byte == .hash { return .range(cursor ..< cursor) } // fragment only → "/"
+            if byte == .slash || byte == .question { start = cursor; break }
+            cursor = bytes.index(after: cursor)
+        }
+        guard let start else { return .range(bytes.endIndex ..< bytes.endIndex) } // no path → "/"
+
+        // Path + query runs to the fragment. `%` and non-ASCII belong to Foundation.
+        var end = bytes.endIndex
+        cursor = start
+        while cursor < bytes.endIndex {
+            let byte = bytes[cursor]
+            if byte == .hash { end = cursor; break }
+            guard byte > 0x20, byte < 0x7F, byte != .percent else { return .needsFoundation }
+            cursor = bytes.index(after: cursor)
+        }
+        return .range(start ..< end)
+    }
+
+    /// The `URLComponents` reading of path + query, for every shape the scan declines.
+    private static func foundationPathAndQuery(_ string: String) -> String {
+        guard let components = URLComponents(string: string) else { return string }
+        let path = components.path.isEmpty ? "/" : components.path
+        return path + (components.query.map { "?\($0)" } ?? "")
+    }
+
     // MARK: - The shared scan
 
     private enum ScanResult {
@@ -52,26 +111,29 @@ public enum URLHost {
         case needsFoundation
     }
 
-    private static func hostRange(in string: String) -> ScanResult {
-        let bytes = string.utf8
-
-        // MARK: scheme "://"
+    /// Index just past `scheme://`, or nil when the string isn't that shape.
+    private static func authorityStart(in bytes: String.UTF8View) -> String.UTF8View.Index? {
         var cursor = bytes.startIndex
         var schemeLength = 0
         while cursor < bytes.endIndex, bytes[cursor] != .colon {
-            guard isSchemeByte(bytes[cursor], isFirst: schemeLength == 0) else { return .needsFoundation }
+            guard isSchemeByte(bytes[cursor], isFirst: schemeLength == 0) else { return nil }
             schemeLength += 1
             cursor = bytes.index(after: cursor)
         }
         // No colon, an empty scheme, or something that isn't a scheme: not our shape.
-        guard cursor < bytes.endIndex, schemeLength > 0 else { return .needsFoundation }
-        var authorityStart = bytes.index(after: cursor) // past ':'
+        guard cursor < bytes.endIndex, schemeLength > 0 else { return nil }
+        var start = bytes.index(after: cursor) // past ':'
         for _ in 0 ..< 2 { // require "//"
-            guard authorityStart < bytes.endIndex, bytes[authorityStart] == .slash else {
-                return .needsFoundation
-            }
-            authorityStart = bytes.index(after: authorityStart)
+            guard start < bytes.endIndex, bytes[start] == .slash else { return nil }
+            start = bytes.index(after: start)
         }
+        return start
+    }
+
+    private static func hostRange(in string: String) -> ScanResult {
+        let bytes = string.utf8
+        guard let authorityStart = authorityStart(in: bytes) else { return .needsFoundation }
+        var cursor = bytes.startIndex
 
         // MARK: authority runs to the first '/', '?' or '#'
         var authorityEnd = bytes.endIndex
@@ -193,5 +255,6 @@ private extension UInt8 {
     static let dot = UInt8(ascii: ".")
     static let underscore = UInt8(ascii: "_")
     static let tilde = UInt8(ascii: "~")
+    static let percent = UInt8(ascii: "%")
     static let plus = UInt8(ascii: "+")
 }
