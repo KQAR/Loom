@@ -101,17 +101,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Menu-bar icon with state variants:
+/// Menu-bar icon with state variants. The glyph is Loom's own mark (a custom SF
+/// Symbol, see DESIGN.md § Brand mark): an outlined window on a bus with a node
+/// where it meets the line. The node carries the rules state — it solidifies when
+/// traffic is being acted on — so one glyph covers both states:
 /// - stopped → dimmed
-/// - running, no map rules → two-way arrows
-/// - running, map/rewrite active → branch glyph
+/// - running, no map rules → `loom.mark` (hollow node)
+/// - running, map/rewrite active → `loom.mark.intercept` (solid node)
 /// Also the always-present surface that boots the capture subscription at launch.
 private struct MenuBarLabel: View {
     let store: StoreOf<AppFeature>
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: store.rules.rulesEnabled ? "arrow.triangle.branch" : "arrow.left.arrow.right")
+        Image(store.rules.rulesEnabled ? "loom.mark.intercept" : "loom.mark")
             .fontWeight(.semibold)
             .foregroundStyle(store.setup.isSystemProxy ? Color.yellow : Color.primary)
             .opacity(store.status.isRunning ? 1 : 0.4)

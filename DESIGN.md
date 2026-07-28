@@ -247,6 +247,54 @@ console, depth is the material plus tint; do not stack opaque cards on it. Never
 
 **Capsule = control, rounded-rect = container.** `RoundedRectangle` is always `.continuous`.
 
+## Brand mark
+
+**`loom.mark`** — a custom SF Symbol, not a system one: an **outlined window
+sitting on a bus, with a node where it meets the line**. A client whose traffic
+passes through one point, which is what Loom is. Original artwork — no
+third-party asset is used or owed attribution.
+
+It ships as a variable template (Ultralight / Regular / Black; SF Symbols
+interpolates the rest) in `App/Resources/Assets.xcassets`, so it tracks font
+weight and scale like any system symbol. **Template rendering only** — the menu
+bar reads alpha and discards color.
+
+The artwork is **generated, not hand-drawn**: `Tools/symbol-template/build.py`
+(geometry in `mark.py`) emits both symbol sets. Retune the mark there and re-run;
+never hand-edit the baked path data in the `.symbolset`.
+
+Two variants, and the difference carries state rather than decoration:
+
+| Symbol | Meaning |
+|---|---|
+| `loom.mark` | hollow node — traffic passes through untouched |
+| `loom.mark.intercept` | solid node — traffic is being acted on (map / rewrite rules active) |
+
+**Identity lives in the glyph, state lives in the modifiers.** Don't add a third
+glyph for a third state — the menu-bar label already spends color on system-proxy
+(yellow) and opacity on stopped.
+
+Constraints for any future edit, each one learned by rendering it at size and
+rejecting what failed:
+
+- It is read at **18pt as a silhouette**, so the budget is a handful of strokes.
+- **Outline, never fill.** Template rendering keeps only alpha: a filled body
+  collapses into a solid block, and inverts to a glaring white one on a dark menu
+  bar. This is what rules out most stock icon artwork wholesale.
+- **No container.** A disc or plate around the glyph is the heaviest possible
+  silhouette and reads as foreign beside the line glyphs it sits next to.
+- Pin the visual extents to one box (x 6–94, y 8–92 in the design space) so every
+  weight shares a bounding box.
+- **Flatten every arc to a fixed chord count** (`build.py`). Left as arcs, CoreUI
+  subdivides them by radius, the three weights end up with different segment
+  counts, the interpolation has no point correspondence, and the compiled symbol
+  **silently fails to decode** — `actool` succeeds, the app builds, `Image(_:)`
+  has no compile-time check, and the icon is just gone. Nothing upstream reports
+  it.
+- Therefore: **`Tools/symbol-template/check.py` is the pass condition**, not a
+  clean build. It compiles the catalog and asks a real bundle for each symbol
+  back. Run it after any retune.
+
 ## Components
 
 ### Status-bar console
@@ -311,4 +359,5 @@ on every label).
 - **Approval cards, faults, and scope** are M3 in [`ROADMAP.md`](ROADMAP.md); until then the stack is header +
   feed + footer only. Design them here now so the layout budget accounts for them.
 - Liquid Glass button styles (`.glassProminent`/`.glass`) are macOS 26-only; on the macOS 14 baseline use
-  `.borderedProminent`/`.bordered`. App icon and brand mark are unspecified; the app carries zero branding until then.
+  `.borderedProminent`/`.bordered`. The brand mark is now specified (§ Brand mark) and shipping in the menu bar;
+  the **app icon** is still unspecified and is the remaining branding gap.
