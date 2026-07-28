@@ -114,7 +114,7 @@ surfaces and fixed what had rotted; what it *found* is the phase.
   deliberate omission with a reason. It found the real one: every breakpoint
   capability was reachable over MCP and absent from the client, so an agent could
   park a live client connection with nothing in the human's surface able to see
-  it or let it go. Plumbing closed; **the panel is still missing** (below).
+  it or let it go. Plumbing closed, and the panel now exists too (see below).
 - **`RuleCodecParityTests`** — a rule exists four times (model, `set_rule` schema,
   `list_rules` render, the editor's `RuleDraft`) and only the model is
   compiler-checked. A reflection census now fails when a field stops being
@@ -136,12 +136,18 @@ decorator chain and the single choke point absorb it. Adding one that **both the
 agent and the human** need is still expensive, and that asymmetry is what M7 is
 about:
 
-1. **Breakpoint supervision has no UI.** `BreakpointControlling` is complete in the
-   engine, reachable over MCP, and now exposed on `ProxyClient` — but no
-   `AppFeature` state or view consumes it. An agent can hold real traffic with
-   nothing in the human's panel showing it or releasing it. This is the largest
-   standing violation of value #2 (*the human stays in control of risk*), and it is
-   UI work, not plumbing.
+1. ~~**Breakpoint supervision has no UI.**~~ **Done.** `BreakpointsFeature` mirrors
+   armed + held state from the engine (boot seed → `pendingBreakpointStream` →
+   re-sync after every write, plus a 2 s poll that runs *only* while something is
+   held, because a hold can resolve with no decision from us — client hangup, or the
+   engine's watchdog). Two surfaces consume it: the main window's **sidebar →
+   Breakpoints** panel (held exchanges lead, each with resume/abort inline; armed
+   breakpoints below with disarm), and an orange **Breakpoints** row in the
+   status-bar console that appears only when something is armed or held, names the
+   held requests, and jumps straight to the release surface. Editing a held exchange
+   stays with the agent (`resume` + `BreakpointEdit` over MCP); the human gets
+   proceed-unmodified and abort. Value #2 is no longer violated by the one write
+   action that parks a live connection.
 2. **The parity guard records four deliberate omissions that are really UI gaps** —
    HAR import/export and wholesale `setRules` are agent-only because the window has
    no affordance for them, not because the human shouldn't have them.

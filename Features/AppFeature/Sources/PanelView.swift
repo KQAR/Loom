@@ -24,6 +24,7 @@ public struct PanelView: View {
                 systemProxyRow
                 sslRow
                 rulesRow
+                breakpointsRow
 
                 Divider().padding(.vertical, LoomTheme.Space.xxs)
 
@@ -33,15 +34,7 @@ public struct PanelView: View {
                     title: "Open Main Window",
                     detail: "\(store.status.capturedCount) flows"
                 ) {
-                    // Capture the popover (the key window at click time) so we can
-                    // close it after the main window is up. `dismiss()` alone is
-                    // unreliable for a MenuBarExtra window; closing the exact panel
-                    // window is deterministic.
-                    let panel = NSApp.keyWindow
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    dismiss()
-                    panel?.close()
+                    openMainWindow(at: nil)
                 }
             }
             .padding(.vertical, LoomTheme.Space.xs)
@@ -185,6 +178,69 @@ public struct PanelView: View {
     private var rulesDetail: String {
         guard store.rules.rulesEnabled else { return "off" }
         return store.rules.enabledRules.isEmpty ? "no rules yet" : "\(store.rules.enabledRules.count) active"
+    }
+
+    /// Present only when an agent has breakpoints armed or is holding traffic — the
+    /// console is a fixed set of rows the rest of the time. Held traffic is a live
+    /// client connection stalled by the AI, so it must not be something the human
+    /// only discovers by opening the main window and picking the right sidebar row:
+    /// it surfaces here in orange, and the row jumps straight to the release surface.
+    @ViewBuilder private var breakpointsRow: some View {
+        if store.breakpoints.isActive {
+            let held = store.breakpoints.heldCount
+            PanelRow(
+                kind: .action,
+                icon: held > 0 ? "pause.circle.fill" : "pause.circle",
+                iconTint: held > 0 ? Color.orange : .secondary,
+                title: "Breakpoints",
+                detail: breakpointsDetail,
+                help: held > 0
+                    ? "Traffic is held mid-flight — open Loom to release or abort it"
+                    : "Breakpoints armed by your agent"
+            ) {
+                openMainWindow(at: .breakpoints)
+            }
+            if held > 0 {
+                // Named, not just counted: "2 held" doesn't tell the human whether
+                // it's a background poll or the request they're waiting on.
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(store.breakpoints.pending.prefix(3))) { pending in
+                        Label("\(pending.method) \(pending.url)", systemImage: "pause.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(Color.orange)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    if held > 3 {
+                        Text("+\(held - 3) more")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, PanelRow.titleLeadingInset)
+                .padding(.horizontal, LoomTheme.Space.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var breakpointsDetail: String {
+        let held = store.breakpoints.heldCount
+        if held > 0 { return "\(held) held" }
+        let armed = store.breakpoints.armed.count
+        return "\(armed) armed"
+    }
+
+    /// Open the main window (optionally on a given sidebar category) and close the
+    /// popover. The key window is captured at click time because `dismiss()` alone
+    /// is unreliable for a `MenuBarExtra` window; closing that exact window isn't.
+    private func openMainWindow(at category: FlowCategory?) {
+        if let category { store.send(.categorySelected(category)) }
+        let panel = NSApp.keyWindow
+        openWindow(id: "main")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        dismiss()
+        panel?.close()
     }
 
     private func inlineNote(_ text: String, busy: Bool) -> some View {

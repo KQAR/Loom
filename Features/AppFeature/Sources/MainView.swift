@@ -51,6 +51,7 @@ public struct MainView: View {
             Label("Audit", systemImage: "checklist")
                 .badge(store.auditEntries.count)
                 .tag(FlowCategory.audit)
+            breakpointsSidebarRow
 
             if !store.devices.isEmpty {
                 Section("Devices") {
@@ -120,6 +121,26 @@ public struct MainView: View {
         }
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+    }
+
+    /// Breakpoints category. While something is held the row goes orange and its
+    /// badge counts *held exchanges*, not armed breakpoints — a parked live
+    /// connection is the thing the human has to act on; how many breakpoints an
+    /// agent armed is only interesting when none of them is holding anything.
+    private var breakpointsSidebarRow: some View {
+        let held = store.breakpoints.heldCount
+        return Label {
+            Text("Breakpoints")
+                .foregroundStyle(held > 0 ? Color.orange : .primary)
+        } icon: {
+            Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
+                .foregroundStyle(held > 0 ? Color.orange : .secondary)
+        }
+        .badge(held > 0 ? held : store.breakpoints.armed.count)
+        .tag(FlowCategory.breakpoints)
+        .help(held > 0
+            ? "\(held) exchange\(held == 1 ? "" : "s") held — the client is still waiting"
+            : "Breakpoints armed by your agent")
     }
 
     /// Sidebar row title with a trailing pin glyph when pinned.
@@ -340,6 +361,8 @@ public struct MainView: View {
             RulesPanelView(store: store.scope(state: \.rules, action: \.rules))
         } else if store.selectedCategory == .audit {
             AuditPanelView(store: store)
+        } else if store.selectedCategory == .breakpoints {
+            BreakpointsPanelView(store: store.scope(state: \.breakpoints, action: \.breakpoints))
         } else if let flow = store.selectedFlow {
             VSplitView {
                 requestArea
