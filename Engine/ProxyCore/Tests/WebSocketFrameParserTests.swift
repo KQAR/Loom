@@ -56,6 +56,43 @@ import LoomSharedModels
         #expect(WebSocketMessage.Kind(opcode: frames[0].opcode) == .binary)
     }
 
+    /// Many small frames in one read, with a partial frame trailing: every complete
+    /// frame comes back, and the leftover bytes still join the next read. Guards the
+    /// cursor-based consume — a stale offset would drop or mis-slice frames here.
+    @Test func manyFramesThenPartialInOneFeed() {
+        var parser = WebSocketFrameParser()
+        var bytes: [UInt8] = []
+        for i in 0 ..< 500 { bytes += [0x81, 0x01, UInt8(i % 26) + 0x61] }
+        bytes += [0x81, 0x02, 0x68] // one byte short of "hi"
+
+        let frames = parser.feed(bytes)
+        #expect(frames.count == 500)
+        #expect(frames[0].payload == Data("a".utf8))
+        #expect(frames[499].payload == Data([UInt8(499 % 26) + 0x61]))
+
+        let rest = parser.feed([0x69])
+        #expect(rest.count == 1)
+        #expect(rest[0].payload == Data("hi".utf8))
+    }
+
+    /// Past the compaction threshold the consumed prefix is dropped rather than
+    /// tracked by an ever-growing cursor; parsing must survive the re-anchoring.
+    @Test func parsingSurvivesBufferCompaction() {
+        var parser = WebSocketFrameParser()
+        let payload = [UInt8](repeating: 0x7a, count: 1000)
+        var total = 0
+        for _ in 0 ..< 40 { // 40 KB, crossing the 16 KB compaction threshold
+            total += parser.feed([0x82, 126, 0x03, 0xE8] + payload).count
+        }
+        #expect(total == 40)
+
+        // A frame split across the compaction boundary still reassembles.
+        #expect(parser.feed([0x81, 0x05, 0x68, 0x65]).isEmpty)
+        let frames = parser.feed([0x6c, 0x6c, 0x6f])
+        #expect(frames.count == 1)
+        #expect(frames[0].payload == Data("hello".utf8))
+    }
+
     /// Non-final fragment then continuation.
     @Test func fragmentedMessage() {
         var parser = WebSocketFrameParser()
