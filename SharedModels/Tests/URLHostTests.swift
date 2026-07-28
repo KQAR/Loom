@@ -178,6 +178,90 @@ import LoomSharedModels
         #expect(URLHost.hostMatches(urlString: "https://", host: ""))
     }
 
+    // MARK: pathAndQuery
+
+    /// Same contract as `host`: only worth having if it is indistinguishable from the
+    /// `URLComponents` reading the flow table used to do per visible row.
+    private func expectPathParity(_ string: String) {
+        let reference: String = {
+            guard let components = URLComponents(string: string) else { return string }
+            let path = components.path.isEmpty ? "/" : components.path
+            return path + (components.query.map { "?\($0)" } ?? "")
+        }()
+        #expect(
+            URLHost.pathAndQuery(ofURLString: string) == reference,
+            "pathAndQuery must match URLComponents for \(string.debugDescription)"
+        )
+    }
+
+    @Test func pathAndQuery_ordinaryShapes() {
+        for string in [
+            "https://api.example.com/v1/home",
+            "https://api.example.com/v1/home?x=1&y=2",
+            "https://api.example.com",
+            "https://api.example.com/",
+            "https://api.example.com?q=1",
+            "https://api.example.com#frag",
+            "https://api.example.com/v1#frag",
+            "https://api.example.com/v1?q=1#frag",
+            "https://api.example.com:8443/p",
+            "https://user:pass@api.example.com/p?q=1",
+            "https://[::1]:8443/p?q=1",
+            "https:///path-only",
+            "https://",
+            "wss://api.example.com/socket",
+        ] { expectPathParity(string) }
+    }
+
+    @Test func pathAndQuery_emptyPathReadsAsSlash() {
+        #expect(URLHost.pathAndQuery(ofURLString: "https://api.example.com") == "/")
+        #expect(URLHost.pathAndQuery(ofURLString: "https://api.example.com#frag") == "/")
+        #expect(URLHost.pathAndQuery(ofURLString: "https://api.example.com?q=1") == "/?q=1")
+    }
+
+    /// The fragment is a client-side concern and never crossed the wire, so it stays
+    /// out — same as `URLComponents.path`/`query`.
+    @Test func pathAndQuery_dropsTheFragment() {
+        #expect(URLHost.pathAndQuery(ofURLString: "https://h.test/a/b?x=1#deep") == "/a/b?x=1")
+    }
+
+    /// Percent-escapes route to Foundation, which *decodes* the path — a byte scan
+    /// returning the raw form would show a different URL than the inspector does.
+    @Test func pathAndQuery_percentEscapesAreDecodedLikeFoundation() {
+        expectPathParity("https://h.test/a%20b?q=a%2Bb")
+        #expect(URLHost.pathAndQuery(ofURLString: "https://h.test/a%20b") == "/a b")
+    }
+
+    @Test func pathAndQuery_nonURLComesBackUnchanged() {
+        #expect(URLHost.pathAndQuery(ofURLString: "not a url at all") == "not a url at all")
+        // The empty string *is* a valid `URLComponents` with an empty path, so it
+        // reads as "/" rather than coming back unchanged.
+        expectPathParity("")
+        #expect(URLHost.pathAndQuery(ofURLString: "") == "/")
+    }
+
+    @Test func pathAndQuery_generatedCombinations_allAgree() {
+        let schemes = ["http", "https", "ws", "HTTPS"]
+        let userinfos = ["", "user@", "user:pass@"]
+        let hosts = ["example.com", "127.0.0.1", "[::1]", ""]
+        let ports = ["", ":8443", ":"]
+        let paths = [
+            "", "/", "/v1/home", "/v1?q=1", "#frag", "?q=1", "/a%20b", "/v1?q=1#f",
+            "/trailing/", "/dots/../x", "/q?a=b&c=d",
+        ]
+        for scheme in schemes {
+            for userinfo in userinfos {
+                for host in hosts {
+                    for port in ports {
+                        for path in paths {
+                            expectPathParity("\(scheme)://\(userinfo)\(host)\(port)\(path)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     @Test func flowHost_usesIt() {
         let flow = Flow(
             id: UUID(),

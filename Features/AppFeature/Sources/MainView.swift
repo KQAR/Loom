@@ -270,9 +270,11 @@ public struct MainView: View {
             .width(min: 52, ideal: 62, max: 90)
 
             TableColumn("Host") { flow in
+                // One parse per row, shared by the favicon and the label.
+                let host = Self.host(flow.request.url)
                 HStack(spacing: 6) {
-                    FaviconView(host: Self.host(flow.request.url))
-                    Text(Self.host(flow.request.url))
+                    FaviconView(host: host)
+                    Text(host)
                         .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
                 }
@@ -324,12 +326,14 @@ public struct MainView: View {
         .background(RequestTableAutoScroll(rowCount: rows.count, follow: $followTail))
         .contextMenu(forSelectionType: Flow.ID.self) { ids in
             if let id = ids.first, let flow = store.flows[id: id] {
+                // Parsed once for the whole menu, not once per action closure.
+                let host = Self.host(flow.request.url)
                 Button("Replay", systemImage: "arrow.triangle.2.circlepath") {
                     store.send(.replayTapped(id))
                 }
                 Divider()
                 Menu("Copy") {
-                    Button("Host") { Self.copy(Self.host(flow.request.url)) }
+                    Button("Host") { Self.copy(host) }
                     Button("Path") { Self.copy(Self.path(flow.request.url)) }
                     Button("URL") { Self.copy(flow.request.url) }
                     Divider()
@@ -340,7 +344,7 @@ public struct MainView: View {
                         .disabled(flow.response == nil)
                     Divider()
                     Button("Block This URL") { store.send(.addRuleFromFlow(id, .blockURL)) }
-                    Button("Block Host \(Self.host(flow.request.url))") {
+                    Button("Block Host \(host)") {
                         store.send(.addRuleFromFlow(id, .blockHost))
                     }
                 }
@@ -554,12 +558,13 @@ public struct MainView: View {
         }
     }
 
-    static func host(_ raw: String) -> String { URLComponents(string: raw)?.host ?? raw }
-    static func path(_ raw: String) -> String {
-        guard let c = URLComponents(string: raw) else { return raw }
-        let path = c.path.isEmpty ? "/" : c.path
-        return path + (c.query.map { "?\($0)" } ?? "")
-    }
+    /// Both go through `URLHost`, which exists for exactly this call site: a row
+    /// body runs per visible row per redraw, and these used to build a
+    /// `URLComponents` each time — the cost `Flow.host` and the sidebar's host
+    /// filter were already moved off. Cache the result per row rather than calling
+    /// twice for the same string.
+    static func host(_ raw: String) -> String { URLHost.host(ofURLString: raw) ?? raw }
+    static func path(_ raw: String) -> String { URLHost.pathAndQuery(ofURLString: raw) }
 }
 
 // MARK: - Status pill (table Status column)
