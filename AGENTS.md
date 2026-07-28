@@ -122,6 +122,8 @@ Two ways in, both hitting the **same** in-process MCP server (all tools + state 
 
 **Plugin packaging.** The repo root doubles as a Claude Code / Cursor plugin (modelled on KQAR/Reticle): `.claude-plugin/` + `.cursor-plugin/` (`plugin.json` + `marketplace.json`, `source: "./"`), a shared root `.mcp.json` (the HTTP server above), and `skills/loom/SKILL.md` documenting the tools + the debug loop. The MCP endpoint stays **loopback-only on its own port** — deliberately NOT the proxy's `9090`, which binds `0.0.0.0` when LAN device connection is on and would otherwise expose the write-capable, token-optional control plane to the whole Wi-Fi.
 
+**Two skill directories, two audiences — they are not duplicates, don't merge them.** `skills/` ships *with the plugin* to its users (`skills/loom/SKILL.md`: the tool surface, the debug loop, and the scrub-before-you-file rules for reporting a Loom bug). `.claude/skills/` is for whoever is *working on this repo* (`release`, `embed-engine`) and is auto-discovered when the project is opened. Moving the latter into `skills/` would ship maintainer procedure — EdDSA key handling included — to every plugin user; moving the former into `.claude/skills/` breaks the plugin, whose skills path is fixed at `<plugin-root>/skills/` (and hard-coded in `.cursor-plugin/plugin.json`). Both stay tracked in git: this file delegates authoritative content to them. Only `.claude/settings.local.json` is ignored.
+
 ### MCP Tools
 
 The full tool list — names, kinds, arguments, and the debug loop they compose into — lives in
