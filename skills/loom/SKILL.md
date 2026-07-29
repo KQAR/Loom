@@ -107,7 +107,7 @@ Loom is built for one cycle — do this, don't just read:
 | `resume` | release a held exchange by its `pending_id`: apply edits (method / url / status_code / set+remove headers / body) and continue, or `abort` with a 502 |
 | `set_ssl_scope` | turn HTTPS interception on/off + set include/exclude host globs |
 | `export_ca_certificate` | write the root CA (PEM) to disk for trusting; returns the path |
-| `export_har` | export captured flows to a HAR 1.2 file (host filter + limit); returns the path. **`redact: true`** scrubs credential headers + token query params (values become `<redacted>`, the header stays so a reader can tell scrubbed from absent); `redact_bodies: true` drops payloads keeping their sizes; `redact_headers` adds names. Use redaction whenever the file leaves the machine — a ticket, a chat, CI |
+| `export_har` | export captured flows to a HAR 1.2 file (host filter + limit); returns the path. **`redact: true`** scrubs credential headers + token query params (values become `<redacted>`, the header stays so a reader can tell scrubbed from absent) — it does **not** touch bodies or WebSocket frames, so a password in a login POST survives it. **`redact_bodies: true`** blanks those too, keeping their sizes; `redact_headers` adds names. If the file is leaving the machine, pass both |
 | `import_har` | load a HAR file into the capture as flows (`path`, optional `label`) so an exchange recorded elsewhere can be read, diffed and **replayed** like live traffic. Imported flows are labelled `importedFrom` and get fresh `ids`; unusable entries are reported in `skipped`/`skippedReasons` |
 
 ### Rules (`set_rule`) — the shape
@@ -169,9 +169,10 @@ scoped rule); then one action:
   isn't trusted. `export_ca_certificate` returns a PEM; trusting it is a manual
   admin step on the client.
 - **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
-  filter; return the path. If it's going into a ticket or a chat, add `redact: true`
-  (plus `redact_bodies: true` when you can't audit every payload) and tell the human
-  what was scrubbed.
+  filter; return the path. If it's going into a ticket or a chat, pass **both**
+  `redact: true` and `redact_bodies: true` — headers alone leave every payload
+  intact — and tell the human what was scrubbed. The tool says so in its result
+  when bodies were kept; don't call a file redacted when it isn't.
 - **"Here's a HAR from a colleague / CI — why did that request fail?"** →
   `import_har`, then work the flows exactly as if they were live: `get_flow_detail`,
   `diff_flows` against a local one, `replay_flow` to re-send it from here. They stay
@@ -221,8 +222,10 @@ and effectively permanent; a deleted issue was still readable.
 - `Authorization`, `Cookie`, `Set-Cookie`, API keys, JWTs, signatures — redacted
   or not, don't include the value or its shape
 - Emails, phone numbers, names, device names, LAN IPs, `/Users/<name>/…` paths
-- **A HAR file.** `export_har(redact: true)` scrubs credentials, but hostnames,
-  paths and timings survive — that is business data. Keep it local; offer it to
+- **A HAR file.** `export_har(redact: true)` scrubs credential headers and token
+  query params — and nothing else: bodies and WebSocket frames come through
+  verbatim unless you also pass `redact_bodies: true`. Even with both, hostnames,
+  paths and timings survive, and that is business data. Keep it local; offer it to
   the maintainer privately only if they ask.
 
 **Use placeholders consistently** so the report still reads: `api.example.com`,
