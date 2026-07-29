@@ -311,9 +311,14 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     /// (`Connection: close`), so nothing queues behind a held one.
     private func respond(channel: Channel, head: HTTPRequestHead, payload: Data) {
         let dispatcher = self.dispatcher
-        inFlight = Task {
+        // `[weak self]`: `Task.isCancelled` is only consulted after `handle` returns,
+        // so a strong capture pins this handler and its channel for the rest of a
+        // wait that can run tens of seconds — well after the client hung up. Not a
+        // leak (the wait is capped), but it outlives its purpose, and everything
+        // else in the codebase captures weakly here.
+        inFlight = Task { [weak self] in
             let response = await dispatcher.handle(requestBody: payload)
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let self else { return }
             if let response {
                 self.writeJSON(channel: channel, status: .ok, data: response)
             } else {
