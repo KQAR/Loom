@@ -49,9 +49,13 @@ struct EngineLifecycleReentrancyTests {
     ///
     /// Skipped when the machine has no LAN IPv4 (CI containers, Wi-Fi off) — phone
     /// onboarding legitimately can't start there.
-    @Test func concurrentPhoneOnboarding_onlyOneWins() async throws {
-        try #require(LANAddress.primaryIPv4() != nil, "needs a LAN IPv4 address")
-
+    ///
+    /// The skip is a trait, evaluated before the body runs. It used to be
+    /// `try #require(LANAddress.primaryIPv4() != nil)`, which in Swift Testing
+    /// records an issue and *fails* — so on precisely the LAN-less environment this
+    /// comment describes, the test went red instead of standing down.
+    @Test(.enabled(if: LANAddress.primaryIPv4() != nil, "needs a LAN IPv4 address"))
+    func concurrentPhoneOnboarding_onlyOneWins() async throws {
         let engine = makeEngine()
         _ = try await engine.start(port: 0)
         defer { Task { await engine.stop() } }
