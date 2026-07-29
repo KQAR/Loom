@@ -212,7 +212,7 @@ public struct MainView: View {
                         .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
                         .padding(3)
                     Image(systemName: "trash")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(LoomTheme.Icon.fab)
                         .foregroundStyle(Color.red)
                 }
                 // Grow out of the dot: scale up from the corner + fade in.
