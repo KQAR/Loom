@@ -26,9 +26,10 @@ final class AuditPersistence: @unchecked Sendable {
     init?(fileURL: URL, maxRows: Int = 10_000, pruneSlack: Int = 250) {
         self.maxRows = maxRows
         self.pruneSlack = max(0, pruneSlack)
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
+        // Owner-only, like the CA store. Audit rows carry each write tool's full
+        // arguments — `replay_flow` header/body overrides included — so this file
+        // is as sensitive as the traffic it describes.
+        try? LoomPaths.createSecureDirectory(at: fileURL.deletingLastPathComponent())
         var handle: OpaquePointer?
         guard sqlite3_open(fileURL.path, &handle) == SQLITE_OK else {
             // The audit trail is the human's record of what the agent did; losing
@@ -42,6 +43,7 @@ final class AuditPersistence: @unchecked Sendable {
             return nil
         }
         db = handle
+        FlowPersistence.restrictDatabaseFiles(at: fileURL)
         exec("PRAGMA journal_mode=WAL;")
         exec("""
         CREATE TABLE IF NOT EXISTS audit (
