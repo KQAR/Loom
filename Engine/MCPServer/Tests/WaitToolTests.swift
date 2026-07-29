@@ -96,9 +96,11 @@ import LoomSharedModels
         async let response = executor.call(name: "wait_for_flow", arguments: [
             "url_contains": "checkout", "max_seconds": 5,
         ])
-        // Let the wait subscribe, then push. (Even if this lands first, the store
-        // pre-check would catch it — that redundancy is the point.)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Push only once the wait is actually subscribed. This used to be a fixed
+        // 100 ms sleep, i.e. a bet that the executor got there first; losing that
+        // bet drops the event and the test fails on its own timeout, blaming the
+        // tool for a scheduling accident.
+        await eventually("the wait to subscribe") { engine.flowSubscriptionsOpened > 0 }
         engine.emit(arriving)
 
         let result = try await json(response)
@@ -126,7 +128,7 @@ import LoomSharedModels
         let inFlight = flow(status: nil)
 
         async let response = executor.call(name: "wait_for_flow", arguments: ["max_seconds": 0.4])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await eventually("the wait to subscribe") { engine.flowSubscriptionsOpened > 0 }
         engine.emit(inFlight)
 
         let result = try await json(response)
@@ -141,7 +143,7 @@ import LoomSharedModels
         async let response = executor.call(name: "wait_for_flow", arguments: [
             "until": "request", "max_seconds": 5,
         ])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await eventually("the wait to subscribe") { engine.flowSubscriptionsOpened > 0 }
         engine.emit(inFlight)
 
         let result = try await json(response)
@@ -165,7 +167,7 @@ import LoomSharedModels
         async let response = executor.call(name: "wait_for_flow", arguments: [
             "body_contains": "checkout", "only_errors": true, "max_seconds": 5,
         ])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await eventually("the wait to subscribe") { engine.flowSubscriptionsOpened > 0 }
         engine.emit(flow(url: "https://api.example.com/graphql", status: 200)) // right host, not an error
         engine.emit(wanted)
 
@@ -181,7 +183,7 @@ import LoomSharedModels
         async let response = executor.call(name: "wait_for_flow", arguments: [
             "host": "api.example.com", "limit": 3, "max_seconds": 0.5,
         ])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await eventually("the wait to subscribe") { engine.flowSubscriptionsOpened > 0 }
         engine.emit(flow())
         engine.emit(flow())
 
@@ -201,7 +203,7 @@ import LoomSharedModels
         async let response = executor.call(name: "wait_for_flow", arguments: [
             "until": "request", "limit": 2, "max_seconds": 0.4,
         ])
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await eventually("the wait to subscribe") { engine.flowSubscriptionsOpened > 0 }
         engine.emit(subject)
         engine.emit(subject)
 
@@ -254,7 +256,7 @@ import LoomSharedModels
         let held = pending()
 
         async let response = executor.call(name: "wait_for_pending", arguments: ["max_seconds": 5])
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await eventually("the wait to subscribe") { engine.pendingSubscriptionsOpened > 0 }
         engine.hold(held)
 
         let result = try await json(response)
@@ -271,7 +273,7 @@ import LoomSharedModels
         async let response = executor.call(name: "wait_for_pending", arguments: [
             "breakpoint_id": wanted.uuidString, "max_seconds": 5,
         ])
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await eventually("the wait to subscribe") { engine.pendingSubscriptionsOpened > 0 }
         engine.hold(pending()) // another breakpoint's hold
         engine.hold(mine)
 
