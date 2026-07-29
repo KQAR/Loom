@@ -107,6 +107,11 @@ enum WebSocketRelay {
                     _ = client.setOption(ChannelOptions.autoRead, value: true)
                     client.read()
                 case .failure:
+                    // Neither tap made it into a pipeline, so no `channelInactive`
+                    // will ever arrive to call `finish()` — end the capture here or
+                    // the sink's consumer task parks forever. Nothing is published:
+                    // this socket never relayed a byte.
+                    sink.abandon()
                     client.close(promise: nil)
                     upstream.close(promise: nil)
                 }
@@ -187,6 +192,13 @@ final class WebSocketCaptureSink: @unchecked Sendable {
         Task { for await flow in stream { await store.upsert(flow, force: true) } }
     }
 
+    /// Backstop for the consumer task, which is unstored and ends only when the
+    /// stream does. Without this, any path that drops the sink without calling
+    /// `finish()`/`abandon()` leaves that task parked on `for await` forever,
+    /// holding the sink's frames and a live `FlowStore` reference for the life of
+    /// the process. Finishing an already-finished continuation is a no-op.
+    deinit { continuation.finish() }
+
     func record(direction: WebSocketMessage.Direction, frame: WebSocketFrameParser.Frame) {
         if capped {
             // The relay still forwards the bytes; we just stop recording — but we
@@ -221,6 +233,15 @@ final class WebSocketCaptureSink: @unchecked Sendable {
         // Unconditional, not coalesced: this is the snapshot that completes the
         // flow, and a pending trailing flush would be dropped by the guard below.
         enqueue(completed: true)
+        continuation.finish()
+    }
+
+    /// End the capture without publishing anything — for the paths where the relay
+    /// never started, so there is no exchange to record. `finish()` would upsert a
+    /// completed WebSocket flow for a socket that never carried a frame.
+    func abandon() {
+        guard !finished else { return }
+        finished = true
         continuation.finish()
     }
 
