@@ -188,11 +188,17 @@ public struct MainView: View {
         .background(.bar)
     }
 
+    /// How long the clear button must be held to fire. The gesture and the ring
+    /// that charges around it read from the same constant: they are one signal —
+    /// the ring *is* the countdown — and if they drift the ring either fills
+    /// before the gesture fires or the press completes on a half-full ring.
+    private static let clearHoldDuration: TimeInterval = 0.7
+
     /// Destructive "clear captured flows", floated bottom-right of the flow list.
     /// At rest it's just a small red dot so it barely covers the table; hovering
-    /// (or reaching toward it) expands it to the full button. Hold for 1s to fire —
-    /// a red ring charges around the trash glyph while held and springs back if
-    /// released early, so a stray click can't wipe the capture (no modal dialog).
+    /// (or reaching toward it) expands it to the full button. Held to fire — a red
+    /// ring charges around the trash glyph while held and springs back if released
+    /// early, so a stray click can't wipe the capture (no modal dialog).
     private var clearFAB: some View {
         ZStack {
             if clearHovering {
@@ -225,13 +231,13 @@ public struct MainView: View {
         .onHover { hovering in
             clearHovering = hovering
         }
-        .onLongPressGesture(minimumDuration: 1.0, maximumDistance: 60) {
+        .onLongPressGesture(minimumDuration: Self.clearHoldDuration, maximumDistance: 60) {
             store.send(.clearTapped)
             clearProgress = 0
         } onPressingChanged: { pressing in
             // Pressing implies the cursor is on it — keep it expanded while held.
             if pressing { clearHovering = true }
-            withAnimation(pressing ? .linear(duration: 1.0) : .easeOut(duration: 0.2)) {
+            withAnimation(pressing ? .linear(duration: Self.clearHoldDuration) : .easeOut(duration: 0.2)) {
                 clearProgress = pressing ? 1 : 0
             }
         }
