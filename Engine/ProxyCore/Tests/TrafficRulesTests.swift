@@ -421,6 +421,7 @@ private actor StubUpstream: UpstreamForwarding {
         let first = RulesConfig(fileURL: fileURL)
         first.add(rule)
         first.setEnabled(false)
+        first.flush() // writes are queued; drain before reading the file back
 
         #expect(FileManager.default.fileExists(atPath: fileURL.path), "rules should be written to disk")
 

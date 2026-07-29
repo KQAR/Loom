@@ -13,6 +13,12 @@ final class InterceptionConfig: @unchecked Sendable {
     private var scope: SSLScope
     private let defaults: UserDefaults?
     private let storageKey = "com.loom.sslScope"
+    /// Writes serialized here and enqueued under the lock, so the stored scope can
+    /// only move forward through the states the in-memory one did. Persisting after
+    /// unlocking let two concurrent updates land in the opposite order — and a
+    /// stale scope surviving a relaunch means HTTPS silently stops being
+    /// intercepted, which reads as "Loom captured nothing" with no error anywhere.
+    private let persistQueue = DispatchQueue(label: "com.loom.interceptionconfig.persist")
 
     /// - Parameter defaults: persistence backing; `nil` disables it (tests). When
     ///   non-nil and a scope was previously saved, that saved scope wins over the
@@ -35,8 +41,14 @@ final class InterceptionConfig: @unchecked Sendable {
     func update(_ newScope: SSLScope) {
         lock.lock()
         scope = newScope
+        persistQueue.async { [weak self] in self?.persist(newScope) }
         lock.unlock()
-        persist(newScope)
+    }
+
+    /// Block until every queued write has run — quit handler, and any test that
+    /// reads the defaults straight after updating.
+    func flush() {
+        persistQueue.sync {}
     }
 
     func shouldIntercept(host: String) -> Bool {

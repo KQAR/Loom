@@ -219,6 +219,10 @@ public actor ProxyEngine: ProxyControlling {
         await store.finalizeInFlight(reason: "interrupted (app quit)")
         await store.flush()
         await auditStore.flush()
+        // Rules and the SSL scope persist off a serial queue too, so a quit can
+        // outrun the last edit the same way it could outrun the last flow.
+        rulesConfig.flush()
+        config.flush()
     }
 
     // MARK: - Certificate authority

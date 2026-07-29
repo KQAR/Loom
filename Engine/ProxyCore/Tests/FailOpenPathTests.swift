@@ -79,6 +79,7 @@ import LoomSharedModels
         )
         let first = RulesConfig(fileURL: url)
         first.add(rule) // mutations persist
+        first.flush()
 
         let reloaded = RulesConfig(fileURL: url)
         #expect(reloaded.snapshot().rules.map(\.name) == ["mock home"])
@@ -103,6 +104,7 @@ import LoomSharedModels
 
         let config = InterceptionConfig(defaults: defaults)
         config.update(SSLScope(enabled: true, include: ["api.example.com"]))
+        config.flush()
 
         let reloaded = InterceptionConfig(defaults: defaults)
         #expect(reloaded.snapshot().enabled)
