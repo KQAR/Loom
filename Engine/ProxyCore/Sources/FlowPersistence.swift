@@ -56,9 +56,11 @@ final class FlowPersistence: @unchecked Sendable {
     init?(fileURL: URL, maxRows: Int = 20_000, pruneSlack: Int = 500) {
         self.maxRows = maxRows
         self.pruneSlack = max(0, pruneSlack)
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
-        )
+        // Owner-only, like the CA store: these rows hold whole request and response
+        // bodies — passwords, session tokens, PII — so on a shared Mac they are a
+        // bigger prize than the CA key. The directory mode is what covers SQLite's
+        // `-wal`/`-shm` siblings, which Loom never creates itself.
+        try? LoomPaths.createSecureDirectory(at: fileURL.deletingLastPathComponent())
         var handle: OpaquePointer?
         guard sqlite3_open(fileURL.path, &handle) == SQLITE_OK else {
             // The caller falls back to a ring-only store: captures then vanish on
@@ -72,6 +74,7 @@ final class FlowPersistence: @unchecked Sendable {
             return nil
         }
         db = handle
+        Self.restrictDatabaseFiles(at: fileURL)
         exec("PRAGMA journal_mode=WAL;")
         // WAL's standard durability setting: writes still survive a process crash;
         // only a power loss can lose the last transactions. FULL fsyncs on every
@@ -91,6 +94,16 @@ final class FlowPersistence: @unchecked Sendable {
         // overrides when a body column is present.
         migrateAddBodyColumns()
         rowCount = countRows()
+    }
+
+    /// Belt to the directory's braces: chmod the database and its WAL siblings to
+    /// `0600`. Best-effort and re-run on every open, because SQLite creates
+    /// `-wal`/`-shm` on first write — an install predating this change has them
+    /// already, a fresh one grows them under a `0700` directory either way.
+    static func restrictDatabaseFiles(at fileURL: URL) {
+        for suffix in ["", "-wal", "-shm"] {
+            LoomPaths.restrictToOwner(URL(fileURLWithPath: fileURL.path + suffix))
+        }
     }
 
     /// Add `reqBody`/`respBody` to an old table that predates body separation.

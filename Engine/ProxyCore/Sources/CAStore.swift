@@ -115,13 +115,9 @@ final class FileCAStore: CAStore {
 
     func save(_ material: CAMaterial) throws {
         let blob = material.certificatePEM + Self.separator + material.privateKeyPEM
-        let dir = fileURL.deletingLastPathComponent()
-        try FileManager.default.createDirectory(
-            at: dir, withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try LoomPaths.createSecureDirectory(at: fileURL.deletingLastPathComponent())
         try Data(blob.utf8).write(to: fileURL, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        LoomPaths.restrictToOwner(fileURL)
     }
 }
 

@@ -105,13 +105,9 @@ final class RulesConfig: @unchecked Sendable {
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         do {
             let data = try encoder.encode(state)
-            let dir = url.deletingLastPathComponent()
-            try FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
+            try LoomPaths.createSecureDirectory(at: url.deletingLastPathComponent())
             try data.write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            LoomPaths.restrictToOwner(url)
         } catch {
             // Rules are primary user data; a lost write means edits vanish on
             // relaunch. Can't throw from here (mutation setters are sync), so log.
