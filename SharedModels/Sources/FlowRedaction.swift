@@ -49,8 +49,13 @@ public struct FlowRedaction: Equatable, Sendable {
 
     public var headerNames: [String]
     public var queryKeys: [String]
-    /// Drop request and response bodies entirely (their sizes are kept). The blunt
-    /// instrument for "I can't audit every payload, so send none of them".
+    /// Drop request and response bodies entirely (their sizes are kept), and blank
+    /// WebSocket frame payloads the same way. The blunt instrument for "I can't
+    /// audit every payload, so send none of them".
+    ///
+    /// Frames count as bodies: a subscribe message carrying a token is the same
+    /// leak as a login POST, and a socket transcript was previously copied into a
+    /// "redacted" export untouched.
     public var dropBodies: Bool
 
     public init(
@@ -76,6 +81,9 @@ public struct FlowRedaction: Equatable, Sendable {
             copy.request.body = nil
         }
         copy.outcome = redact(outcome: flow.outcome)
+        if dropBodies, let messages = flow.webSocketMessages {
+            copy.webSocketMessages = messages.map(redact(message:))
+        }
         return copy
     }
 
@@ -126,6 +134,18 @@ public struct FlowRedaction: Equatable, Sendable {
         case let .failed(error, at, partial):
             return .failed(error, at: at, partialResponse: partial.map(redact(response:)))
         }
+    }
+
+    /// A frame keeps its direction, kind, ordering and timestamp; only the bytes go.
+    /// `WebSocketMessage.payload` is non-optional and carries no separate size, so
+    /// the marker states the byte count — same principle as a dropped body keeping
+    /// `fullBodyBytes`: a reader must be able to tell an emptied frame from an empty
+    /// one.
+    private func redact(message: WebSocketMessage) -> WebSocketMessage {
+        guard !message.payload.isEmpty else { return message }
+        var copy = message
+        copy.payload = Data("\(Self.placeholder) \(message.payload.count) bytes".utf8)
+        return copy
     }
 
     private func redact(response: CapturedResponse) -> CapturedResponse {

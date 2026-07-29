@@ -432,9 +432,11 @@ extension MCPToolExecutor {
                 Set `redact: true` when the file is going anywhere — a ticket, a chat, a CI \
                 artifact. It replaces credential-bearing header values and query parameters with \
                 `<redacted>` (the header stays, so a reader can tell a scrubbed token from an absent \
-                one), and `redact_bodies: true` drops payloads while keeping their sizes. Redaction \
-                is off by default because a debugging export usually needs the token — that is often \
-                the bug. This is a write action (writes a file).
+                one). It does NOT touch bodies or WebSocket frames: add `redact_bodies: true` for \
+                those, which blanks them while keeping their sizes. A password in a login POST body \
+                survives `redact: true` alone. Redaction is off by default because a debugging \
+                export usually needs the token — that is often the bug. This is a write action \
+                (writes a file).
                 """,
                 "inputSchema": [
                     "type": "object",
@@ -453,7 +455,7 @@ extension MCPToolExecutor {
                         ],
                         "redact_bodies": [
                             "type": "boolean",
-                            "description": "Drop request/response bodies entirely, keeping their sizes (implies redact). Use when you can't audit every payload.",
+                            "description": "Drop request/response bodies and WebSocket frame payloads, keeping their sizes (implies redact). Use when you can't audit every payload — which is most of the time if the file is leaving the machine.",
                         ],
                     ],
                 ],
