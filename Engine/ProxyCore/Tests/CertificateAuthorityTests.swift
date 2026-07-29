@@ -132,6 +132,7 @@ import LoomSharedModels
         let defaults = makeDefaults()
         let first = InterceptionConfig(defaults: defaults)
         first.update(SSLScope(enabled: true, include: ["*"], exclude: ["secure.bank.com"]))
+        first.flush() // the write is queued; drain it before "relaunching"
 
         // A fresh config (simulating an app relaunch) must reload the saved scope.
         let reloaded = InterceptionConfig(scope: .disabled, defaults: defaults)

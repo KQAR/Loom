@@ -14,6 +14,16 @@ final class RulesConfig: @unchecked Sendable {
     private let lock = NSLock()
     private var state: RulesState
     private let fileURL: URL?
+    /// Writes are serialized here, and **enqueued while the lock is held**, so the
+    /// file can only ever move forward through the same sequence of states the
+    /// in-memory value did. Persisting after unlocking (as this used to) left two
+    /// concurrent mutations free to land on disk in the opposite order, so the file
+    /// silently regressed to a stale snapshot and the next launch reloaded it.
+    ///
+    /// The write itself stays off the lock: `snapshot()` runs on the event loop for
+    /// every request, and a rule edit must never make it wait on a disk write.
+    /// Same shape as `FlowPersistence`/`AuditPersistence`, `flush()` included.
+    private let persistQueue = DispatchQueue(label: "com.loom.rulesconfig.persist")
 
     /// - Parameter fileURL: persistence backing; `nil` disables it (tests). When
     ///   it points at the default location and no file exists yet, a one-time
@@ -92,8 +102,17 @@ final class RulesConfig: @unchecked Sendable {
         lock.lock()
         body(&state)
         let updated = state
+        // Enqueued under the lock: that is what pins the write order to the
+        // mutation order. Only the enqueue is on the lock; the encode + write run
+        // on the queue.
+        if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
         lock.unlock()
-        if let fileURL { Self.persist(updated, to: fileURL) }
+    }
+
+    /// Block until every queued write has run — call from the quit handler, and
+    /// from any test that reads the file straight after mutating.
+    func flush() {
+        persistQueue.sync {}
     }
 
     // MARK: - Persistence
