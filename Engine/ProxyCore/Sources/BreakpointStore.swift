@@ -44,6 +44,33 @@ final class BreakpointStore: @unchecked Sendable {
     /// Live subscribers to "an exchange was just parked" (`pendingBreakpointStream`).
     private var pendingContinuations: [UUID: AsyncStream<PendingBreakpoint>.Continuation] = [:]
 
+    /// The most recently armed watchdog, and how many watchdogs actually
+    /// auto-proceeded a hold. Both exist so a test can assert cancellation
+    /// *positively* — await the task, then check it resolved nothing — instead of
+    /// sleeping past the deadline and inferring cancellation from silence.
+    private var lastWatchdog: Task<Void, Never>?
+    private var timeoutResolutionCount = 0
+
+    /// Awaitable handle on the watchdog armed by the last `hold`.
+    var mostRecentWatchdog: Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastWatchdog
+    }
+
+    /// Holds released by the timeout rather than by a resume/disarm/cancel.
+    var timeoutResolutions: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return timeoutResolutionCount
+    }
+
+    private func countTimeoutResolution() {
+        lock.lock()
+        timeoutResolutionCount += 1
+        lock.unlock()
+    }
+
     init(timeout: TimeInterval = 300) {
         self.timeout = timeout
     }
@@ -204,8 +231,17 @@ final class BreakpointStore: @unchecked Sendable {
                 let task = Task { [weak self] in
                     try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
                     guard !Task.isCancelled else { return }
-                    self?.resolve(pendingID: id, resolution: .proceed(.none))
+                    if self?.resolve(pendingID: id, resolution: .proceed(.none)) == true {
+                        self?.countTimeoutResolution()
+                    }
                 }
+                // Test seam. Proving the watchdog was *cancelled* means observing
+                // that it never resolved anything — and the only alternative is to
+                // sleep past its deadline and conclude from silence, which races the
+                // clock rather than testing the behaviour.
+                lock.lock()
+                lastWatchdog = task
+                lock.unlock()
 
                 // Attach the watchdog. A short timeout can already have resolved the
                 // hold by now (tests use 50 ms), in which case there's nothing left

@@ -206,12 +206,16 @@ import LoomSharedModels
     /// a resumed-then-aborted exchange is never also auto-proceeded afterwards.
     @Test func resolvingAHold_cancelsTheTimeoutWatchdog() async throws {
         let upstream = recordingUpstream()
-        // This test needs the abort to beat the watchdog, then needs to outlive the
-        // watchdog to prove it was cancelled. 50 ms was too tight for the first half
-        // on a loaded CI machine (#116) — the watchdog won, the abort returned false,
-        // and the failure read as if the watchdog had survived. 500 ms leaves a
-        // ~100× margin over the microseconds a buffered announcement + resume take.
-        let store = BreakpointStore(timeout: 0.5)
+        // A long timeout, deliberately: the abort must win, and nothing here waits
+        // for the deadline any more, so making it generous costs nothing.
+        //
+        // This test used to race the clock twice — abort had to beat a 500 ms
+        // watchdog, then the test slept 800 ms to "prove" the watchdog was
+        // cancelled. Widening that margin only lowered the odds of a flake (it has
+        // gone red on `main` at 50 ms and again after); it never made the assertion
+        // sound, because sleeping past a deadline and seeing nothing is not proof
+        // that a task was cancelled. The store now reports both directly.
+        let store = BreakpointStore(timeout: 30)
         let forwarder = BreakpointForwarder(base: upstream, store: store)
         store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
 
@@ -220,12 +224,17 @@ import LoomSharedModels
         let announcements = store.pendingStream()
         async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
         let pending = try #require(await firstParked(announcements), "the exchange never parked")
+        let watchdog = try #require(store.mostRecentWatchdog, "the hold should have armed a watchdog")
+
         #expect(store.resume(pendingID: pending.id, resolution: .abort))
         _ = try await resultTask
 
-        // Well past the 500 ms watchdog: had it survived the abort, it would have
-        // resolved `.proceed` and the request would have reached upstream.
-        try await Task.sleep(nanoseconds: 800_000_000)
+        // Awaiting the watchdog is exact: a cancelled one returns as soon as its
+        // sleep throws, so this finishes in microseconds rather than waiting out a
+        // 30 s deadline. If the abort had failed to cancel it, this would hang —
+        // which the suite's time limit turns into a named failure.
+        await watchdog.value
+        #expect(store.timeoutResolutions == 0, "the watchdog must not have auto-proceeded the aborted hold")
         #expect(await upstream.callCount == 0, "aborted exchange must never reach upstream")
     }
 
