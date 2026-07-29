@@ -35,19 +35,6 @@ import LoomSharedModels
         return request
     }
 
-    /// Poll for a condition instead of sleeping a fixed time, so the test fails fast
-    /// on regression rather than flaking on a slow machine.
-    private func eventually(
-        _ description: String, timeout: TimeInterval = 3, _ condition: () -> Bool
-    ) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return }
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-        Issue.record("timed out waiting for: \(description)")
-    }
-
     @Test func aParkedWaitDoesNotBlockOtherCalls() async throws {
         let engine = StubEngine()
         let (server, url) = try await startServer(engine)

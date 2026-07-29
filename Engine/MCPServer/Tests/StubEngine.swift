@@ -44,6 +44,9 @@ final class StubEngine: ProxyControlling {
     /// when it finishes or is cancelled.
     private(set) var flowSubscriptionsOpened = 0
     private(set) var endedFlowSubscriptions = 0
+    /// Same signal for the breakpoint side, so a `wait_for_pending` test can push a
+    /// hold once the wait is actually listening rather than after a hopeful sleep.
+    private(set) var pendingSubscriptionsOpened = 0
 
     func flowStream() async -> AsyncStream<Flow> {
         AsyncStream { continuation in
@@ -56,7 +59,10 @@ final class StubEngine: ProxyControlling {
     }
 
     func pendingBreakpointStream() async -> AsyncStream<PendingBreakpoint> {
-        AsyncStream { continuation in pendingContinuations.append(continuation) }
+        AsyncStream { continuation in
+            pendingContinuations.append(continuation)
+            pendingSubscriptionsOpened += 1
+        }
     }
 
     /// Push a flow to every subscriber, as the store's broadcast would.
