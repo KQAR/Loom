@@ -43,6 +43,29 @@ import LoomSharedModels
         #expect(throws: Never.self) { try ca.serverContext(for: "127.0.0.1") }
     }
 
+    @Test func serverContext_cacheIsBoundedAndEvictsLeastRecentlyUsed() throws {
+        // Regression: contextCache was the one collection in the engine with no
+        // cap, so a long session across many distinct MITM'd hosts grew live
+        // NIOSSLContext (BoringSSL) state without limit.
+        let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
+        let capacity = CertificateAuthority.contextCacheCapacity
+
+        let first = try ca.serverContext(for: "host0.example.test")
+        for i in 1 ..< capacity {
+            _ = try ca.serverContext(for: "host\(i).example.test")
+        }
+        #expect(ca.cachedContextCount == capacity)
+
+        // Re-touch the oldest host so it becomes most-recently-used, then overflow.
+        #expect(try ca.serverContext(for: "host0.example.test") === first)
+        _ = try ca.serverContext(for: "overflow.example.test")
+
+        #expect(ca.cachedContextCount == capacity, "cache must stay at its cap")
+        // host0 was touched, so host1 is now the least-recently-used victim.
+        #expect(try ca.serverContext(for: "host0.example.test") === first,
+                "a recently-used host must survive eviction")
+    }
+
     @Test func mintedSerials_neverExceed20Octets() throws {
         // Regression: a 21-octet serial (top random bit set → DER prepends 0x00)
         // violates RFC 5280 and makes Secure Transport reject the leaf with
