@@ -82,7 +82,7 @@ enum CapturedExchange {
             _ = channel.setOption(ChannelOptions.autoRead, value: false)
             let eventLoop = channel.eventLoop
             Task {
-                let sourceApp = ProcessResolver.resolve(
+                let sourceApp = await ProcessResolver.resolve(
                     sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
                 )
                 eventLoop.execute {
@@ -110,7 +110,7 @@ enum CapturedExchange {
             // races: forwarding (below) hasn't started, so no response upsert can
             // interleave. `nil` (e.g. a LAN device with no local pid) skips the
             // redundant re-upsert.
-            let sourceApp = ProcessResolver.resolve(
+            let sourceApp = await ProcessResolver.resolve(
                 sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
             )
             if sourceApp != nil {

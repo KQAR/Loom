@@ -46,9 +46,13 @@ final class ProcessResolver: @unchecked Sendable {
     private(set) var scanCount = 0
 
     /// Resolve the app that owns `sourcePort` (its socket's foreign port is
-    /// `proxyPort`). Runs a `libproc` scan off the event loop — call it from the
-    /// async forwarding task, never on a NIO event loop. Returns nil if the socket
-    /// is already gone or the owner can't be determined.
+    /// `proxyPort`). Returns nil if the socket is already gone or the owner can't be
+    /// determined.
+    ///
+    /// **Blocking.** Never call this from a NIO event loop, and prefer the async
+    /// `resolve(sourcePort:proxyPort:isLoopbackPeer:)` over calling it from a
+    /// `Task` — that one moves the sweep off the cooperative pool. This entry point
+    /// stays for tests and for callers that already own a suitable thread.
     func resolve(sourcePort: UInt16, proxyPort: UInt16) -> SourceApp? {
         lock.lock()
         defer { lock.unlock() }
@@ -90,6 +94,36 @@ final class ProcessResolver: @unchecked Sendable {
             proxyPort: UInt16(truncatingIfNeeded: proxy)
         )
     }
+
+    /// The async form the forwarding path uses, and the one new callers should
+    /// reach for.
+    ///
+    /// Being "off the event loop" was never enough. The sweep is *synchronous and
+    /// blocking*, so calling it from a bare `Task {}` blocks a worker of the global
+    /// cooperative pool — which is sized to core count. With a 2 s table TTL, a
+    /// burst of connections produces several concurrent misses, each pinning a
+    /// worker for the length of a full pid/fd walk and stalling unrelated async
+    /// work process-wide. No data race, so nothing in TSan ever saw it.
+    ///
+    /// Hopping onto a dedicated serial queue costs one blocked thread instead of
+    /// several pool workers. Serial is not a new constraint either: `resolve` holds
+    /// one lock for its whole body, so these calls were already serialized — they
+    /// just used to serialize while occupying the pool.
+    static func resolve(sourcePort: Int?, proxyPort: Int?, isLoopbackPeer: Bool) async -> SourceApp? {
+        guard isLoopbackPeer else { return nil }
+        guard let source = sourcePort, let proxy = proxyPort, source > 0, proxy > 0 else { return nil }
+        return await withCheckedContinuation { continuation in
+            scanQueue.async {
+                continuation.resume(returning: shared.resolve(
+                    sourcePort: UInt16(truncatingIfNeeded: source),
+                    proxyPort: UInt16(truncatingIfNeeded: proxy)
+                ))
+            }
+        }
+    }
+
+    /// Where the blocking sweep actually runs.
+    private static let scanQueue = DispatchQueue(label: "com.loom.processresolver.scan")
 
     // MARK: - Private (lock held)
 

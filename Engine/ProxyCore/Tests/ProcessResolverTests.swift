@@ -31,6 +31,35 @@ import LoomSharedModels
         #expect(ProcessResolver.resolve(sourcePort: 0, proxyPort: 9_090, isLoopbackPeer: true) == nil)
     }
 
+    /// The async form is what the forwarding path calls, so its gating must match
+    /// the blocking one exactly — a LAN peer or a bad port must be refused before
+    /// anything is dispatched to the scan queue.
+    @Test func asyncForm_gatesTheSameWayAsTheBlockingOne() async {
+        #expect(await ProcessResolver.resolve(sourcePort: 54_321, proxyPort: 9_090, isLoopbackPeer: false) == nil)
+        #expect(await ProcessResolver.resolve(sourcePort: nil, proxyPort: 9_090, isLoopbackPeer: true) == nil)
+        #expect(await ProcessResolver.resolve(sourcePort: 50_000, proxyPort: nil, isLoopbackPeer: true) == nil)
+        #expect(await ProcessResolver.resolve(sourcePort: 0, proxyPort: 9_090, isLoopbackPeer: true) == nil)
+    }
+
+    /// Many concurrent resolutions must all complete — the point of the dedicated
+    /// queue is that they wait on one blocked thread instead of each blocking a
+    /// worker of the (core-count-sized) cooperative pool. A deadlock or a lost
+    /// continuation here would hang rather than fail, hence the time limit.
+    @Test(.timeLimit(.minutes(1)))
+    func concurrentAsyncResolutions_allComplete() async {
+        let results = await withTaskGroup(of: SourceApp?.self, returning: [SourceApp?].self) { group in
+            for port in 41_000 ..< 41_064 {
+                group.addTask {
+                    await ProcessResolver.resolve(sourcePort: port, proxyPort: 9_090, isLoopbackPeer: true)
+                }
+            }
+            var collected: [SourceApp?] = []
+            for await result in group { collected.append(result) }
+            return collected
+        }
+        #expect(results.count == 64, "every continuation resumed exactly once")
+    }
+
     /// The regression this replaces: 200 distinct source ports used to mean 200
     /// full-system scans. One sweep now answers them all (plus at most one rescan
     /// for a possibly-stale table).
