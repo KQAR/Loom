@@ -17,7 +17,23 @@ final class FaviconLoader {
 
     /// host → icon. A present-but-nil value means "tried, none available" so we
     /// stop retrying and fall back to the globe.
+    ///
+    /// Stays a dictionary rather than becoming an `NSCache`: `@Observable` tracks
+    /// the read of this property in `FaviconView.body`, and an `NSCache` mutation
+    /// is invisible to it — views would stop refreshing when an icon arrives.
+    /// Bounded by hand instead, below.
     private(set) var icons: [String: NSImage?] = [:]
+
+    /// Insertion order, so the cap can evict the oldest host. Without this the
+    /// dictionary grew one entry per distinct host forever — the one collection in
+    /// the app (with `AppIconLoader`) that ignored the "every collection has an
+    /// explicit cap" rule, in a process designed to stay resident for days across
+    /// arbitrary traffic.
+    private var insertionOrder: [String] = []
+    /// Far above any plausible visible set, so eviction can't thrash with the rows
+    /// on screen; and an evicted host that reappears is refilled from the disk
+    /// cache without a network fetch. Internal so the bound is assertable.
+    let maxIcons = 512
 
     private var inFlight: Set<String> = []
     private let diskDir: URL?
@@ -31,7 +47,10 @@ final class FaviconLoader {
         return URLSession(configuration: config)
     }()
 
-    private init() {
+    /// `shared` is the instance the app uses — a process-wide cache tied to no
+    /// view's lifetime. Internal rather than private so a test can take its own and
+    /// not inherit whatever hosts a previous test cached.
+    init() {
         diskDir = LoomPaths.cachesDirectory?.appendingPathComponent("favicons", isDirectory: true)
         if let diskDir { try? FileManager.default.createDirectory(at: diskDir, withIntermediateDirectories: true) }
     }
@@ -43,7 +62,7 @@ final class FaviconLoader {
 
         // Disk cache first — survives relaunches, avoids refetching.
         if let cached = diskImage(for: host) {
-            icons[host] = cached
+            store(cached, for: host)
             inFlight.remove(host)
             return
         }
@@ -52,8 +71,18 @@ final class FaviconLoader {
             guard let self else { return }
             let image = await Self.fetchFavicon(host: host, session: session)
             if let image { writeDisk(image, for: host) }
-            icons[host] = image        // nil marks "none available" so we don't retry
+            store(image, for: host)    // nil marks "none available" so we don't retry
             inFlight.remove(host)
+        }
+    }
+
+    /// Record an answer and evict the oldest once past the cap.
+    func store(_ image: NSImage?, for host: String) {
+        if icons[host] == nil { insertionOrder.append(host) }
+        icons[host] = image
+        while insertionOrder.count > maxIcons {
+            let oldest = insertionOrder.removeFirst()
+            icons.removeValue(forKey: oldest)
         }
     }
 
