@@ -117,6 +117,57 @@ import LoomSharedModels
         #expect(!redacted.request.url.contains("abc"))
     }
 
+    /// A WebSocket transcript is a body by any other name — a subscribe frame
+    /// carrying a token is the same leak as a login POST. `dropBodies` used to walk
+    /// straight past `webSocketMessages`, so a socket's frames were copied into a
+    /// "redacted" export verbatim.
+    @Test func dropBodies_blanksWebSocketFrames_keepingTheirShape() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let socket = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "wss://api.example.com/socket", headers: []),
+            startedAt: startedAt,
+            outcome: .streaming(CapturedResponse(statusCode: 101, headers: [], body: nil)),
+            webSocketMessages: [
+                WebSocketMessage(direction: .clientToServer, kind: .text,
+                                 payload: Data(#"{"type":"auth","token":"SUPERSECRET"}"#.utf8),
+                                 timestamp: startedAt),
+                WebSocketMessage(direction: .serverToClient, kind: .pong,
+                                 payload: Data(), timestamp: startedAt.addingTimeInterval(1)),
+            ]
+        )
+
+        let redacted = FlowRedaction(dropBodies: true).apply(to: socket)
+        let frames = try! #require(redacted.webSocketMessages)
+
+        #expect(frames.count == 2, "frames are blanked, never dropped")
+        let text = String(decoding: frames[0].payload, as: UTF8.self)
+        #expect(!text.contains("SUPERSECRET"))
+        #expect(text.contains(FlowRedaction.placeholder))
+        #expect(text.contains("37 bytes"), "the size survives, like a dropped body's fullBodyBytes")
+        #expect(frames[0].direction == .clientToServer, "direction/kind/ordering are what make it diagnosable")
+        #expect(frames[0].kind == .text)
+        #expect(frames[1].payload.isEmpty, "an already-empty frame gains no marker")
+    }
+
+    /// Without `dropBodies` the transcript is deliberately untouched — same rule as
+    /// request/response bodies, and the reason `export_har` now warns about it.
+    @Test func headerOnlyRedaction_leavesWebSocketFramesAlone() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let socket = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "wss://api.example.com/socket", headers: []),
+            startedAt: startedAt,
+            outcome: .streaming(CapturedResponse(statusCode: 101, headers: [], body: nil)),
+            webSocketMessages: [
+                WebSocketMessage(direction: .clientToServer, kind: .text,
+                                 payload: Data("hello".utf8), timestamp: startedAt),
+            ]
+        )
+        let redacted = FlowRedaction().apply(to: socket)
+        #expect(redacted.webSocketMessages?.first?.payload == Data("hello".utf8))
+    }
+
     /// A redacted export must still be a valid HAR, and must not carry the secret in
     /// some other field the encoder writes (query strings are emitted separately from
     /// the URL).

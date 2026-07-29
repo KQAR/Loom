@@ -49,7 +49,19 @@ extension MCPToolExecutor {
                 "headers": redaction.headerNames,
                 "queryKeys": redaction.queryKeys,
                 "bodiesDropped": redaction.dropBodies,
+                "webSocketFramesDropped": redaction.dropBodies,
             ] as [String: Any]
+            if !redaction.dropBodies {
+                // `redact: true` reads as "safe to share now", and it is not: a login
+                // POST body or a token in a JSON response survives it untouched. Say
+                // so in the result rather than leaving it to whoever remembers the
+                // second flag exists.
+                payload["warning"] = """
+                Bodies and WebSocket frames were NOT redacted — only headers and query \
+                parameters were. Pass `redact_bodies: true` as well if this file is \
+                leaving the machine.
+                """
+            }
         }
         return prettyJSON(payload)
     }
