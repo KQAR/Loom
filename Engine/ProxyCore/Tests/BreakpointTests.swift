@@ -7,7 +7,13 @@ import LoomSharedModels
 /// traffic on `BreakpointStore` until a resume decision arrives, applies edits to
 /// the request or response, aborts on request, and — crucially — leaves
 /// non-matching traffic completely untouched (including streaming).
-@Suite struct BreakpointTests {
+///
+/// Time-limited as a whole: every wait in here is for an exchange to park or
+/// release, and if one never does, the honest outcome is a failed test naming it —
+/// not a run that hangs until the CI job is killed. Several helpers used to carry
+/// their own poll budget purely to avoid that, which made them fail early on a
+/// loaded machine instead.
+@Suite(.timeLimit(.minutes(2))) struct BreakpointTests {
     private let url = URL(string: "https://api.example.test/v1/home")!
 
     private func recordingUpstream() -> BPStubUpstream { BPStubUpstream() }
@@ -275,6 +281,17 @@ import LoomSharedModels
     /// The window is narrow, so hammer it rather than trying to hit it once.
     @Test func cancellingAroundAResolution_leavesNoMarkerBehind() async throws {
         let store = BreakpointStore(timeout: 300)
+        // Subscribed once, before any hold starts: announcements are buffered, so
+        // consuming one per iteration can't be outrun (#116).
+        //
+        // This used to spin `for _ in 0..<2000 where !parked { await Task.yield() }`
+        // per iteration — up to a million yields. `Task.yield()` hands off within
+        // the cooperative pool without giving up wall-clock time, so on a loaded
+        // machine the `hold` task could simply not be scheduled inside the budget
+        // and the require failed. A spin gets *worse* as the box gets busier, which
+        // is exactly backwards for CI. The suite's time limit now turns a genuine
+        // stall into a failure instead of the hang the budget was there to prevent.
+        var announcements = store.pendingStream().makeAsyncIterator()
 
         for _ in 0..<500 {
             let info = PendingBreakpoint(
@@ -283,15 +300,8 @@ import LoomSharedModels
             )
             let holding = Task { await store.hold(info) }
 
-            var parked = false
-            for _ in 0..<2000 where !parked {
-                if store.pending().contains(where: { $0.id == info.id }) {
-                    parked = true
-                } else {
-                    await Task.yield()
-                }
-            }
-            try #require(parked, "the exchange never parked")
+            let parked = await announcements.next()
+            try #require(parked?.id == info.id, "the exchange never parked")
 
             // Resolve and cancel back to back, so the cancellation lands while
             // `hold` is on its way out and `held` no longer holds the entry.
