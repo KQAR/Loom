@@ -20,3 +20,9 @@ xcuserdata/
 # .claude/skills are project docs (CLAUDE.md delegates the release and
 # engine-embedding procedures to them), so they stay tracked.
 .claude/settings.local.json
+
+# Working notes from audit/analysis runs. Findings worth keeping belong in a PR
+# description or an issue, where they sit next to the change that resolved them;
+# a snapshot of "what was wrong on 2026-07-29" rots in the tree. Ignored because
+# a `git add -A` swept one such batch in by accident (#127).
+scratch/
