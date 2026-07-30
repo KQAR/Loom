@@ -160,7 +160,7 @@ about:
    it doesn't merge them. If a fifth surface appears (a rule-import format, a
    config file), collapse the codec first.
 
-### M8 — Capture reach (in progress)
+### M8 — Capture reach (done, 0.0.10)
 
 M1–M7 assumed the traffic arrives. This round is about the traffic that never
 does. Measured against Charles / whistle / mitmproxy, Loom's capture breadth had
@@ -186,6 +186,16 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    unreachable upstream is discovered after having already said "succeeded", so the
    client sees a closed connection instead of a SOCKS error; mitmproxy's SOCKS mode
    makes the same trade, and it is strictly better than declining to capture.
+
+   Sniffing needed a deadline, and finding out why is the lesson of this phase.
+   Classifying on the client's first bytes assumes the client speaks first; SSH,
+   SMTP, IMAP, MySQL and PostgreSQL are *server-first*, so they deadlocked outright —
+   the client waited for a banner Loom had not opened an upstream connection to
+   fetch. Every test passed, because the opaque-relay test's payload happened to be
+   client-first. It surfaced the moment a real `nc -X 5` was pointed at a real SSH
+   server, which is why "verified" now means through the running app and not through
+   a green suite. Sniffing carries a 150 ms deadline; only server-first connections
+   ever pay it, and each pays it once.
 
 2. **mTLS (client certificates) — done.** A target that requires a client
    certificate made Loom's upstream handshake fail outright, so those APIs could not
@@ -220,7 +230,15 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    asked, so an identity meant for one internal API must not be offered to every host
    that requests one.
 
-3. **Processes that ignore every proxy setting — deliberately not planned.** Only
+3. **Failures say which identity was presented** (`UpstreamTLSError`) — an mTLS
+   refusal used to read as a localized `NIOSSLError error 0` with no host and no
+   hint. The wrap has to sit in the response handler, not around `connect()`: TCP
+   succeeds and the handshake fails afterwards inside the pipeline. And it reports
+   what Loom *did*, never what the server *wanted* — a client-certificate
+   requirement arrives as a TLS alert, and under TLS 1.3 a rejection can surface
+   after the handshake looks complete, indistinguishable from an ordinary reset.
+
+4. **Processes that ignore every proxy setting — deliberately not planned.** Only
    transparent interception (pf `rdr` plus recovering the original destination
    through `/dev/pf`'s `DIOCNATLOOK`) reaches those, and it is the most expensive
    item on this list by a wide margin: root, a hand-rolled ioctl struct, and
