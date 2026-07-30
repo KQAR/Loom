@@ -76,7 +76,7 @@ Loom is built for one cycle — do this, don't just read:
 | Tool | Purpose |
 | --- | --- |
 | `get_version` | app + MCP protocol version — a cheap readiness ping |
-| `get_proxy_status` | running state, listen address (`lanReachable`), captured flow count, recording state, and **`systemProxy`: `on` / `off` / `unavailable`** — whether this Mac's own traffic is actually routed through Loom. Check it first when a capture is empty: "nothing happened" and "nothing was pointed at the proxy" look identical otherwise |
+| `get_proxy_status` | running state, listen address (`lanReachable`), captured flow count, recording state, and **`systemProxy`: `on` / `off` / `other` / `unavailable`** — whether this Mac's own traffic is actually routed through Loom. Check it first when a capture is empty: "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. `other` means **another proxy app** (Charles, Proxyman, whistle) owns the system proxy and `systemProxyPointsAt` gives its `host:port`; `unavailable` means this build can't inspect it, which is not the same as off |
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
 | `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `header_contains`, `body_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
 | `wait_for_flow` | **block** until a flow matching those same filters is captured (default 20 s, max 60), then return it — the tool to use around "trigger the action, then look". Checks the stored capture first, so a match that already arrived comes back immediately. `until` picks how much to wait for: `completed` (default), `response` (status known, body may still stream — use for WebSocket/long downloads), `request` (first sighting). The default window is the last 10 s (so triggering the action *then* calling can't race); widen with `since_seconds`/`since`. A timeout is a normal result (`timedOut: true`) and costs nothing: the flow stays in the store, and retrying with `since` = the reply's `windowFrom` resumes with no gap |
@@ -183,10 +183,15 @@ scoped rule); then one action:
 - `loom` tools missing / connection refused on `127.0.0.1:9092` → **the Loom app
   isn't running or isn't installed**. Ask the user to install/launch it; don't
   guess at traffic.
-- No flows / empty `get_recent_flows` → check `get_proxy_status`: if `systemProxy` is
-  `off`, this Mac's traffic isn't routed through Loom (fix with `set_system_proxy`);
-  otherwise nothing has been routed through the proxy
-  yet (client not pointed at it, or recording paused). Say so.
+- No flows / empty `get_recent_flows` → check `get_proxy_status`:
+  - `systemProxy: "off"` → this Mac's traffic isn't routed through Loom (fix with
+    `set_system_proxy`);
+  - `systemProxy: "other"` → **another proxy app holds the setting**
+    (`systemProxyPointsAt` names it). Tell the user to quit it rather than calling
+    `set_system_proxy`: taking the setting works, but Loom does not put the other
+    app's configuration back when it releases it, so that is the user's call;
+  - otherwise nothing has been routed through the proxy yet (client not pointed at
+    it, or recording paused). Say so.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with
   `get_ssl_scope` + `get_certificate_status`; don't claim you saw the plaintext.
@@ -205,7 +210,7 @@ them is noise:
 | Apple / pinned domains fail under HTTPS interception | Certificate pinning working as designed, not a bug |
 | HTTPS captured but bodies empty | CA not trusted on the client, or host out of SSL scope — check `get_certificate_status` / `get_ssl_scope` |
 | `get_version` reports a version you just replaced | The app was rebuilt but not relaunched |
-| Nothing captured at all | Nothing is routed through the proxy — check `get_proxy_status.systemProxy` |
+| Nothing captured at all | Nothing is routed through the proxy — check `get_proxy_status.systemProxy` (`other` = another proxy app owns the setting) |
 
 **Then scrub.** By the time you decide to file, your context is full of the user's
 real traffic — and the instinct that makes a *good* bug report (paste the exact
