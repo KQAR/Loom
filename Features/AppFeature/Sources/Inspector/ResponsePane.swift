@@ -9,13 +9,22 @@ struct ResponsePane: View {
     enum Tab: Hashable { case messages, raw, headers, cookies, body }
     @State private var tab: Tab = .raw
 
-    private var cookies: [CookieItem] {
-        CookieParsing.responseCookies(flow.response?.headers ?? [])
+    /// Same reason as `RequestPane.Derived`: `tabs` needs the cookies (to decide
+    /// whether the tab exists) and `content` needs them (to render it), so as a
+    /// computed property each render re-split every `Set-Cookie` header two or
+    /// three times over. That matters on the streaming path, where an open
+    /// inspector re-renders every ~100 ms batch while the request is in flight.
+    private struct Derived {
+        var cookies: [CookieItem]
+    }
+
+    private static func derive(_ flow: Flow) -> Derived {
+        Derived(cookies: CookieParsing.responseCookies(flow.response?.headers ?? []))
     }
 
     private var messages: [WebSocketMessage] { flow.webSocketMessages ?? [] }
 
-    private var tabs: [(String, Tab)] {
+    private func tabs(_ derived: Derived) -> [(String, Tab)] {
         if flow.isWebSocket {
             // A WebSocket flow's payload is its frames, not a body.
             return [("Messages(\(messages.count))", .messages), ("Headers(\(flow.response?.headers.count ?? 0))", .headers)]
@@ -24,15 +33,16 @@ struct ResponsePane: View {
             ("Raw", .raw),
             ("Headers(\(flow.response?.headers.count ?? 0))", .headers),
         ]
-        if !cookies.isEmpty { t.append(("Cookies(\(cookies.count))", .cookies)) }
+        if !derived.cookies.isEmpty { t.append(("Cookies(\(derived.cookies.count))", .cookies)) }
         t.append(("Body", .body))
         return t
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        let derived = Self.derive(flow)
+        return VStack(spacing: 0) {
             HStack(spacing: LoomTheme.Space.sm) {
-                InspectorTabStrip(tabs: tabs, selection: $tab)
+                InspectorTabStrip(tabs: tabs(derived), selection: $tab)
                 Spacer(minLength: LoomTheme.Space.xs)
                 if let code = flow.statusCode {
                     StatusBadge(code: code)
@@ -71,7 +81,7 @@ struct ResponsePane: View {
                 Divider()
             }
 
-            content
+            content(derived)
                 .overlay(alignment: .topTrailing) {
                     if tab == .body, let text = RequestPane.bodyText(flow.response?.body) {
                         FloatingCopyButton(text: text)
@@ -82,13 +92,13 @@ struct ResponsePane: View {
         .onChange(of: flow.id) {
             if flow.isWebSocket { tab = .messages }
             else if tab == .messages { tab = .raw }
-            else if tab == .cookies, cookies.isEmpty { tab = .raw }
+            else if tab == .cookies, derived.cookies.isEmpty { tab = .raw }
         }
     }
 
     /// See `RequestPane.content`: each tab scrolls itself; Raw/Body route large
     /// payloads to the viewport-lazy `NSTextView`.
-    @ViewBuilder private var content: some View {
+    @ViewBuilder private func content(_ derived: Derived) -> some View {
         if tab == .messages {
             Scrolled { WebSocketMessagesView(messages: messages, droppedMessages: flow.webSocketDroppedMessages) }
         } else if let response = flow.response {
@@ -96,7 +106,7 @@ struct ResponsePane: View {
             case .messages: EmptyView()
             case .raw: RawView(text: Self.rawText(flow), identity: "resp-raw:\(flow.id)")
             case .headers: Scrolled { HeadersList(headers: response.headers) }
-            case .cookies: Scrolled { CookiesView(cookies: cookies) }
+            case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
             case .body: BodyView(data: response.body, identity: "resp-body:\(flow.id)", fullBodyBytes: response.fullBodyBytes)
             }
         } else if let error = flow.error {
