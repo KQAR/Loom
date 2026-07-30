@@ -150,6 +150,47 @@ struct SOCKSCaptureTests {
         )
     }
 
+    @Test func relaysAServerFirstProtocolThatNeverSpeaksFirst() throws {
+        // SSH, SMTP, IMAP, MySQL, PostgreSQL: the *server* sends a banner before the
+        // client says a word. Classifying from the client's first bytes deadlocks
+        // those outright — the client waits for a banner, and Loom hasn't opened the
+        // upstream connection because it is still waiting to classify. Shipped broken
+        // and found with `nc -X 5` against a real SSH server; the opaque test above
+        // missed it because its payload was client-first.
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { try? group.syncShutdownGracefully() }
+        let banner = "SSH-2.0-loom-test\r\n"
+        let server = try ServerBootstrap(group: group)
+            .childChannelInitializer { $0.pipeline.addHandler(BannerHandler(banner: banner)) }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        defer { try? server.close().wait() }
+        let bannerPort = try #require(server.localAddress?.port)
+
+        let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
+        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
+        defer { runBlockingVoid { await engine.stop() } }
+        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+
+        let loop = group.next()
+        let ready = loop.makePromise(of: Void.self)
+        let received = loop.makePromise(of: String.self)
+
+        let handshake = SOCKSHandshakeClient(host: "127.0.0.1", port: bannerPort, ready: ready)
+        let collector = ByteCollector(sentinel: "loom-test", promise: received)
+        let client = try ClientBootstrap(group: group)
+            .channelInitializer { $0.pipeline.addHandler(handshake) }
+            .connect(host: "127.0.0.1", port: socksPort).wait()
+        defer { try? client.close().wait() }
+
+        try ready.futureResult.wait()
+        try client.pipeline.removeHandler(handshake).wait()
+        try client.pipeline.addHandler(collector).wait()
+
+        // Deliberately writes nothing. The banner has to arrive on the strength of the
+        // sniff deadline alone.
+        #expect(try received.futureResult.wait().contains(banner.trimmingCharacters(in: .whitespacesAndNewlines)))
+    }
+
     @Test func refusesUDPAssociateInsteadOfHanging() throws {
         // A QUIC-minded client asks for UDP. Loom is a TCP proxy: say so, so the
         // client falls back instead of waiting on a reply that never comes.
@@ -340,5 +381,24 @@ private final class ByteCollector: ChannelInboundHandler {
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         promise.fail(error)
+    }
+}
+
+/// Sends a banner the moment the connection opens and never reads — a server-first
+/// protocol in miniature (SSH, SMTP, IMAP, MySQL all behave this way).
+private final class BannerHandler: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    private let banner: String
+
+    init(banner: String) {
+        self.banner = banner
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        var buffer = context.channel.allocator.buffer(capacity: banner.utf8.count)
+        buffer.writeString(banner)
+        context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
     }
 }
