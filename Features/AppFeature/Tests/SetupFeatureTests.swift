@@ -31,6 +31,7 @@ import Testing
             }
             $0.proxyClient.certificateStatus = { cert }
             $0.proxyClient.sslScope = { scope }
+            $0.proxyClient.clientCertificates = { [] }
         }
         await store.send(.refresh)
         await store.receive(\.systemProxySnapshotChanged) {
@@ -42,6 +43,146 @@ import Testing
             $0.sslScope = scope
             $0.sslEnabled = true
         }
+        // Re-read on every appearance: the other writer is an agent, so an identity
+        // can appear without the human having done anything.
+        await store.receive(\.clientCertificatesLoaded)
+    }
+
+    // MARK: Mutual TLS (client certificates)
+
+    @Test func test_expandingClientCerts_reloadsTheList() async {
+        let summary = ClientCertificateSummary(
+            id: UUID(0), hostPattern: "api.corp.example", label: "Corp", isEnabled: true,
+            subject: "CN=client", notAfter: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.clientCertificates = { [summary] }
+        }
+
+        await store.send(.clientCertsExpandTapped) { $0.clientCertsExpanded = true }
+        await store.receive(\.clientCertificatesLoaded) { $0.clientCertificates = [summary] }
+
+        // Collapsing is just UI — no reason to hit the engine again.
+        await store.send(.clientCertsExpandTapped) { $0.clientCertsExpanded = false }
+    }
+
+    @Test func test_addClientCertificate_readsTheFileAndStoresItsBytes() async throws {
+        // The view hands over a URL, not bytes: reading key material belongs in the
+        // effect, not on the main thread inside a form's @State.
+        let bundle = Data("pretend-pkcs12".utf8)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-setup-test-\(UUID()).p12")
+        try bundle.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let saved = LockIsolated<ClientCertificate?>(nil)
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setClientCertificate = { certificate in
+                saved.setValue(certificate)
+            }
+            $0.proxyClient.clientCertificates = { [] }
+        }
+
+        await store.send(.addClientCertificate(
+            url: url, hostPattern: "api.corp.example", passphrase: "s3cret", label: "Corp"
+        )) {
+            $0.clientCertBusy = true
+        }
+        await store.receive(\.clientCertificatesLoaded)
+        await store.receive(\.clientCertFinished) { $0.clientCertBusy = false }
+
+        let certificate = try #require(saved.value)
+        #expect(certificate.pkcs12 == bundle)
+        #expect(certificate.hostPattern == "api.corp.example")
+        #expect(certificate.passphrase == "s3cret")
+        #expect(certificate.label == "Corp")
+    }
+
+    @Test func test_addClientCertificate_relaysTheEnginesMessageVerbatim() async throws {
+        // The engine validates the bundle on the way in, and its message names what
+        // the operator can fix (wrong passphrase / not a .p12). Replacing it with a
+        // generic failure would throw that away.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-setup-test-\(UUID()).p12")
+        try Data("pretend".utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setClientCertificate = { _ in
+                throw ProxyControlError.invalidClientCertificate("wrong passphrase")
+            }
+        }
+
+        await store.send(.addClientCertificate(url: url, hostPattern: "a.test", passphrase: "", label: "")) {
+            $0.clientCertBusy = true
+        }
+        await store.receive(\.clientCertFinished) {
+            $0.clientCertBusy = false
+            $0.clientCertMessage = "invalid client certificate: wrong passphrase"
+        }
+        // The list is not reloaded on failure: nothing changed, and a reload would
+        // clear the message's context.
+    }
+
+    @Test func test_addClientCertificate_unreadableFileStillReportsRatherThanFailingSilently() async {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-missing-\(UUID()).p12")
+        let store = TestStore(initialState: SetupFeature.State()) { SetupFeature() }
+        // Non-exhaustive on purpose: the exact wording comes from Foundation and is
+        // localized. What must hold is that *something* reaches the operator instead
+        // of the add quietly doing nothing.
+        store.exhaustivity = .off
+
+        await store.send(.addClientCertificate(url: missing, hostPattern: "a.test", passphrase: "", label: ""))
+        await store.receive(\.clientCertFinished)
+        #expect(store.state.clientCertBusy == false)
+        #expect(store.state.clientCertMessage?.isEmpty == false)
+    }
+
+    @Test func test_deleteClientCertificate_reloadsTheList() async {
+        let deleted = LockIsolated<UUID?>(nil)
+        var initial = SetupFeature.State()
+        initial.clientCertificates = [ClientCertificateSummary(
+            id: UUID(1), hostPattern: "a.test", label: "a.test", isEnabled: true
+        )]
+        let store = TestStore(initialState: initial) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.deleteClientCertificate = { deleted.setValue($0) }
+            $0.proxyClient.clientCertificates = { [] }
+        }
+
+        await store.send(.deleteClientCertificateTapped(id: UUID(1))) { $0.clientCertBusy = true }
+        await store.receive(\.clientCertificatesLoaded) { $0.clientCertificates = [] }
+        await store.receive(\.clientCertFinished) { $0.clientCertBusy = false }
+        #expect(deleted.value == UUID(1))
+    }
+
+    @Test func test_brokenClientCertificates_countsExpiredAndUnreadable() {
+        // The row's "needs attention" count. Expired and unreadable both fail a
+        // handshake exactly like having no identity, so they're one category.
+        var state = SetupFeature.State()
+        state.clientCertificates = [
+            ClientCertificateSummary(
+                id: UUID(0), hostPattern: "good.test", label: "good", isEnabled: true,
+                subject: "CN=c", notAfter: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            ClientCertificateSummary(
+                id: UUID(1), hostPattern: "expired.test", label: "expired", isEnabled: true,
+                subject: "CN=c", notAfter: Date(timeIntervalSince1970: 1)
+            ),
+            ClientCertificateSummary(
+                id: UUID(2), hostPattern: "broken.test", label: "broken", isEnabled: true,
+                problem: "could not read the PKCS#12 bundle"
+            ),
+        ]
+        #expect(state.brokenClientCertificates.map(\.hostPattern) == ["expired.test", "broken.test"])
     }
 
     // MARK: System proxy

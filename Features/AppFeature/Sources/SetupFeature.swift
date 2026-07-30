@@ -36,6 +36,25 @@ public struct SetupFeature: Sendable {
         public var certBusy = false               // a trust action is running
         public var certActionMessage: String?     // transient feedback under the cert card
 
+        /// Mutual-TLS identities Loom presents when an origin demands one, secrets
+        /// stripped. Mirrored here rather than read on demand because the human's
+        /// half of the contract is *seeing* what an agent installed — an identity
+        /// that only exists in the engine is an invisible write.
+        public var clientCertificates: [ClientCertificateSummary] = []
+        public var clientCertBusy = false
+        public var clientCertMessage: String?
+        /// Whether the panel's client-certificate section is expanded. Collapsed by
+        /// default: this is the lowest-frequency configuration Loom has, so it earns
+        /// a row, not permanent space.
+        public var clientCertsExpanded = false
+
+        /// Identities that can't do their job — expired, or a bundle that no longer
+        /// reads. Both fail a handshake exactly like having no identity at all, which
+        /// is why the row surfaces a count instead of waiting to be opened.
+        public var brokenClientCertificates: [ClientCertificateSummary] {
+            clientCertificates.filter { $0.isExpired() || $0.problem != nil }
+        }
+
         public init() {}
     }
 
@@ -60,6 +79,16 @@ public struct SetupFeature: Sendable {
         case recheckCertTapped
         case certActionStarted(String)
         case certActionFinished(message: String?)
+
+        // MARK: Mutual TLS
+        case clientCertsExpandTapped
+        case clientCertificatesLoaded([ClientCertificateSummary])
+        /// The human picked a `.p12` and filled in the form. The file is read in the
+        /// effect, not the view: a view that loads key material would put it on the
+        /// main thread and into a `@State` that outlives the sheet.
+        case addClientCertificate(url: URL, hostPattern: String, passphrase: String, label: String)
+        case deleteClientCertificateTapped(id: UUID)
+        case clientCertFinished(message: String?)
     }
 
     @Dependency(\.proxyClient) var proxyClient
@@ -83,6 +112,9 @@ public struct SetupFeature: Sendable {
                     await send(.systemProxySnapshotChanged(privilegedHelperClient.systemProxySnapshot()))
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    // Re-read on every appearance, because the other writer is an
+                    // agent: an identity can appear without the human doing anything.
+                    await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
                 }
 
             // MARK: System proxy
@@ -216,6 +248,61 @@ public struct SetupFeature: Sendable {
             case let .certActionFinished(message):
                 state.certBusy = false
                 state.certActionMessage = message
+                return .none
+
+            // MARK: Mutual TLS (client certificates)
+
+            case .clientCertsExpandTapped:
+                state.clientCertsExpanded.toggle()
+                // Opening is also a re-read: the list is only as fresh as its last
+                // load, and the agent can have written since.
+                guard state.clientCertsExpanded else { return .none }
+                return .run { send in
+                    await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
+                }
+
+            case let .clientCertificatesLoaded(summaries):
+                state.clientCertificates = summaries
+                return .none
+
+            case let .addClientCertificate(url, hostPattern, passphrase, label):
+                state.clientCertBusy = true
+                state.clientCertMessage = nil
+                return .run { send in
+                    do {
+                        let bundle = try Data(contentsOf: url)
+                        try await proxyClient.setClientCertificate(ClientCertificate(
+                            hostPattern: hostPattern, pkcs12: bundle,
+                            passphrase: passphrase, label: label
+                        ))
+                        await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
+                        await send(.clientCertFinished(message: nil))
+                    } catch {
+                        // The engine validates the bundle on the way in, so the message
+                        // it throws already names what the operator can fix (wrong
+                        // passphrase / not a .p12). Relay it verbatim.
+                        let message = (error as? ProxyControlError)?.message ?? error.localizedDescription
+                        await send(.clientCertFinished(message: message))
+                    }
+                }
+
+            case let .deleteClientCertificateTapped(id):
+                state.clientCertBusy = true
+                state.clientCertMessage = nil
+                return .run { send in
+                    do {
+                        try await proxyClient.deleteClientCertificate(id)
+                        await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
+                        await send(.clientCertFinished(message: nil))
+                    } catch {
+                        let message = (error as? ProxyControlError)?.message ?? error.localizedDescription
+                        await send(.clientCertFinished(message: message))
+                    }
+                }
+
+            case let .clientCertFinished(message):
+                state.clientCertBusy = false
+                state.clientCertMessage = message
                 return .none
             }
         }
