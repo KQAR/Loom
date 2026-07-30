@@ -39,9 +39,30 @@ struct IconCacheBoundsTests {
         #expect(loader.icons.count == before + 1)
     }
 
-    /// `AppIconLoader` is not observed by any view, so it can use `NSCache` — which
-    /// also evicts under memory pressure. This pins that it *has* a limit at all.
-    @Test func appIconCache_hasACountLimit() {
-        #expect(AppIconLoader.cache.countLimit > 0)
+    /// `AppIconLoader` used to be an `NSCache`, which was fine while nothing observed
+    /// it. It now resolves icons asynchronously — a synchronous
+    /// `NSWorkspace.icon(forFile:)` miss measured 24 ms inside a row body — so a view
+    /// must be able to observe an icon arriving, and an `NSCache` mutation is invisible
+    /// to `@Observable`. Same dictionary-plus-hand-rolled-cap shape as the favicons.
+    @Test func appIconCache_evictsOldestPastTheCap() {
+        let loader = AppIconLoader()
+        let cap = loader.maxIcons
+        let paths = (0 ..< (cap + 20)).map { "/Applications/App-\($0).app" }
+
+        for path in paths { loader.store(nil, for: path) }
+
+        #expect(loader.icons.count <= cap, "the map must not grow past its cap (got \(loader.icons.count))")
+        #expect(loader.icons[paths[0]] == nil, "the oldest bundle was evicted")
+        #expect(loader.icons.index(forKey: paths[paths.count - 1]) != nil, "the newest bundle is retained")
+    }
+
+    /// Same drift guard as the favicon map: re-recording a path must not add a second
+    /// slot in the eviction order.
+    @Test func appIconCache_repeatedPathDoesNotGrowTheOrder() {
+        let loader = AppIconLoader()
+        let path = "/Applications/Repeat.app"
+        let before = loader.icons.count
+        for _ in 0 ..< 20 { loader.store(nil, for: path) }
+        #expect(loader.icons.count == before + 1)
     }
 }

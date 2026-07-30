@@ -6,7 +6,7 @@ import SwiftUI
 ///
 /// SwiftUI's `Table` is NSTableView-backed and `ScrollViewReader` doesn't reliably
 /// drive it, so this bridges to AppKit: it locates the table's `NSScrollView`,
-/// scrolls to the last row when `follow` is on and the row count changes, and
+/// scrolls to the last row when `follow` is on and the row count changed, and
 /// listens for **live-scroll** notifications (user gesture only — programmatic
 /// scrolls don't fire them) to turn following off. Following turns back on when
 /// the user scrolls back to the bottom.
@@ -26,7 +26,11 @@ struct RequestTableAutoScroll: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         DispatchQueue.main.async {
             context.coordinator.attachIfNeeded(from: nsView)
-            if follow { context.coordinator.scrollToBottom() }
+            // Only when the row count actually moved. `updateNSView` runs on every
+            // render of the table, and the table re-renders for any state change it
+            // observes — not just a new flow — so an unconditional scroll spent main
+            // thread on renders that hadn't added a row.
+            if follow { context.coordinator.scrollToBottomIfRowCountChanged(rowCount) }
         }
     }
 
@@ -66,6 +70,19 @@ struct RequestTableAutoScroll: NSViewRepresentable {
             // Follow iff they're at the bottom; only write when it actually changes.
             let atBottom = isAtBottom()
             if follow != atBottom { follow = atBottom }
+        }
+
+        /// Last row count this coordinator scrolled for. `nil` until the first scroll,
+        /// so the initial attach still pins to the newest row.
+        private var lastScrolledRowCount: Int?
+
+        /// Tail-follow, but only when the list actually grew or shrank. Re-following
+        /// after the user scrolls back to the bottom still works: `userScrolling`
+        /// flips `follow`, and the next row arrival scrolls.
+        func scrollToBottomIfRowCountChanged(_ rowCount: Int) {
+            guard lastScrolledRowCount != rowCount else { return }
+            lastScrolledRowCount = rowCount
+            scrollToBottom()
         }
 
         func scrollToBottom() {

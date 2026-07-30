@@ -161,7 +161,7 @@ public struct MainView: View {
         if store.displayFlows.isEmpty {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            requestTable
+            RequestTableView(store: store, followTail: $followTail)
                 // The clear control floats over the table (bottom-right): a small red
                 // dot at rest, expanding to the full hold-to-clear button on hover, so
                 // it barely covers content until you reach for it. No reserved gap —
@@ -245,120 +245,7 @@ public struct MainView: View {
         .padding(LoomTheme.Space.md)
     }
 
-    private var requestTable: some View {
-        // Evaluated once per render and reused: `displayFlows` filters the capture,
-        // and the auto-scroll modifier below needs its count too.
-        let rows = store.displayFlows
-        return Table(rows, selection: $store.selectedFlowID.sending(\.flowSelected)) {
-            TableColumn("") { flow in
-                StatusDot(flow: flow)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            .width(28)
-
-            TableColumn("#") { flow in
-                // 1-based capture order: position in the oldest-first store + 1.
-                Text("\((store.flows.index(id: flow.id) ?? 0) + 1)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
-            .width(min: 36, ideal: 44, max: 64)
-
-            TableColumn("App") { flow in
-                AppIconView(app: flow.sourceApp)
-                    .help(flow.sourceApp?.name ?? "Unknown app")
-            }
-            .width(36)
-
-            TableColumn("Method") { flow in
-                Text(flow.request.method).font(.callout.monospaced())
-            }
-            .width(min: 52, ideal: 62, max: 90)
-
-            TableColumn("Host") { flow in
-                // One parse per row, shared by the favicon and the label.
-                let host = Self.host(flow.request.url)
-                HStack(spacing: 6) {
-                    FaviconView(host: host)
-                    Text(host)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .width(min: 110, ideal: 180, max: 280)
-
-            TableColumn("Path") { flow in
-                HStack(spacing: LoomTheme.Space.xs) {
-                    Text(Self.path(flow.request.url))
-                        .font(.callout.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if flow.replayedFrom != nil {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.caption2)
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    // Loaded from a file, not seen on this machine's wire. Marked for
-                    // the same reason a replay is: the row would otherwise read as
-                    // something that just happened here.
-                    if let importedFrom = flow.importedFrom {
-                        Image(systemName: "tray.and.arrow.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .help("Imported from \(importedFrom)")
-                    }
-                    if let applied = flow.appliedRules, !applied.isEmpty {
-                        Image(systemName: "wand.and.stars")
-                            .font(.caption2)
-                            .foregroundStyle(Color.accentColor)
-                            .help("Modified by rules: \(applied.map(\.name).joined(separator: ", "))")
-                    }
-                    if flow.isWebSocket {
-                        Image(systemName: "bolt.horizontal.circle")
-                            .font(.caption2)
-                            .foregroundStyle(Color.accentColor)
-                            .help("WebSocket · \(flow.webSocketMessages?.count ?? 0) messages")
-                    }
-                }
-            }
-
-            TableColumn("Time") { flow in
-                Text(flow.durationMS.map { "\($0)ms" } ?? "—")
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            .width(min: 56, ideal: 70, max: 100)
-        }
-        .background(RequestTableAutoScroll(rowCount: rows.count, follow: $followTail))
-        .contextMenu(forSelectionType: Flow.ID.self) { ids in
-            if let id = ids.first, let flow = store.flows[id: id] {
-                // Parsed once for the whole menu, not once per action closure.
-                let host = Self.host(flow.request.url)
-                Button("Replay", systemImage: "arrow.triangle.2.circlepath") {
-                    store.send(.replayTapped(id))
-                }
-                Divider()
-                Menu("Copy") {
-                    Button("Host") { Self.copy(host) }
-                    Button("Path") { Self.copy(Self.path(flow.request.url)) }
-                    Button("URL") { Self.copy(flow.request.url) }
-                    Divider()
-                    Button("as cURL") { store.send(.copyCurlTapped(id)) }
-                }
-                Menu("Add Rule") {
-                    Button("Mock This Response") { store.send(.addRuleFromFlow(id, .mockResponse)) }
-                        .disabled(flow.response == nil)
-                    Divider()
-                    Button("Block This URL") { store.send(.addRuleFromFlow(id, .blockURL)) }
-                    Button("Block Host \(host)") {
-                        store.send(.addRuleFromFlow(id, .blockHost))
-                    }
-                }
-            }
-        }
-    }
-
-    private static func copy(_ text: String) {
+    static func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -605,5 +492,137 @@ struct StatusDot: View {
         if let code = flow.statusCode { return "\(code)" }
         if flow.error != nil { return "Error" }
         return "In flight"
+    }
+}
+
+/// The request table, its own view rather than a computed property of `MainView`.
+///
+/// As part of `MainView.body` it shared that view's observation: every store property
+/// read anywhere in the window — an audit entry arriving, a rule refresh, a breakpoint
+/// tick, proxy status, update availability — invalidated the table too, and re-running
+/// the table body makes SwiftUI re-diff every row. Here it reads only what it draws.
+private struct RequestTableView: View {
+    @Bindable var store: StoreOf<AppFeature>
+    /// Tail-follow lives in `MainView`, alongside the empty state and clear button
+    /// that share it; the AppKit scroll bridge below is what consumes it.
+    @Binding var followTail: Bool
+
+    var body: some View {
+        // Evaluated once per render and reused: `displayFlows` filters the capture,
+        // and the auto-scroll modifier below needs its count too.
+        let rows = store.displayFlows
+        // Read once here, for the `#` column below. The lookup was already O(1) on
+        // `IdentifiedArray` — what it cost was *observation*: a cell body that touches
+        // `store.flows` makes every realized row depend on the whole capture, so each
+        // live batch of flows invalidated all of them. Captured as a local, the
+        // dependency belongs to this one view instead of to N rows.
+        let capture = store.flows
+        return Table(rows, selection: $store.selectedFlowID.sending(\.flowSelected)) {
+            TableColumn("") { flow in
+                StatusDot(flow: flow)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .width(28)
+
+            TableColumn("#") { flow in
+                // 1-based capture order: position in the oldest-first store + 1.
+                Text("\((capture.index(id: flow.id) ?? 0) + 1)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            .width(min: 36, ideal: 44, max: 64)
+
+            TableColumn("App") { flow in
+                AppIconView(app: flow.sourceApp)
+                    .help(flow.sourceApp?.name ?? "Unknown app")
+            }
+            .width(36)
+
+            TableColumn("Method") { flow in
+                Text(flow.request.method).font(.callout.monospaced())
+            }
+            .width(min: 52, ideal: 62, max: 90)
+
+            TableColumn("Host") { flow in
+                // One parse per row, shared by the favicon and the label.
+                let host = MainView.host(flow.request.url)
+                HStack(spacing: 6) {
+                    FaviconView(host: host)
+                    Text(host)
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .width(min: 110, ideal: 180, max: 280)
+
+            TableColumn("Path") { flow in
+                HStack(spacing: LoomTheme.Space.xs) {
+                    Text(MainView.path(flow.request.url))
+                        .font(.callout.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if flow.replayedFrom != nil {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.caption2)
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    // Loaded from a file, not seen on this machine's wire. Marked for
+                    // the same reason a replay is: the row would otherwise read as
+                    // something that just happened here.
+                    if let importedFrom = flow.importedFrom {
+                        Image(systemName: "tray.and.arrow.down")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("Imported from \(importedFrom)")
+                    }
+                    if let applied = flow.appliedRules, !applied.isEmpty {
+                        Image(systemName: "wand.and.stars")
+                            .font(.caption2)
+                            .foregroundStyle(Color.accentColor)
+                            .help("Modified by rules: \(applied.map(\.name).joined(separator: ", "))")
+                    }
+                    if flow.isWebSocket {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.caption2)
+                            .foregroundStyle(Color.accentColor)
+                            .help("WebSocket · \(flow.webSocketMessages?.count ?? 0) messages")
+                    }
+                }
+            }
+
+            TableColumn("Time") { flow in
+                Text(flow.durationMS.map { "\($0)ms" } ?? "—")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .width(min: 56, ideal: 70, max: 100)
+        }
+        .background(RequestTableAutoScroll(rowCount: rows.count, follow: $followTail))
+        .contextMenu(forSelectionType: Flow.ID.self) { ids in
+            if let id = ids.first, let flow = store.flows[id: id] {
+                // Parsed once for the whole menu, not once per action closure.
+                let host = MainView.host(flow.request.url)
+                Button("Replay", systemImage: "arrow.triangle.2.circlepath") {
+                    store.send(.replayTapped(id))
+                }
+                Divider()
+                Menu("Copy") {
+                    Button("Host") { MainView.copy(host) }
+                    Button("Path") { MainView.copy(MainView.path(flow.request.url)) }
+                    Button("URL") { MainView.copy(flow.request.url) }
+                    Divider()
+                    Button("as cURL") { store.send(.copyCurlTapped(id)) }
+                }
+                Menu("Add Rule") {
+                    Button("Mock This Response") { store.send(.addRuleFromFlow(id, .mockResponse)) }
+                        .disabled(flow.response == nil)
+                    Divider()
+                    Button("Block This URL") { store.send(.addRuleFromFlow(id, .blockURL)) }
+                    Button("Block Host \(host)") {
+                        store.send(.addRuleFromFlow(id, .blockHost))
+                    }
+                }
+            }
+        }
     }
 }
