@@ -51,6 +51,9 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
     /// routes at or before `ProtocolSniff.maxBytes`.
     private var pending: [UInt8] = []
     private var target: SOCKS5.Request?
+    /// Fires if the client never speaks (see `armSniffDeadline`). Cancelled the moment
+    /// routing happens, so a classified connection pays nothing for it.
+    private var sniffDeadlineTask: Scheduled<Void>?
 
     init(
         store: FlowStore,
@@ -78,6 +81,16 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
         }
         if let bytes = buffer.readBytes(length: buffer.readableBytes) { pending.append(contentsOf: bytes) }
         advance(context: context)
+    }
+
+    /// A client that hangs up mid-handshake must not leave the sniff deadline armed:
+    /// it would fire on a dead channel and open an upstream connection for an exchange
+    /// nobody is waiting on.
+    func channelInactive(context: ChannelHandlerContext) {
+        phase = .done
+        sniffDeadlineTask?.cancel()
+        sniffDeadlineTask = nil
+        context.fireChannelInactive()
     }
 
     /// Drive the state machine as far as the buffered bytes allow.
@@ -129,6 +142,7 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
                     target = request
                     write(SOCKS5.reply(.succeeded), context: context)
                     phase = .sniffing
+                    armSniffDeadline(context: context)
                 }
 
             case .sniffing:
@@ -143,6 +157,43 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
         }
     }
 
+    /// Route as opaque if the client hasn't said anything by the deadline.
+    ///
+    /// Sniffing the client's first bytes assumes the client speaks first. Plenty of
+    /// protocols don't: SSH, SMTP, IMAP, MySQL and PostgreSQL all have the *server*
+    /// send a banner or greeting before the client says a word — and those are a large
+    /// part of why a SOCKS listener exists at all. Without this deadline such a
+    /// connection deadlocks outright: the client waits for a banner, and Loom hasn't
+    /// even opened the upstream connection because it is still waiting to classify.
+    /// Found by pointing `nc -X 5` at a real SSH server; the integration test missed
+    /// it because its opaque payload was client-first.
+    ///
+    /// The alternative was to connect upstream eagerly and let whichever side speaks
+    /// first decide. That removes the delay but opens a connection Loom then throws
+    /// away for every HTTP/TLS exchange — the common case — so the cost lands on the
+    /// traffic Loom exists to capture rather than on the tail. A client that *does*
+    /// speak first sends its bytes within microseconds of the reply (it is already
+    /// waiting on the socket), so in practice only a server-first protocol ever pays
+    /// this, once per connection, on a handshake that is not latency-critical.
+    private func armSniffDeadline(context: ChannelHandlerContext) {
+        let deadline = context.eventLoop.scheduleTask(in: Self.sniffDeadline) { [weak self] in
+            guard let self, self.phase == .sniffing else { return }
+            // Nothing buffered means nothing to classify; anything buffered that still
+            // reads as `.needMore` is a partial prefix that isn't going to complete.
+            self.route(context: context, guess: .opaque)
+        }
+        // Same event loop as every read, so no synchronisation is needed here.
+        sniffDeadlineTask = deadline
+    }
+
+    /// How long to wait for a client to speak before assuming it never will.
+    ///
+    /// Short enough that a server-first handshake isn't visibly slowed, long enough
+    /// that a client-first one is never misclassified — the latter is already sitting
+    /// on the socket when the success reply goes out, so it wins this race by orders
+    /// of magnitude, not by a margin.
+    static let sniffDeadline: TimeAmount = .milliseconds(150)
+
     /// Install the stack the sniffed protocol calls for, then replay the bytes that
     /// paid for the decision.
     ///
@@ -152,6 +203,8 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
     private func route(context: ChannelHandlerContext, guess: ClientProtocolGuess) {
         guard let target else { return }
         phase = .done
+        sniffDeadlineTask?.cancel()
+        sniffDeadlineTask = nil
         let channel = context.channel
         let host = target.host
         let port = target.port
