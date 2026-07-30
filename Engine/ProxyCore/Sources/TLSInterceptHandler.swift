@@ -9,6 +9,11 @@ import LoomSharedModels
 /// captures the response, and writes it back — all while the client believes it
 /// is talking straight to the server. Keep-alive is honored: many requests may
 /// share one intercepted connection.
+///
+/// Also serves cleartext HTTP whose destination came from somewhere other than the
+/// request line (`upstreamTLS: false`, used by the SOCKS listener): the shape is
+/// identical — origin-form requests plus a known host:port — and the only
+/// difference is which scheme the rebuilt absolute URL carries.
 final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
@@ -17,6 +22,10 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     private let port: Int
     private let store: FlowStore
     private let forwarder: UpstreamForwarding
+    /// Whether the leg Loom re-originates is TLS. True for a MITM'd CONNECT (the
+    /// client believes it is on HTTPS); false for cleartext HTTP arriving over
+    /// SOCKS, where re-fetching over `https://` would be a different request.
+    private let upstreamTLS: Bool
 
     private var requestHead: HTTPRequestHead?
     private var requestURL: URL?
@@ -27,11 +36,12 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     private var bodyBridge: RequestBodyBridge?
     private var droppingRequest = false
 
-    init(host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding) {
+    init(host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool = true) {
         self.host = host
         self.port = port
         self.store = store
         self.forwarder = forwarder
+        self.upstreamTLS = upstreamTLS
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -110,22 +120,27 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                 urlString: absolute,
                 webSocketHost: host,
                 webSocketPort: port,
-                webSocketUpstreamTLS: true,
+                webSocketUpstreamTLS: upstreamTLS,
                 webSocketRequestPath: requestPath,
-                webSocketRemoveHandlerNames: ["loom.mitm.encoder", "loom.mitm.decoder", "loom.mitm.intercept"]
+                webSocketRemoveHandlerNames: [
+                    MITMPipeline.encoderName, MITMPipeline.decoderName, MITMPipeline.interceptName,
+                ]
             ),
             store: store, forwarder: forwarder
         )
     }
 
     /// Intercepted requests arrive in origin form (`/path`); rebuild the absolute
-    /// URL from the CONNECT authority so the captured flow and the upstream fetch
-    /// both address the real host.
+    /// URL from the known authority so the captured flow and the upstream fetch
+    /// both address the real host. The scheme's default port is elided so the
+    /// captured URL reads the way the client wrote it.
     private func absoluteURLString(for head: HTTPRequestHead) -> String {
         let lower = head.uri.lowercased()
         if lower.hasPrefix("https://") || lower.hasPrefix("http://") { return head.uri }
-        let authority = port == 443 ? host : "\(host):\(port)"
+        let scheme = upstreamTLS ? "https" : "http"
+        let defaultPort = upstreamTLS ? 443 : 80
+        let authority = port == defaultPort ? host : "\(host):\(port)"
         let path = head.uri.hasPrefix("/") ? head.uri : "/\(head.uri)"
-        return "https://\(authority)\(path)"
+        return "\(scheme)://\(authority)\(path)"
     }
 }

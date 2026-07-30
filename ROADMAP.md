@@ -160,6 +160,49 @@ about:
    it doesn't merge them. If a fifth surface appears (a rule-import format, a
    config file), collapse the codec first.
 
+### M8 — Capture reach (in progress)
+
+M1–M7 assumed the traffic arrives. This round is about the traffic that never
+does. Measured against Charles / whistle / mitmproxy, Loom's capture breadth had
+three real gaps — not protocol-parsing gaps, *arrival* gaps:
+
+1. **Clients that don't speak HTTP proxying — done (SOCKS5 listener).** The HTTP
+   proxy port only sees a client that sends an absolute request URI or a `CONNECT`.
+   A Go/Rust/Node CLI honouring only `ALL_PROXY`, a tool whose sole proxy field is
+   a SOCKS one, and anything that isn't HTTP at all were invisible — which reads
+   as "nothing happened", the exact ambiguity M6 spent a phase removing elsewhere.
+   A second listener (`port + 1`, reported as `get_proxy_status.socksPort`) now
+   terminates SOCKS5 and hands the connection to the *same* capture stack.
+
+   The interesting constraint is ordering: a SOCKS client sends nothing until it
+   gets a success reply, so Loom must accept the connection before it can look at
+   one application byte. Deciding capture strategy from the port number would
+   therefore capture nothing on the non-standard ports that are half the reason to
+   add this. So the reply goes out first and the first bytes are sniffed
+   (`ProtocolSniff`): a TLS record MITMs if the host is in SSL scope, an HTTP
+   request line is captured in cleartext, everything else — h2c prior knowledge
+   included — is relayed byte-transparently and recorded as a tunnel flow when the
+   embedder asked to observe tunnels. The cost of replying first is that an
+   unreachable upstream is discovered after having already said "succeeded", so the
+   client sees a closed connection instead of a SOCKS error; mitmproxy's SOCKS mode
+   makes the same trade, and it is strictly better than declining to capture.
+
+2. **mTLS (client certificates) — next.** A target that requires a client
+   certificate makes Loom's MITM handshake fail outright, so those APIs cannot be
+   captured at all. Charles and mitmproxy both carry per-host client certs; this is
+   a narrow feature with a hard failure mode, which is why it ranks above the wider
+   one below.
+
+3. **Processes that ignore every proxy setting — deliberately not planned.** Only
+   transparent interception (pf `rdr` plus recovering the original destination
+   through `/dev/pf`'s `DIOCNATLOOK`) reaches those, and it is the most expensive
+   item on this list by a wide margin: root, a hand-rolled ioctl struct, and
+   destination inference when there is no SNI. It is also the item an *agent* can
+   never perceive — Loom's value hierarchy puts "the agent can finish the job"
+   above protocol breadth, and mitmproxy already exists for the transparent case.
+   Revisit only if empty captures on this Mac turn out to be dominated by
+   proxy-ignoring processes rather than by routing that was never turned on.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:

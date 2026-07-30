@@ -86,7 +86,11 @@ extension ProxyClient: DependencyKey {
     public static let liveValue: ProxyClient = {
         let engine = ProxyEngine.shared
         return ProxyClient(
-            start: { try await engine.start(port: $0) },
+            // The SOCKS listener rides one port above the HTTP proxy: the app always
+            // wants it (a client that can only point at a SOCKS proxy is invisible
+            // otherwise), while the engine defaults it off so an embedder isn't given
+            // a second socket it never asked for.
+            start: { try await engine.start(port: $0, socksPort: $0 + 1) },
             stop: { await engine.stop() },
             status: { await engine.status() },
             recentFlows: { await engine.recentFlows(limit: $0) },

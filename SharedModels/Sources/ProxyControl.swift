@@ -52,16 +52,24 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// because "nothing is being captured" and "nothing can reach the proxy" look
     /// identical from the outside, and this is half the answer.
     public var listenHost: String
+    /// Port of the SOCKS5 listener, or `nil` when there isn't one (an embedder that
+    /// didn't ask for it, or a bind that failed — the engine fails open on that and
+    /// this is how it says so). The other half of the same "is my traffic even
+    /// reaching Loom" question `listenHost` answers: a client that only knows how to
+    /// point at a SOCKS proxy needs this number, and a `nil` means pointing it there
+    /// would go nowhere.
+    public var socksPort: Int?
 
     public init(
         isRunning: Bool, port: Int, capturedCount: Int, isRecording: Bool = true,
-        listenHost: String = "127.0.0.1"
+        listenHost: String = "127.0.0.1", socksPort: Int? = nil
     ) {
         self.isRunning = isRunning
         self.port = port
         self.capturedCount = capturedCount
         self.isRecording = isRecording
         self.listenHost = listenHost
+        self.socksPort = socksPort
     }
 
     /// Reachable from other devices on the network, not just this Mac.

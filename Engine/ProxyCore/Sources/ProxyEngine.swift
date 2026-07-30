@@ -24,6 +24,10 @@ public actor ProxyEngine: ProxyControlling {
     let store: FlowStore
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
     lazy var server = ProxyServer(group: group)
+    /// Second listener speaking SOCKS5, for clients that only know how to point at
+    /// a SOCKS proxy (or aren't speaking HTTP at all). Lives and dies with the HTTP
+    /// listener rather than having its own switch — see `start(port:host:…)`.
+    lazy var socksServer = SOCKSServer(group: group)
 
     let forwarder: UpstreamForwarding
     let caStore: CAStore
@@ -57,6 +61,11 @@ public actor ProxyEngine: ProxyControlling {
     /// `0.0.0.0` (LAN-reachable) and back to loopback when it ends.
     var currentBindHost = "127.0.0.1"
     var lastObserveTunnels = false
+    /// SOCKS5 port the caller asked for (nil = don't listen), and the port actually
+    /// bound. The requested value is remembered so a rebind (phone onboarding moving
+    /// the listeners to the LAN) can move the SOCKS listener with it.
+    var requestedSOCKSPort: Int?
+    var boundSOCKSPort: Int?
 
     /// LAN-facing CA/profile download server + last-published info, live only
     /// while phone onboarding is active.
@@ -163,8 +172,19 @@ public actor ProxyEngine: ProxyControlling {
 
     // MARK: - Lifecycle
 
+    /// Start the listeners.
+    ///
+    /// - Parameter socksPort: port for the SOCKS5 listener, or `nil` (default) for
+    ///   none. The app passes `port + 1`; an embedder opts in, because a library
+    ///   quietly opening a second socket would be a surprise. A SOCKS bind failure
+    ///   is **not** fatal — the HTTP proxy is the primary surface, and taking capture
+    ///   down entirely because port `9091` was busy would be the worse outcome — but
+    ///   it is logged, because "SOCKS captured nothing" otherwise looks like the
+    ///   client's fault.
     @discardableResult
-    public func start(port: Int = 9090, host: String = "127.0.0.1", observeTunnels: Bool = false) async throws -> Int {
+    public func start(
+        port: Int = 9090, host: String = "127.0.0.1", observeTunnels: Bool = false, socksPort: Int? = nil
+    ) async throws -> Int {
         guard !running else { return boundPort }
         // Claim `running` synchronously, before the first await, so a reentrant
         // start() (actor reentrancy during the awaits below) bails at the guard
@@ -185,6 +205,8 @@ public actor ProxyEngine: ProxyControlling {
             )
             currentBindHost = host
             lastObserveTunnels = observeTunnels
+            requestedSOCKSPort = socksPort
+            await startSOCKSIfRequested(host: host)
             return boundPort
         } catch {
             running = false
@@ -203,9 +225,32 @@ public actor ProxyEngine: ProxyControlling {
         provisioning = nil
         phoneInfo = nil
         await server.stop()
+        await socksServer.stop()
+        boundSOCKSPort = nil
         running = false
         stopping = false
         currentBindHost = "127.0.0.1"
+    }
+
+    /// Bind the SOCKS listener if one was asked for. Fail-open: a bind error leaves
+    /// `boundSOCKSPort` nil (so `status()` honestly reports no SOCKS listener) and
+    /// the HTTP proxy running.
+    func startSOCKSIfRequested(host: String) async {
+        guard let socksPort = requestedSOCKSPort else { return }
+        do {
+            boundSOCKSPort = try await socksServer.start(
+                host: host,
+                port: socksPort,
+                store: store,
+                forwarder: forwarder,
+                ca: ensureCA(),
+                config: config,
+                observeTunnels: lastObserveTunnels
+            )
+        } catch {
+            boundSOCKSPort = nil
+            Log.proxy.error("SOCKS listener failed to bind on \(host, privacy: .public):\(socksPort): \(String(describing: error))")
+        }
     }
 
     public var isRunning: Bool { running }

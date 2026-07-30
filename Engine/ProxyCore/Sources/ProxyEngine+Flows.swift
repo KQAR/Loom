@@ -12,7 +12,8 @@ extension ProxyEngine {
             port: boundPort,
             capturedCount: await store.count,
             isRecording: await store.isRecording,
-            listenHost: currentBindHost
+            listenHost: currentBindHost,
+            socksPort: boundSOCKSPort
         )
     }
 

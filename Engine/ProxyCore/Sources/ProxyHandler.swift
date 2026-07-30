@@ -212,18 +212,10 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 var ack = channel.allocator.buffer(capacity: 40)
                 ack.writeString("HTTP/1.1 200 Connection Established\r\n\r\n")
                 channel.writeAndFlush(NIOAny(ack)).whenComplete { _ in
-                    pipeline.addHandler(NIOSSLServerHandler(context: sslContext), name: "loom.tls", position: .first)
-                        .flatMap {
-                            // After TLS, branch on the negotiated ALPN protocol: HTTP/2
-                            // if the client asked for it, else the HTTP/1.1 stack.
-                            let alpn = ApplicationProtocolNegotiationHandler { negotiated in
-                                Self.configureInterceptedPipeline(
-                                    channel: channel, negotiated: negotiated,
-                                    host: host, port: port, store: store, forwarder: forwarder
-                                )
-                            }
-                            return pipeline.addHandler(alpn)
-                        }
+                    MITMPipeline.installTLS(
+                        channel: channel, host: host, port: port, sslContext: sslContext,
+                        store: store, forwarder: forwarder
+                    )
                         .whenComplete { result in
                             switch result {
                             case .success:
@@ -235,30 +227,6 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                         }
                 }
             }
-    }
-
-    /// Install the decrypted capture stack once ALPN is known. HTTP/2 demuxes each
-    /// stream into an HTTP/1-shaped child channel (via the h2↔h1 codec) so the same
-    /// `TLSInterceptHandler` captures + forwards it; http/1.1 uses the named h1 stack
-    /// (kept removable so a WebSocket upgrade can splice a raw relay).
-    private static func configureInterceptedPipeline(
-        channel: Channel, negotiated: ALPNResult,
-        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding
-    ) -> EventLoopFuture<Void> {
-        if case .negotiated("h2") = negotiated {
-            return channel.configureHTTP2Pipeline(mode: .server) { streamChannel in
-                streamChannel.pipeline.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
-                    .flatMap {
-                        streamChannel.pipeline.addHandler(
-                            TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder)
-                        )
-                    }
-            }.map { _ in () }
-        }
-        let pipeline = channel.pipeline
-        return pipeline.addHandler(HTTPResponseEncoder(), name: "loom.mitm.encoder")
-            .flatMap { pipeline.addHandler(ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)), name: "loom.mitm.decoder") }
-            .flatMap { pipeline.addHandler(TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder), name: "loom.mitm.intercept") }
     }
 
     // MARK: - CONNECT (blind HTTPS pass-through)
@@ -276,25 +244,13 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 switch result {
                 case let .success(upstream):
                     if self.observeTunnels {
-                        self.recordTunnel(host: host, port: port, startedAt: startedAt)
+                        TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: self.store)
                     }
                     self.spliceRawBytes(client: clientChannel, upstream: upstream)
                 case .failure:
                     clientChannel.close(promise: nil)
                 }
             }
-    }
-
-    /// Record an established blind tunnel as a flow. Marked by the `CONNECT`
-    /// method (a real captured request never carries it) so a consumer can flag
-    /// it as un-decrypted HTTPS. No body is available — the bytes are opaque.
-    private func recordTunnel(host: String, port: Int, startedAt: Date) {
-        let flow = Flow(
-            request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
-            startedAt: startedAt,
-            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date())
-        )
-        Task { await store.upsert(flow) }
     }
 
     private func spliceRawBytes(client: Channel, upstream: Channel) {
@@ -305,9 +261,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         let removals = ["loom.http.encoder", "loom.http.decoder", "loom.proxy"].map { name in
             client.pipeline.removeHandler(name: name).recover { _ in () }
         }
-        EventLoopFuture.andAllSucceed(removals, on: client.eventLoop).flatMap { () -> EventLoopFuture<Void> in
-            let (clientGlue, upstreamGlue) = GlueHandler.matchedPair()
-            return client.pipeline.addHandler(clientGlue).and(upstream.pipeline.addHandler(upstreamGlue)).map { _ in () }
+        EventLoopFuture.andAllSucceed(removals, on: client.eventLoop).flatMap {
+            TunnelFlow.glue(client: client, upstream: upstream)
         }.whenComplete { result in
             switch result {
             case .success:
