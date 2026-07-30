@@ -80,6 +80,9 @@ Loom is built for one cycle — do this, don't just read:
 | --- | --- |
 | `get_version` | app + MCP protocol version — a cheap readiness ping |
 | `get_proxy_status` | running state, listen address (`lanReachable`), `socksPort` (the SOCKS5 listener, absent when there isn't one — aim a client that ignores HTTP proxy settings at it), captured flow count, recording state, and **`systemProxy`: `on` / `off` / `other` / `unavailable`** — whether this Mac's own traffic is actually routed through Loom. Check it first when a capture is empty: "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. `other` means **another proxy app** (Charles, Proxyman, whistle) owns the system proxy and `systemProxyPointsAt` gives its `host:port`; `unavailable` means this build can't inspect it, which is not the same as off |
+| `list_client_certificates` | mutual-TLS identities Loom presents when an origin demands one: host pattern, label, leaf subject, `notAfter` + `expired`, and `problem` when the stored bundle can't be read. Never returns the key or passphrase. **Check this when an `https://` host fails its handshake for no visible reason** — an expired or unreadable identity fails exactly like a missing one |
+| `set_client_certificate` | add/replace a mutual-TLS identity: `host_pattern` (glob), `pkcs12_base64`, `passphrase`. Validated immediately, so a wrong passphrase is reported here, not as a request failure later. Scope it — presenting a certificate identifies its holder to whoever asked, so `*` is almost never right. Write action; bundle + passphrase are redacted in the audit trail |
+| `delete_client_certificate` | remove an identity by id. Hosts it covered go back to failing the handshake if they require one. Write action |
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
 | `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `header_contains`, `body_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
 | `wait_for_flow` | **block** until a flow matching those same filters is captured (default 20 s, max 60), then return it — the tool to use around "trigger the action, then look". Checks the stored capture first, so a match that already arrived comes back immediately. `until` picks how much to wait for: `completed` (default), `response` (status known, body may still stream — use for WebSocket/long downloads), `request` (first sighting). The default window is the last 10 s (so triggering the action *then* calling can't race); widen with `since_seconds`/`since`. A timeout is a normal result (`timedOut: true`) and costs nothing: the flow stays in the store, and retrying with `since` = the reply's `windowFrom` resumes with no gap |
@@ -203,6 +206,13 @@ scoped rule); then one action:
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with
   `get_ssl_scope` + `get_certificate_status`; don't claim you saw the plaintext.
+- The flow **failed** on an `https://` host with a TLS/handshake error, and the host
+  is in scope with a trusted CA → the origin may require a **client certificate**
+  (mutual TLS: common on internal and partner APIs). Check
+  `list_client_certificates` — an expired or unreadable identity fails identically to
+  a missing one — and install one with `set_client_certificate` if the user has the
+  `.p12`. Ask them for it; don't go looking through their keychain or disk for
+  credentials.
 - A write tool acts immediately and globally — there is no confirmation prompt.
   When a rule would broadly alter traffic (e.g. a wide block glob), state what it
   will affect before creating it.

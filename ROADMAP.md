@@ -187,11 +187,23 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    client sees a closed connection instead of a SOCKS error; mitmproxy's SOCKS mode
    makes the same trade, and it is strictly better than declining to capture.
 
-2. **mTLS (client certificates) — next.** A target that requires a client
-   certificate makes Loom's MITM handshake fail outright, so those APIs cannot be
-   captured at all. Charles and mitmproxy both carry per-host client certs; this is
-   a narrow feature with a hard failure mode, which is why it ranks above the wider
-   one below.
+2. **mTLS (client certificates) — done.** A target that requires a client
+   certificate made Loom's upstream handshake fail outright, so those APIs could not
+   be captured at all — a narrow feature with a hard failure mode, which is why it
+   ranked above the wider one below. `ClientCertificate` (PKCS#12 + passphrase,
+   scoped by host glob) is stored in `client-certificates.json` (0600) and consulted
+   per upstream host by `NIOStreamingForwarder`; three MCP tools plus `ProxyClient`
+   endpoints expose it.
+
+   Three decisions worth keeping: the bundle is **validated when it is set**, so a
+   wrong passphrase lands on the operator who typed it instead of on a request hours
+   later attributed to the origin; a configured-but-unloadable identity **throws**
+   instead of quietly connecting without it, for the same reason; and the audit trail
+   **redacts** the bundle and passphrase, because a durable on-disk record of what an
+   agent did must not double as a copy of the operator's key material. Host scoping
+   is not cosmetic either — presenting a certificate identifies its holder to whoever
+   asked, so an identity meant for one internal API must not be offered to every host
+   that requests one.
 
 3. **Processes that ignore every proxy setting — deliberately not planned.** Only
    transparent interception (pf `rdr` plus recovering the original destination

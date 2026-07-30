@@ -37,6 +37,10 @@ struct EngineConfiguration {
     var upstream: UpstreamForwarding?
     /// Overrides where `exportCACertificate()` writes.
     var caExportURL: URL?
+    /// Overrides the mutual-TLS identity store. Tests pass a non-persisting one so
+    /// they can't read or clobber the operator's real client certificates — which,
+    /// unlike rules, are credentials.
+    var clientCertificates: ClientCertificateConfig?
 
     /// What `ProxyEngine.shared` runs on.
     static let `default` = EngineConfiguration()

@@ -18,10 +18,19 @@ import LoomSharedModels
 final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     private let group: EventLoopGroup
     private let connectTimeout: TimeAmount
+    /// Mutual-TLS identities, consulted per upstream host. Nil = never present a
+    /// client certificate (the default, and what an embedder gets unless it wires
+    /// one — presenting a credential is not a neutral default).
+    private let clientIdentities: ClientIdentityProviding?
 
-    init(group: EventLoopGroup, connectTimeout: TimeAmount = .seconds(30)) {
+    init(
+        group: EventLoopGroup,
+        connectTimeout: TimeAmount = .seconds(30),
+        clientIdentities: ClientIdentityProviding? = nil
+    ) {
         self.group = group
         self.connectTimeout = connectTimeout
+        self.clientIdentities = clientIdentities
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
@@ -39,7 +48,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
 
             let sslHandler: NIOSSLClientHandler?
             do {
-                sslHandler = try isTLS ? Self.makeSSLHandler(host: host) : nil
+                sslHandler = try isTLS ? self.makeSSLHandler(host: host) : nil
             } catch {
                 continuation.finish(throwing: error)
                 return
@@ -162,10 +171,17 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         }
     }
 
-    private static func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
+    /// The upstream TLS handler for `host`: normally the one shared, trust-store-only
+    /// context, but a context carrying a client certificate when an mTLS identity is
+    /// configured for this host. A configured-but-unloadable identity **throws**
+    /// rather than falling back to the shared context: silently connecting without
+    /// the credential would fail the handshake anyway, and the error would name the
+    /// origin instead of the identity the operator can fix.
+    private func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
         // IP-literal peers can't take an SNI/validation hostname.
-        let serverName = isIPLiteral(host) ? nil : host
-        return try NIOSSLClientHandler(context: SharedTLS.clientContext, serverHostname: serverName)
+        let serverName = Self.isIPLiteral(host) ? nil : host
+        let context = try clientIdentities?.context(forHost: host) ?? SharedTLS.clientContext
+        return try NIOSSLClientHandler(context: context, serverHostname: serverName)
     }
 
     private static func isIPLiteral(_ host: String) -> Bool {

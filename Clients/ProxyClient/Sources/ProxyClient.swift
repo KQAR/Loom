@@ -80,6 +80,18 @@ public struct ProxyClient: Sendable {
     public var pendingBreakpointStream: @Sendable () async -> AsyncStream<PendingBreakpoint> = { AsyncStream { $0.finish() } }
     /// Release a held exchange: apply `edit` and continue, or abort it with a 502.
     public var resumeBreakpoint: @Sendable (_ pendingID: UUID, _ abort: Bool, _ edit: BreakpointEdit) async throws -> Void
+
+    // MARK: Mutual TLS
+    //
+    // Which client certificate Loom presents to a third party is exactly the kind of
+    // write the human has to be able to see and revoke, so these are wired here from
+    // the start rather than left agent-only. Summaries never carry the key or the
+    // passphrase (see `ClientCertificateSummary`).
+
+    public var clientCertificates: @Sendable () async -> [ClientCertificateSummary] = { [] }
+    /// Add or replace by id; throws when the PKCS#12 bundle can't be opened.
+    public var setClientCertificate: @Sendable (_ certificate: ClientCertificate) async throws -> Void
+    public var deleteClientCertificate: @Sendable (_ id: UUID) async throws -> Void
 }
 
 extension ProxyClient: DependencyKey {
@@ -126,7 +138,10 @@ extension ProxyClient: DependencyKey {
             armedBreakpoints: { await engine.armedBreakpoints() },
             pendingBreakpoints: { await engine.pendingBreakpoints() },
             pendingBreakpointStream: { await engine.pendingBreakpointStream() },
-            resumeBreakpoint: { try await engine.resumeBreakpoint(pendingID: $0, abort: $1, edit: $2) }
+            resumeBreakpoint: { try await engine.resumeBreakpoint(pendingID: $0, abort: $1, edit: $2) },
+            clientCertificates: { await engine.clientCertificates() },
+            setClientCertificate: { try await engine.setClientCertificate($0) },
+            deleteClientCertificate: { try await engine.deleteClientCertificate(id: $0) }
         )
     }()
 
