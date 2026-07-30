@@ -1,6 +1,8 @@
 import Foundation
 import Testing
 import LoomHelperProtocol
+import LoomSharedModels
+@testable import PrivilegedHelperClient
 
 /// Covers the pure privileged-proxy logic that the root helper relies on, without
 /// needing root or `networksetup`.
@@ -53,27 +55,35 @@ import LoomHelperProtocol
         #expect(!other.pointsAtLoom(port: 9090))
     }
 
-    @Test func effectiveProxiesPointAt_matchesSCDynamicStoreShape() {
-        // The dictionary shape SCDynamicStoreCopyProxies returns.
+    /// The `SCDynamicStoreCopyProxies` key names are the part that breaks silently if
+    /// it drifts — a typo reads as "no proxy set", which looks exactly like the state
+    /// Loom is trying to detect. Exercised against the dictionary shape macOS returns,
+    /// with no real dynamic store involved.
+    @Test func snapshotFromDynamicStoreShape_readsTheRightKeys() {
         let pointing: [String: Any] = [
             "HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 9090,
             "HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 9090,
             "ExceptionsList": ["localhost", "127.0.0.1", "*.local"],
         ]
-        #expect(SystemProxyParsing.effectiveProxiesPoint(at: "127.0.0.1", port: 9090, in: pointing))
-        #expect(!SystemProxyParsing.effectiveProxiesPoint(at: "127.0.0.1", port: 8888, in: pointing))
+        #expect(SystemProxyMonitor.snapshot(from: pointing).routing(loomPort: 9090) == .loom)
+        // Same settings, different Loom port — Loom rebinds (phone onboarding), and a
+        // proxy pointed at the old port is not routing to us.
+        #expect(SystemProxyMonitor.snapshot(from: pointing).routing(loomPort: 8888)
+            == .other(host: "127.0.0.1", port: 9090))
 
-        // HTTPS disabled → not fully ours.
+        // HTTPS disabled → not fully ours: every https:// request would bypass Loom.
         var httpOnly = pointing
         httpOnly["HTTPSEnable"] = 0
-        #expect(!SystemProxyParsing.effectiveProxiesPoint(at: "127.0.0.1", port: 9090, in: httpOnly))
+        #expect(SystemProxyMonitor.snapshot(from: httpOnly).routing(loomPort: 9090)
+            == .other(host: "127.0.0.1", port: 9090))
 
-        // Someone else's proxy.
-        let other: [String: Any] = ["HTTPEnable": 1, "HTTPProxy": "10.0.0.1", "HTTPPort": 8080]
-        #expect(!SystemProxyParsing.effectiveProxiesPoint(at: "127.0.0.1", port: 9090, in: other))
+        // Another proxy app owns it — reported as such, not as "off".
+        let other: [String: Any] = ["HTTPEnable": 1, "HTTPProxy": "127.0.0.1", "HTTPPort": 8888]
+        #expect(SystemProxyMonitor.snapshot(from: other).routing(loomPort: 9090)
+            == .other(host: "127.0.0.1", port: 8888))
 
         // Proxies off entirely (empty dict).
-        #expect(!SystemProxyParsing.effectiveProxiesPoint(at: "127.0.0.1", port: 9090, in: [:]))
+        #expect(SystemProxyMonitor.snapshot(from: [:]).routing(loomPort: 9090) == .off)
     }
 
     @Test func proxyBackup_codableRoundTrip() throws {

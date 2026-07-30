@@ -21,12 +21,22 @@ import Testing
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
         } withDependencies: {
-            $0.privilegedHelperClient.isSystemProxyActive = { _ in true }
+            // `refresh` reads the effective settings rather than a bare boolean, so the
+            // panel can distinguish "off" from "another proxy app owns it".
+            $0.privilegedHelperClient.systemProxySnapshot = {
+                SystemProxySnapshot(
+                    httpEnabled: true, httpHost: "127.0.0.1", httpPort: 9090,
+                    httpsEnabled: true, httpsHost: "127.0.0.1", httpsPort: 9090
+                )
+            }
             $0.proxyClient.certificateStatus = { cert }
             $0.proxyClient.sslScope = { scope }
         }
         await store.send(.refresh)
-        await store.receive(\.systemProxyStateLoaded) { $0.isSystemProxy = true }
+        await store.receive(\.systemProxySnapshotChanged) {
+            $0.systemProxyRouting = .loom
+            $0.isSystemProxy = true
+        }
         await store.receive(\.certificateStatusLoaded) { $0.certificateStatus = cert }
         await store.receive(\.sslScopeLoaded) {
             $0.sslScope = scope
@@ -56,6 +66,12 @@ import Testing
             SetupFeature()
         } withDependencies: {
             $0.privilegedHelperClient.setSystemProxy = { _, _ in HelperOutcome(ok: true, message: "") }
+            $0.privilegedHelperClient.systemProxySnapshot = {
+                SystemProxySnapshot(
+                    httpEnabled: true, httpHost: "127.0.0.1", httpPort: 9090,
+                    httpsEnabled: true, httpsHost: "127.0.0.1", httpsPort: 9090
+                )
+            }
         }
         await store.send(.toggleSystemProxyTapped) {
             $0.isSystemProxy = true            // optimistic
@@ -66,6 +82,9 @@ import Testing
             $0.systemProxyBusy = false
             $0.systemProxyMessage = "On — QUIC blocked so browser (HTTP/3) traffic is captured. Restored when Loom quits."
         }
+        // Snapshots are ignored while busy, so the result re-reads once to confirm the
+        // optimistic value against what macOS actually has.
+        await store.receive(\.systemProxySnapshotChanged) { $0.systemProxyRouting = .loom }
     }
 
     @Test func test_toggleSystemProxy_result_failure_revertsOptimisticToggle() async {
@@ -76,6 +95,7 @@ import Testing
             SetupFeature()
         } withDependencies: {
             $0.privilegedHelperClient.setSystemProxy = { _, _ in HelperOutcome(ok: false, message: "networksetup failed") }
+            $0.privilegedHelperClient.systemProxySnapshot = { .off }
         }
         await store.send(.toggleSystemProxyTapped) {
             $0.isSystemProxy = true
@@ -87,6 +107,9 @@ import Testing
             $0.isSystemProxy = false           // reverted
             $0.systemProxyMessage = "networksetup failed"
         }
+        // Already `.off`, so nothing changes — but the read must still happen, or a
+        // half-applied write would leave the row asserting the optimistic value.
+        await store.receive(\.systemProxySnapshotChanged)
     }
 
     // MARK: SSL interception

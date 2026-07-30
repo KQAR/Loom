@@ -118,7 +118,7 @@ public struct PanelView: View {
             kind: .state(on: store.setup.isSystemProxy),
             icon: "globe",
             title: "System Proxy",
-            detail: store.setup.isSystemProxy ? "on" : "off",
+            detail: systemProxyDetail,
             disabled: store.setup.systemProxyBusy,
             help: "Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password)"
         ) {
@@ -126,6 +126,17 @@ public struct PanelView: View {
         }
         if store.setup.systemProxyBusy || store.setup.systemProxyMessage != nil {
             inlineNote(store.setup.systemProxyMessage ?? "", busy: store.setup.systemProxyBusy)
+        }
+    }
+
+    /// "off" is the wrong word when another proxy app owns the setting: the fix is to
+    /// quit Charles, not to press Loom's switch again. Naming the address is what lets
+    /// the human recognize whose it is.
+    private var systemProxyDetail: String {
+        switch store.setup.systemProxyRouting {
+        case .loom: return "on"
+        case .off: return "off"
+        case let .other(host, port): return "in use by \(host):\(port)"
         }
     }
 

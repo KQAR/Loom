@@ -75,7 +75,12 @@ extension MCPToolExecutor {
                 whether recording is paused, and whether this Mac's own traffic is actually routed \
                 through Loom (`systemProxy`). Check this first when a capture comes back empty — \
                 "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. \
-                `systemProxy: "unavailable"` means this build can't inspect it, not that it's off.
+                `systemProxy` is one of: `"on"` (routed through Loom), `"off"` (no system proxy set), \
+                `"other"` (another proxy app — Charles, Proxyman, whistle — owns the setting; \
+                `systemProxyPointsAt` gives its host:port), or `"unavailable"` (this build can't \
+                inspect it, which is not the same as off). On `"other"`, say so rather than calling \
+                `set_system_proxy`: taking the setting works, but Loom does not put the other app's \
+                configuration back, so that is the human's call to make.
                 """,
                 "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
             ],

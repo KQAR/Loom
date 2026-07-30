@@ -98,18 +98,12 @@ public enum SystemProxyParsing {
         return String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
     }
 
-    /// Interpret an `SCDynamicStoreCopyProxies`-shaped dictionary: true when the
-    /// *effective* system proxy routes both HTTP and HTTPS through `host:port`.
-    /// Pure so it can be unit-tested; the caller bridges the CF dictionary.
-    public static func effectiveProxiesPoint(at host: String, port: Int, in proxies: [String: Any]) -> Bool {
-        func enabled(_ key: String) -> Bool { (proxies[key] as? Int ?? 0) == 1 }
-        return enabled("HTTPEnable")
-            && proxies["HTTPProxy"] as? String == host
-            && proxies["HTTPPort"] as? Int == port
-            && enabled("HTTPSEnable")
-            && proxies["HTTPSProxy"] as? String == host
-            && proxies["HTTPSPort"] as? Int == port
-    }
+    // An `SCDynamicStoreCopyProxies` dictionary is interpreted by
+    // `SystemProxyMonitor.snapshot(from:)` → `SystemProxySnapshot.routing(loomPort:)`,
+    // not here. There used to be a second predicate in this file answering "does the
+    // proxy point at Loom" from the same dictionary; two definitions of that question
+    // is one too many, and the surviving one also distinguishes "another app owns it"
+    // from "nothing is set".
 
     /// Sanitize a bypass-domain list before it is handed to `networksetup`:
     /// trim, drop empties, reject entries with shell metacharacters or whitespace

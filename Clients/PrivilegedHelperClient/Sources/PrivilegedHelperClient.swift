@@ -41,6 +41,15 @@ public struct PrivilegedHelperClient: Sendable {
     /// Whether the *effective* system proxy currently routes through Loom on
     /// `port`. Reading needs no privileges; used to sync the UI at boot.
     public var isSystemProxyActive: @Sendable (_ port: Int) async -> Bool = { _ in false }
+    /// The effective HTTP/HTTPS proxy settings right now. Richer than
+    /// `isSystemProxyActive`: the caller can tell "nothing set" from "Charles has it".
+    public var systemProxySnapshot: @Sendable () async -> SystemProxySnapshot = { .off }
+    /// Every change to those settings, seeded with the current value.
+    ///
+    /// Exists because Loom is not the only app that sets the system proxy. Without a
+    /// live watch the panel's switch went stale the moment another proxy took over,
+    /// and stayed stale until the panel was reopened.
+    public var systemProxySnapshots: @Sendable () -> AsyncStream<SystemProxySnapshot> = { .never }
     /// Trust a DER root CA in the system keychain via the helper.
     public var installCA: @Sendable (_ der: Data) async -> HelperOutcome = { _ in .notWired }
     /// Remove a DER root CA and its trust settings.
@@ -84,7 +93,13 @@ extension PrivilegedHelperClient: DependencyKey {
             }
         },
         isSystemProxyActive: { port in
-            SystemProxyApplier.isPointing(at: "127.0.0.1", port: port)
+            SystemProxyApplier.isPointing(port: port)
+        },
+        systemProxySnapshot: {
+            SystemProxyMonitor.snapshot()
+        },
+        systemProxySnapshots: {
+            SystemProxyMonitor.snapshots()
         },
         installCA: { der in
             await HelperConnection.call { proxy, reply in

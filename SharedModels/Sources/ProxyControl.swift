@@ -83,6 +83,10 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
 public protocol SystemRoutingControlling: Sendable {
     /// Is the system proxy currently pointing this Mac's HTTP/HTTPS traffic at Loom?
     func isSystemProxyActive() async -> Bool
+    /// Where this Mac's traffic actually goes. Strictly more informative than
+    /// `isSystemProxyActive()`: it separates "no proxy set" from "another proxy owns
+    /// it", which are the same `false` to the boolean and *different* advice to give.
+    func systemProxyRouting() async -> SystemProxyRouting
     /// Point this Mac's traffic at Loom (or stop). May prompt for an admin password
     /// on a non-admin account, and also toggles the QUIC block that forces browsers
     /// off HTTP/3 (which a TCP proxy cannot see).

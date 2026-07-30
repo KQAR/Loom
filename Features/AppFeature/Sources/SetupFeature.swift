@@ -24,6 +24,11 @@ public struct SetupFeature: Sendable {
         public var isSystemProxy = false          // M2: routed via networksetup
         public var systemProxyBusy = false        // change in flight
         public var systemProxyMessage: String?    // transient feedback under the row
+        /// Where traffic actually goes, followed live. Kept alongside
+        /// `isSystemProxy` rather than replacing it because the toggle sets that one
+        /// optimistically before the system has been asked; this one is only ever
+        /// what macOS reported.
+        public var systemProxyRouting = SystemProxyRouting.off
 
         public var sslEnabled = false             // M2: HTTPS interception (SSL parsing)
         public var sslScope = SSLScope.disabled   // interception scope (include/exclude globs)
@@ -35,11 +40,17 @@ public struct SetupFeature: Sendable {
     }
 
     public enum Action: Sendable {
+        /// Long-running subscription: follow the system proxy for as long as the app
+        /// lives. Started by the parent, next to the other `.task` subscriptions.
+        case task
         /// Cheap re-sync of all setup state when a window/panel appears.
         case refresh
         case toggleSystemProxyTapped
         case systemProxyResult(enabling: Bool, ok: Bool, message: String?)
         case systemProxyStateLoaded(Bool)
+        /// macOS reported new proxy settings — either someone else changed them, or
+        /// our own write landed.
+        case systemProxySnapshotChanged(SystemProxySnapshot)
         case toggleSSLTapped
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
@@ -59,10 +70,17 @@ public struct SetupFeature: Sendable {
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
+            case .task:
+                return .run { send in
+                    for await snapshot in privilegedHelperClient.systemProxySnapshots() {
+                        await send(.systemProxySnapshotChanged(snapshot))
+                    }
+                }
+
             case .refresh:
                 let port = state.port
                 return .run { send in
-                    await send(.systemProxyStateLoaded(privilegedHelperClient.isSystemProxyActive(port)))
+                    await send(.systemProxySnapshotChanged(privilegedHelperClient.systemProxySnapshot()))
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
                 }
@@ -71,6 +89,21 @@ public struct SetupFeature: Sendable {
 
             case let .systemProxyStateLoaded(active):
                 state.isSystemProxy = active
+                return .none
+
+            case let .systemProxySnapshotChanged(snapshot):
+                // Ignore while our own change is in flight. The enable script writes
+                // each network service in turn, so mid-apply snapshots are genuinely
+                // half-applied; letting them through would flicker the switch and
+                // fight the optimistic value. `.systemProxyResult` re-reads once the
+                // write has settled.
+                guard !state.systemProxyBusy else { return .none }
+                // Classified here, not in the effect: the port can change under us
+                // (phone onboarding rebinds the proxy), so the comparison has to use
+                // the port as of delivery rather than as of subscription.
+                let routing = snapshot.routing(loomPort: state.port)
+                state.systemProxyRouting = routing
+                state.isSystemProxy = routing == .loom
                 return .none
 
             case .toggleSystemProxyTapped:
@@ -92,6 +125,13 @@ public struct SetupFeature: Sendable {
 
             case let .systemProxyResult(enabling, ok, message):
                 state.systemProxyBusy = false
+                // Settle on what the system actually says now: snapshots are ignored
+                // while busy, so nothing has been believed since the toggle, and a
+                // write that half-landed must not leave the row asserting the
+                // optimistic value.
+                let settle = Effect<Action>.run { send in
+                    await send(.systemProxySnapshotChanged(privilegedHelperClient.systemProxySnapshot()))
+                }
                 if ok {
                     // Quitting cleans up both the proxy and the QUIC block (see
                     // AppDelegate); a crash leaves them — the boot-time sync surfaces it.
@@ -102,7 +142,7 @@ public struct SetupFeature: Sendable {
                     state.isSystemProxy = !enabling // revert the optimistic toggle
                     state.systemProxyMessage = message ?? "System proxy change failed."
                 }
-                return .none
+                return settle
 
             // MARK: SSL interception
 

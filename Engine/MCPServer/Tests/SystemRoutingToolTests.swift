@@ -140,17 +140,30 @@ private actor StubRouting: SystemRoutingControlling {
     /// which is the normal case; `false` simulates a change that silently didn't take.
     private let applyChangesState: Bool?
     private let result: SystemRoutingResult
+    /// Set to simulate another proxy app (Charles, whistle) owning the setting.
+    private let occupant: (host: String, port: Int)?
     private(set) var lastRequest: Bool?
 
-    init(active: Bool, applyChangesState: Bool? = nil, result: SystemRoutingResult = SystemRoutingResult(ok: true)) {
+    init(
+        active: Bool, applyChangesState: Bool? = nil,
+        result: SystemRoutingResult = SystemRoutingResult(ok: true),
+        occupant: (host: String, port: Int)? = nil
+    ) {
         self.active = active
         self.applyChangesState = applyChangesState
         self.result = result
+        self.occupant = occupant
     }
 
     func set(active: Bool) { self.active = active }
 
     func isSystemProxyActive() async -> Bool { active }
+
+    func systemProxyRouting() async -> SystemProxyRouting {
+        if active { return .loom }
+        if let occupant { return .other(host: occupant.host, port: occupant.port) }
+        return .off
+    }
 
     func setSystemProxy(enabled: Bool) async -> SystemRoutingResult {
         lastRequest = enabled
