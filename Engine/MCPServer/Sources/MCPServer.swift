@@ -230,8 +230,10 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias OutboundOut = HTTPServerResponsePart
 
     /// Cap the accumulated request body. Even though the endpoint is loopback +
-    /// bearer-gated, any local process (or a browser via a no-preflight POST) can
-    /// stream at the port; bound it so a hostile client can't buffer us to death.
+    /// bearer-gated, any local process can stream at the port; bound it so a hostile
+    /// client can't buffer us to death. (A *browser* no longer gets this far — see
+    /// the Origin and Content-Type checks in `channelRead` — but a local process
+    /// still does.)
     static let maxBodyBytes = 10_000_000
 
     private let dispatcher: MCPDispatcher
@@ -270,6 +272,14 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                        message: "one request per connection; this endpoint closes after each response")
             } else if head.method != .POST || Self.path(head.uri) != "/mcp" {
                 reject(channel: context.channel, status: .notFound, message: "not found")
+            } else if head.headers.contains(name: "Origin") {
+                // No legitimate Loom client is a web page. A request carrying Origin
+                // came from a browser, which means some site is driving this
+                // write-capable endpoint on the user's behalf — refuse it.
+                reject(channel: context.channel, status: .forbidden, message: "Origin not accepted")
+            } else if !Self.isJSONContentType(head) {
+                reject(channel: context.channel, status: .unsupportedMediaType,
+                       message: "Content-Type must be application/json")
             } else if !authorized(head) {
                 reject(channel: context.channel, status: .unauthorized, message: "unauthorized")
             }
@@ -297,6 +307,22 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     /// The path component of a request-target, without any query string.
     private static func path(_ uri: String) -> Substring {
         uri[uri.startIndex ..< (uri.firstIndex(of: "?") ?? uri.endIndex)]
+    }
+
+    /// Require `application/json` (a parameter like `; charset=utf-8` is fine).
+    ///
+    /// This is the load-bearing half of the CSRF defence, and it is load-bearing
+    /// precisely because `application/json` is *not* a CORS-safelisted request
+    /// content type: a cross-site `fetch` that sets it must pass a preflight, and
+    /// this endpoint answers no CORS headers, so the browser never sends the real
+    /// request. Without the check, a page could POST `text/plain` — a simple
+    /// request, no preflight — and the dispatcher, which never looked at
+    /// Content-Type, would parse the body as JSON and run a write tool. The
+    /// response is unreadable cross-origin, but the *effect* already happened.
+    private static func isJSONContentType(_ head: HTTPRequestHead) -> Bool {
+        guard let value = head.headers.first(name: "Content-Type") else { return false }
+        let mediaType = value[value.startIndex ..< (value.firstIndex(of: ";") ?? value.endIndex)]
+        return mediaType.trimmingCharacters(in: .whitespaces).lowercased() == "application/json"
     }
 
     private func reject(channel: Channel, status: HTTPResponseStatus, message: String) {
