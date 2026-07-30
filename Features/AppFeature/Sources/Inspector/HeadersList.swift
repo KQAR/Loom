@@ -1,10 +1,8 @@
 import LoomSharedModels
 import SwiftUI
 
-/// Headers as an aligned two-column Key/Value table. A `Grid` (not a `Table`)
-/// because it lives inside the inspector's `ScrollView` and headers are a small,
-/// bounded per-flow set — the key column sizes to its widest name, the value
-/// column takes the rest and wraps.
+/// Headers as an aligned two-column Key/Value table (`KeyValueGrid`, shared with the
+/// cookies pane so the two can't drift apart).
 struct HeadersList: View {
     let headers: [HeaderPair]
 
@@ -12,18 +10,7 @@ struct HeadersList: View {
         if headers.isEmpty {
             Text("No headers").foregroundStyle(.secondary)
         } else {
-            Grid(alignment: .leadingFirstTextBaseline,
-                 horizontalSpacing: LoomTheme.Space.md,
-                 verticalSpacing: LoomTheme.Space.xs) {
-                GridRow {
-                    Text("Key").gridColumnAlignment(.leading)
-                    Text("Value")
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-                Divider().gridCellColumns(2)
-
+            KeyValueGrid {
                 ForEach(headers.indices, id: \.self) { i in
                     GridRow(alignment: .firstTextBaseline) {
                         Text(headers[i].name)
@@ -37,7 +24,6 @@ struct HeadersList: View {
                     .font(.callout.monospaced())
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
