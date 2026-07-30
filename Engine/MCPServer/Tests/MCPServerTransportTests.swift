@@ -86,6 +86,62 @@ import LoomSharedModels
         }
     }
 
+    // MARK: Browser defence
+
+    /// The endpoint is loopback-only and treats a missing `Authorization` header as
+    /// local trust — which is fine for a local process and *not* fine for a web page,
+    /// because a page on any site can reach 127.0.0.1 too. A cross-site `fetch` with
+    /// `Content-Type: text/plain` is a CORS "simple request": no preflight, so the
+    /// browser sends it, and the response being unreadable cross-origin doesn't undo
+    /// a write tool that already ran. Two checks close it: reject any request carrying
+    /// `Origin` (no real client is a browser), and require `application/json` (not a
+    /// safelisted content type, so it forces a preflight this endpoint fails).
+    ///
+    /// Asserted on `clear_flows` throughout: a rejected request must not merely get a
+    /// 4xx, it must not have *run* the tool.
+    @Test func aRequestCarryingAnOriginHeaderIsRefused() async throws {
+        let engine = StubEngine()
+        let (server, url) = try await startServer(engine)
+        defer { Task { await server.stop() } }
+
+        var request = try callRequest(url, tool: "clear_flows", arguments: [:])
+        request.setValue("https://evil.example", forHTTPHeaderField: "Origin")
+        let (_, response) = try await URLSession.shared.data(for: request)
+
+        #expect((response as? HTTPURLResponse)?.statusCode == 403)
+        #expect(engine.clearFlowsCallCount == 0, "the write tool ran despite the request being refused")
+    }
+
+    @Test(arguments: [nil, "text/plain", "application/x-www-form-urlencoded", "multipart/form-data"] as [String?])
+    func aRequestWithoutAJSONContentTypeIsRefused(contentType: String?) async throws {
+        let engine = StubEngine()
+        let (server, url) = try await startServer(engine)
+        defer { Task { await server.stop() } }
+
+        var request = try callRequest(url, tool: "clear_flows", arguments: [:])
+        // `nil` clears the header `callRequest` set — the no-Content-Type case.
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let (_, response) = try await URLSession.shared.data(for: request)
+
+        #expect((response as? HTTPURLResponse)?.statusCode == 415)
+        #expect(engine.clearFlowsCallCount == 0, "the write tool ran despite the request being refused")
+    }
+
+    /// The check reads the media type only, so the parameter every sane HTTP client
+    /// appends must not be mistaken for a different type.
+    @Test func aJSONContentTypeWithACharsetParameterIsAccepted() async throws {
+        let engine = StubEngine()
+        let (server, url) = try await startServer(engine)
+        defer { Task { await server.stop() } }
+
+        var request = try callRequest(url, tool: "clear_flows", arguments: [:])
+        request.setValue("Application/JSON; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        let (_, response) = try await URLSession.shared.data(for: request)
+
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(engine.clearFlowsCallCount == 1)
+    }
+
     /// A complete HTTP/1.1 `tools/call` request as bytes.
     private static func rawCall(tool: String, arguments: [String: Any]) -> Data {
         let body = try! JSONSerialization.data(withJSONObject: [
