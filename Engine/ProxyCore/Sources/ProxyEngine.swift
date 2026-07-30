@@ -33,6 +33,11 @@ public actor ProxyEngine: ProxyControlling {
     let caStore: CAStore
     let config: InterceptionConfig
     let rulesConfig: RulesConfig
+    /// Mutual-TLS identities Loom presents upstream, read per request by the
+    /// forwarder (so it never has to hop to this actor) and mutated through
+    /// `ClientCertificateControlling`. Named for the store, not the protocol
+    /// requirement, so `clientCertificates()` below is unambiguously the method.
+    let clientIdentities: ClientCertificateConfig
     /// Holds armed breakpoints and currently-paused exchanges. Shared with the
     /// `BreakpointForwarder` wrapping `forwarder`, off the actor so forwarding can
     /// check for a breakpoint without hopping here.
@@ -145,7 +150,11 @@ public actor ProxyEngine: ProxyControlling {
         // header, originates its own TLS) is the upstream leg.
         let breakpointStore = BreakpointStore()
         self.breakpointStore = breakpointStore
-        let upstream = configuration.upstream ?? NIOStreamingForwarder(group: group)
+        let clientIdentities = configuration.clientCertificates
+            ?? (durable ? ClientCertificateConfig() : ClientCertificateConfig(fileURL: nil))
+        self.clientIdentities = clientIdentities
+        let upstream = configuration.upstream
+            ?? NIOStreamingForwarder(group: group, clientIdentities: clientIdentities)
         self.forwarder = BreakpointForwarder(
             base: RuleApplyingForwarder(base: upstream, rules: rulesConfig),
             store: breakpointStore
@@ -268,6 +277,7 @@ public actor ProxyEngine: ProxyControlling {
         // outrun the last edit the same way it could outrun the last flow.
         rulesConfig.flush()
         config.flush()
+        clientIdentities.flush()
     }
 
     // MARK: - Certificate authority

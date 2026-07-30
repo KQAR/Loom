@@ -98,6 +98,15 @@ import Testing
         case .recentAuditEntries: return .wired(client.recentAuditEntries)
         case .auditStream: return .wired(client.auditStream)
         case .clearAudit: return .wired(client.clearAudit)
+
+        // MARK: ClientCertificateControlling
+        //
+        // Wired from the start, unlike HAR import above: which credential Loom
+        // presents to a third party is precisely the write the human has to be able
+        // to see and revoke without asking the agent to do it.
+        case .clientCertificates: return .wired(client.clientCertificates)
+        case .setClientCertificate: return .wired(client.setClientCertificate)
+        case .deleteClientCertificate: return .wired(client.deleteClientCertificate)
         }
     }
 

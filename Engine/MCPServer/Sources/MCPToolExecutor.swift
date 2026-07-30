@@ -51,6 +51,9 @@ struct MCPToolExecutor {
         "delete_rule": { ex, args in try await ex.handleDeleteRule(args) },
         "set_rules_enabled": { ex, args in try await ex.handleSetRulesEnabled(args) },
         "set_group_enabled": { ex, args in try await ex.handleSetGroupEnabled(args) },
+        "list_client_certificates": { ex, args in try await ex.handleListClientCertificates(args) },
+        "set_client_certificate": { ex, args in try await ex.handleSetClientCertificate(args) },
+        "delete_client_certificate": { ex, args in try await ex.handleDeleteClientCertificate(args) },
     ]
 
     /// Tools that touch real traffic — every one is audited (§ `call`). Kept as an
@@ -73,6 +76,8 @@ struct MCPToolExecutor {
         "delete_rule",
         "set_rules_enabled",
         "set_group_enabled",
+        "set_client_certificate",
+        "delete_client_certificate",
     ]
 
     /// Dispatch one `tools/call`. Returns the tool's text result, or throws a
@@ -115,11 +120,30 @@ struct MCPToolExecutor {
     /// by the caller (whole-string, so we don't split a key from its value).
     static func auditArguments(_ arguments: [String: Any]) -> String {
         guard !arguments.isEmpty else { return "{}" }
+        let arguments = redactingSecrets(arguments)
         guard JSONSerialization.isValidJSONObject(arguments),
               let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
               let string = String(data: data, encoding: .utf8)
         else { return String(describing: arguments) }
         return string
+    }
+
+    /// Argument names whose *values* must never reach the audit trail.
+    ///
+    /// The trail is durable, on-disk and readable by anyone with the file, and it
+    /// exists to record what an agent did — not to archive the credentials it was
+    /// handed. `set_client_certificate` carries a PKCS#12 bundle (a private key) and
+    /// its passphrase; auditing those verbatim would turn the supervision feature
+    /// into a second copy of the operator's key material. The argument *name* still
+    /// appears, so "a certificate was installed for this host" stays visible, which
+    /// is the part supervision needs.
+    static let redactedArgumentNames: Set<String> = ["pkcs12_base64", "passphrase"]
+
+    private static func redactingSecrets(_ arguments: [String: Any]) -> [String: Any] {
+        guard arguments.keys.contains(where: redactedArgumentNames.contains) else { return arguments }
+        return arguments.mapValues { $0 }.reduce(into: [:]) { result, pair in
+            result[pair.key] = redactedArgumentNames.contains(pair.key) ? "<redacted>" : pair.value
+        }
     }
 
     func prettyJSON(_ value: Any) -> String {

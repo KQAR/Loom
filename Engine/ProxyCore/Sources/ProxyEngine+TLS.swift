@@ -83,4 +83,20 @@ extension ProxyEngine {
         _ = ensureCA() // make sure a CA exists before we start intercepting
         config.update(scope)
     }
+
+    // MARK: - Mutual TLS (client certificates)
+
+    public func clientCertificates() async -> [ClientCertificateSummary] {
+        clientIdentities.summaries()
+    }
+
+    public func setClientCertificate(_ certificate: ClientCertificate) async throws {
+        try clientIdentities.set(certificate)
+    }
+
+    public func deleteClientCertificate(id: UUID) async throws {
+        guard clientIdentities.delete(id: id) else {
+            throw ProxyControlError.clientCertificateNotFound(id)
+        }
+    }
 }

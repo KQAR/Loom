@@ -428,6 +428,63 @@ extension MCPToolExecutor {
                 ],
             ],
             [
+                "name": "list_client_certificates",
+                "description": """
+                List the mutual-TLS client identities Loom presents to origins that ask for one: \
+                host pattern, label, enabled state, the leaf's subject and expiry, and `problem` \
+                when the stored bundle can't be read. Never returns the key or the passphrase. \
+                Check this when an https:// host fails its handshake for no visible reason — an \
+                expired or unreadable identity fails exactly like a missing one.
+                """,
+                "inputSchema": ["type": "object", "properties": [:] as [String: Any]],
+            ],
+            [
+                "name": "set_client_certificate",
+                "description": """
+                Add or replace a mutual-TLS client identity (pass the same `id` to replace). Some \
+                origins — internal and partner APIs especially — demand a client certificate during \
+                the TLS handshake; without one Loom's upstream leg fails to connect at all, so the \
+                exchange can't be captured. The bundle is validated immediately, so a wrong \
+                passphrase is reported here rather than as a request failure later.
+
+                Scope it with `host_pattern` (glob, same semantics as the SSL scope). Presenting a \
+                certificate identifies its holder to whoever asked, so `*` is almost never right. \
+                This is a write action; the bundle and passphrase are redacted in the audit trail.
+                """,
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "host_pattern": [
+                            "type": "string",
+                            "description": "Hosts to present this identity to, e.g. \"api.corp.example\" or \"*.corp.example\".",
+                        ],
+                        "pkcs12_base64": [
+                            "type": "string",
+                            "description": "Base64 of the PKCS#12 (.p12/.pfx) bundle holding the leaf, chain and private key.",
+                        ],
+                        "passphrase": [
+                            "type": "string",
+                            "description": "Passphrase for the bundle. Omit for an unprotected export.",
+                        ],
+                        "label": ["type": "string", "description": "Name for the operator's list (defaults to host_pattern)."],
+                        "enabled": ["type": "boolean", "description": "Present this identity (default true)."],
+                        "id": ["type": "string", "description": "Replace the identity with this id instead of adding one."],
+                    ],
+                    "required": ["host_pattern", "pkcs12_base64"],
+                ],
+            ],
+            [
+                "name": "delete_client_certificate",
+                "description": "Remove a mutual-TLS client identity by id (from list_client_certificates). Hosts it covered will go back to failing the handshake if they require one. This is a write action.",
+                "inputSchema": [
+                    "type": "object",
+                    "properties": [
+                        "id": ["type": "string", "description": "The identity's id."],
+                    ],
+                    "required": ["id"],
+                ],
+            ],
+            [
                 "name": "export_har",
                 "description": """
                 Export captured flows to a HAR 1.2 file (readable by Chrome DevTools / Charles / \

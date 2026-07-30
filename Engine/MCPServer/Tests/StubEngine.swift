@@ -227,4 +227,38 @@ final class StubEngine: ProxyControlling {
     }
     func auditStream() async -> AsyncStream<AuditEntry> { AsyncStream { $0.finish() } }
     func clearAudit() async { recordedAudits.removeAll() }
+
+    // ClientCertificateControlling
+    //
+    // Stores what it was given without opening the bundle: the real store validates
+    // PKCS#12 (and `ClientCertificateTests` covers that), while these tests are about
+    // the tool surface — argument parsing, the audit record, and that secrets never
+    // come back out.
+    private(set) var storedClientCertificates: [ClientCertificate] = []
+    var clientCertificateSetError: Error?
+
+    func clientCertificates() async -> [ClientCertificateSummary] {
+        storedClientCertificates.map {
+            ClientCertificateSummary(
+                id: $0.id, hostPattern: $0.hostPattern, label: $0.label, isEnabled: $0.isEnabled,
+                subject: "CN=stub-client", notAfter: Date(timeIntervalSince1970: 4_000_000_000)
+            )
+        }
+    }
+
+    func setClientCertificate(_ certificate: ClientCertificate) async throws {
+        if let clientCertificateSetError { throw clientCertificateSetError }
+        if let index = storedClientCertificates.firstIndex(where: { $0.id == certificate.id }) {
+            storedClientCertificates[index] = certificate
+        } else {
+            storedClientCertificates.append(certificate)
+        }
+    }
+
+    func deleteClientCertificate(id: UUID) async throws {
+        guard storedClientCertificates.contains(where: { $0.id == id }) else {
+            throw ProxyControlError.clientCertificateNotFound(id)
+        }
+        storedClientCertificates.removeAll { $0.id == id }
+    }
 }

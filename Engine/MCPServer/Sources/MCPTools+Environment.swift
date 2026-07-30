@@ -142,6 +142,94 @@ extension MCPToolExecutor {
         return prettyJSON(Self.scope(scope))
     }
 
+    // MARK: - Mutual TLS (client certificates)
+
+    func handleListClientCertificates(_ arguments: [String: Any]) async throws -> String {
+        let summaries = await engine.clientCertificates()
+        return prettyJSON([
+            "clientCertificates": summaries.map { summary -> [String: Any] in
+                var out: [String: Any] = [
+                    "id": summary.id.uuidString,
+                    "hostPattern": summary.hostPattern,
+                    "label": summary.label,
+                    "enabled": summary.isEnabled,
+                ]
+                if let subject = summary.subject { out["subject"] = subject }
+                if let notAfter = summary.notAfter {
+                    out["notAfter"] = Self.iso8601.string(from: notAfter)
+                    // Stated rather than left to be derived from the date: an expired
+                    // identity fails the handshake exactly like a missing one, and that
+                    // is the diagnosis this list exists to shorten.
+                    out["expired"] = summary.isExpired()
+                }
+                if let problem = summary.problem { out["problem"] = problem }
+                return out
+            },
+        ])
+    }
+
+    func handleSetClientCertificate(_ arguments: [String: Any]) async throws -> String {
+        guard let hostPattern = arguments["host_pattern"] as? String, !hostPattern.isEmpty else {
+            throw MCPError.invalidParams("`host_pattern` must be a non-empty string")
+        }
+        guard let base64 = arguments["pkcs12_base64"] as? String,
+              let pkcs12 = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
+              !pkcs12.isEmpty
+        else {
+            throw MCPError.invalidParams("`pkcs12_base64` must be base64 of a PKCS#12 bundle")
+        }
+        let id: UUID
+        if let raw = arguments["id"] as? String {
+            guard let parsed = UUID(uuidString: raw) else {
+                throw MCPError.invalidParams("`id` must be a UUID")
+            }
+            id = parsed
+        } else {
+            id = UUID()
+        }
+
+        let certificate = ClientCertificate(
+            id: id,
+            hostPattern: hostPattern,
+            pkcs12: pkcs12,
+            passphrase: (arguments["passphrase"] as? String) ?? "",
+            label: (arguments["label"] as? String) ?? "",
+            isEnabled: (arguments["enabled"] as? Bool) ?? true
+        )
+        do {
+            try await engine.setClientCertificate(certificate)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        // Echo the summary, not the input: it carries the parsed subject and expiry,
+        // which is how the operator learns they installed the identity they meant to.
+        let summaries = await engine.clientCertificates()
+        guard let saved = summaries.first(where: { $0.id == id }) else {
+            throw MCPToolFailure("client certificate was not stored")
+        }
+        return prettyJSON([
+            "saved": true,
+            "id": saved.id.uuidString,
+            "hostPattern": saved.hostPattern,
+            "label": saved.label,
+            "enabled": saved.isEnabled,
+            "subject": saved.subject ?? "unknown",
+            "notAfter": saved.notAfter.map(Self.iso8601.string(from:)) ?? "unknown",
+        ])
+    }
+
+    func handleDeleteClientCertificate(_ arguments: [String: Any]) async throws -> String {
+        guard let raw = arguments["id"] as? String, let id = UUID(uuidString: raw) else {
+            throw MCPError.invalidParams("`id` must be a UUID")
+        }
+        do {
+            try await engine.deleteClientCertificate(id: id)
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+        return prettyJSON(["deleted": true, "id": id.uuidString])
+    }
+
     static func certificateStatus(_ status: CertificateStatus) -> [String: Any] {
         var out: [String: Any] = [
             "isGenerated": status.isGenerated,
