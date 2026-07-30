@@ -133,11 +133,14 @@ public struct SetupFeature: Sendable {
                     await send(.systemProxySnapshotChanged(privilegedHelperClient.systemProxySnapshot()))
                 }
                 if ok {
-                    // Quitting cleans up both the proxy and the QUIC block (see
-                    // AppDelegate); a crash leaves them — the boot-time sync surfaces it.
-                    state.systemProxyMessage = enabling
-                        ? "On — QUIC blocked so browser (HTTP/3) traffic is captured. Restored when Loom quits."
-                        : nil
+                    // No standing claim is stored here. The "QUIC is blocked" note is a
+                    // fact about the *current* routing, not feedback about this action,
+                    // so the panel derives it from `systemProxyRouting`. Storing it as
+                    // text is what let it outlive the state it described: another proxy
+                    // app would take the setting, the row would correctly read "in use
+                    // by 127.0.0.1:8888", and the note underneath would still be
+                    // claiming Loom had it and would restore it on quit.
+                    state.systemProxyMessage = nil
                 } else {
                     state.isSystemProxy = !enabling // revert the optimistic toggle
                     state.systemProxyMessage = message ?? "System proxy change failed."

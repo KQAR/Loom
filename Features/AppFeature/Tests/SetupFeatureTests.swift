@@ -80,7 +80,9 @@ import Testing
         }
         await store.receive(\.systemProxyResult) {
             $0.systemProxyBusy = false
-            $0.systemProxyMessage = "On — QUIC blocked so browser (HTTP/3) traffic is captured. Restored when Loom quits."
+            // No message: the "QUIC is blocked" note describes current routing, so the
+            // panel derives it. See `aSuccessfulEnableStoresNoStandingClaim`.
+            $0.systemProxyMessage = nil
         }
         // Snapshots are ignored while busy, so the result re-reads once to confirm the
         // optimistic value against what macOS actually has.
