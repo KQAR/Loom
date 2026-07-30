@@ -285,11 +285,23 @@ public enum HARExport {
         headers.value(named: "location")
     }
 
-    // A fresh formatter per call: ISO8601DateFormatter isn't Sendable, so it can't
-    // be a shared static under strict concurrency. Cheap enough for an export.
-    private static func iso8601String(_ date: Date) -> String {
+    /// One shared formatter, guarded by a lock — same shape as `RegexCache`.
+    /// `ISO8601DateFormatter` init is expensive (locale/calendar/timezone setup) and
+    /// an export runs this once per flow, so a fresh formatter per call cost a
+    /// 10k-flow export thousands of allocations. `formatOptions` is set once and
+    /// never varies per call, so the instance is safely reusable; the lock is what
+    /// makes the shared state sound (unlike the MCP renderer's copy, `HARExport` is
+    /// not confined to a single actor or queue).
+    private static let iso8601Lock = NSLock()
+    nonisolated(unsafe) private static let iso8601: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    private static func iso8601String(_ date: Date) -> String {
+        iso8601Lock.lock()
+        defer { iso8601Lock.unlock() }
+        return iso8601.string(from: date)
     }
 }
