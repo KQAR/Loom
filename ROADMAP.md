@@ -164,9 +164,15 @@ about:
 
 MCP over loopback HTTP is the transport, effective M1:
 
-- The app hosts a JSON-RPC endpoint at `127.0.0.1:<port>/mcp`; the `loom-mcp` bridge forwards stdio JSON-RPC from AI clients (Claude Desktop, Cursor) to it.
-- Auth is a per-launch bearer token written to `~/Library/Application Support/com.loom/mcp-handshake.json` (mode `0600`).
-- The domain model (`Flow`, `ReplayOverrides`, rules) is transport-independent; a Streamable-HTTP/SSE upgrade can replace the bridge without touching it.
+- The app hosts a JSON-RPC endpoint at `127.0.0.1:9092/mcp`; the `loom-mcp` bridge forwards stdio JSON-RPC from AI clients (Claude Desktop, Cursor) to it.
+- Auth is a per-launch bearer token written to `~/Library/Application Support/com.loom/mcp-handshake.json` (mode `0600`). A loopback request may omit it (so a static `.mcp.json` can connect); a token that *is* sent must still match.
+- The domain model (`Flow`, `ReplayOverrides`, rules) is transport-independent; the protocol revision moves under it without touching it.
+
+**Two protocol revisions, one endpoint — done (0.0.9).** The server speaks **`2026-07-28`** (stateless: no `initialize` handshake, per-request `_meta` carrying version + client capabilities, those values mirrored into HTTP headers and checked against the body, `resultType` on every result, cacheable `tools/list`, `server/discover`) **and `2025-06-18`**. Dual-era is not politeness: a modern client probes and falls back, but a **legacy client cannot fall forward**, so dropping the old revision would silently disconnect every client that hasn't rolled over — Claude Code and Cursor included. The inverse mattered too: answering a modern probe with `200 OK` (which a legacy-only server does, since `tools/list`/`tools/call` share names across eras) makes a dual-era client latch "modern" and never fall back, so `UnsupportedProtocolVersionError` is what makes renegotiation possible at all.
+
+Deliberately **not** on the official Swift SDK: as of 0.12.1 it caps at `2025-11-25`, is pre-1.0, has no `2026-07-28` work in flight, and carries open cross-request-leak and hang bugs in its stateless HTTP transport — adopting it would *lower* the revision Loom speaks. Revisit at SDK 1.0 + `2026-07-28`.
+
+**The control plane is write-capable, so it is also browser-hardened — done (0.0.9).** Loopback + token-optional means a *web page* is "local" too: any site can `fetch` `127.0.0.1:9092`. A request carrying `Origin` is refused `403`, and one whose Content-Type isn't `application/json` is refused `415` — the latter load-bearing, because `application/json` is not CORS-safelisted, so a cross-site `fetch` must pass a preflight this endpoint fails. Without them a page could POST `text/plain` with no preflight and fire write tools; the response is unreadable cross-origin, but the write already happened.
 
 ## Embeddable engine (library reuse)
 
