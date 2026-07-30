@@ -42,6 +42,9 @@ and logic live in the app.
   (`curl -x http://127.0.0.1:9090 …`) or the human enabled the macOS system
   proxy from the panel. A phone on the same Wi-Fi can be pointed at the Mac's LAN
   IP:9090 (see the panel's phone QR). Use **`list_devices`** to see who's sending.
+  A second listener speaks **SOCKS5** on `127.0.0.1:9091` for clients that only
+  understand a SOCKS proxy (`curl --socks5-hostname`, `ALL_PROXY=socks5://…`);
+  `get_proxy_status.socksPort` is the authoritative number.
 - **HTTPS needs interception scope + a trusted CA.** Plain HTTP is captured out
   of the box. For HTTPS, SSL interception must be **on** and the host **in scope**
   (`get_ssl_scope` / `set_ssl_scope`), AND Loom's root CA must be trusted by the
@@ -76,7 +79,7 @@ Loom is built for one cycle — do this, don't just read:
 | Tool | Purpose |
 | --- | --- |
 | `get_version` | app + MCP protocol version — a cheap readiness ping |
-| `get_proxy_status` | running state, listen address (`lanReachable`), captured flow count, recording state, and **`systemProxy`: `on` / `off` / `other` / `unavailable`** — whether this Mac's own traffic is actually routed through Loom. Check it first when a capture is empty: "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. `other` means **another proxy app** (Charles, Proxyman, whistle) owns the system proxy and `systemProxyPointsAt` gives its `host:port`; `unavailable` means this build can't inspect it, which is not the same as off |
+| `get_proxy_status` | running state, listen address (`lanReachable`), `socksPort` (the SOCKS5 listener, absent when there isn't one — aim a client that ignores HTTP proxy settings at it), captured flow count, recording state, and **`systemProxy`: `on` / `off` / `other` / `unavailable`** — whether this Mac's own traffic is actually routed through Loom. Check it first when a capture is empty: "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. `other` means **another proxy app** (Charles, Proxyman, whistle) owns the system proxy and `systemProxyPointsAt` gives its `host:port`; `unavailable` means this build can't inspect it, which is not the same as off |
 | `list_devices` | devices that sent traffic (this Mac + LAN devices), typed from User-Agent, with per-device counts + last-seen |
 | `get_recent_flows` | newest-first flow summaries (method, url, status, `startedAt`, flags). **Filter server-side** — `host` (glob ok), `method`, `url_contains`, `header_contains`, `body_contains`, `status`/`status_min`/`status_max` (`"5xx"` works), `only_errors`, `since_seconds`, `device_ip`, `source_app` — filters apply across the whole capture *before* `limit`, so don't pull a big list and scan it yourself. `captureTruncated: true` means a body (or the WS frame log) is only a prefix of what flowed |
 | `wait_for_flow` | **block** until a flow matching those same filters is captured (default 20 s, max 60), then return it — the tool to use around "trigger the action, then look". Checks the stored capture first, so a match that already arrived comes back immediately. `until` picks how much to wait for: `completed` (default), `response` (status known, body may still stream — use for WebSocket/long downloads), `request` (first sighting). The default window is the last 10 s (so triggering the action *then* calling can't race); widen with `since_seconds`/`since`. A timeout is a normal result (`timedOut: true`) and costs nothing: the flow stays in the store, and retrying with `since` = the reply's `windowFrom` resumes with no gap |
@@ -190,6 +193,11 @@ scoped rule); then one action:
     (`systemProxyPointsAt` names it). Tell the user to quit it rather than calling
     `set_system_proxy`: taking the setting works, but Loom does not put the other
     app's configuration back when it releases it, so that is the user's call;
+  - the client may not honour HTTP proxy settings at all (a Go/Rust/Node CLI that
+    reads only `ALL_PROXY`, a tool whose only field is a SOCKS one). Point it at the
+    **SOCKS5 listener** instead — `get_proxy_status.socksPort` (normally one above
+    the HTTP port, e.g. `ALL_PROXY=socks5://127.0.0.1:9091`). It captures HTTP and
+    MITM-able TLS the same way, and relays anything else untouched;
   - otherwise nothing has been routed through the proxy yet (client not pointed at
     it, or recording paused). Say so.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not

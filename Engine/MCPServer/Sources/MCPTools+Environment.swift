@@ -33,6 +33,12 @@ extension MCPToolExecutor {
             "capturedCount": status.capturedCount,
             "isRecording": status.isRecording,
         ]
+        // Reported only when there is one to point at, so its absence is an answer
+        // rather than a zero to interpret: a client that ignores HTTP proxy settings
+        // but honours `ALL_PROXY` / a SOCKS field can be aimed here instead.
+        if let socksPort = status.socksPort {
+            payload["socksPort"] = socksPort
+        }
         // Four-valued on purpose: routed / nothing set / another proxy owns it / can't
         // tell. Collapsing "can't tell" into `false` would have an agent "fix" a
         // routing problem it has no way to observe; collapsing "another app owns it"

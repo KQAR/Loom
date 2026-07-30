@@ -56,8 +56,19 @@ public struct PanelView: View {
             Circle()
                 .fill(captureDotColor)
                 .frame(width: 7, height: 7)
-            Text(verbatim: "\(store.displayHost):\(store.status.port)")
-                .font(.headline.monospaced())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: "\(store.displayHost):\(store.status.port)")
+                    .font(.headline.monospaced())
+                // The second listener, named only when it is actually up. A client
+                // that ignores HTTP proxy settings but has a SOCKS field needs this
+                // number, and it is not derivable from the one above (the engine
+                // fails open if the port was taken).
+                if let socksPort = store.status.socksPort {
+                    Text(verbatim: "SOCKS5 \(store.displayHost):\(socksPort)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
             Spacer(minLength: LoomTheme.Space.xs)
             // The proxy on/off control (replaces the old Proxy row + "Running" text).
             Toggle("", isOn: Binding(

@@ -93,8 +93,12 @@ extension ProxyEngine {
         phoneInfo
     }
 
-    /// Move the running listener to a different interface on the same port. The
-    /// flow store, CA and rules are untouched — only the accepting socket moves.
+    /// Move the running listeners to a different interface on the same ports. The
+    /// flow store, CA and rules are untouched — only the accepting sockets move.
+    ///
+    /// The SOCKS listener moves with the HTTP one: a phone configured to route
+    /// through Loom can be pointed at either, and leaving SOCKS on loopback would
+    /// make it silently unreachable from the device this rebind exists to serve.
     private func rebind(host: String) async throws {
         guard running else { return }
         await server.stop()
@@ -107,6 +111,9 @@ extension ProxyEngine {
             config: config,
             observeTunnels: lastObserveTunnels
         )
+        await socksServer.stop()
+        boundSOCKSPort = nil
+        await startSOCKSIfRequested(host: host)
         currentBindHost = host
     }
 }
