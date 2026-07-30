@@ -259,6 +259,39 @@ import LoomSharedModels
         _ = try await resultTask
     }
 
+    /// An announced hold is **fully** parked: its watchdog is armed by the time the
+    /// announcement goes out.
+    ///
+    /// This is the invariant `resolvingAHold_cancelsTheTimeoutWatchdog` was quietly
+    /// assuming, and it did not hold — `hold` used to broadcast first and arm the
+    /// watchdog afterwards, so a subscriber could observe the hold during the window
+    /// where no watchdog existed. It went red on `main` under Thread Sanitizer, which
+    /// widens that window.
+    ///
+    /// Asserted through `willAnnounceParked` rather than by reading
+    /// `mostRecentWatchdog` after receiving an announcement, because that reading
+    /// passes under either ordering on a fast machine — the window is microseconds and
+    /// scheduling a subscriber takes longer than that. A test that only fails on a
+    /// slow machine is how this shipped in the first place.
+    @Test func anAnnouncedHold_alreadyHasItsWatchdogArmed() async throws {
+        let store = BreakpointStore(timeout: 30)
+        let forwarder = BreakpointForwarder(base: recordingUpstream(), store: store)
+        store.arm(Breakpoint(match: RuleMatch(urlPattern: "*"), onRequest: true))
+
+        let armedAtAnnouncement = BoolBox()
+        store.willAnnounceParked = { [weak store] in
+            armedAtAnnouncement.set(store?.mostRecentWatchdog != nil)
+        }
+
+        let announcements = store.pendingStream()
+        async let resultTask = forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+        let pending = try #require(await firstParked(announcements), "the exchange never parked")
+
+        #expect(armedAtAnnouncement.value == true, "the announcement must not precede the watchdog")
+        #expect(store.resume(pendingID: pending.id, resolution: .abort))
+        _ = try await resultTask
+    }
+
     /// Two subscribers both hear about a hold, and a subscriber that goes away stops
     /// costing anything — the same fan-out contract as the flow stream.
     @Test func pendingStream_fansOutAndDropsTerminatedSubscribers() async throws {
@@ -385,5 +418,24 @@ private actor BPStubUpstream: UpstreamForwarding {
         lastHeaders = headers
         lastBody = body
         return result
+    }
+}
+
+/// Lock-guarded box for a value written from the store's hold path and read from the
+/// test body — the hook fires on whichever thread parked the exchange.
+private final class BoolBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Bool?
+
+    func set(_ value: Bool) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+
+    var value: Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }
