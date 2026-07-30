@@ -27,12 +27,56 @@ func readHandshake() -> Handshake? {
     return try? JSONDecoder().decode(Handshake.self, from: data)
 }
 
+/// Mirror the body fields that the Streamable HTTP transport carries in headers.
+///
+/// This is the one piece of protocol the bridge cannot avoid knowing. stdio has no
+/// headers — a modern (`2026-07-28`) client puts the protocol version in `_meta` and
+/// nothing else — but the HTTP endpoint on the other side **requires**
+/// `MCP-Protocol-Version`, `Mcp-Method` and (for `tools/call`) `Mcp-Name` to be
+/// present and to agree with the body, and answers `-32020 HeaderMismatch` when they
+/// don't. Translating between the two bindings is exactly what a transport bridge is
+/// for; without this, every modern request over stdio would be rejected.
+///
+/// A legacy request has no `_meta` protocol version, so nothing is mirrored and the
+/// server serves it under legacy rules — the behaviour this bridge has always had.
+func mirroredHeaders(for line: Data) -> [String: String] {
+    guard let message = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
+          let method = message["method"] as? String
+    else { return [:] }
+    let params = message["params"] as? [String: Any] ?? [:]
+    let meta = params["_meta"] as? [String: Any] ?? [:]
+    guard let version = meta["io.modelcontextprotocol/protocolVersion"] as? String else { return [:] }
+
+    var headers = ["MCP-Protocol-Version": version, "Mcp-Method": method]
+    // `Mcp-Name` mirrors `params.name` (tools/call, prompts/get) or `params.uri`
+    // (resources/read); Loom only serves the first, but mirroring whichever is present
+    // keeps the bridge correct if the server grows the others.
+    if let name = (params["name"] as? String) ?? (params["uri"] as? String) {
+        headers["Mcp-Name"] = headerSafe(name)
+    }
+    return headers
+}
+
+/// A header value must be visible ASCII. Anything else travels in the spec's Base64
+/// sentinel, which the server decodes before comparing it to the body. A value that
+/// merely *looks* like the sentinel is encoded too, so it can't be mistaken for one.
+func headerSafe(_ value: String) -> String {
+    let needsEncoding = value.unicodeScalars.contains { $0.value < 0x21 || $0.value > 0x7E }
+        || value != value.trimmingCharacters(in: .whitespaces)
+        || (value.hasPrefix("=?base64?") && value.hasSuffix("?="))
+    guard needsEncoding else { return value }
+    return "=?base64?\(Data(value.utf8).base64EncodedString())?="
+}
+
 func post(line: Data, handshake: Handshake) -> Data? {
     guard let url = URL(string: "http://127.0.0.1:\(handshake.port)/mcp") else { return nil }
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("Bearer \(handshake.token)", forHTTPHeaderField: "Authorization")
+    for (name, value) in mirroredHeaders(for: line) {
+        request.setValue(value, forHTTPHeaderField: name)
+    }
     request.httpBody = line
     // URLSession defaults to a 60 s request timeout, which the blocking tools
     // (`wait_for_flow`, `wait_for_pending`) can legitimately sit inside — a wait that

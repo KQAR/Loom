@@ -21,28 +21,72 @@ public enum MCPError: Error {
     case methodNotFound(String)
     case invalidParams(String)
     case internalError(String)
+    /// An advertised tool that doesn't exist. `-32602` rather than `-32601`: the
+    /// *method* (`tools/call`) was found, it's the `name` parameter that is wrong,
+    /// and the spec's tool error handling assigns exactly this code to "unknown tool".
+    case unknownTool(String)
+    /// The mirrored HTTP headers disagree with the body, or a required one is missing.
+    /// Modern era only — nothing mirrors headers before `2026-07-28`.
+    case headerMismatch(String)
+    /// The client asked for a revision Loom doesn't serve. The `supported` list in
+    /// `data` is the client's retry instruction, so this error is the *only* way a
+    /// modern client can renegotiate downwards; omitting it strands them.
+    case unsupportedProtocolVersion(requested: String)
 
     var code: Int {
         switch self {
         case .parseError: return -32_700
         case .invalidRequest: return -32_600
         case .methodNotFound: return -32_601
-        case .invalidParams: return -32_602
+        case .invalidParams, .unknownTool: return -32_602
         case .internalError: return -32_603
+        case .headerMismatch: return -32_020
+        case .unsupportedProtocolVersion: return -32_022
         }
     }
 
     var message: String {
         switch self {
         case let .parseError(m), let .invalidRequest(m), let .methodNotFound(m),
-             let .invalidParams(m), let .internalError(m):
+             let .invalidParams(m), let .internalError(m), let .headerMismatch(m):
             return m
+        case let .unknownTool(name):
+            return "unknown tool: \(name)"
+        case .unsupportedProtocolVersion:
+            return "Unsupported protocol version"
+        }
+    }
+
+    /// The JSON-RPC `error.data` member, where a machine-actionable payload goes.
+    var data: Any? {
+        switch self {
+        case let .unsupportedProtocolVersion(requested):
+            return ["supported": MCPProtocol.supported, "requested": requested]
+        default:
+            return nil
+        }
+    }
+
+    /// The HTTP status this error is returned with in the **modern** era, where the
+    /// status carries protocol meaning: `404` distinguishes an unknown method from a
+    /// legacy server that doesn't host the endpoint at all, and `400` is what the
+    /// spec mandates for every validation failure. Legacy replies ignore this and
+    /// stay on `200`.
+    var modernStatusCode: Int {
+        switch self {
+        case .methodNotFound: return 404
+        case .internalError: return 500
+        case .parseError, .invalidRequest, .invalidParams, .unknownTool,
+             .headerMismatch, .unsupportedProtocolVersion:
+            return 400
         }
     }
 }
 
-/// A local HTTP JSON-RPC endpoint (`POST /mcp`) implementing the slice of MCP
-/// that the stdio bridge forwards: initialize, tools/list, tools/call.
+/// A local HTTP JSON-RPC endpoint (`POST /mcp`) implementing the slice of MCP that a
+/// tools-only server needs, in **both** protocol eras: `server/discover`,
+/// `tools/list`, `tools/call`, `ping`, and — for clients still on `2025-06-18` —
+/// `initialize`. See `MCPProtocol` for how an incoming request's era is decided.
 ///
 /// `@unchecked Sendable` so the app (Swift 6) can hand the boot-time instance to
 /// its `start()` task without a data-race diagnostic (Xcode 26.5 promotes that to
@@ -50,7 +94,10 @@ public enum MCPError: Error {
 /// `EventLoopGroup` is thread-safe, and `channel` is written once at boot. Matches
 /// the `@unchecked Sendable` treatment of `MCPDispatcher`/`MCPHTTPHandler`.
 public final class MCPServer: @unchecked Sendable {
-    public static let protocolVersion = "2025-06-18"
+    /// The newest revision this server speaks. Reported by `get_version` and used as
+    /// the `initialize` answer when a legacy client asks for something unknown; the
+    /// full dual-era set lives in `MCPProtocol.supported`.
+    public static let protocolVersion = MCPProtocol.latest
     /// Fixed loopback port for the HTTP MCP endpoint, so a static client config
     /// (the Claude Code plugin's `.mcp.json`, `http://127.0.0.1:9092/mcp`) can
     /// reach it without discovering a random port. The `loom-mcp` stdio bridge
@@ -140,47 +187,88 @@ final class MCPDispatcher: @unchecked Sendable {
         self.executor = executor
     }
 
-    /// Returns response bytes, or nil for notifications (which get 202/no body).
-    func handle(requestBody: Data) async -> Data? {
+    /// Returns the reply and the HTTP status to send it with, or nil for notifications
+    /// (which get 202/no body).
+    func handle(requestBody: Data, headers: MCPRequestHeaders = .none) async -> MCPHTTPReply? {
         guard let object = try? JSONSerialization.jsonObject(with: requestBody) else {
-            return errorResponse(id: nil, error: .parseError("invalid JSON"))
+            // The era is unknowable when the body won't parse, so this answers with the
+            // modern status. A legacy client that sent unparseable JSON is broken either
+            // way, and a modern one reads the body before deciding anything.
+            return errorReply(id: nil, error: .parseError("invalid JSON"), era: .modern)
         }
         guard let message = object as? [String: Any] else {
-            return errorResponse(id: nil, error: .invalidRequest("expected a JSON-RPC object"))
+            return errorReply(id: nil, error: .invalidRequest("expected a JSON-RPC object"), era: .modern)
         }
 
         let id = message["id"]
         guard let method = message["method"] as? String else {
-            return errorResponse(id: id, error: .invalidRequest("missing method"))
+            return errorReply(id: id, error: .invalidRequest("missing method"), era: .modern)
         }
         let params = message["params"] as? [String: Any] ?? [:]
+        let meta = params["_meta"] as? [String: Any] ?? [:]
 
         // Notifications carry no id and expect no response.
         if id == nil, method.hasPrefix("notifications/") {
             return nil
         }
 
+        let era = MCPProtocol.era(method: method, meta: meta, headerVersion: headers.protocolVersion)
         do {
-            let result = try await dispatch(method: method, params: params)
-            return successResponse(id: id, result: result)
+            if era == .modern {
+                try MCPProtocol.validateModern(
+                    method: method, params: params, meta: meta, headers: headers
+                )
+            }
+            let result = try await dispatch(method: method, params: params, era: era)
+            return successReply(id: id, result: result, era: era)
         } catch let error as MCPError {
-            return errorResponse(id: id, error: error)
+            return errorReply(id: id, error: error, era: era)
         } catch {
-            return errorResponse(id: id, error: .internalError(error.localizedDescription))
+            return errorReply(id: id, error: .internalError(error.localizedDescription), era: era)
         }
     }
 
-    private func dispatch(method: String, params: [String: Any]) async throws -> Any {
+    private func dispatch(
+        method: String, params: [String: Any], era: MCPProtocol.Era
+    ) async throws -> [String: Any] {
         switch method {
-        case "initialize":
+        // Served in **both** eras, deliberately. The spec requires modern servers to
+        // implement it, and answering it even when the request carries no `_meta` is
+        // what lets a dual-era client discover that this endpoint speaks 2026-07-28
+        // without having to guess-and-retry first.
+        case "server/discover":
             return [
-                "protocolVersion": MCPServer.protocolVersion,
+                "supportedVersions": MCPProtocol.supported,
+                "capabilities": ["tools": ["listChanged": false]],
+                "instructions": Self.instructions,
+                "ttlMs": MCPProtocol.listTTLMs,
+                "cacheScope": MCPProtocol.listCacheScope,
+            ]
+
+        // Legacy only: modern has no handshake, so a modern-shaped `initialize` falls
+        // through to `methodNotFound` (404) below.
+        case "initialize" where era == .legacy:
+            // Echo the client's revision when it's one we serve, so it isn't told to
+            // speak a version it didn't ask for; otherwise name our newest legacy one.
+            let asked = params["protocolVersion"] as? String
+            let negotiated = asked.flatMap { MCPProtocol.supported.contains($0) ? $0 : nil }
+                ?? MCPProtocol.latestLegacy
+            return [
+                "protocolVersion": negotiated,
                 "serverInfo": ["name": "loom", "version": executor.appVersion],
                 "capabilities": ["tools": ["listChanged": false]],
             ]
 
         case "tools/list":
-            return ["tools": executor.toolDefinitions]
+            guard era == .modern else { return ["tools": executor.toolDefinitions] }
+            // Caching hints are mandatory on a modern `complete` list result, and they
+            // are the single biggest win in the revision for a client like Claude Code:
+            // the registry is static, so re-listing it every turn is pure overhead.
+            return [
+                "tools": executor.toolDefinitions,
+                "ttlMs": MCPProtocol.listTTLMs,
+                "cacheScope": MCPProtocol.listCacheScope,
+            ]
 
         case "tools/call":
             guard let name = params["name"] as? String else {
@@ -204,18 +292,45 @@ final class MCPDispatcher: @unchecked Sendable {
         }
     }
 
+    /// `instructions` from `server/discover` — the one place the protocol lets a server
+    /// say what it is for. Deliberately short: the depth lives in each tool's
+    /// description and in the plugin's skill, and this string is paid for on every
+    /// discovery.
+    private static let instructions = """
+    An AI-operable HTTP/HTTPS debugging proxy. Read captured flows, then modify live \
+    traffic: replay with overrides, mock/map/rewrite/block with rules, hold requests \
+    mid-flight with breakpoints. Write tools are audited and visible to the human \
+    supervising from the menu bar.
+    """
+
     // MARK: JSON-RPC envelopes
 
-    private func successResponse(id: Any?, result: Any) -> Data {
-        envelope(["jsonrpc": "2.0", "id": id ?? NSNull(), "result": result])
+    private func successReply(id: Any?, result: [String: Any], era: MCPProtocol.Era) -> MCPHTTPReply {
+        var result = result
+        if era == .modern {
+            // Every modern result is polymorphic on `resultType`. Loom never returns
+            // `input_required` (no sampling, elicitation or roots — its "waiting"
+            // tools park the HTTP request instead), so this is always `complete`.
+            result["resultType"] = "complete"
+            var meta = result["_meta"] as? [String: Any] ?? [:]
+            meta[MCPProtocol.MetaKey.serverInfo] = ["name": "loom", "version": executor.appVersion]
+            result["_meta"] = meta
+        }
+        return MCPHTTPReply(
+            statusCode: 200,
+            body: envelope(["jsonrpc": "2.0", "id": id ?? NSNull(), "result": result])
+        )
     }
 
-    private func errorResponse(id: Any?, error: MCPError) -> Data {
-        envelope([
-            "jsonrpc": "2.0",
-            "id": id ?? NSNull(),
-            "error": ["code": error.code, "message": error.message],
-        ])
+    private func errorReply(id: Any?, error: MCPError, era: MCPProtocol.Era) -> MCPHTTPReply {
+        var payload: [String: Any] = ["code": error.code, "message": error.message]
+        if let data = error.data { payload["data"] = data }
+        return MCPHTTPReply(
+            // Legacy stays on 200 — that is how every client served here to date has
+            // read its JSON-RPC errors, and a status change buys them nothing.
+            statusCode: era == .modern ? error.modernStatusCode : 200,
+            body: envelope(["jsonrpc": "2.0", "id": id ?? NSNull(), "error": payload])
+        )
     }
 
     private func envelope(_ object: [String: Any]) -> Data {
@@ -270,8 +385,15 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 // client was told not to reuse this connection in the first place.
                 reject(channel: context.channel, status: .serviceUnavailable,
                        message: "one request per connection; this endpoint closes after each response")
-            } else if head.method != .POST || Self.path(head.uri) != "/mcp" {
+            } else if Self.path(head.uri) != "/mcp" {
                 reject(channel: context.channel, status: .notFound, message: "not found")
+            } else if head.method != .POST {
+                // `405` specifically, not `404`: GET and DELETE were the old transport's
+                // standalone SSE stream and session teardown, and `2026-07-28` requires a
+                // server that dropped them to say "method not allowed" so a client can
+                // tell that apart from an endpoint that isn't there.
+                reject(channel: context.channel, status: .methodNotAllowed,
+                       message: "only POST is supported on this endpoint")
             } else if head.headers.contains(name: "Origin") {
                 // No legitimate Loom client is a web page. A request carrying Origin
                 // came from a browser, which means some site is driving this
@@ -342,11 +464,20 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         // wait that can run tens of seconds — well after the client hung up. Not a
         // leak (the wait is capped), but it outlives its purpose, and everything
         // else in the codebase captures weakly here.
+        let headers = MCPRequestHeaders(
+            protocolVersion: head.headers.first(name: "MCP-Protocol-Version"),
+            method: head.headers.first(name: "Mcp-Method"),
+            name: head.headers.first(name: "Mcp-Name")
+        )
         inFlight = Task { [weak self] in
-            let response = await dispatcher.handle(requestBody: payload)
+            let reply = await dispatcher.handle(requestBody: payload, headers: headers)
             guard !Task.isCancelled, let self else { return }
-            if let response {
-                self.writeJSON(channel: channel, status: .ok, data: response)
+            if let reply {
+                self.writeJSON(
+                    channel: channel,
+                    status: HTTPResponseStatus(statusCode: reply.statusCode),
+                    data: reply.body
+                )
             } else {
                 self.writeJSON(channel: channel, status: .accepted, data: Data())
             }
