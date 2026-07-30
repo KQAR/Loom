@@ -199,6 +199,17 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    that needs supervising while it happens, and this is the lowest-frequency
    configuration in the app.
 
+   **Per-flow attribution is deferred, deliberately.** Recording *which* identity a
+   flow presented, as a `Flow` field, was the obvious next step and is the wrong one
+   for now: it answers "which one", while the actual pain is "why did this fail" — and
+   the failure usually happens when there is no identity to attribute. It would also
+   touch a public model and everything downstream of it (HAR, `get_flow_detail`,
+   `FlowComparison`, the Inspector, redaction) for value that only appears once
+   several overlapping host patterns exist. What shipped instead is `UpstreamTLSError`:
+   a refused handshake names the host and which identity was presented (or that none
+   was), in `Flow.error` — one file, every surface, no model change. Revisit the field
+   when there are enough identities that "which one matched" is a real question.
+
    Three decisions worth keeping: the bundle is **validated when it is set**, so a
    wrong passphrase lands on the operator who typed it instead of on a request hours
    later attributed to the origin; a configured-but-unloadable identity **throws**

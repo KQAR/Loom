@@ -46,10 +46,18 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             let isTLS = (url.scheme?.lowercased() == "https")
             let port = url.port ?? (isTLS ? 443 : 80)
 
+            // Resolved before the attempt so it is available on the failure path too:
+            // an mTLS handshake failure is the case where naming the identity (or its
+            // absence) is the whole diagnosis. See `UpstreamTLSError`.
+            let identity = isTLS ? self.clientIdentities?.identityLabel(forHost: host) : nil
+
             let sslHandler: NIOSSLClientHandler?
             do {
                 sslHandler = try isTLS ? self.makeSSLHandler(host: host) : nil
             } catch {
+                // A configured identity that won't load: the error already names it
+                // (the store validates on the way in), so it is passed through as-is
+                // rather than wrapped in a handshake story that never happened.
                 continuation.finish(throwing: error)
                 return
             }
@@ -70,14 +78,21 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                             // Decompress gzip/deflate so relayed/captured bytes are plaintext;
                             // the now-wrong Content-Encoding/Length are stripped on `.head`.
                             .flatMap { channel.pipeline.addHandler(NIOHTTPResponseDecompressor(limit: .none)) }
-                            .flatMap { channel.pipeline.addHandler(StreamingResponseHandler(continuation: continuation)) }
+                            .flatMap {
+                                channel.pipeline.addHandler(StreamingResponseHandler(
+                                    continuation: continuation,
+                                    contextualize: { UpstreamTLSError.wrapping($0, host: host, isTLS: isTLS, identity: identity) }
+                                ))
+                            }
                     }
                 do {
                     let channel = try await bootstrap.connect(host: host, port: port).get()
                     box.set(channel)
                     try await Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
                 } catch {
-                    continuation.finish(throwing: error)
+                    continuation.finish(throwing: UpstreamTLSError.wrapping(
+                        error, host: host, isTLS: isTLS, identity: identity
+                    ))
                 }
             }
             // On stream completion/cancellation, stop connecting and close the socket.
@@ -222,10 +237,20 @@ private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked 
     typealias InboundIn = HTTPClientResponsePart
 
     private let continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation
+    /// Adds context to a failing error on its way out. A TLS handshake failure does
+    /// **not** come back from `connect()` — the TCP connection succeeds and the
+    /// handshake fails afterwards, inside the pipeline, arriving here as
+    /// `errorCaught`. So this is the only place that sees it, and wrapping it at the
+    /// call site (as this first tried) silently misses every one.
+    private let contextualize: @Sendable (Error) -> Error
     private var finished = false
 
-    init(continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation) {
+    init(
+        continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
+        contextualize: @escaping @Sendable (Error) -> Error = { $0 }
+    ) {
         self.continuation = continuation
+        self.contextualize = contextualize
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -260,7 +285,7 @@ private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked 
         guard !finished else { return }
         finished = true
         if let error {
-            continuation.finish(throwing: error)
+            continuation.finish(throwing: contextualize(error))
         } else {
             continuation.yield(.end)
             continuation.finish()

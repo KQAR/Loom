@@ -12,6 +12,13 @@ protocol ClientIdentityProviding: Sendable {
     /// Client context for `host`, or nil when no identity is configured for it.
     /// Throws only when an identity *is* configured and cannot be loaded.
     func context(forHost host: String) throws -> NIOSSLContext?
+    /// Name of the identity that *would* be presented to `host`, for error context;
+    /// nil when none matches.
+    ///
+    /// Separate from `context(forHost:)` because it is needed on the failure path,
+    /// where building a context may be exactly what failed — and because naming the
+    /// identity must never itself throw.
+    func identityLabel(forHost host: String) -> String?
 }
 
 /// Thread-safe holder for the configured mutual-TLS identities, shared between the
@@ -103,6 +110,16 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
         all()
             .filter { $0.isEnabled && SSLScope.matches(pattern: $0.hostPattern, host: host) }
             .max { $0.hostPattern.count < $1.hostPattern.count }
+    }
+
+    func identityLabel(forHost host: String) -> String? {
+        guard let identity = identity(forHost: host) else { return nil }
+        // Both halves, because they answer different questions: the label is what the
+        // operator named it, the pattern is *why* it was chosen — which is the part
+        // that matters when two globs overlap.
+        return identity.label == identity.hostPattern
+            ? identity.hostPattern
+            : "\(identity.label) (\(identity.hostPattern))"
     }
 
     func context(forHost host: String) throws -> NIOSSLContext? {

@@ -182,6 +182,68 @@ struct ClientCertificateTests {
         }
     }
 
+    // MARK: Failure legibility
+
+    @Test func aRefusedHandshakeNamesWhetherAnIdentityWasPresented() async throws {
+        // The diagnosis this exists for. Before it, an mTLS refusal reached the
+        // operator as `NIOSSL.NIOSSLError error 3.` — no host, no hint.
+        let material = try TLSMaterial.make()
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { try? group.syncShutdownGracefully() }
+        let server = try MutualTLSServer(material: material, group: group)
+        defer { server.stop() }
+
+        // No identity matches 127.0.0.1, so the server (which requires one) refuses.
+        let config = ClientCertificateConfig(
+            certificates: [ClientCertificate(
+                hostPattern: "elsewhere.example", pkcs12: material.p12, passphrase: material.passphrase
+            )],
+            fileURL: nil,
+            baseConfiguration: material.clientConfiguration
+        )
+        let forwarder = NIOStreamingForwarder(group: group, clientIdentities: config)
+        let url = try #require(URL(string: "https://127.0.0.1:\(server.port)/mtls"))
+
+        do {
+            _ = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+            Issue.record("the handshake should have failed")
+        } catch {
+            // `localizedDescription` specifically: that is what `StreamRelay` and the
+            // replay path store in `Flow.error`, which is the string every surface reads.
+            let message = error.localizedDescription
+            #expect(message.contains("127.0.0.1"), "got \(message)")
+            #expect(message.contains("no client certificate"), "got \(message)")
+            #expect(message.contains("set_client_certificate"), "got \(message)")
+            // States what Loom did, never what the server wanted — Loom cannot tell a
+            // client-cert requirement from any other handshake failure.
+            #expect(!message.lowercased().contains("requires a client certificate"), "got \(message)")
+        }
+    }
+
+    @Test func handshakeContextNamesTheIdentityWhenOneWasPresented() throws {
+        // Unit-level, because provoking a *rejection* of a valid certificate needs a
+        // second CA the server doesn't trust — more machinery than the message is
+        // worth. What matters is which branch the text takes.
+        let wrapped = UpstreamTLSError.wrapping(
+            NIOSSLError.handshakeFailed(.noError),
+            host: "api.corp.example", isTLS: true, identity: "Corp API (*.corp.example)"
+        )
+        let message = wrapped.localizedDescription
+        #expect(message.contains("Loom presented client certificate Corp API (*.corp.example)"), "got \(message)")
+        #expect(!message.contains("set_client_certificate"), "advice for the wrong problem")
+    }
+
+    @Test func nonTLSFailuresAreLeftAlone() throws {
+        // The filter is the load-bearing part: appending a mutual-TLS note to a DNS
+        // miss or a refused connection would turn a clear error into a misleading one.
+        let plain = ForwarderError.connectionClosed
+        #expect(UpstreamTLSError.wrapping(plain, host: "a.test", isTLS: true, identity: nil) is ForwarderError,
+                "a mid-exchange close is where TLS 1.3 rejection *and* every ordinary reset land — not attributable")
+        #expect(UpstreamTLSError.wrapping(
+            NIOSSLError.handshakeFailed(.noError), host: "a.test", isTLS: false, identity: nil
+        ) is NIOSSLError, "plain HTTP can't have a handshake problem")
+    }
+
     @Test func aConfiguredButUnloadableIdentityFailsLoudlyRatherThanConnectingWithoutIt() async throws {
         // Connecting anyway would fail the handshake too, but the error would name
         // the origin. The identity is the thing the operator can fix, so it is named.
