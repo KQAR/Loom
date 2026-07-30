@@ -212,6 +212,46 @@ public struct PanelView: View {
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.top, LoomTheme.Space.xxs)
         }
+        clientCertsRow
+    }
+
+    /// Mutual TLS — the identity Loom presents *to* an origin, the mirror of the root
+    /// CA above (which is what Loom presents to clients). Sits under the HTTPS row
+    /// because it only ever matters while interception is on: with SSL off, HTTPS is
+    /// blind-tunneled and Loom never originates the upstream TLS that would present
+    /// one.
+    ///
+    /// Shown while SSL is on, **or** whenever an identity exists — the second half
+    /// matters because the other writer is an agent, and an identity installed while
+    /// SSL happened to be off would otherwise be an invisible write.
+    @ViewBuilder private var clientCertsRow: some View {
+        if store.setup.sslEnabled || !store.setup.clientCertificates.isEmpty {
+            PanelRow(
+                kind: .action,
+                icon: "person.badge.key",
+                iconTint: store.setup.brokenClientCertificates.isEmpty ? nil : .orange,
+                title: "Client Certificates",
+                detail: clientCertsDetail,
+                help: "Certificates Loom presents when a server demands one (mutual TLS)"
+            ) {
+                store.send(.setup(.clientCertsExpandTapped))
+            }
+            if store.setup.clientCertsExpanded {
+                ClientCertificatesCard(store: store.scope(state: \.setup, action: \.setup))
+                    .padding(.horizontal, LoomTheme.Space.md)
+                    .padding(.top, LoomTheme.Space.xxs)
+            }
+        }
+    }
+
+    /// Count, or the broken count when there is one — an expired or unreadable
+    /// identity fails a handshake exactly like a missing one, and that is the only
+    /// state here the human has to act on.
+    private var clientCertsDetail: String {
+        let broken = store.setup.brokenClientCertificates.count
+        if broken > 0 { return "\(broken) need attention" }
+        let total = store.setup.clientCertificates.count
+        return total == 0 ? "none" : "\(total)"
     }
 
     private var sslDetail: String {

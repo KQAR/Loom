@@ -183,17 +183,28 @@ utility — closer to the system's own controls than to a themed Electron tool.
 ### Status-bar console — a fixed `{metrics.console-width}` popover
 
 ```
-┌─ ● Loom                    Running ─┐   header: status dot + name + state
-│ 🌐 Proxy         :9090        [◉]   │   config-row (toggle)
-│ 🌍 System proxy  off          [ ]   │   config-row (M2, disabled)
-│ ⚙︎ Rules         none yet      Off   │   config-row (M3)
+┌─ ● 127.0.0.1:9090            [◉] ──┐   header: capture dot + address + proxy switch
+│    SOCKS5 127.0.0.1:9091            │   second listener, only while it is bound
+│ 📱 Connect Device            2      │   action-row (phone onboarding)
+│ 🌍 System Proxy      in use by …    │   config-row (three-valued: loom/off/other)
+│ 🔒 HTTPS (SSL)       decrypting     │   config-row
+│ 🔑 Client Certificates       1      │   config-row, conditional — expands a card
+│ ⚙︎ Rules             2 active       │   config-row
+│ 🛑 Breakpoints       1 held         │   config-row, conditional (orange)
 │ ──────────────────────────────────  │
-│        [ Open Main Window ]          │   prominent button
-│ N flows captured              Quit   │   footer
+│ 📋 Open Main Window     N flows     │   action-row
+│ v0.0.9   Loom                Quit   │   footer
 └──────────────────────────────────────┘
 ```
 
-(M2 fault cards and M3 approval cards appear between the header and the config rows when present.)
+Rows marked **conditional** are absent rather than empty: Breakpoints appears only
+while something is armed or held, Client Certificates only while HTTPS is on or an
+identity exists. A row that is always visible but usually says "none" spends the
+console's scarcest resource — vertical space — on nothing.
+
+Cards appear directly under the row they belong to (root-CA trust under HTTPS, the
+client-certificate list under its own row) rather than in a fixed slot, so the
+control and its detail read as one unit.
 
 ### Main window — sidebar + vertical split (standard debugger layout)
 

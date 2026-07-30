@@ -193,7 +193,11 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    ranked above the wider one below. `ClientCertificate` (PKCS#12 + passphrase,
    scoped by host glob) is stored in `client-certificates.json` (0600) and consulted
    per upstream host by `NIOStreamingForwarder`; three MCP tools plus `ProxyClient`
-   endpoints expose it.
+   endpoints expose it, and the status-bar console carries a collapsed **Client
+   Certificates** row under HTTPS (list, add via file picker, confirmed delete).
+   Deliberately a row and not a sidebar panel — the existing panels are for activity
+   that needs supervising while it happens, and this is the lowest-frequency
+   configuration in the app.
 
    Three decisions worth keeping: the bundle is **validated when it is set**, so a
    wrong passphrase lands on the operator who typed it instead of on a request hours
