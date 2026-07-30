@@ -60,6 +60,29 @@ import Testing
 
     /// The tail of a burst must not be stranded when the stream goes quiet — the
     /// failure mode where a request appears to have never happened.
+    /// The drop this guards against, forced deterministically: with a clock that is
+    /// never advanced, the window never elapses, so the buffered flows can only leave
+    /// via the end-of-stream flush. If that flush happens on a task the group has
+    /// already cancelled, `Send` discards it silently (`guard !Task.isCancelled`) and
+    /// the whole batch is gone.
+    @Test func theBufferedTailSurvivesWhenTheWindowNeverElapses() async {
+        let collected = Collected()
+        let flows = (0 ..< 5).map(flow)
+        await AppFeature.streamFlows(
+            into: Send { action in
+                if case let .flowsReceived(batch) = action { collected.append(batch) }
+            },
+            flowStream: {
+                AsyncStream { continuation in
+                    for flow in flows { continuation.yield(flow) }
+                    continuation.finish()
+                }
+            },
+            clock: TestClock()
+        )
+        #expect(collected.batches.flatMap { $0 }.map(\.id) == flows.map(\.id))
+    }
+
     @Test func trailingFlows_areFlushedWhenTheStreamEnds() async {
         let single = flow(1)
         let batches = await batches(from: [single])
