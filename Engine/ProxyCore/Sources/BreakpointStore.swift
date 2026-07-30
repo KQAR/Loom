@@ -51,6 +51,19 @@ final class BreakpointStore: @unchecked Sendable {
     private var lastWatchdog: Task<Void, Never>?
     private var timeoutResolutionCount = 0
 
+    /// Test seam: called immediately before a parked exchange is announced on
+    /// `pendingStream()`, with the lock released.
+    ///
+    /// It exists because the ordering it observes — watchdog armed *before* the
+    /// announcement — can only otherwise be checked by reading `mostRecentWatchdog`
+    /// straight after receiving an announcement, and that check passes either way on
+    /// a fast machine: the window between the two is microseconds, far shorter than
+    /// it takes a subscriber to be scheduled. That is precisely how the ordering bug
+    /// this guards survived until Thread Sanitizer slowed the tail of `hold` down
+    /// enough to lose the race on CI. A hook at the exact moment is deterministic;
+    /// a timing-dependent assertion is not a guard, it is a coin toss.
+    var willAnnounceParked: (@Sendable () -> Void)?
+
     /// Awaitable handle on the watchdog armed by the last `hold`.
     var mostRecentWatchdog: Task<Void, Never>? {
         lock.lock()
@@ -221,11 +234,6 @@ final class BreakpointStore: @unchecked Sendable {
                 held[info.id] = Held(info: info, continuation: continuation, timeout: nil)
                 lock.unlock()
 
-                // Tell the waiters before arming the watchdog: the exchange is
-                // already parked and resumable at this point, and a `wait_for_pending`
-                // caller should hear about it with no polling delay.
-                broadcast(parked: info)
-
                 let id = info.id
                 let seconds = self.timeout
                 let task = Task { [weak self] in
@@ -235,23 +243,37 @@ final class BreakpointStore: @unchecked Sendable {
                         self?.countTimeoutResolution()
                     }
                 }
-                // Test seam. Proving the watchdog was *cancelled* means observing
-                // that it never resolved anything — and the only alternative is to
-                // sleep past its deadline and conclude from silence, which races the
-                // clock rather than testing the behaviour.
+
+                // Record and attach the watchdog in one critical section, then
+                // announce. `lastWatchdog` is the test seam for proving cancellation
+                // positively (await the task, then check it resolved nothing) instead
+                // of sleeping past a deadline and inferring it from silence.
+                //
+                // The announcement goes *last* on purpose. It used to come first, on
+                // the reasoning that a parked exchange is already resumable and a
+                // `wait_for_pending` caller shouldn't wait — true, but it made the
+                // announcement arrive before the watchdog existed, so anything treating
+                // "announced" as "fully parked" was racing this function's own tail.
+                // `BreakpointTests.resolvingAHold_cancelsTheTimeoutWatchdog` did exactly
+                // that and went red under TSan, which widens the window. Moving it here
+                // costs the waiter a task creation and two lock acquisitions — not a
+                // delay of any consequence — and buys an ordering guarantee: an
+                // announced hold has its watchdog armed.
                 lock.lock()
                 lastWatchdog = task
+                // A short timeout can already have resolved the hold by now (tests use
+                // 50 ms), in which case there is nothing left to attach it to.
+                let stillHeld = held[id] != nil
+                if stillHeld { held[id]?.timeout = task }
                 lock.unlock()
 
-                // Attach the watchdog. A short timeout can already have resolved the
-                // hold by now (tests use 50 ms), in which case there's nothing left
-                // to attach it to and the task is redundant.
-                lock.lock()
-                if held[id] != nil {
-                    held[id]?.timeout = task
-                    lock.unlock()
+                if stillHeld {
+                    willAnnounceParked?()
+                    broadcast(parked: info)
                 } else {
-                    lock.unlock()
+                    // Resolved already — announcing it now would hand a waiter an
+                    // exchange it cannot act on, which is the one thing the pending
+                    // stream must not do.
                     task.cancel()
                 }
             }
