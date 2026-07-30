@@ -108,6 +108,44 @@ import LoomSharedModels
         }
     }
 
+    /// The reported bug: after a successful enable the panel showed "On — QUIC blocked…
+    /// Restored when Loom quits." Nothing ever cleared it, so once another proxy app
+    /// took the setting the row correctly read "in use by 127.0.0.1:8888" while the line
+    /// underneath still claimed Loom held it.
+    ///
+    /// The fix is structural rather than another clearing rule: a note describing
+    /// current routing is derived by the panel from `systemProxyRouting`, so the
+    /// reducer must store **no** standing claim on success. Transient feedback about an
+    /// action (errors, "Setting system proxy…") is still stored — that's what the field
+    /// is for.
+    @Test func aSuccessfulEnableStoresNoStandingClaim() async {
+        var initial = SetupFeature.State()
+        initial.port = 9090
+        initial.isSystemProxy = true
+        initial.systemProxyBusy = true
+        initial.systemProxyMessage = "Setting system proxy…"
+        // Built outside the dependency closure: the escaping closure isn't main-actor
+        // isolated, so it can't reach this suite's helper.
+        let onLoom = snapshot(host: "127.0.0.1", port: 9090)
+        let store = TestStore(initialState: initial) { SetupFeature() } withDependencies: {
+            $0.privilegedHelperClient.systemProxySnapshot = { onLoom }
+        }
+
+        await store.send(.systemProxyResult(enabling: true, ok: true, message: nil)) {
+            $0.systemProxyBusy = false
+            $0.systemProxyMessage = nil
+        }
+        await store.receive(\.systemProxySnapshotChanged) { $0.systemProxyRouting = .loom }
+
+        // And when someone else takes it, there is no leftover text to contradict the
+        // row — the note simply follows the new routing.
+        await store.send(.systemProxySnapshotChanged(snapshot(host: "127.0.0.1", port: 8888))) {
+            $0.systemProxyRouting = .other(host: "127.0.0.1", port: 8888)
+            $0.isSystemProxy = false
+        }
+        #expect(store.state.systemProxyMessage == nil)
+    }
+
     /// A failed enable reverts the optimistic toggle *and* settles on what the system
     /// really says, so a partial write can't leave the row lying in the other direction.
     /// Starts from a stale `.loom` — the state a previous reading left behind — so the

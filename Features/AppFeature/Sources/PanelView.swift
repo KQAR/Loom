@@ -124,19 +124,65 @@ public struct PanelView: View {
         ) {
             store.send(.setup(.toggleSystemProxyTapped))
         }
-        if store.setup.systemProxyBusy || store.setup.systemProxyMessage != nil {
-            inlineNote(store.setup.systemProxyMessage ?? "", busy: store.setup.systemProxyBusy)
+        if store.setup.systemProxyBusy || systemProxyNote != nil {
+            inlineNote(
+                systemProxyNote ?? "",
+                busy: store.setup.systemProxyBusy,
+                // Tinted only while another app holds the setting: that note is the one
+                // the human has to act on (go quit it), unlike the QUIC note, which is
+                // just describing a healthy state.
+                tint: isSystemProxyOccupied ? .yellow : nil
+            )
         }
     }
 
+    /// Another proxy app holds the system proxy. Not the same as off — and while a
+    /// change of ours is in flight the note is our own progress text, not this.
+    private var isSystemProxyOccupied: Bool {
+        guard !store.setup.systemProxyBusy, store.setup.systemProxyMessage == nil else { return false }
+        if case .other = store.setup.systemProxyRouting { return true }
+        return false
+    }
+
     /// "off" is the wrong word when another proxy app owns the setting: the fix is to
-    /// quit Charles, not to press Loom's switch again. Naming the address is what lets
-    /// the human recognize whose it is.
+    /// quit Charles, not to press Loom's switch again.
+    ///
+    /// Kept to two words. The row's detail sits at the trailing edge of a 300pt panel
+    /// (`LoomTheme.consoleWidth`) beside the icon and title, so the address does not
+    /// fit — it goes in the note underneath, which wraps and is tinted to draw the eye
+    /// there anyway.
     private var systemProxyDetail: String {
         switch store.setup.systemProxyRouting {
         case .loom: return "on"
         case .off: return "off"
-        case let .other(host, port): return "in use by \(host):\(port)"
+        case .other: return "in use"
+        }
+    }
+
+    /// Feedback about the last action if there is any, otherwise a note derived from
+    /// where traffic actually goes.
+    ///
+    /// Derived, not stored: the "QUIC is blocked" line used to be written into
+    /// `systemProxyMessage` on a successful enable and never cleared, so when another
+    /// proxy app took the setting the row read "in use by 127.0.0.1:8888" while the
+    /// line underneath still claimed Loom held it and would restore it on quit. A note
+    /// that describes current state has to be a function of current state.
+    private var systemProxyNote: String? {
+        // A real action's feedback (an error, "Setting system proxy…") outranks the
+        // standing note — it is the thing the human just caused and needs to read.
+        if store.setup.systemProxyBusy { return store.setup.systemProxyMessage }
+        if let message = store.setup.systemProxyMessage { return message }
+        switch store.setup.systemProxyRouting {
+        case .loom:
+            return "QUIC blocked so browser (HTTP/3) traffic is captured. Restored when Loom quits."
+        case let .other(host, port):
+            // Carries the address the row has no room for, and says what to do rather
+            // than only what is wrong: turning Loom on from here works, but it takes
+            // the setting and Loom will not hand it back (see AGENTS.md), so quitting
+            // the other app first is the safe order.
+            return "Another proxy app has it (\(host):\(port)). Quit that app first — Loom won't put its settings back."
+        case .off:
+            return nil
         }
     }
 
@@ -254,12 +300,15 @@ public struct PanelView: View {
         panel?.close()
     }
 
-    private func inlineNote(_ text: String, busy: Bool) -> some View {
+    /// `tint == nil` is the ordinary secondary note. A tint is for a note the human is
+    /// expected to act on — same yellow as the paused capture dot, which is the panel's
+    /// existing "attention, not failure" signal.
+    private func inlineNote(_ text: String, busy: Bool, tint: Color? = nil) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
             if busy { ProgressView().controlSize(.small) }
             Text(text)
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(tint ?? Color.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.leading, PanelRow.titleLeadingInset)
