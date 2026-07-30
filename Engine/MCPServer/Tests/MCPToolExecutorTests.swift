@@ -63,12 +63,16 @@ import LoomSharedModels
         #expect(advertised == handled, "every advertised tool has a handler and vice-versa")
     }
 
-    @Test func unknownTool_throwsMethodNotFound() async {
+    /// `-32602`, not `-32601`: `tools/call` was found, its `name` parameter wasn't, and
+    /// that is the code the spec assigns to "unknown tool". `-32601` would tell the
+    /// client the *method* is missing and invite it to stop calling `tools/call` at all.
+    @Test func unknownTool_throwsInvalidParams() async {
         do {
             _ = try await makeExecutor().call(name: "does_not_exist", arguments: [:])
-            Issue.record("expected methodNotFound")
+            Issue.record("expected unknownTool")
         } catch let error as MCPError {
-            guard case .methodNotFound = error else { Issue.record("wrong error: \(error)"); return }
+            guard case .unknownTool = error else { Issue.record("wrong error: \(error)"); return }
+            #expect(error.code == -32_602)
         } catch { Issue.record("wrong error type: \(error)") }
     }
 

@@ -15,7 +15,11 @@ extension MCPToolExecutor {
         prettyJSON([
             "app": "Loom",
             "appVersion": appVersion,
+            // The newest revision served, plus the whole dual-era set — the same list
+            // `server/discover` reports, so an agent debugging a version problem sees
+            // one answer whichever way it asked.
             "protocolVersion": protocolVersion,
+            "supportedProtocolVersions": MCPProtocol.supported,
         ])
     }
 

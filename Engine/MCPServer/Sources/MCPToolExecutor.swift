@@ -79,7 +79,7 @@ struct MCPToolExecutor {
     /// `MCPError` describing why the call could not be dispatched.
     func call(name: String, arguments: [String: Any]) async throws -> String {
         guard let handler = Self.handlers[name] else {
-            throw MCPError.methodNotFound("unknown tool: \(name)")
+            throw MCPError.unknownTool(name)
         }
         // Read tools run straight through. Write tools are the whole reason Loom
         // exists — record each in the audit trail (success or failure) so the
