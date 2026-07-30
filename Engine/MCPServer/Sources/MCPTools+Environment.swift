@@ -33,11 +33,21 @@ extension MCPToolExecutor {
             "capturedCount": status.capturedCount,
             "isRecording": status.isRecording,
         ]
-        // Three-valued on purpose: routed / not routed / can't tell. Collapsing the
-        // third into `false` would have an agent "fix" a routing problem that it has
-        // no way to observe, and report success it can't verify.
+        // Four-valued on purpose: routed / nothing set / another proxy owns it / can't
+        // tell. Collapsing "can't tell" into `false` would have an agent "fix" a
+        // routing problem it has no way to observe; collapsing "another app owns it"
+        // into `"off"` would have it turn Loom on and silently steal the user's
+        // Charles/whistle configuration instead of saying so.
         if let routing {
-            payload["systemProxy"] = await routing.isSystemProxyActive() ? "on" : "off"
+            switch await routing.systemProxyRouting() {
+            case .loom:
+                payload["systemProxy"] = "on"
+            case .off:
+                payload["systemProxy"] = "off"
+            case let .other(host, port):
+                payload["systemProxy"] = "other"
+                payload["systemProxyPointsAt"] = "\(host):\(port)"
+            }
         } else {
             payload["systemProxy"] = "unavailable"
         }

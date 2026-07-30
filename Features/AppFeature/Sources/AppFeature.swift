@@ -507,7 +507,11 @@ public struct AppFeature: Sendable {
                     // Breakpoint supervision: seed armed/held state and follow the
                     // hold stream. Owned by the child so its cancellation and its
                     // held-poll stay in one place.
-                    .send(.breakpoints(.task))
+                    .send(.breakpoints(.task)),
+                    // Follow the system proxy for the life of the app: another proxy
+                    // app can take it at any moment, and the panel must not keep
+                    // claiming Loom holds it.
+                    .send(.setup(.task))
                 )
 
             case let .connectedDeviceCountChanged(count):

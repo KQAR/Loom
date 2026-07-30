@@ -20,7 +20,7 @@ enum SystemProxyApplier {
         // 1) Direct, silent path (works for admin users): feed the script to sh on
         //    stdin-equivalent `-c`, never touching disk.
         _ = run("/bin/sh", ["-c", script])
-        if verified(enabled: enabled, host: host, port: port) { return (true, nil) }
+        if verified(enabled: enabled, port: port) { return (true, nil) }
 
         // 2) Fallback: the SAME script inlined into one admin prompt. Inlining the
         //    text (rather than writing a script file and running it as root) closes
@@ -29,11 +29,19 @@ enum SystemProxyApplier {
         //    turning Loom's authorization dialog into arbitrary root code.
         let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
         let (status, stderr) = run("/usr/bin/osascript", ["-e", osascript])
-        if status == 0, verified(enabled: enabled, host: host, port: port) { return (true, nil) }
+        if status == 0, verified(enabled: enabled, port: port) { return (true, nil) }
         if stderr.contains("User canceled") || stderr.contains("-128") {
             return (false, "Authorization cancelled.")
         }
         return (false, stderr.isEmpty ? "networksetup failed" : stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Where this Mac's traffic currently goes. Reading needs no privileges. Used for
+    /// the boot-time UI sync, post-apply verification, and the quit-time cleanup
+    /// decision — one definition, so the human, the agent and the quit path can't
+    /// disagree about whether Loom holds the proxy.
+    static func routing(loomPort: Int) -> SystemProxyRouting {
+        SystemProxyMonitor.snapshot().routing(loomPort: loomPort)
     }
 
     /// Quote a shell script as an AppleScript string literal for `do shell script`.
@@ -46,25 +54,32 @@ enum SystemProxyApplier {
         return "\"\(escaped)\""
     }
 
-    /// Whether the *effective* system proxy currently routes HTTP+HTTPS through
-    /// `host:port`. Reading needs no privileges. Used for the boot-time UI sync,
-    /// post-apply verification, and the quit-time cleanup decision.
-    static func isPointing(at host: String, port: Int) -> Bool {
-        guard let cf = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return false }
-        return SystemProxyParsing.effectiveProxiesPoint(at: host, port: port, in: cf)
+    /// Whether the *effective* system proxy currently routes HTTP+HTTPS through Loom.
+    static func isPointing(port: Int) -> Bool {
+        routing(loomPort: port) == .loom
     }
 
     // MARK: - Internals
 
     /// The dynamic store lags a written config by a beat; poll briefly.
-    private static func verified(enabled: Bool, host: String, port: Int, attempts: Int = 10) -> Bool {
+    ///
+    /// Note this checks "does Loom hold it", not "is any proxy set" — so a disable
+    /// that *restored another app's* proxy still verifies, because Loom no longer
+    /// holds it, which is the whole intent of the change.
+    private static func verified(enabled: Bool, port: Int, attempts: Int = 10) -> Bool {
         for _ in 0..<attempts {
-            let pointing = isPointing(at: host, port: port)
-            if pointing == enabled { return true }
+            if isPointing(port: port) == enabled { return true }
             usleep(100_000) // 0.1s
         }
         return false
     }
+
+    // Loom deliberately does **not** back up and restore whoever held the proxy before
+    // it. Restoring is only correct if that app is still running, and Loom has no way
+    // to know: re-enabling a proxy pointed at an exited Charles would break every
+    // request on the machine, which is strictly worse than leaving the setting off.
+    // Turning Loom off therefore turns the proxy off, and the panel names the other
+    // app while it *does* hold the setting so the human can go switch back themselves.
 
     private static func run(_ launchPath: String, _ arguments: [String]) -> (status: Int32, stderr: String) {
         let process = Process()
