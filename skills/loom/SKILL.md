@@ -212,7 +212,10 @@ scoped rule); then one action:
   `list_client_certificates` — an expired or unreadable identity fails identically to
   a missing one — and install one with `set_client_certificate` if the user has the
   `.p12`. Ask them for it; don't go looking through their keychain or disk for
-  credentials.
+  credentials. **Read the flow's `error` first**: a refused handshake names the host
+  and whether Loom presented an identity or had none for it. It reports what Loom did,
+  not what the server required — Loom cannot tell a client-certificate requirement
+  from any other handshake failure, so don't restate it as one.
 - A write tool acts immediately and globally — there is no confirmation prompt.
   When a rule would broadly alter traffic (e.g. a wide block glob), state what it
   will affect before creating it.
