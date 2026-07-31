@@ -65,6 +65,26 @@ import Foundation
         #expect(QUICBlocker.anchorName.hasPrefix("com.loom"))
     }
 
+    @Test func fragments_reportPfOutcomeInTheirExitStatus() {
+        // Every pfctl needs root (/dev/pf is root-only), and stderr is swallowed —
+        // so the exit status is the ONE channel telling `apply` that the silent
+        // un-escalated run set the proxy without touching pf. Both fragments wrap
+        // in a function whose return value is that signal; the fail-closed branch
+        // must return non-zero rather than fall through as success.
+        let enable = QUICBlocker.enableFragment
+        #expect(enable.contains("loom_quic_enable()"))
+        #expect(enable.hasSuffix("loom_quic_enable"), "the fragment must end by invoking the function so its status propagates")
+        #expect(enable.contains("return 1"), "fail-closed must surface in the exit status, not read as success")
+        #expect(enable.contains("/sbin/pfctl -f \(QUICBlocker.mainConfPath) 2>/dev/null && /sbin/pfctl -E"),
+                "load and enable must be chained so a failed load can't report success")
+
+        let disable = QUICBlocker.disableFragment
+        #expect(disable.contains("loom_quic_disable()"))
+        #expect(disable.hasSuffix("loom_quic_disable"))
+        #expect(disable.contains("return $loom_pf_restored"),
+                "the restore outcome must survive the best-effort cleanup steps")
+    }
+
     @Test func workingFilesAreRootOnly_notWorldWritableTmp() {
         // Regression: predictable /tmp paths let a non-root process pre-plant a
         // symlink that redirected our root-run writes. Work files must live under
@@ -77,5 +97,35 @@ import Foundation
         let s = QUICBlocker.enableFragment
         #expect(s.contains("set -C"), "noclobber guards against a planted symlink")
         #expect(s.contains("rm -f \(QUICBlocker.rulesPath)"))
+    }
+}
+
+/// The scripts `SystemProxyApplier` feeds to sh — the exit-status contract that
+/// lets the silent (un-escalated) run admit the root-only pf work didn't happen,
+/// and the ordering invariant that QUIC is never left blocked with the proxy off.
+@Suite struct SystemProxyScriptTests {
+    @Test func enableScript_endsWithTheQUICFragment_soExitStatusReportsPf() {
+        let s = SystemProxyApplier.enableScript(host: "127.0.0.1", port: 9090)
+        #expect(s.contains("networksetup -setwebproxy"))
+        #expect(s.hasSuffix("loom_quic_enable"),
+                "the pf outcome must be the script's exit status — it's how apply() learns the silent admin run didn't block QUIC")
+    }
+
+    @Test func disableScript_withRestore_restoresPfFirst_butReportsItsStatusLast() {
+        let s = SystemProxyApplier.disableScript(restoreQUIC: true)
+        let pf = s.range(of: "loom_quic_disable")
+        let proxy = s.range(of: "networksetup -setwebproxystate")
+        #expect(pf != nil && proxy != nil && pf!.lowerBound < proxy!.lowerBound,
+                "pf restores before the proxy drops — never leave QUIC blocked on a machine whose proxy is off")
+        #expect(s.hasSuffix("exit $loom_quic_status"),
+                "the pf outcome must survive the networksetup loop as the script's exit status")
+    }
+
+    @Test func disableScript_withNothingToRestore_carriesNoPfctl() {
+        // No pf work → nothing needs root → the direct run exits 0 and the admin
+        // user's toggle-off stays prompt-free, exactly as before QUIC tracking.
+        let s = SystemProxyApplier.disableScript(restoreQUIC: false)
+        #expect(!s.contains("pfctl"))
+        #expect(s.contains("networksetup -setwebproxystate"))
     }
 }
