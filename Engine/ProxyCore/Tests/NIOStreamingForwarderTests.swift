@@ -72,6 +72,52 @@ final class NIOStreamingForwarderTests {
                 "a caller-supplied Host must survive (keepHostHeader relies on this)")
     }
 
+    @Test func acceptEncoding_isPinnedToWhatLoomCanDecode() async throws {
+        // The client's list (browsers advertise br/zstd) must NOT reach the origin:
+        // the decompressor only inflates gzip/deflate, so any other encoding would
+        // pass through still-compressed after its Content-Encoding was stripped.
+        let forwarder = NIOStreamingForwarder(group: group)
+        _ = try await forwarder.forward(
+            method: "GET", url: baseURL,
+            headers: [HeaderPair(name: "Accept-Encoding", value: "gzip, deflate, br, zstd")], body: nil
+        )
+        #expect(recorder.headerValue("Accept-Encoding") == "gzip, deflate")
+    }
+
+    @Test func acceptEncoding_isPinnedEvenWhenTheClientSentNone() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        _ = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
+        #expect(recorder.headerValue("Accept-Encoding") == "gzip, deflate")
+    }
+
+    @Test func deflateResponse_reachesTheCallerAsPlaintext_withEncodingHeadersGone() async throws {
+        // End-to-end pin of the decode-then-sanitize contract this forwarder's
+        // Known Issues entry exists for: a compressed upstream body must come back
+        // inflated, with Content-Encoding/Content-Length no longer lying about it.
+        let plaintext = "hello compressed world, hello compressed world"
+        let deflateGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { try? deflateGroup.syncShutdownGracefully() }
+        let deflateServer = try ServerBootstrap(group: deflateGroup)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { ch in
+                ch.pipeline.configureHTTPServerPipeline().flatMap {
+                    ch.pipeline.addHandler(DeflateResponder(plaintext: plaintext))
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        defer { try? deflateServer.close().wait() }
+        let url = URL(string: "http://127.0.0.1:\(deflateServer.localAddress!.port!)/compressed")!
+
+        let forwarder = NIOStreamingForwarder(group: group)
+        let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+
+        #expect(String(decoding: result.body, as: UTF8.self) == plaintext)
+        #expect(result.headers.allSatisfy { $0.name.lowercased() != "content-encoding" },
+                "a decoded body must not keep the Content-Encoding it no longer has")
+        #expect(result.headers.allSatisfy { $0.name.lowercased() != "content-length" },
+                "the compressed length no longer matches the decoded body")
+    }
+
     @Test func forwardStream_deliversChunksInOrder() async throws {
         // A chunked server that emits three body parts with small gaps, so they
         // arrive as distinct reads and prove the response streams (not buffers).
@@ -104,6 +150,48 @@ final class NIOStreamingForwarderTests {
         #expect(order.last == "end", "end must arrive last")
         #expect(bodies.count >= 2, "body should arrive in multiple streamed chunks")
         #expect(bodies.joined() == "part1part2part3")
+    }
+}
+
+/// Responds with a zlib-deflated body and `Content-Encoding: deflate`, so the
+/// forwarder's decompressor has real compressed bytes to inflate.
+private final class DeflateResponder: ChannelInboundHandler {
+    typealias InboundIn = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    private let plaintext: String
+    init(plaintext: String) { self.plaintext = plaintext }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        guard case .end = unwrapInboundIn(data) else { return }
+        let body = Self.zlibDeflate(Data(plaintext.utf8))
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Encoding", value: "deflate")
+        headers.add(name: "Content-Length", value: String(body.count))
+        context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))), promise: nil)
+        var buffer = context.channel.allocator.buffer(capacity: body.count)
+        buffer.writeBytes(body)
+        context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+    }
+
+    /// RFC 1950 zlib stream: 2-byte header + raw DEFLATE (Compression framework's
+    /// `.zlib` is raw per its docs) + Adler-32 of the plaintext.
+    private static func zlibDeflate(_ original: Data) -> Data {
+        let raw = (try? (original as NSData).compressed(using: .zlib) as Data) ?? Data()
+        var out = Data([0x78, 0x9C])
+        out.append(raw)
+        var a: UInt32 = 1, b: UInt32 = 0
+        for byte in original {
+            a = (a + UInt32(byte)) % 65521
+            b = (b + a) % 65521
+        }
+        let adler = (b << 16) | a
+        out.append(contentsOf: [
+            UInt8((adler >> 24) & 0xFF), UInt8((adler >> 16) & 0xFF),
+            UInt8((adler >> 8) & 0xFF), UInt8(adler & 0xFF),
+        ])
+        return out
     }
 }
 
