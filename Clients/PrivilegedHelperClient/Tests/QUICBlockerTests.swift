@@ -25,6 +25,23 @@ import Foundation
         #expect(!(s.contains("> /etc/pf.conf")), "must never clobber the system pf.conf")
     }
 
+    @Test func enableFragment_failsClosedWithoutABaseline() {
+        // `pfctl -f` replaces the whole loaded ruleset. If /etc/pf.conf can't be
+        // copied, the old fallback loaded a config containing ONLY our anchor —
+        // silently wiping the user's firewall. The baseline copy must gate the
+        // entire pf section: no baseline, no QUIC block, and no synthesized conf.
+        let s = QUICBlocker.enableFragment
+        #expect(s.contains("if cp /etc/pf.conf \(QUICBlocker.mainConfPath)"),
+                "the baseline copy must be the gate, not a best-effort step")
+        #expect(!s.contains("|| printf '' >"),
+                "must never synthesize an empty baseline to load")
+        // Both pfctl mutations sit inside the guarded branch.
+        for line in ["/sbin/pfctl -f \(QUICBlocker.mainConfPath)", "/sbin/pfctl -E"] {
+            let guarded = s.range(of: "if cp /etc/pf.conf").map { s[$0.upperBound...].contains(line) }
+            #expect(guarded == true, "\(line) must run only after the baseline copy succeeded")
+        }
+    }
+
     @Test func enableFragment_recordsPriorPfState() {
         // So restore can put pf back to disabled if that's how it started.
         let s = QUICBlocker.enableFragment

@@ -47,11 +47,18 @@ enum QUICBlocker {
         set -C                              # noclobber: never follow a planted symlink
         rm -f \(rulesPath) \(mainConfPath)  # drop any pre-existing file/symlink first
         printf '%s\\n' '\(rule)' > \(rulesPath)
-        /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || touch \(disabledMarkerPath)
-        cp /etc/pf.conf \(mainConfPath) 2>/dev/null || printf '' > \(mainConfPath)
-        printf 'anchor "%s"\\nload anchor "%s" from "%s"\\n' '\(anchorName)' '\(anchorName)' '\(rulesPath)' >> \(mainConfPath)
-        /sbin/pfctl -f \(mainConfPath) 2>/dev/null
-        /sbin/pfctl -E 2>/dev/null
+        # Fail closed on a missing baseline: `pfctl -f` replaces the WHOLE loaded
+        # ruleset, so loading a copy that is only our anchor would wipe the user's
+        # firewall. If /etc/pf.conf can't be read, skip blocking QUIC entirely —
+        # an unblocked QUIC is a capture gap; an emptied ruleset is a security hole.
+        if cp /etc/pf.conf \(mainConfPath) 2>/dev/null; then
+          printf 'anchor "%s"\\nload anchor "%s" from "%s"\\n' '\(anchorName)' '\(anchorName)' '\(rulesPath)' >> \(mainConfPath)
+          /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || touch \(disabledMarkerPath)
+          /sbin/pfctl -f \(mainConfPath) 2>/dev/null
+          /sbin/pfctl -E 2>/dev/null
+        else
+          rm -f \(rulesPath) \(mainConfPath)
+        fi
         """
     }
 
