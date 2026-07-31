@@ -21,7 +21,22 @@ enum SystemProxyApplier {
     /// prompt-free.
     static let quicBlockedKey = "com.loom.quicBlocked"
 
+    /// Serializes whole applies. There are two independent writers — the panel
+    /// toggle and the agent's `set_system_proxy` — and only the UI one is debounced
+    /// (`systemProxyBusy`). Overlapping runs share the pf work files under
+    /// `/var/root/com.loom`: one run's `rm -f` deletes the rules file the other is
+    /// about to `load anchor` from, so its whole `pfctl -f` fails (silently, since
+    /// pf stderr is swallowed). Interleaving an enable with a disable is worse — it
+    /// can leave QUIC blocked on a machine whose proxy is off, the exact state the
+    /// fragment ordering exists to prevent, because that ordering only holds within
+    /// one call. Blocking is correct here: applies are human-speed and already off
+    /// the main thread.
+    private static let applyLock = NSLock()
+
     static func apply(enabled: Bool, host: String, port: Int, defaults: UserDefaults = .standard) -> (Bool, String?) {
+        applyLock.lock()
+        defer { applyLock.unlock() }
+
         let restoreQUIC = !enabled && defaults.bool(forKey: quicBlockedKey)
         let script = enabled ? enableScript(host: host, port: port) : disableScript(restoreQUIC: restoreQUIC)
 
@@ -79,6 +94,54 @@ enum SystemProxyApplier {
     /// disagree about whether Loom holds the proxy.
     static func routing(loomPort: Int) -> SystemProxyRouting {
         SystemProxyMonitor.snapshot().routing(loomPort: loomPort)
+    }
+
+    /// Clear a QUIC block that outlived the proxy it belonged to.
+    ///
+    /// A crash skips the quit-time cleanup, so `com.loom.quicBlocked` can still be
+    /// set on the next launch while the system proxy no longer points at Loom
+    /// (someone else took it, or the setting was cleared by hand). In that state the
+    /// pf anchor keeps dropping *all* outbound UDP/443 machine-wide, and no UI path
+    /// could remove it: the panel's toggle only ever runs the enable branch when the
+    /// proxy is off, so the pf restore was unreachable. The only escape was a manual
+    /// `sudo pfctl -f /etc/pf.conf`.
+    ///
+    /// Runs the pf restore alone (no networksetup — Loom doesn't hold the setting and
+    /// must not touch it). `disableFragment` is idempotent, so a no-op costs one
+    /// silent, un-escalated `sh -c`; only a genuinely present block escalates, and
+    /// only then does the human see a prompt.
+    ///
+    /// Whether there is an orphaned block to clear. Separate from the effectful call
+    /// below, and taking the routing as an input, so the decision is testable without
+    /// a machine that happens to have a proxy set (and without ever reaching the
+    /// escalation prompt).
+    static func hasOrphanedQUICBlock(routing: SystemProxyRouting, defaults: UserDefaults = .standard) -> Bool {
+        // Loom holds the proxy: the block belongs to this session, leave it be —
+        // clearing it would silently stop capturing browser HTTP/3.
+        defaults.bool(forKey: quicBlockedKey) && routing != .loom
+    }
+
+    /// - Returns: whether an orphaned block was found and cleared.
+    @discardableResult
+    static func restoreOrphanedQUICBlock(port: Int, defaults: UserDefaults = .standard) -> Bool {
+        applyLock.lock()
+        defer { applyLock.unlock() }
+
+        guard hasOrphanedQUICBlock(routing: routing(loomPort: port), defaults: defaults) else { return false }
+
+        let script = "#!/bin/sh\n\(QUICBlocker.disableFragment)"
+        if run("/bin/sh", ["-c", script]).status == 0 {
+            defaults.set(false, forKey: quicBlockedKey)
+            return true
+        }
+        // Needs root. One prompt, explained by the caller's UI; if declined, the flag
+        // stays set so the next launch (or toggle) tries again.
+        let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
+        if run("/usr/bin/osascript", ["-e", osascript]).status == 0 {
+            defaults.set(false, forKey: quicBlockedKey)
+            return true
+        }
+        return false
     }
 
     /// Quote a shell script as an AppleScript string literal for `do shell script`.
