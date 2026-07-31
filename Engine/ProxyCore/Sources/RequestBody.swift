@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOHTTP1
 
@@ -159,6 +160,19 @@ final class RequestBodyBridge: @unchecked Sendable {
     /// that owns a bridge must call this from `channelInactive` and `errorCaught`.
     func abort(reason: String) { fail(RequestBodyAborted(reason: reason)) }
 
+    /// Total `channel.read()` calls this process has issued from body-stream demand.
+    ///
+    /// A diagnostic seam, not state anything depends on (sibling of
+    /// `BreakpointStore.timeoutResolutions`). It exists because the h2 upload stall
+    /// (issue #99) and a Loom-side back-pressure regression are *indistinguishable*
+    /// from the byte counters alone: both park with exactly one 65535-byte window
+    /// consumed. Reads-issued separates them — "we asked for more and got nothing"
+    /// is upstream's bug; "we never asked" is ours. Without it the documented
+    /// discriminator ("a stall reads consumed = 65535") can't actually tell the two
+    /// apart, so a real regression would be waved through as the known flake.
+    static var readsIssued: Int { readCounter.withLockedValue { $0 } }
+    private static let readCounter = NIOLockedValueBox(0)
+
     /// Drives `channel.read()` from producer demand. `Channel.read()` is safe to
     /// call from any thread (it hops to the event loop internally).
     final class Delegate: NIOAsyncSequenceProducerDelegate, @unchecked Sendable {
@@ -181,7 +195,9 @@ final class RequestBodyBridge: @unchecked Sendable {
             lock.lock()
             let channel = terminated ? nil : self.channel
             lock.unlock()
-            channel?.read()
+            guard let channel else { return }
+            RequestBodyBridge.readCounter.withLockedValue { $0 += 1 }
+            channel.read()
         }
     }
 }
