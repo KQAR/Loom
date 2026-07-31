@@ -18,12 +18,27 @@ enum HTTPUtil {
         headers.map { HeaderPair(name: $0.name, value: $0.value) }
     }
 
-    /// Drop headers that lie once the upstream body has been decoded for us:
+    /// Drop the headers that lie once the upstream body has been decoded for us:
     /// `Content-Encoding` (the bytes are already decompressed) and `Content-Length`
     /// (no longer matches; the response writer recomputes it). Keeping either makes
     /// the client try to re-decode plaintext and fail with -1015.
+    ///
+    /// Only applied when the response actually *was* encoded. A response with no
+    /// `Content-Encoding` reaches us byte-for-byte, so its `Content-Length` is the
+    /// truth — stripping it unconditionally cost fidelity in two visible ways: the
+    /// captured flow (Inspector / HAR / `get_flow_detail`) lost a header the origin
+    /// really sent, and `writeResponseHead(chunked: false)` — the bodyless path,
+    /// which documents that it preserves the upstream length — had nothing left to
+    /// preserve, so `curl -I` through Loom lost `Content-Length` entirely
+    /// (RFC 9110 §9.3.2: a HEAD should report the length a GET would).
     static func sanitizeDecodedResponseHeaders(_ headers: [HeaderPair]) -> [HeaderPair] {
-        headers.filter {
+        let wasEncoded = headers.contains {
+            $0.name.lowercased() == "content-encoding"
+                && !$0.value.trimmingCharacters(in: .whitespaces).isEmpty
+                && $0.value.caseInsensitiveCompare("identity") != .orderedSame
+        }
+        guard wasEncoded else { return headers }
+        return headers.filter {
             let lower = $0.name.lowercased()
             return lower != "content-encoding" && lower != "content-length"
         }

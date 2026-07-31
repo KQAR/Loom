@@ -16,6 +16,10 @@ import LoomSharedModels
 /// readable. True chunk-at-a-time streaming (SSE / large bodies), WebSocket, and
 /// HTTP/2 build on this same NIO client in later increments.
 final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
+    /// Largest decompressed:compressed ratio accepted from an upstream response.
+    /// See the decompressor's installation below for why this isn't `.none`.
+    static let maxDecompressionRatio = 100
+
     private let group: EventLoopGroup
     private let connectTimeout: TimeAmount
     /// Mutual-TLS identities, consulted per upstream host. Nil = never present a
@@ -77,7 +81,13 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                             .flatMap { channel.pipeline.addHTTPClientHandlers() }
                             // Decompress gzip/deflate so relayed/captured bytes are plaintext;
                             // the now-wrong Content-Encoding/Length are stripped on `.head`.
-                            .flatMap { channel.pipeline.addHandler(NIOHTTPResponseDecompressor(limit: .none)) }
+                            // The ratio cap is a decompression-bomb guard: bodies come from
+                            // arbitrary origins, and `.none` is the setting swift-nio-extras
+                            // itself documents as leaving you open to denial of service. 100x
+                            // is far above real content (text gzips ~3-10x) and far below a
+                            // zip bomb (1000x+), so it costs nothing legitimate. The capture
+                            // is separately capped; this bounds the *inflation*.
+                            .flatMap { channel.pipeline.addHandler(NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))) }
                             .flatMap {
                                 channel.pipeline.addHandler(StreamingResponseHandler(
                                     continuation: continuation,
