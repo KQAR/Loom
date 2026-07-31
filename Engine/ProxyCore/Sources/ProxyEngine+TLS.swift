@@ -13,8 +13,19 @@ extension ProxyEngine {
             commonName: CertificateAuthority.commonName,
             sha256Fingerprint: ca.sha256Fingerprint,
             notAfter: ca.certificate.notValidAfter,
-            exportedPEMPath: exportedPEMPath?.path
+            exportedPEMPath: currentExportedPEMPath
         )
+    }
+
+    /// The exported PEM's path if one exists on disk — not merely if *this session*
+    /// exported it. `exportedPEMPath` is in-memory, so before this a relaunch made an
+    /// existing export invisible: the panel's manual-trust command (gated on this
+    /// value) silently disappeared, and the human had to press Export… again to see
+    /// the `security add-trusted-cert` line for a file that was already there.
+    var currentExportedPEMPath: String? {
+        if let exportedPEMPath { return exportedPEMPath.path }
+        guard FileManager.default.fileExists(atPath: caExportURL.path) else { return nil }
+        return caExportURL.path
     }
 
     /// DER bytes of the root CA, for a one-click keychain install via the helper.
