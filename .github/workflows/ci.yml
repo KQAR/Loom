@@ -42,6 +42,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-loom-ci-
 
+      # The one failure mode no other gate can see: a custom SF Symbol that
+      # compiles clean (actool exits 0, Assets.car is complete, `Image(_:)` has
+      # no compile-time check) and is still nil at runtime, because CoreUI
+      # refused to decode it — the menu-bar icon silently disappears. check.py
+      # compiles the catalog and asks a real bundle for each symbol back, which
+      # is the only trustworthy answer. Runs before the build so a broken mark
+      # fails in seconds instead of after a 10-minute test run.
+      - name: Verify custom SF Symbols resolve at runtime
+        run: python3 Tools/symbol-template/check.py
+
       - name: Install dependencies
         run: tuist install
 

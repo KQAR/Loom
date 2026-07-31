@@ -66,18 +66,30 @@ import LoomSharedModels
                 "a recently-used host must survive eviction")
     }
 
-    @Test func mintedSerials_neverExceed20Octets() throws {
+    @Test func mintedSerials_areExactly20Octets() throws {
         // Regression: a 21-octet serial (top random bit set → DER prepends 0x00)
         // violates RFC 5280 and makes Secure Transport reject the leaf with
         // -1015 "cannot decode raw data", silently breaking ~half of interception.
         // Mint many leaves so the ~50% case is exercised deterministically.
+        //
+        // Asserted as EXACTLY 20, not `<= 20`: the generator clears the top bit
+        // (so DER never prepends 0x00 → never 21) *and* replaces a resulting zero
+        // first byte (so the normalizer never strips a leading zero → never 19).
+        // A loose bound would pass while either half regressed, quietly halving
+        // the serial's entropy or drifting the encoded length.
         let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
         for i in 0..<200 {
             let leaf = try ca.mintLeaf(for: "host\(i).example.test")
             let octets = leaf.serialNumber.bytes.count
-            #expect(octets <= 20, "leaf serial must be ≤ 20 octets (RFC 5280), got \(octets)")
-            #expect(octets > 0, "serial must be positive/non-empty")
+            #expect(octets == 20, "leaf serial must be exactly 20 octets (RFC 5280 caps at 20), got \(octets)")
         }
+    }
+
+    @Test func theRootCASerial_isAlsoWithinTheLimit() throws {
+        // The same generator mints the root's serial. Nothing pinned it, so a
+        // change that fixed only the leaf path would look fully covered.
+        let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
+        #expect(ca.certificate.serialNumber.bytes.count == 20)
     }
 
     @Test func mintedLeaf_carriesSKIAndAKIMatchingCA() throws {
