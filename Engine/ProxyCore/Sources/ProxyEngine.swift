@@ -110,13 +110,16 @@ public actor ProxyEngine: ProxyControlling {
     /// Test seam: inject a deterministic forwarder and an in-memory CA store so
     /// interception can be exercised without the network or the Keychain. Nothing
     /// touches disk, UserDefaults, or the user's exported CA file.
-    init(forwarder: UpstreamForwarding, caStore: CAStore) {
+    /// - Parameter caExportURL: pass an explicit path when a test needs two engines
+    ///   to agree on one (e.g. proving an export survives a "relaunch"). Defaults to
+    ///   a fresh temp file per engine.
+    init(forwarder: UpstreamForwarding, caStore: CAStore, caExportURL: URL? = nil) {
         self.init(configuration: EngineConfiguration(
             persistence: .inMemory,
             caStore: caStore,
             upstream: forwarder,
             // Hermetic: never let a test clobber the user's real exported CA file.
-            caExportURL: FileManager.default.temporaryDirectory
+            caExportURL: caExportURL ?? FileManager.default.temporaryDirectory
                 .appendingPathComponent("loom-ca-test-\(UUID()).pem")
         ))
     }

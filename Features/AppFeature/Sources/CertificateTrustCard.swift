@@ -62,10 +62,22 @@ struct CertificateTrustCard: View {
                 Text(message).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
 
-            if let path = store.certificateStatus.exportedPEMPath {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Manual trust:").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            // Always present, never conditional on an export having happened. It used
+            // to appear only once `exportedPEMPath` was set, so the machine-wide trust
+            // path was invisible until you guessed that Export… was a prerequisite —
+            // with nothing saying so. The command needs a real path, so when there is
+            // no export yet this says which button produces one.
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Manual trust (machine-wide):")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if let path = store.certificateStatus.exportedPEMPath {
                     manualCommand(path: path)
+                } else {
+                    Text("Press Export… to write the certificate to disk, then copy the `security add-trusted-cert` command from here.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
