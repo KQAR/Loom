@@ -304,7 +304,8 @@ rejecting what failed:
   it.
 - Therefore: **`Tools/symbol-template/check.py` is the pass condition**, not a
   clean build. It compiles the catalog and asks a real bundle for each symbol
-  back. Run it after any retune.
+  back. Run it after any retune — and CI's build job runs it too, so a symbol
+  that stops resolving fails the PR instead of shipping an invisible icon.
 
 ## Components
 
