@@ -44,6 +44,12 @@ public struct PrivilegedHelperClient: Sendable {
     /// Whether the *effective* system proxy currently routes through Loom on
     /// `port`. Reading needs no privileges; used to sync the UI at boot.
     public var isSystemProxyActive: @Sendable (_ port: Int) async -> Bool = { _ in false }
+    /// Clear a QUIC (pf) block left behind by a crash, when the system proxy no
+    /// longer points at Loom. Returns whether anything was cleared. A no-op unless
+    /// a block is actually recorded, so it's safe to call unconditionally at boot —
+    /// which is the point: without it, a crash could leave all outbound UDP/443
+    /// dropped machine-wide with no path in the UI to undo it.
+    public var restoreOrphanedQUICBlock: @Sendable (_ port: Int) async -> Bool = { _ in false }
     /// The effective HTTP/HTTPS proxy settings right now. Richer than
     /// `isSystemProxyActive`: the caller can tell "nothing set" from "Charles has it".
     public var systemProxySnapshot: @Sendable () async -> SystemProxySnapshot = { .off }
@@ -97,6 +103,15 @@ extension PrivilegedHelperClient: DependencyKey {
         },
         isSystemProxyActive: { port in
             SystemProxyApplier.isPointing(port: port)
+        },
+        restoreOrphanedQUICBlock: { port in
+            // Off the main thread: the escalation path (only reached when a block is
+            // genuinely present) shows a modal prompt.
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    continuation.resume(returning: SystemProxyApplier.restoreOrphanedQUICBlock(port: port))
+                }
+            }
         },
         systemProxySnapshot: {
             SystemProxyMonitor.snapshot()

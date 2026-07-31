@@ -82,6 +82,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exit(0)
     }
 
+    /// Clear a QUIC (pf) block that outlived the session that created it.
+    ///
+    /// The quit path below removes the block along with the proxy, but a crash skips
+    /// it. What's left is worse than a stale proxy setting: the pf anchor drops *all*
+    /// outbound UDP/443 machine-wide, and no UI path could undo it — the panel's
+    /// toggle only runs the enable branch while the proxy is off, so the pf restore
+    /// was unreachable and the user's only escape was `sudo pfctl -f /etc/pf.conf`.
+    ///
+    /// A no-op unless a block is actually recorded *and* the proxy no longer points
+    /// at Loom, so the common launch costs nothing and shows no prompt.
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let helper = PrivilegedHelperClient.liveValue
+        Task.detached {
+            let port = await ProxyEngine.shared.status().port
+            if await helper.restoreOrphanedQUICBlock(port) {
+                NSLog("Loom: cleared a QUIC firewall block left over from a previous session.")
+            }
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let helper = PrivilegedHelperClient.liveValue
         Task.detached {
