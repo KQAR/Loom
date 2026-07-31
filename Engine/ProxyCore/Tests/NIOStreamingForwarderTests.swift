@@ -118,6 +118,19 @@ final class NIOStreamingForwarderTests {
                 "the compressed length no longer matches the decoded body")
     }
 
+    @Test func unencodedResponse_keepsItsContentLength() async throws {
+        // The echo server answers with Content-Length and no Content-Encoding, so
+        // nothing was decoded and the length still describes the bytes. It must
+        // survive to the caller — the capture shows what the origin sent, and the
+        // bodyless writer has a length to preserve for `curl -I`.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let result = try await forwarder.forward(
+            method: "POST", url: baseURL, headers: [], body: Data("hello".utf8)
+        )
+        let length = result.headers.first { $0.name.lowercased() == "content-length" }
+        #expect(length?.value == "5")
+    }
+
     @Test func forwardStream_deliversChunksInOrder() async throws {
         // A chunked server that emits three body parts with small gaps, so they
         // arrive as distinct reads and prove the response streams (not buffers).
