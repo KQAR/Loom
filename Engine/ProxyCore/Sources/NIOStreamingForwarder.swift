@@ -122,6 +122,15 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             httpHeaders.add(name: "Host", value: port == defaultPort ? host : "\(host):\(port)")
         }
 
+        // Pin Accept-Encoding to what the response pipeline can actually inflate.
+        // NIOHTTPResponseDecompressor only handles gzip/deflate, but the client's
+        // own list (every browser advertises `br`, Chrome also `zstd`) would be
+        // forwarded verbatim — the origin then responds with an encoding we pass
+        // through still-compressed while sanitizeDecodedResponseHeaders strips the
+        // Content-Encoding the client would need to decode it. Compressed bytes
+        // typed as plaintext: broken for the client, unreadable in the capture.
+        httpHeaders.replaceOrAdd(name: "Accept-Encoding", value: "gzip, deflate")
+
         // Frame the body: a known length (buffered body, or a streamed body whose
         // client sent Content-Length) uses Content-Length; an unknown-length stream
         // (client used chunked) re-frames as chunked upstream.
