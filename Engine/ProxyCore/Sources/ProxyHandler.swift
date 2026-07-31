@@ -205,10 +205,18 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         // routing it through HTTPResponseEncoder would chunk-frame the bodyless 200
         // and inject `0\r\n\r\n` into the tunnel, corrupting the client's first TLS
         // record. Only then install the TLS terminator + fresh HTTP + capture stack.
-        pipeline.removeHandler(name: "loom.http.decoder")
-            .flatMap { pipeline.removeHandler(name: "loom.http.encoder") }
-            .flatMap { pipeline.removeHandler(name: "loom.proxy") }
-            .whenComplete { _ in
+        // An already-removed handler is fine to skip (`recover`), but the chain as a
+        // whole must succeed before the ack: acking with the encoder still installed
+        // would frame the tunnel bytes and corrupt the client's first TLS record.
+        let removals = ["loom.http.decoder", "loom.http.encoder", "loom.proxy"].map { name in
+            pipeline.removeHandler(name: name).recover { _ in () }
+        }
+        EventLoopFuture.andAllSucceed(removals, on: channel.eventLoop)
+            .whenComplete { result in
+                guard case .success = result else {
+                    channel.close(promise: nil)
+                    return
+                }
                 var ack = channel.allocator.buffer(capacity: 40)
                 ack.writeString("HTTP/1.1 200 Connection Established\r\n\r\n")
                 channel.writeAndFlush(NIOAny(ack)).whenComplete { _ in
