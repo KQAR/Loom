@@ -165,6 +165,9 @@ private final class H2Progress: @unchecked Sendable {
     private var stages: [(String, TimeInterval)] = []
     private var counters: [(name: String, value: Int)] = []
     private var samples: [String] = []
+    /// The process-wide read counter is cumulative across the suite; baseline it so
+    /// the report shows reads issued *for this exchange*.
+    private let readsAtStart = RequestBodyBridge.readsIssued
 
     func mark(_ stage: String) {
         let at = Date().timeIntervalSince(start)
@@ -182,11 +185,18 @@ private final class H2Progress: @unchecked Sendable {
 
     /// Snapshot the counters into the report, so a stalled run shows whether bytes
     /// were still trickling or had stopped dead.
+    ///
+    /// `reads issued` is what makes the snapshot diagnostic rather than merely
+    /// suggestive: a stall at exactly one 65535-byte window looks identical whether
+    /// upstream failed to send a WINDOW_UPDATE (issue #99) or Loom's own read pump
+    /// stopped asking. Reads still climbing while bytes sit still = we asked and got
+    /// nothing (upstream). Reads frozen too = we stopped asking (ours).
     func sample() {
         lock.lock(); defer { lock.unlock() }
         let at = String(format: "%.1f", Date().timeIntervalSince(start))
-        let values = counters.map { "\($0.name)=\($0.value)" }.joined(separator: " ")
-        samples.append("  t=+\(at)s \(values.isEmpty ? "(nothing moved yet)" : values)")
+        var values = counters.map { "\($0.name)=\($0.value)" }
+        values.append("reads issued=\(RequestBodyBridge.readsIssued - readsAtStart)")
+        samples.append("  t=+\(at)s \(values.joined(separator: " "))")
     }
 
     func report() -> String {
@@ -195,6 +205,9 @@ private final class H2Progress: @unchecked Sendable {
         lines += stages.map { "  +\(String(format: "%.3f", $0.1))s  \($0.0)" }
         lines.append("counters:")
         lines += counters.isEmpty ? ["  (none)"] : counters.map { "  \($0.name) = \($0.value)" }
+        // See `sample()`: this is what separates upstream's missing WINDOW_UPDATE
+        // (issue #99) from a Loom-side read-pump regression. Both park at 65535.
+        lines.append("  reads issued (this exchange) = \(RequestBodyBridge.readsIssued - readsAtStart)")
         if !samples.isEmpty {
             lines.append("samples while waiting:")
             lines += samples

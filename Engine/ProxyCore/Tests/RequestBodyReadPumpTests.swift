@@ -91,4 +91,44 @@ import LoomSharedModels
 
         _ = try channel.finish()
     }
+
+    /// `RequestBodyBridge.readsIssued` is the diagnostic that tells the h2 upload
+    /// stall (issue #99, upstream's missing WINDOW_UPDATE) apart from a Loom-side
+    /// read-pump regression: both park with exactly one 65535-byte window consumed,
+    /// so the byte counters alone can't distinguish them, and the documented
+    /// discriminator would wave a real regression through as the known flake.
+    ///
+    /// Pinned here because a counter that silently stops counting is worse than no
+    /// counter — it reads as "we never asked", i.e. it would accuse Loom.
+    @Test func readsIssuedTracksTheActualReads() throws {
+        let channel = EmbeddedChannel()
+        let counter = ReadCounter()
+        try channel.pipeline.addHandler(counter).wait()
+        try channel.setOption(ChannelOptions.autoRead, value: false).wait()
+
+        let bridge = RequestBodyBridge(capture: RequestBodyCapture())
+        defer { bridge.finish() }
+        // Process-wide and cumulative (other tests in this bundle stream bodies too),
+        // so compare deltas, never absolutes.
+        let before = RequestBodyBridge.readsIssued
+        let pipelineBefore = counter.reads
+
+        bridge.attach(channel: channel)
+        bridge.yield(Data("one".utf8))
+        bridge.yield(Data("two".utf8))
+
+        let issued = RequestBodyBridge.readsIssued - before
+        #expect(issued == counter.reads - pipelineBefore,
+                "every counted read must be one that actually reached the pipeline")
+        #expect(issued > 0, "a running pump must register reads, or the report accuses Loom of never asking")
+
+        // A stopped pump must stop the counter too — otherwise a frozen pump would
+        // still look like it was asking for more, which is the opposite mistake.
+        bridge.delegate.didTerminate()
+        let afterTeardown = RequestBodyBridge.readsIssued
+        bridge.yield(Data("three".utf8))
+        #expect(RequestBodyBridge.readsIssued == afterTeardown)
+
+        _ = try channel.finish()
+    }
 }
