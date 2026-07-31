@@ -248,6 +248,51 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    Revisit only if empty captures on this Mac turn out to be dominated by
    proxy-ignoring processes rather than by routing that was never turned on.
 
+### Known-Issues audit (done, 0.0.11)
+
+No new capability — a pass over every entry in AGENTS.md § Known Issues, checking
+each claim against the code rather than trusting it. All 16 entries were real and
+broadly accurate, which was the reassuring half. The other half: **four of the
+described fixes didn't work, and three entries described code that doesn't exist.**
+
+The lesson is narrow and worth keeping: *a documented claim with no gate behind it
+decays, and the doc goes on asserting it.* Every defect this round found sat behind
+a sentence that read as settled.
+
+1. **The worst one was invisible by construction.** "Enabling the system proxy also
+   blocks QUIC" was false for admin users — the most common setup, and the one the
+   entry itself called out as silent. `networksetup` needs no auth for an admin, so
+   the un-escalated run "succeeded"; every `pfctl` in it needed root and failed with
+   stderr swallowed by design. The proxy check passed, so nothing escalated, nothing
+   logged, and the panel said "QUIC blocked" while browser HTTP/3 bypassed Loom
+   entirely. A capability can be fully implemented, fully documented, and never once
+   execute. The fix makes the script's **exit status** the contract, which costs
+   admin users one auth prompt — the honest price of the feature working at all.
+2. **Two fixes were fail-*open* where they claimed to be safe.** The QUIC blocker
+   synthesized an empty `pf.conf` when it couldn't read the baseline and loaded it —
+   `pfctl -f` replaces the whole ruleset, so a merely-unreadable `/etc/pf.conf`
+   meant Loom silently replaced the user's firewall with one rule. The CA migration
+   swallowed its write failure with `try?`, so a failed migration was
+   indistinguishable from a fresh install and quietly invalidated an already-trusted
+   CA. Both now fail closed, and the second is testable at all for the first time.
+3. **An unconditional fix broke the case it didn't consider.** The forwarder strips
+   `Content-Encoding` because it decompresses — but it only inflates gzip/deflate,
+   while forwarding the client's `Accept-Encoding` verbatim, and every browser
+   advertises `br`. So a `br` response reached the client still compressed with the
+   header it needed to decode it removed. The regression test used `br` as its
+   example, codifying the bug as the spec.
+4. **Three entries described code that isn't there** — a module name that never
+   existed, a `pfctl -nf` validation nothing ran, and a `set_system_proxy` reply
+   claiming it restored the previous proxy owner, which is the exact opposite of a
+   written owner decision. That last one is the dangerous shape: the doc is right and
+   the *code* lies, to an agent, in a sentence it will relay.
+
+What the round changed structurally: two claims that were prose became gates
+(`check.py`'s symbol-resolution check and the pf ruleset's syntax validation now run
+in CI), and the h2-stall instrumentation learned to say *whose* bug it is — bytes
+alone can't separate upstream's missing `WINDOW_UPDATE` from a Loom read-pump
+regression, since both park at exactly one flow-control window.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
