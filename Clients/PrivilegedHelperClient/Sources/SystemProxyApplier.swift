@@ -100,9 +100,10 @@ enum SystemProxyApplier {
 
     /// The dynamic store lags a written config by a beat; poll briefly.
     ///
-    /// Note this checks "does Loom hold it", not "is any proxy set" — so a disable
-    /// that *restored another app's* proxy still verifies, because Loom no longer
-    /// holds it, which is the whole intent of the change.
+    /// Note this checks "does Loom hold it", not "is any proxy set" — a disable
+    /// verifies as soon as Loom no longer holds the setting, even if another app
+    /// has already re-claimed it for itself. (Loom never restores a previous
+    /// owner; see the note below.)
     private static func verified(enabled: Bool, port: Int, attempts: Int = 10) -> Bool {
         for _ in 0..<attempts {
             if isPointing(port: port) == enabled { return true }

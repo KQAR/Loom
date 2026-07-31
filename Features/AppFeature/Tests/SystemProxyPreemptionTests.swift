@@ -87,8 +87,9 @@ import LoomSharedModels
     }
 
     /// After a change settles, the truth is re-read — and on the disable path that truth
-    /// may be *another app's* proxy, restored from the backup, not simply "off".
-    @Test func afterADisableTheRestoredProxyIsReflected() async {
+    /// may be *another app's* proxy (one that re-claimed the setting the moment Loom let
+    /// go), not simply "off". Loom itself never restores a previous owner.
+    @Test func afterADisableAnotherOwnersProxyIsReflected() async {
         var initial = SetupFeature.State()
         initial.port = 9090
         initial.isSystemProxy = false
