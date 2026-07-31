@@ -169,14 +169,12 @@ public actor ProxyEngine: ProxyControlling {
 
     /// Return the file store, first migrating a legacy Keychain CA into it if the
     /// file is empty (so users who already trusted a Keychain-stored CA keep it).
-    /// The Keychain is only touched when the file is empty AND an item exists —
-    /// missing items return `errSecItemNotFound` without a prompt.
+    /// The Keychain is only touched when the file is empty — and a missing item
+    /// returns `errSecItemNotFound` without a prompt. The logic (and its failure
+    /// logging) lives in `CAStoreMigration` so it can be tested against injected
+    /// stores instead of the real path and the real login Keychain.
     private static func migratedCAStore() -> CAStore {
-        let fileStore = FileCAStore()
-        if (try? fileStore.load()) == nil, let legacy = try? KeychainCAStore().load() {
-            try? fileStore.save(legacy)
-        }
-        return fileStore
+        CAStoreMigration.migrate(into: FileCAStore(), from: KeychainCAStore())
     }
 
     // MARK: - Lifecycle
