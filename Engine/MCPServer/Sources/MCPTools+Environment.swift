@@ -86,7 +86,10 @@ extension MCPToolExecutor {
             "systemProxy": active ? "on" : "off",
             "requested": enabled ? "on" : "off",
             "port": status.port,
-            "detail": result.message ?? (enabled ? "This Mac's traffic now routes through Loom." : "Previous proxy settings restored."),
+            // Loom deliberately does NOT restore a previous proxy owner on disable
+            // (see SystemProxyApplier) — say so, or the agent reports a restore
+            // that never happened.
+            "detail": result.message ?? (enabled ? "This Mac's traffic now routes through Loom." : "The system proxy is now off. Loom does not restore a previous proxy owner — if another app held it, re-enable it there."),
         ])
     }
 
