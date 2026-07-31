@@ -143,3 +143,59 @@ final class InMemoryCAStore: CAStore, @unchecked Sendable {
 enum CAStoreError: Error {
     case keychain(OSStatus)
 }
+
+/// One-time move of a legacy Keychain-stored CA into the file store, so a user who
+/// already trusted a Keychain CA keeps it after the switch to file storage.
+///
+/// Split out of `ProxyEngine` and parameterized on both stores so it is testable at
+/// all: the engine's version reached the real Application Support path and the real
+/// login Keychain, which no test can touch. Its promise — "an already-trusted CA
+/// survives" — was the least-verified claim in the CA path.
+enum CAStoreMigration {
+    /// - Returns: `destination`, ready to use, whether or not anything was migrated.
+    @discardableResult
+    static func migrate(into destination: CAStore, from legacy: @autoclosure () -> CAStore) -> CAStore {
+        // A CA already in the file store wins — nothing to do, and the Keychain is
+        // not touched (a missing item returns errSecItemNotFound with no prompt,
+        // but not reading at all is cheaper and quieter still).
+        switch Result(catching: { try destination.load() }) {
+        case .success(.some):
+            return destination
+        case let .failure(error):
+            // Distinct from "empty": the destination exists but won't read. Migrating
+            // over it would be right (a legacy CA is better than a regenerated one),
+            // but the caller deserves to know the file is broken either way.
+            Log.tls.error("CA store unreadable while checking for a legacy migration: \(String(describing: error))")
+        case .success(.none):
+            break
+        }
+
+        let legacyMaterial: CAMaterial?
+        do {
+            legacyMaterial = try legacy().load()
+        } catch {
+            Log.tls.error("""
+            Legacy Keychain CA could not be read, so it cannot be migrated; a new root \
+            CA will be generated and the previously trusted one will stop working: \
+            \(String(describing: error))
+            """)
+            return destination
+        }
+        guard let legacyMaterial else { return destination }
+
+        do {
+            try destination.save(legacyMaterial)
+            Log.tls.info("Migrated the legacy Keychain root CA into the file store; existing trust is preserved.")
+        } catch {
+            // The old code swallowed this. A failed write means the next launch finds
+            // an empty file store and mints a *new* CA — the user's trusted CA stops
+            // working, with nothing anywhere saying why.
+            Log.tls.error("""
+            Migrating the legacy Keychain root CA failed; a new root CA will be \
+            generated and the previously trusted one will stop working: \
+            \(String(describing: error))
+            """)
+        }
+        return destination
+    }
+}
