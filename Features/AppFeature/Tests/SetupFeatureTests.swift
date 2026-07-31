@@ -206,7 +206,7 @@ import Testing
         let store = TestStore(initialState: initial) {
             SetupFeature()
         } withDependencies: {
-            $0.privilegedHelperClient.setSystemProxy = { _, _ in HelperOutcome(ok: true, message: "") }
+            $0.privilegedHelperClient.setSystemProxy = { _, _ in HelperOutcome(ok: true, message: nil) }
             $0.privilegedHelperClient.systemProxySnapshot = {
                 SystemProxySnapshot(
                     httpEnabled: true, httpHost: "127.0.0.1", httpPort: 9090,
@@ -227,6 +227,38 @@ import Testing
         }
         // Snapshots are ignored while busy, so the result re-reads once to confirm the
         // optimistic value against what macOS actually has.
+        await store.receive(\.systemProxySnapshotChanged) { $0.systemProxyRouting = .loom }
+    }
+
+    @Test func test_toggleSystemProxy_partialSuccess_storesTheCaveat() async {
+        // ok=true WITH a message is a partial success — the proxy landed but the
+        // root-only QUIC work didn't (authorization declined). The caveat is
+        // feedback about this action and must reach the panel, not be dropped
+        // like the standing-claim text a clean success stores nothing for.
+        let caveat = "Proxy is on, but QUIC (HTTP/3) stays unblocked without authorization — browser traffic may bypass capture."
+        var initial = SetupFeature.State()
+        initial.proxyRunning = true
+        initial.isSystemProxy = false
+        let store = TestStore(initialState: initial) {
+            SetupFeature()
+        } withDependencies: {
+            $0.privilegedHelperClient.setSystemProxy = { _, _ in HelperOutcome(ok: true, message: caveat) }
+            $0.privilegedHelperClient.systemProxySnapshot = {
+                SystemProxySnapshot(
+                    httpEnabled: true, httpHost: "127.0.0.1", httpPort: 9090,
+                    httpsEnabled: true, httpsHost: "127.0.0.1", httpsPort: 9090
+                )
+            }
+        }
+        await store.send(.toggleSystemProxyTapped) {
+            $0.isSystemProxy = true
+            $0.systemProxyBusy = true
+            $0.systemProxyMessage = "Setting system proxy…"
+        }
+        await store.receive(\.systemProxyResult) {
+            $0.systemProxyBusy = false
+            $0.systemProxyMessage = caveat   // kept: partial success, not silence
+        }
         await store.receive(\.systemProxySnapshotChanged) { $0.systemProxyRouting = .loom }
     }
 

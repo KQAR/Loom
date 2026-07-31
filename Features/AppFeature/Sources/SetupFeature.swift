@@ -165,14 +165,19 @@ public struct SetupFeature: Sendable {
                     await send(.systemProxySnapshotChanged(privilegedHelperClient.systemProxySnapshot()))
                 }
                 if ok {
-                    // No standing claim is stored here. The "QUIC is blocked" note is a
-                    // fact about the *current* routing, not feedback about this action,
-                    // so the panel derives it from `systemProxyRouting`. Storing it as
-                    // text is what let it outlive the state it described: another proxy
-                    // app would take the setting, the row would correctly read "in use
-                    // by 127.0.0.1:8888", and the note underneath would still be
-                    // claiming Loom had it and would restore it on quit.
-                    state.systemProxyMessage = nil
+                    // No standing claim is stored on a clean success (message nil). The
+                    // "QUIC is blocked" note is a fact about the *current* routing, not
+                    // feedback about this action, so the panel derives it from
+                    // `systemProxyRouting`. Storing it as text is what let it outlive
+                    // the state it described: another proxy app would take the setting,
+                    // the row would correctly read "in use by 127.0.0.1:8888", and the
+                    // note underneath would still be claiming Loom had it and would
+                    // restore it on quit.
+                    //
+                    // A *partial* success does carry a message — the proxy landed but
+                    // the root-only QUIC work didn't (authorization declined) — and
+                    // that caveat is precisely feedback about this action, so it shows.
+                    state.systemProxyMessage = message
                 } else {
                     state.isSystemProxy = !enabling // revert the optimistic toggle
                     state.systemProxyMessage = message ?? "System proxy change failed."

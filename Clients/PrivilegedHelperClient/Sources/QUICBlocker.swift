@@ -36,45 +36,60 @@ enum QUICBlocker {
     /// the moment it's reached; the anchor is appended last so nothing overrides it.
     static let rule = "block drop out quick proto udp from any to any port = 443"
 
-    /// Shell appended to the system-proxy **enable** script. Best-effort: pf
-    /// failures must not fail proxy setup (TCP capture still works), so every
-    /// pfctl call swallows errors. Runs as root inside the osascript admin call.
+    /// Shell appended to the system-proxy **enable** script. pf stderr is
+    /// swallowed (the noise is useless), but the fragment's **exit status is the
+    /// contract**: it runs last in the enable script, and every pfctl needs root
+    /// (`/dev/pf` is root-only) — so a non-zero script status is how the caller
+    /// learns the un-escalated "silent admin" run set the proxy *without* blocking
+    /// QUIC, and that it must retry through the admin prompt. Swallowing that too
+    /// is how admin users ran for months with HTTP/3 never actually blocked.
     static var enableFragment: String {
         """
         # --- Block QUIC (UDP/443) so browser HTTP/3 falls back to capturable TCP ---
-        umask 077
-        /bin/mkdir -p \(workDir)
-        set -C                              # noclobber: never follow a planted symlink
-        rm -f \(rulesPath) \(mainConfPath)  # drop any pre-existing file/symlink first
-        printf '%s\\n' '\(rule)' > \(rulesPath)
-        # Fail closed on a missing baseline: `pfctl -f` replaces the WHOLE loaded
-        # ruleset, so loading a copy that is only our anchor would wipe the user's
-        # firewall. If /etc/pf.conf can't be read, skip blocking QUIC entirely —
-        # an unblocked QUIC is a capture gap; an emptied ruleset is a security hole.
-        if cp /etc/pf.conf \(mainConfPath) 2>/dev/null; then
-          printf 'anchor "%s"\\nload anchor "%s" from "%s"\\n' '\(anchorName)' '\(anchorName)' '\(rulesPath)' >> \(mainConfPath)
-          /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || touch \(disabledMarkerPath)
-          /sbin/pfctl -f \(mainConfPath) 2>/dev/null
-          /sbin/pfctl -E 2>/dev/null
-        else
-          rm -f \(rulesPath) \(mainConfPath)
-        fi
+        loom_quic_enable() {
+          umask 077
+          /bin/mkdir -p \(workDir) || return 1
+          set -C                              # noclobber: never follow a planted symlink
+          rm -f \(rulesPath) \(mainConfPath)  # drop any pre-existing file/symlink first
+          printf '%s\\n' '\(rule)' > \(rulesPath) || return 1
+          # Fail closed on a missing baseline: `pfctl -f` replaces the WHOLE loaded
+          # ruleset, so loading a copy that is only our anchor would wipe the user's
+          # firewall. If /etc/pf.conf can't be read, skip blocking QUIC entirely —
+          # an unblocked QUIC is a capture gap; an emptied ruleset is a security hole.
+          if cp /etc/pf.conf \(mainConfPath) 2>/dev/null; then
+            printf 'anchor "%s"\\nload anchor "%s" from "%s"\\n' '\(anchorName)' '\(anchorName)' '\(rulesPath)' >> \(mainConfPath)
+            /sbin/pfctl -s info 2>/dev/null | grep -q 'Status: Enabled' || touch \(disabledMarkerPath)
+            /sbin/pfctl -f \(mainConfPath) 2>/dev/null && /sbin/pfctl -E 2>/dev/null
+          else
+            rm -f \(rulesPath) \(mainConfPath)
+            return 1
+          fi
+        }
+        loom_quic_enable
         """
     }
 
     /// Shell appended to the system-proxy **disable** script: flush our anchor,
     /// reload the pristine ruleset, and disable pf only if we were the ones who
     /// enabled it. Idempotent and safe to run even if QUIC was never blocked.
+    /// Same exit-status contract as the enable fragment: the function's status
+    /// reports whether the pf restore itself succeeded (the marker/cleanup steps
+    /// are best-effort), so an un-escalated run can't silently leave UDP/443
+    /// blocked on a machine whose proxy is already off.
     static var disableFragment: String {
         """
         # --- Restore firewall / unblock QUIC ---
-        /sbin/pfctl -a \(anchorName) -F rules 2>/dev/null
-        /sbin/pfctl -f /etc/pf.conf 2>/dev/null
-        if [ -f \(disabledMarkerPath) ]; then
-          /sbin/pfctl -d 2>/dev/null
-          rm -f \(disabledMarkerPath)
-        fi
-        rm -f \(rulesPath) \(mainConfPath)
+        loom_quic_disable() {
+          /sbin/pfctl -a \(anchorName) -F rules 2>/dev/null && /sbin/pfctl -f /etc/pf.conf 2>/dev/null
+          loom_pf_restored=$?
+          if [ -f \(disabledMarkerPath) ]; then
+            /sbin/pfctl -d 2>/dev/null
+            rm -f \(disabledMarkerPath)
+          fi
+          rm -f \(rulesPath) \(mainConfPath)
+          return $loom_pf_restored
+        }
+        loom_quic_disable
         """
     }
 }

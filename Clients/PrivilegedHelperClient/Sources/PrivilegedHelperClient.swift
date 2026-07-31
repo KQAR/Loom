@@ -4,11 +4,14 @@ import ServiceManagement
 import LoomHelperProtocol
 import LoomSharedModels
 
-/// Result of a privileged-helper operation, surfaced to the human.
+/// Result of a privileged-helper operation, surfaced to the human. `message` is
+/// nil for an unremarkable success; when `ok` is true AND a message is present,
+/// the message is a partial-success caveat that must reach the human (e.g. the
+/// proxy landed but the QUIC block didn't) — don't drop it on the ok path.
 public struct HelperOutcome: Equatable, Sendable {
     public var ok: Bool
-    public var message: String
-    public init(ok: Bool, message: String) {
+    public var message: String?
+    public init(ok: Bool, message: String? = nil) {
         self.ok = ok
         self.message = message
     }
@@ -88,7 +91,7 @@ extension PrivilegedHelperClient: DependencyKey {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
                     let (ok, message) = SystemProxyApplier.apply(enabled: enabled, host: "127.0.0.1", port: port)
-                    continuation.resume(returning: HelperOutcome(ok: ok, message: message ?? (ok ? "ok" : "failed")))
+                    continuation.resume(returning: HelperOutcome(ok: ok, message: message ?? (ok ? nil : "failed")))
                 }
             }
         },
