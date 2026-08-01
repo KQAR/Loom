@@ -11,8 +11,8 @@ colors:
   panel-material: "Material.menu"  # the popover background — vibrant system material, NEVER a hex.
   panel-selection: ".tint(.accent).opacity(0.12)"  # row hover/expand highlight inside the panel
   attention-fill: "{colors.accent}"   # attention-card tint at ~12% fill
-  window-canvas: "#ECECEC"         # Detail viewer window base — windowBackgroundColor, dark #282828
-  window-content: "#FFFFFF"        # Detail viewer code wells — controlBackgroundColor, dark #1E1E1E
+  window-canvas: "#ECECEC"         # Main-window base — windowBackgroundColor, dark #282828
+  window-content: "#FFFFFF"        # main-window code wells — controlBackgroundColor, dark #1E1E1E
   status-success: "#28CD41"        # 2xx — Color.green, dark #32D74B
   status-redirect: "#FF9500"       # 3xx — Color.orange, dark #FF9F0A
   status-error: "#FF3B30"          # 4xx / 5xx / transport error — Color.red, dark #FF453A
@@ -23,16 +23,16 @@ colors:
 typography:
   headline:     { style: ".headline",     size: 13, weight: 600, use: "Panel header status, fault-card title" }
   body:         { style: ".body",         size: 13, weight: 400, use: "Default text, card reasons" }
-  callout:      { style: ".callout",      size: 12, weight: 400, use: "Feed-row url, metadata, section labels" }
-  subheadline:  { style: ".subheadline",  size: 11, weight: 400, use: "Section headers (uppercased): needs you / live" }
+  callout:      { style: ".callout",      size: 12, weight: 400, use: "Row metadata, section labels" }
+  subheadline:  { style: ".subheadline",  size: 11, weight: 400, use: "Section headers (uppercased)" }
   mono:         { style: ".body.monospaced()",         size: 12, weight: 400, use: "URLs, headers, bodies, method glyph" }
-  mono-small:   { style: ".callout.monospaced()",      size: 11, weight: 400, use: "Feed-row url + host at panel density" }
+  mono-small:   { style: ".callout.monospaced()",      size: 11, weight: 400, use: "Request-table host + method at list density" }
   numeric:      { style: ".callout.monospacedDigit()", size: 12, weight: 400, use: "Status codes, durations, port, count" }
 
 rounded:
-  sm: 6px          # feed-row / card corners inside the panel
+  sm: 6px          # row / card corners inside the console
   md: 10px         # fault cards, expanded-row container
-  lg: 16px         # Detail viewer code wells
+  lg: 16px         # main-window code wells
   capsule: 9999px  # ALL buttons, status badges, method chips
 
 spacing:
@@ -40,7 +40,7 @@ spacing:
   xs: 8px
   sm: 12px
   md: 16px         # panel internal padding
-  lg: 20px         # Detail viewer content margin
+  lg: 20px         # main-window content margin
 
 metrics:
   console-width: 300px       # the menu-bar popover (config & control only)
@@ -53,7 +53,7 @@ components:
   menu-panel:
     material: "{colors.panel-material}"
     width: "{metrics.console-width}"
-    structure: "header (status) · unified rows (proxy / system-proxy / SSL / rules · then Open Main Window) · footer (count · Quit)"
+    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / System Proxy / HTTPS / Client Certificates / Rules / Breakpoints — Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
     note: "config & control only — NO request list here"
   config-row:
     anatomy: "one tappable full-width row: leading checkmark slot (accent, shown when the state is ON) · SF Symbol (secondary, 20pt) · title ({typography.body}) · trailing detail ({typography.callout} .tertiary). NO switch/toggle controls — the row toggles on tap and the checkmark is the state. Hover fills the row with {colors.panel-selection}."
@@ -158,7 +158,7 @@ utility — closer to the system's own controls than to a themed Electron tool.
   | 4xx / 5xx / error | `{colors.status-error}` | `Color.red` | status badge; `error` flows; fault cards |
   | in flight | `{colors.status-pending}` | `Color(.systemGray)` | badge shows `ProgressView` |
 
-- **Hairlines** (`separatorColor`): 1px separators between feed rows and stack sections — the panel's only
+- **Hairlines** (`separatorColor`): 1px separators between rows and sections — the console's only
   structure. No borders, **no gradients, ever**; depth is the material plus surface change.
 
 ## Typography

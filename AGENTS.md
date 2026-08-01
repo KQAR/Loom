@@ -20,8 +20,8 @@ Loom is a personal macOS 14+ app: an **AI-operable debugging proxy** that lives 
 Three docs govern the product; each wins over code in its domain:
 
 - [`ROADMAP.md`](ROADMAP.md) — positioning and iteration order
-- [`DESIGN.md`](DESIGN.md) — visual system for the **status-bar panel** (the whole human surface) + the optional Detail viewer, derived from Apple's HIG, **not** from existing code
-- [`INTERACTION.md`](INTERACTION.md) — interaction architecture: the AI-operates / human-supervises inversion, the status-bar panel as the one surface, write-action guardrails
+- [`DESIGN.md`](DESIGN.md) — visual system for the two human surfaces (status-bar console + main window), derived from Apple's HIG, **not** from existing code
+- [`INTERACTION.md`](INTERACTION.md) — interaction architecture: the AI-operates / human-supervises inversion, the console/main-window split, write-action guardrails
 
 **UI is status-bar-first (DESIGN/INTERACTION v3).** The human surface centers on the menu-bar panel — now a compact **config & control console** (`PanelView`): a header with the proxy address + on/off switch and a capture dot (green recording · yellow paused · grey off), state rows (Connect Device, System Proxy, HTTPS, Client Certificates, Rules, Breakpoints — Client Certificates and Breakpoints conditional), and a footer (version · wordmark · Quit). The main window (`MainView`) is the working surface — a request table + tabbed inspector — opened at launch. Both are driven by the one `AppFeature` store. Any view that conflicts with the specs is the thing to fix; don't propagate old styling.
 
@@ -160,7 +160,7 @@ Write tools are the reason Loom exists. When adding one, it must be scoped and �
 | **ProxyClient** | client | `@DependencyClient` wrapping `ProxyEngine.shared` for TCA |
 | **PrivilegedHelperClient** | client | app-side TCA surface over the helper: SMAppService register/approve + XPC (system proxy, CA trust) — **unverified scaffold** |
 | **UpdaterClient** | client | `@DependencyClient` over **Sparkle** (`UpdaterCoordinator` owns `SPUStandardUpdaterController`); silent once-a-day probe + user-initiated check, feeds the panel's footer "Update" button — Swift 5 mode |
-| **AppFeature** | feature | TCA reducer + status-bar panel (live feed) + optional Detail viewer |
+| **AppFeature** | feature | TCA reducer + status-bar console (`PanelView`) + main window (`MainView`: table, inspector, Rules/Breakpoints/Audit panels) |
 | **Loom** | app | MenuBarExtra entry (panel); boots proxy + MCP server |
 | **loom-mcp** | tool | stdio↔HTTP bridge binary |
 | **LoomHelper** | tool | root daemon: per-service proxy backup/override/restore, CA trust install/verify, caller + Apple-binary validation, crash watchdog, idle-exit — **unverified scaffold** |
