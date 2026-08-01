@@ -134,14 +134,29 @@ public struct AppFeature: Sendable {
         /// every path that populates the list — live capture, the boot seed, and
         /// tests — goes through `recordFlow`.
         public init(flows: [Flow]) {
-            for flow in flows { recordFlow(flow) }
+            recordFlows(flows)
         }
 
-        /// Upsert a flow, then enforce the session display cap by dropping the
-        /// oldest overflow (oldest-first storage → `removeFirst`), counting the
-        /// drops. An upsert of an existing id doesn't grow the array, so this only
-        /// trims on genuinely new flows. Clears the selection if it was dropped.
+        /// Upsert a flow, then enforce the session display cap. Single-flow paths
+        /// only — a batch must use `recordFlows`, which trims once at the end:
+        /// `IdentifiedArray.removeFirst` shifts the whole backing storage and
+        /// rebuilds hash buckets (O(count)), so trimming inside a per-flow loop at
+        /// steady-state cap paid O(cap) per genuinely new flow, every 100 ms
+        /// window, forever.
         mutating func recordFlow(_ flow: Flow) {
+            upsertFlow(flow)
+            enforceDisplayCap()
+        }
+
+        /// Upsert a whole stream batch, enforcing the display cap once.
+        mutating func recordFlows(_ batch: [Flow]) {
+            for flow in batch { upsertFlow(flow) }
+            enforceDisplayCap()
+        }
+
+        /// Upsert without cap enforcement. Every caller must trim afterwards —
+        /// go through `recordFlow`/`recordFlows` rather than calling this.
+        private mutating func upsertFlow(_ flow: Flow) {
             // Store metadata only — bodies for up to 2000 flows would be a large RAM
             // sink; the inspector hydrates the selected flow's body on demand.
             // An upsert replaces: retract the previous version's contribution to the
@@ -150,17 +165,22 @@ public struct AppFeature: Sendable {
             let stripped = flow.strippingBodies()
             flows[id: flow.id] = stripped
             contribute(stripped)
+            status.capturedCount = flows.count
+        }
 
+        /// Drop the oldest overflow past the session display cap (oldest-first
+        /// storage → `removeFirst`), counting the drops. Clears the selection if
+        /// it was dropped.
+        private mutating func enforceDisplayCap() {
             let overflow = flows.count - Self.displayCap
-            if overflow > 0 {
-                let dropped = flows.prefix(overflow)
-                let droppedIDs = Set(dropped.map(\.id))
-                for flow in dropped { retract(flow) }
-                flows.removeFirst(overflow)
-                droppedFlowCount += overflow
-                if let selected = selectedFlowID, droppedIDs.contains(selected) {
-                    selectedFlowID = nil
-                }
+            guard overflow > 0 else { return }
+            let dropped = flows.prefix(overflow)
+            let droppedIDs = Set(dropped.map(\.id))
+            for flow in dropped { retract(flow) }
+            flows.removeFirst(overflow)
+            droppedFlowCount += overflow
+            if let selected = selectedFlowID, droppedIDs.contains(selected) {
+                selectedFlowID = nil
             }
             status.capturedCount = flows.count
         }
@@ -565,14 +585,14 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .flowsReceived(flows):
-                for flow in flows {
-                    state.recordFlow(flow)
-                    // The stream copy still carries bodies; if it's the open
-                    // selection, keep the inspector's hydrated copy live (same as
-                    // the single-flow path below).
-                    if flow.id == state.selectedFlowID {
-                        state.selectedFlowDetail = flow
-                    }
+                state.recordFlows(flows)
+                // The stream copies still carry bodies; if the open selection is in
+                // the batch, keep the inspector's hydrated copy live (same as the
+                // single-flow path below). `last(where:)` matches the old per-flow
+                // loop, which left the batch's final update in place.
+                if let selected = state.selectedFlowID,
+                   let update = flows.last(where: { $0.id == selected }) {
+                    state.selectedFlowDetail = update
                 }
                 return .none
 
