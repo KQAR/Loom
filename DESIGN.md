@@ -10,7 +10,7 @@ colors:
   ink-tertiary: "#00000042"        # .tertiary — dark #FFFFFF42
   panel-material: "Material.menu"  # the popover background — vibrant system material, NEVER a hex.
   panel-selection: ".tint(.accent).opacity(0.12)"  # row hover/expand highlight inside the panel
-  attention-fill: "{colors.accent}"   # approval/fault card tint at ~12% fill
+  attention-fill: "{colors.accent}"   # attention-card tint at ~12% fill
   window-canvas: "#ECECEC"         # Detail viewer window base — windowBackgroundColor, dark #282828
   window-content: "#FFFFFF"        # Detail viewer code wells — controlBackgroundColor, dark #1E1E1E
   status-success: "#28CD41"        # 2xx — Color.green, dark #32D74B
@@ -21,7 +21,7 @@ colors:
   on-accent: "#FFFFFF"
 
 typography:
-  headline:     { style: ".headline",     size: 13, weight: 600, use: "Panel header status, approval-card title" }
+  headline:     { style: ".headline",     size: 13, weight: 600, use: "Panel header status, fault-card title" }
   body:         { style: ".body",         size: 13, weight: 400, use: "Default text, card reasons" }
   callout:      { style: ".callout",      size: 12, weight: 400, use: "Feed-row url, metadata, section labels" }
   subheadline:  { style: ".subheadline",  size: 11, weight: 400, use: "Section headers (uppercased): needs you / live" }
@@ -31,7 +31,7 @@ typography:
 
 rounded:
   sm: 6px          # feed-row / card corners inside the panel
-  md: 10px         # approval + fault cards, expanded-row container
+  md: 10px         # fault cards, expanded-row container
   lg: 16px         # Detail viewer code wells
   capsule: 9999px  # ALL buttons, status badges, method chips
 
@@ -58,11 +58,7 @@ components:
   config-row:
     anatomy: "one tappable full-width row: leading checkmark slot (accent, shown when the state is ON) · SF Symbol (secondary, 20pt) · title ({typography.body}) · trailing detail ({typography.callout} .tertiary). NO switch/toggle controls — the row toggles on tap and the checkmark is the state. Hover fills the row with {colors.panel-selection}."
     action-row: "same anatomy for non-state actions (e.g. Open Main Window): no checkmark, a trailing chevron.right instead of a detail. Keeps the panel one consistent, compact list."
-  approval-card:   # M3, appears above config rows when pending
-    backgroundColor: "{colors.attention-fill} @ ~12%"
-    rounded: "{rounded.md}"
-    anatomy: "tool + target ({typography.mono}) · one-line reason · [Deny] [Approve] [Always]"
-  fault-card:      # M2
+  fault-card:
     backgroundColor: "{colors.status-error} @ ~12%"
     rounded: "{rounded.md}"
     anatomy: "SF Symbol + one-line fault · single fix action"
@@ -149,8 +145,8 @@ utility — closer to the system's own controls than to a themed Electron tool.
   the hierarchical styles are *vibrancy-aware* and adapt to the material automatically. Never manual opacity.
 - **Panel material** (`{colors.panel-material}`): the popover background. A system menu/vibrant material —
   it has no hex and must never be simulated with a translucent fill. Rows and sections sit on it transparently.
-- **Attention fills**: approval cards tint at ~12% `{colors.accent}`, fault cards at ~12% `{colors.status-error}`
-  — just enough to lift them off the feed, still translucent over the material.
+- **Attention fills**: fault cards tint at ~12% `{colors.status-error}` — just enough to lift them off the
+  rows, still translucent over the material.
 - **Main-window surfaces** (opaque, window-only): `{colors.window-canvas}` base, `{colors.window-content}`
   for code wells. These exist *only* in the main window; the console has no opaque surfaces.
 - **Status** — the four HTTP voices, the only sanctioned non-accent chromatic color:
@@ -239,7 +235,7 @@ control and its detail read as one unit.
 | Level | Treatment | Use |
 |---|---|---|
 | Console | System vibrant material + automatic popover shadow | the menu-bar surface |
-| In-console content | Transparent config rows; ~12% tint for approval/fault cards (M2/M3) | console |
+| In-console content | Transparent config rows; ~12% tint for fault cards | console |
 | Window content | Opaque semantic surface, hairlines, system list selection | main window list + detail |
 | Overlay | Sheet with system background | cert-setup wizard (M2), confirmations |
 
@@ -252,7 +248,7 @@ console, depth is the material plus tint; do not stack opaque cards on it. Never
 | Token | Value | Use |
 |---|---|---|
 | `{rounded.sm}` | 6px | status pill, list hover |
-| `{rounded.md}` | 10px | approval / fault cards |
+| `{rounded.md}` | 10px | fault cards |
 | `{rounded.lg}` | 16px | detail-pane code wells |
 | `{rounded.capsule}` | ∞ | all buttons |
 
@@ -317,10 +313,7 @@ rejecting what failed:
   slot (accent, shown when ON) · SF Symbol (secondary, 20pt) · title (`{typography.body}`) · trailing detail
   (`{typography.callout}` `.tertiary`). **No switch/toggle controls in rows** — the row toggles on tap and
   the checkmark is the state; the console's only switch is the proxy on/off in the header.
-- **`approval-card`** (M3) — the guardrail's atom, appears above the config rows. ~12% accent fill,
-  `{rounded.md}`: tool + target in `{typography.mono}`, a one-line reason, and `[Deny] [Approve] [Always]`.
-  Resolves in place.
-- **`fault-card`** (M2) — ~12% red fill: SF Symbol + one-line fault + a single fix action. Floats above approvals.
+- **`fault-card`** — ~12% red fill: SF Symbol + one-line fault + a single fix action, above the config rows.
 
 ### Main window
 
@@ -355,22 +348,20 @@ on every label).
 
 ## Iteration Guide
 
-1. Change ONE component at a time; reference its YAML key (`{components.approval-card}`) in commits/reviews.
+1. Change ONE component at a time; reference its YAML key (`{components.fault-card}`) in commits/reviews.
 2. New states of a component are new YAML entries with a `-suffix`, not prose forks.
 3. Use `{token.refs}` in specs and a `DesignTokens` enum in code — never inline values.
 4. Prefer deleting custom styling over adding it: the target is "system control + tokens + nothing else."
 
 ## Known Gaps
 
-- **v2 supersedes the M1 code**: `InspectorView`'s two-column window and the control-only popover both need
-  to be rebuilt — panel with live feed + inline expansion, window demoted to `detail-viewer`. Until then the
-  running app does not match this spec (the spec wins).
 - **Pin/detach** is implemented (`PinController`): the header pin button re-hosts `PanelView` in a
   non-activating floating `NSPanel` (`level = .floating`, `becomesKeyOnlyIfNeeded`) over an
   `NSVisualEffectView(.popover)` so the vibrant material is preserved; the panel's close button unpins.
   Gap: it opens at a fixed 380×560 top-trailing and isn't resizable yet.
-- **Approval cards, faults, and scope** are M3 in [`ROADMAP.md`](ROADMAP.md); until then the stack is header +
-  feed + footer only. Design them here now so the layout budget accounts for them.
+- **Approval cards were cancelled, not deferred** (owner decision — see [`INTERACTION.md`](INTERACTION.md)
+  § Guardrail): write tools act directly; supervision is the loopback boundary + audit trail. The former
+  `approval-card` spec was removed with them; `fault-card` shipped and stays.
 - Liquid Glass button styles (`.glassProminent`/`.glass`) are macOS 26-only; on the macOS 14 baseline use
   `.borderedProminent`/`.bordered`. The brand mark is now specified (§ Brand mark) and shipping in the menu bar;
   the **app icon** is still unspecified and is the remaining branding gap.

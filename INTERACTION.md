@@ -14,33 +14,22 @@ Three consequences shape every decision:
 
 1. **The MCP surface is the real operator surface.** Tool ergonomics (clear names, structured results, honest errors) matter more than pixels. A capability not exposed as a tool doesn't exist for the primary operator.
 2. **The status bar is config + control, never traffic.** It answers "is the proxy on? am I the system proxy? which rules are active?" — all at a glance, no scrolling through requests.
-3. **The main window is the working surface.** The request list and per-flow detail live there, opened from the console's "Open Main Window" button.
+3. **The main window is the working surface.** The request list and per-flow detail live there — opened at launch, re-openable from the console's "Open Main Window" row.
 
 ## Two Surfaces, One Job Each
 
 | Surface | Question it answers | Contents |
 |---------|--------------------|----------|
-| **Status-bar console** (popover) | "What's the current config, and does anything need me?" | proxy on/off · system-proxy state · rules on/off + which · Open Main Window · Quit |
+| **Status-bar console** (popover) | "What's the current config, and does anything need me?" | proxy address + on/off · device onboarding · system-proxy state · HTTPS · client certificates · rules · breakpoints (when armed/held) · Open Main Window · Quit |
 | **Main window** | "What flowed, and what's in this request?" | category sidebar + request list + flow detail (Replay & diff) |
 
 Plus the headless **MCP endpoint** — the operator's surface.
 
 ### Status-bar console (config & control)
 
-Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`; see [`DESIGN.md`](DESIGN.md) `menu-panel`). No traffic here — only state and control:
+Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control: a header (proxy address + on/off switch + capture dot), state rows (Connect Device · System Proxy · HTTPS · Client Certificates · Rules · Breakpoints — the conditional ones absent rather than empty), Open Main Window, and a footer. The row inventory and layout live in [`DESIGN.md`](DESIGN.md) § Layout (`menu-panel` / `config-row`) — one diagram, there, not here.
 
-```
-┌─ ● Loom                         Running ─┐
-│  🌐  Proxy          127.0.0.1:9090   [◉] │  on/off toggle
-│  🌍  System proxy   off · explicit   [ ] │  (M2: needs helper — disabled)
-│  ⚙︎  Rules          no rules yet     Off │  (M3: lists active rules here)
-│ ───────────────────────────────────────  │
-│         [ Open Main Window ]              │
-│  5 flows captured                   Quit  │
-└───────────────────────────────────────────┘
-```
-
-When faults (proxy bind failure, cert not trusted — M2) exist, they appear as cards above the config rows — the console is the single front door for "something needs you". Otherwise it is config + control only.
+When faults (proxy bind failure, cert not trusted) exist, they appear as cards above the config rows — the console is the single front door for "something needs you". Otherwise it is config + control only.
 
 ### Main window (the request list)
 
@@ -48,9 +37,9 @@ Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style): a ca
 
 1. **Sidebar — categories.** `All Flows`, `Errors`, `Replayed` (each with a count badge), then a `Hosts` section grouping traffic by domain. Selection scopes the table.
 2. **Request table — the requests.** A multi-column table (status · method · host · path · time), newest first, resizable columns; single selection drives the inspector. `↻` marks agent-replayed rows.
-3. **Inspector — the selected flow.** Hidden until a row is selected (the table then fills the whole pane); selecting reveals it below the table, split **Request (left) | Response (right)** — layout referenced from Proxyman. The Request pane has tabs `Summary / Headers / Body` (+ `Diff` for replays), a method badge, a copyable URL bar, and the **Replay** button (same `ProxyEngine.shared` write path the agent uses). The Response pane has tabs `Headers / Body / Raw`, a status badge, and a ✕ close (top-right) that hides the inspector by deselecting.
+3. **Inspector — the selected flow.** Hidden until a row is selected (the table then fills the whole pane); selecting reveals it below the table, split **Request (left) | Response (right)** — layout referenced from Proxyman, tab sets per [`DESIGN.md`](DESIGN.md) `{components.inspector-panel}`. What matters here: the **Replay** button lives in the Request pane and runs the same `ProxyEngine.shared` write path the agent uses, and the Response pane's ✕ close hides the inspector by deselecting.
 
-The window toolbar has a centered status chip — dot + `LAN-IP:port` + three gray/green quick toggles (System proxy, SSL, Map/rewrite) — and, right-aligned, a **Record** stop/play button (capture pause/resume: paused means traffic keeps flowing but isn't stored) and **Clear**. Breakpoint interception is **not** this button; it gets its own gated control in M3. No search field, no window title. Opened from the console; a normal, persistent, resizable window — where the human watches traffic.
+The window toolbar has a centered status chip — dot + `LAN-IP:port` + three gray/green quick toggles (System proxy, SSL, Map/rewrite) — and, right-aligned, a **Record** start/stop button (capture pause/resume: paused means traffic keeps flowing but isn't stored) and **Clear**. Breakpoint interception is **not** this button — held/armed breakpoints surface in the sidebar → Breakpoints panel and as the console's Breakpoints row. No search field, no window title. A normal, persistent, resizable window, opened at launch and from the console — where the human watches traffic.
 
 ## The Guardrail: loopback boundary + full audit trail
 
@@ -76,7 +65,7 @@ The agent is never a black box the human can't interrupt.
 
 ## Degraded & Empty States
 
-- **Faults** (proxy bind failure, upstream unreachable, cert not trusted — M2) render as fault cards at the top of the status-bar console. The agent's affected tool calls return the matching structured error, so human and agent learn of the fault together.
+- **Faults** (proxy bind failure, upstream unreachable, cert not trusted) render as fault cards at the top of the status-bar console. The agent's affected tool calls return the matching structured error, so human and agent learn of the fault together.
 - **Empty list** (main window) has two honest meanings and must not look identical: *proxy stopped* (start it from the console) vs *running, nothing captured yet* (hint: point a client at `127.0.0.1:<port>` / `curl -x`). Use `ContentUnavailableView` for both.
 
 ## Menu-bar icon & notifications
@@ -84,9 +73,6 @@ The agent is never a black box the human can't interrupt.
 - The **menu-bar icon is the ambient channel**: it is where the human notices state without opening anything. Which glyph carries which state is DESIGN.md's call — see [`DESIGN.md`](DESIGN.md) § Brand mark (the custom `loom.mark` symbol: hollow node when traffic passes untouched, solid `loom.mark.intercept` when map/rewrite rules act on it, opacity for stopped, color for system-proxy). This doc fixes only the role, not the artwork. (The icon's `.task` also boots the capture subscription at launch, so state is live before the popover is ever opened.)
 - macOS notifications (opt-in, later) surface a **fault** for "away from the machine" — the same fault card, relocated, no new interaction concept.
 
-## Build Order (mapped to ROADMAP)
+## What's built vs parked
 
-1. **Done**: status-bar console (proxy on/off · system-proxy + rules status · Open Main Window) and main window (request list + detail with Replay & diff). Config/traffic split is in place.
-2. **M2**: real system-proxy toggle (privileged helper); fault cards in the console; cert-setup as a sheet.
-3. **M3**: rules + breakpoints + the durable audit trail; write tools act directly (no approval cards or scope allow-list — owner decision); the console's rules rows go live, take-over via stop / disable / disarm.
-4. **Parked**: a surface for the human to *drive* the agent from inside Loom (Loom is MCP-first; the agent lives in the user's own client).
+Iteration order and per-milestone status live in [`ROADMAP.md`](ROADMAP.md) — not mirrored here. The one deliberately **parked** interaction concept: a surface for the human to *drive* the agent from inside Loom (Loom is MCP-first; the agent lives in the user's own client).
