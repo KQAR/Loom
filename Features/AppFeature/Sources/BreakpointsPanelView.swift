@@ -88,10 +88,13 @@ struct BreakpointsPanelView: View {
             }
             if !store.armed.isEmpty {
                 Section("Armed") {
+                    // One pass over the held exchanges, not one filter per armed
+                    // row (that was O(held × armed) per render).
+                    let heldCounts = Dictionary(grouping: store.pending, by: \.breakpointID).mapValues(\.count)
                     ForEach(store.armed) { breakpoint in
                         ArmedRow(
                             breakpoint: breakpoint,
-                            heldCount: store.pending.filter { $0.breakpointID == breakpoint.id }.count,
+                            heldCount: heldCounts[breakpoint.id] ?? 0,
                             onDisarm: { store.send(.disarmTapped(breakpoint.id)) }
                         )
                         .listRowSeparator(.hidden)
