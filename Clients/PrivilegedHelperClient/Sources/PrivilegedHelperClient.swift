@@ -26,13 +26,17 @@ public enum HelperRegistration: Equatable, Sendable {
     case failed(String)
 }
 
-/// TCA surface over the root privileged helper (M2, **scaffold — unverified**).
+/// TCA surface over the privileged operations — **two halves, only one live.**
 ///
-/// Owns the whole privileged surface: SMAppService lifecycle plus the XPC calls
-/// that point the system proxy at Loom and trust Loom's root CA. Not exercised in
-/// CI — it needs a signed/notarized app with the helper embedded at
-/// `Contents/Library/LaunchDaemons` and interactive admin approval. Live values
-/// report failure honestly instead of pretending to succeed.
+/// Live and shipping: `setSystemProxy` / `systemProxySnapshots`, which never touch
+/// the helper (direct `networksetup`, escalating to one osascript admin prompt for
+/// the pf work).
+///
+/// Dormant by decision: `register` / `installCA` / `removeCA` / `verifyTrusted`,
+/// the SMAppService + XPC path. Loom signs ad-hoc only, so launchd will not load
+/// the root daemon and the helper's caller requirement would reject an ad-hoc
+/// caller anyway. Kept as a design record; see ROADMAP § M2 before scheduling any
+/// work here. Live values report failure honestly instead of pretending to succeed.
 @DependencyClient
 public struct PrivilegedHelperClient: Sendable {
     /// Register (or confirm) the helper daemon. May require user approval.
@@ -92,8 +96,9 @@ extension PrivilegedHelperClient: DependencyKey {
         },
         setSystemProxy: { enabled, port in
             // No-helper path: `networksetup` directly (silent for admin users),
-            // osascript admin-prompt fallback otherwise. (When the signed daemon
-            // lands, this can switch to the XPC helper for non-admin installs.)
+            // osascript admin-prompt fallback otherwise. This is the permanent
+            // path, not a stopgap: the XPC helper is parked (ROADMAP § M2), so
+            // non-admin installs stay unsupported and admins pay one prompt.
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
                     let (ok, message) = SystemProxyApplier.apply(enabled: enabled, host: "127.0.0.1", port: port)
