@@ -175,7 +175,9 @@ public struct MainView: View {
     // MARK: Request area (table, or a full-bleed empty state)
 
     @ViewBuilder private var requestArea: some View {
-        if store.displayFlows.isEmpty {
+        // O(1) aggregate probe — `displayFlows.isEmpty` would filter all 2000
+        // flows a second time per render just to pick the empty state.
+        if store.displayFlowsAreEmpty {
             emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             RequestTableView(store: store, followTail: $followTail)

@@ -81,7 +81,7 @@ struct RequestPane: View {
         switch tab {
         case .summary: Scrolled { SummaryTable(flow: flow) }
         case .graphQL: Scrolled { GraphQLView(operation: derived.graphQL) }
-        case .raw: RawView(text: Self.rawText(flow), identity: "req-raw:\(flow.id)")
+        case .raw: RawTab(flow: flow, pane: "req", makeText: Self.rawText)
         case .headers: Scrolled { HeadersList(headers: flow.request.headers) }
         case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
         case .body: BodyView(data: flow.request.body, identity: "req-body:\(flow.id)", fullBodyBytes: flow.request.fullBodyBytes)
@@ -97,7 +97,7 @@ struct RequestPane: View {
     }
 
     /// The captured request as raw text: request line · headers · blank · body.
-    static func rawText(_ flow: Flow) -> String {
+    nonisolated static func rawText(_ flow: Flow) -> String {
         let request = flow.request
         var lines = ["\(request.method) \(request.url)"]
         lines += request.headers.map { "\($0.name): \($0.value)" }

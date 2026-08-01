@@ -15,7 +15,11 @@ struct JSONBodyEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // One parse per body evaluation: `body` re-runs per keystroke of the
+        // bound TextEditor, and reading the computed `parsed` in two places
+        // re-parsed the whole body twice per character typed.
+        let parsed = self.parsed
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: LoomTheme.Space.xs) {
                 Text(title).font(.caption).foregroundStyle(.secondary)
                 Spacer()

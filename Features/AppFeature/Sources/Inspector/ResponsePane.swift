@@ -104,7 +104,7 @@ struct ResponsePane: View {
         } else if let response = flow.response {
             switch tab {
             case .messages: EmptyView()
-            case .raw: RawView(text: Self.rawText(flow), identity: "resp-raw:\(flow.id)")
+            case .raw: RawTab(flow: flow, pane: "resp", makeText: Self.rawText)
             case .headers: Scrolled { HeadersList(headers: response.headers) }
             case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
             case .body: BodyView(data: response.body, identity: "resp-body:\(flow.id)", fullBodyBytes: response.fullBodyBytes)
@@ -116,7 +116,7 @@ struct ResponsePane: View {
         }
     }
 
-    static func rawText(_ flow: Flow) -> String {
+    nonisolated static func rawText(_ flow: Flow) -> String {
         guard let response = flow.response else { return "" }
         var lines = ["HTTP \(response.statusCode)"]
         lines += response.headers.map { "\($0.name): \($0.value)" }

@@ -13,20 +13,56 @@ struct DiffView: View {
     let original: Flow?
     let replayed: Flow
 
+    /// Computed once per flow pair, off the main actor, not per render: the LCS
+    /// line diff (up to its 400-line cap) plus body decoding used to re-run on
+    /// every inspector re-render — ~10×/s under live traffic with the Diff tab
+    /// open, for a value that only changes when the pair does.
+    @State private var comparison: FlowComparison?
+
+    /// What the diff depends on: the pair's identity plus each side's body sizes
+    /// and completion — hydration attaches bodies and completion fills the
+    /// response, both under unchanged flow ids.
+    private struct Key: Hashable {
+        let base: UUID, compared: UUID
+        let baseBytes: Int?, comparedBytes: Int?
+        let baseDone: Date?, comparedDone: Date?
+    }
+
+    private var key: Key? {
+        original.map {
+            Key(
+                base: $0.id, compared: replayed.id,
+                baseBytes: ($0.request.body?.count ?? 0) + ($0.response?.body?.count ?? 0),
+                comparedBytes: (replayed.request.body?.count ?? 0) + (replayed.response?.body?.count ?? 0),
+                baseDone: $0.completedAt, comparedDone: replayed.completedAt
+            )
+        }
+    }
+
     var body: some View {
         if let original {
-            let comparison = FlowComparison.compare(base: original, compared: replayed)
-            if comparison.isIdentical {
-                Text("Identical — same request, same response.")
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
-                    section("Request", rows: requestRows(comparison.request))
-                    section("Response", rows: responseRows(comparison.response))
-                    if let error = comparison.error {
-                        section("Error", rows: [.change(label: "error", change: error.strings)])
+            Group {
+                if let comparison {
+                    if comparison.isIdentical {
+                        Text("Identical — same request, same response.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
+                            section("Request", rows: requestRows(comparison.request))
+                            section("Response", rows: responseRows(comparison.response))
+                            if let error = comparison.error {
+                                section("Error", rows: [.change(label: "error", change: error.strings)])
+                            }
+                        }
                     }
                 }
+            }
+            .task(id: key) {
+                let base = original
+                let compared = replayed
+                let result = await Task.detached { FlowComparison.compare(base: base, compared: compared) }.value
+                guard !Task.isCancelled else { return }
+                comparison = result
             }
         }
     }
