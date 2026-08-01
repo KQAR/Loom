@@ -238,19 +238,37 @@ actor FlowStore {
     /// read's "never hydrate" contract (invariant I2) holds and a body search still
     /// sees flows the ring has slimmed. Narrow it with `host`/`url_contains`/`since`
     /// to keep the number of hydrations small.
-    func recent(matching query: FlowQuery, limit: Int) -> [Flow] {
+    ///
+    /// The hydrations run *off the actor*: the metadata scan snapshots its
+    /// candidates (Flow is a value), then the disk reads and body tests proceed on
+    /// a detached task while capture upserts keep landing. Running them on the
+    /// actor meant an unnarrowed body search over a slimmed ring — up to
+    /// `capacity` synchronous SQLite blob reads — stalled every in-flight
+    /// exchange behind one MCP call.
+    func recent(matching query: FlowQuery, limit: Int) async -> [Flow] {
         guard !query.isEmpty else { return recent(limit: limit) }
         let limit = max(0, limit)
-        let needsBodies = query.needsBodies
         var matches: [Flow] = []
         matches.reserveCapacity(min(limit, 64))
-        for flow in flows.reversed() {
-            guard matches.count < limit else { break }
-            guard query.matchesMetadata(flow) else { continue }
-            if needsBodies, !query.matchesBodies(hydrated(flow)) { continue }
-            matches.append(flow)
+        guard query.needsBodies else {
+            for flow in flows.reversed() {
+                guard matches.count < limit else { break }
+                if query.matchesMetadata(flow) { matches.append(flow) }
+            }
+            return matches
         }
-        return matches
+        let candidates = flows.reversed().filter(query.matchesMetadata)
+        let persistence = persistence
+        return await Task.detached(priority: .utility) {
+            var matches: [Flow] = []
+            matches.reserveCapacity(min(limit, 64))
+            for flow in candidates {
+                guard matches.count < limit else { break }
+                guard query.matchesBodies(Self.hydrated(flow, from: persistence)) else { continue }
+                matches.append(flow)
+            }
+            return matches
+        }.value
     }
 
     func clear() {
@@ -316,15 +334,29 @@ actor FlowStore {
     /// body-free — i.e. a flow reloaded from a prior session (or, once Layer 2
     /// lands, slimmed by the ring budget). Detail/replay/diff read through here, so
     /// they always see full bodies without knowing the flow was ever slimmed.
-    func flow(id: UUID) -> Flow? {
-        if let index = index(of: id) { return hydrated(flows[index]) }
+    func flow(id: UUID) async -> Flow? {
+        let persistence = persistence
+        if let index = index(of: id) {
+            let flow = flows[index]
+            // Still carrying its bodies (or has none on disk to fetch) — no disk.
+            guard flow.request.body == nil, flow.response?.body == nil, persistence != nil else { return flow }
+            // Slimmed by the body budget: hydrate off the actor so the blob read
+            // doesn't stall capture upserts (Flow is a value; the snapshot is safe).
+            return await Task.detached(priority: .utility) {
+                Self.hydrated(flow, from: persistence)
+            }.value
+        }
         // Not in the ring — but the durable store keeps an order of magnitude more
         // rows, so read through to it. Without this the store is effectively
         // write-only past the ring: `get_flow_detail` / `diff_flows` / `replay`
         // answer "no flow with id X" for a flow Loom still has on disk, and an
         // agent holding a legitimate id (from an earlier list, a `replayedFrom`
         // link, an exported HAR) concludes the exchange never happened.
-        return persistence?.flow(id: id)
+        // Off-actor for the same reason as above.
+        guard persistence != nil else { return nil }
+        return await Task.detached(priority: .utility) {
+            persistence?.flow(id: id)
+        }.value
     }
 
     /// Recent flows with bodies re-attached — for exports (HAR) that need the full
@@ -333,22 +365,35 @@ actor FlowStore {
     /// Tops up from the durable store when the ring holds fewer than `limit`:
     /// "export the last 5000" must not quietly hand back the 2000 that happen to
     /// be in memory while the rest sit on disk.
-    func recentHydrated(limit: Int) -> [Flow] {
-        let fromRing = recent(limit: limit).map(hydrated)
-        guard let persistence, fromRing.count < limit else { return fromRing }
-        let seen = Set(fromRing.map(\.id))
-        let older = persistence.recent(limit: limit)
-            .lazy
-            .filter { !seen.contains($0.id) }
-            .map(hydrated)
-            .prefix(limit - fromRing.count)
-        return fromRing + older
+    ///
+    /// Only the ring snapshot happens on the actor. The hydration — one blob read
+    /// per slimmed flow, multi-MB `Data` copies included — and the disk top-up run
+    /// detached, because a 1000-flow HAR export used to hold the actor for the
+    /// whole assembly and queue every capture upsert behind it.
+    func recentHydrated(limit: Int) async -> [Flow] {
+        let fromRing = recent(limit: limit)
+        let persistence = persistence
+        return await Task.detached(priority: .utility) {
+            let hydratedRing = fromRing.map { Self.hydrated($0, from: persistence) }
+            guard let persistence, hydratedRing.count < limit else { return hydratedRing }
+            let seen = Set(hydratedRing.map(\.id))
+            let older = persistence.recent(limit: limit)
+                .lazy
+                .filter { !seen.contains($0.id) }
+                .map { Self.hydrated($0, from: persistence) }
+                .prefix(limit - hydratedRing.count)
+            return hydratedRing + older
+        }.value
     }
 
     /// Re-attach persisted bodies when the in-memory flow carries none. A live
     /// flow that still holds its bodies is returned untouched; a genuinely
     /// body-less flow stays body-less (the columns are nil too).
-    private func hydrated(_ flow: Flow) -> Flow {
+    ///
+    /// `nonisolated` and fed an explicit persistence handle: callers run it off
+    /// the actor (persistence serializes on its own queue, so it needs no actor
+    /// protection, and blocking the actor on `queue.sync` was the whole problem).
+    private nonisolated static func hydrated(_ flow: Flow, from persistence: FlowPersistence?) -> Flow {
         guard flow.request.body == nil, flow.response?.body == nil,
               let persistence, let bodies = persistence.bodies(id: flow.id),
               bodies.request != nil || bodies.response != nil
