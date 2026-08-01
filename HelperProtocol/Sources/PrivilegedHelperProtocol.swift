@@ -1,5 +1,22 @@
 import Foundation
 
+// MARK: - Dormant by decision
+//
+// Nothing in the shipping app reaches this contract, and nothing should be
+// scheduled against it. Loom signs ad-hoc only (`CODE_SIGN_IDENTITY="-"`) and no
+// Developer ID certificate is being bought, which makes the helper unloadable in
+// two independent places: `SMAppService.register()` refuses a root daemon with no
+// trust anchor, and `callerCodeRequirement` below refuses an ad-hoc caller over
+// XPC even if launchd had loaded it. Both refusals are the OS working correctly —
+// a root process that installs system-wide CA trust must not accept a binary
+// anyone with local write access could forge.
+//
+// The shipping substitute is user-domain CA trust (`CertificateTrust.installUserTrust`)
+// plus `SystemProxyApplier`'s direct `networksetup` + one-osascript path; the cost
+// is non-admin users and one auth prompt. This file and the helper it describes
+// stay as a design record — hardened, unit-tested where the logic is pure — so the
+// decision is reversible without a rewrite. See ROADMAP § M2.
+
 // MARK: - Helper identity
 
 /// Everything the app and the privileged helper must agree on to find and trust
@@ -50,8 +67,9 @@ public enum HelperIdentity {
 /// pointing the **system** proxy at Loom and trusting Loom's root CA in the
 /// **system** keychain. Every method uses the `withReply:` pattern NSXPC requires.
 ///
-/// Runtime is UNVERIFIED here: it needs a signed/notarized app, the helper
-/// embedded at `Contents/Library/LaunchDaemons`, and interactive admin approval.
+/// Never executed as things stand — see the dormant-by-decision note at the top of
+/// this file. Running it would need a Developer ID–signed/notarized app with the
+/// helper embedded at `Contents/Library/LaunchDaemons` and admin approval.
 @objc public protocol LoomPrivilegedHelperProtocol {
     /// Point the system HTTP+HTTPS proxy at `127.0.0.1:<port>` on every enabled
     /// network service, backing up prior settings. `ownerPID` is the app process;

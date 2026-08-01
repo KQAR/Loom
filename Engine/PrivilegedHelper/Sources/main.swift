@@ -2,14 +2,16 @@ import Foundation
 import LoomHelperProtocol
 import os
 
-// Loom privileged helper (root daemon, M2 — UNVERIFIED SCAFFOLD).
+// Loom privileged helper (root daemon, M2 — DORMANT BY DECISION, never loaded).
 //
-// Registered via SMAppService, this performs the operations the sandboxed app
+// It would register via SMAppService and perform the operations the sandboxed app
 // cannot: pointing the system proxy at Loom and trusting Loom's root CA in the
 // system keychain. Hardening: caller code-signature validation, Apple-signed
 // binary checks before exec, precise per-service proxy backup/restore, a crash
-// watchdog, and idle self-exit. Compiles, but end-to-end operation needs a
-// signed/notarized app with the helper embedded — not exercised in CI.
+// watchdog, and idle self-exit. It compiles and its pure logic is unit-tested, but
+// Loom signs ad-hoc only, so launchd refuses to load it — the app ships
+// user-domain CA trust and a direct `networksetup` path instead. Kept as a design
+// record; read ROADMAP § M2 before scheduling work here.
 
 // Watchdog mode: spawned as a child while an override is active; restores the
 // proxy if the owning app dies, then exits.
