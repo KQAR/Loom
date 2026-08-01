@@ -17,7 +17,7 @@ claude plugin install loom@loom
 ```
 
 然后**启动 Loom App**(插件通过 `http://127.0.0.1:9092/mcp` 与它通信)。重启 Claude Code
-让 `loom` MCP 服务连上;之后 Agent 即可使用 29 个工具,以及讲解用法的 `loom` skill。
+让 `loom` MCP 服务连上;之后 Agent 即可使用全部读/写工具,以及讲解用法的 `loom` skill。
 
 > Cursor:本仓库同时是 Cursor 插件(`.cursor-plugin/`)——在 Cursor 的插件设置里把
 > `KQAR/Loom` 添加为插件 marketplace 即可。

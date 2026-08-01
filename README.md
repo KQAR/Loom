@@ -18,8 +18,8 @@ claude plugin install loom@loom
 ```
 
 Then **launch the Loom app** (the plugin talks to it over `http://127.0.0.1:9092/mcp`).
-Restart Claude Code so the `loom` MCP server connects; the agent then has 29
-tools plus the `loom` skill explaining them.
+Restart Claude Code so the `loom` MCP server connects; the agent then has the
+full tool set (read + write) plus the `loom` skill explaining them.
 
 > Cursor: the repo is also a Cursor plugin (`.cursor-plugin/`) — add
 > `KQAR/Loom` as a plugin marketplace from Cursor's plugin settings.
