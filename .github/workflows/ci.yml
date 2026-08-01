@@ -3,6 +3,8 @@ name: CI
 # Every PR and every push to main must build the whole graph and run all five
 # test bundles. Before this existed the only workflow was Release (tag-driven,
 # archive-only), so ~425 tests ran on developer machines and nowhere else.
+# Exception: a docs-only change (*.md / docs/ / LICENSE) skips the build jobs —
+# see the `changes` job for why that's a conditional skip, not paths-ignore.
 #
 # The pass condition is deliberately NOT xcodebuild's exit code — see
 # scripts/assert-tests-ran.sh for why a green `** TEST SUCCEEDED **` can mean
@@ -19,12 +21,54 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Docs-only changes (*.md, docs/, LICENSE) skip the three build jobs. This is
+  # a conditional-job skip, NOT a workflow-level paths-ignore: the three jobs
+  # are required status checks, and a workflow that never triggers never
+  # reports, leaving the PR blocked forever — whereas a job skipped by `if:`
+  # reports "skipped", which branch protection treats as passing. Anything
+  # ambiguous (unknown base, empty diff) falls through to running everything.
+  changes:
+    name: Detect docs-only change
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Diff against base
+        id: diff
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "Base commit unknown — running full CI."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE"...HEAD)
+          echo "Changed files:"; echo "$CHANGED"
+          NON_DOCS=$(echo "$CHANGED" | grep -vE '(^docs/|\.md$|^LICENSE$)' || true)
+          if [ -n "$CHANGED" ] && [ -z "$NON_DOCS" ]; then
+            echo "Docs-only change — build jobs will be skipped."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # The real gate: the Tuist graph (app + engine + MCP + helper) compiles and
   # all five test bundles pass.
   test:
     name: Build & test
     runs-on: macos-latest
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -104,6 +148,8 @@ jobs:
     name: SPM library
     runs-on: macos-latest
     timeout-minutes: 30
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -135,6 +181,8 @@ jobs:
     name: Thread Sanitizer (ProxyCore)
     runs-on: macos-latest
     timeout-minutes: 60
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
 
