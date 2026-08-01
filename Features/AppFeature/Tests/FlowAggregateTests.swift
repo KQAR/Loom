@@ -155,6 +155,31 @@ import Testing
         #expect(state.apps.map(\.app.groupingKey) == ["com.pinned", "com.busy"])
     }
 
+    /// A whole stream batch lands through `recordFlows`, which trims the cap once
+    /// at the end instead of per flow — the state it leaves must be exactly what
+    /// per-flow recording produced, including the drop count, the aggregates, and
+    /// a selection that fell off the front.
+    @Test func batchRecording_matchesPerFlowRecording_atTheCap() {
+        let seed = (0 ..< AppFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
+        let batch = (0 ..< 10).map { flow(url: "https://new.test/\($0)") }
+
+        var perFlow = AppFeature.State(flows: seed)
+        var batched = AppFeature.State(flows: seed)
+        let evicted = perFlow.flows.first!.id
+        perFlow.selectedFlowID = evicted
+        batched.selectedFlowID = evicted
+
+        for flow in batch { perFlow.recordFlow(flow) }
+        batched.recordFlows(batch)
+
+        #expect(batched.flows == perFlow.flows)
+        #expect(batched.allCount == AppFeature.State.displayCap, "the cap holds")
+        #expect(batched.droppedFlowCount == perFlow.droppedFlowCount)
+        #expect(batched.hosts.map(\.host) == perFlow.hosts.map(\.host))
+        #expect(batched.hosts.map(\.count) == perFlow.hosts.map(\.count))
+        #expect(batched.selectedFlowID == nil, "a selection dropped by the trim is cleared")
+    }
+
     /// The seeding initializer must produce exactly the state live capture would.
     @Test func seedingInitializer_matchesIncrementalRecording() {
         let flows = [
