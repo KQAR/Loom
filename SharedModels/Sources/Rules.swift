@@ -591,6 +591,12 @@ public enum RegexCache {
     private struct Key: Hashable { let pattern: String; let caseInsensitive: Bool }
     private static let lock = NSLock()
     nonisolated(unsafe) private static var cache: [Key: NSRegularExpression] = [:]
+    /// Far above any real rule set, but a bound nonetheless: patterns come from
+    /// rules, and an agent cycling one-off regex rules programmatically would
+    /// otherwise grow this for the process lifetime. Reset wholesale rather than
+    /// tracking recency — recompiling the few dozen live patterns once after a
+    /// reset is cheaper than LRU bookkeeping on every request.
+    static let maxEntries = 512
 
     /// The compiled regex for `pattern`, or nil if it doesn't compile (invalid
     /// patterns are rejected at rule-creation time, so this is rare).
@@ -601,6 +607,7 @@ public enum RegexCache {
         if let cached = cache[key] { return cached }
         let options: NSRegularExpression.Options = caseInsensitive ? [.caseInsensitive] : []
         guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+        if cache.count >= maxEntries { cache.removeAll(keepingCapacity: true) }
         cache[key] = regex
         return regex
     }
