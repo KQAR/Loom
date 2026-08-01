@@ -270,9 +270,20 @@ public struct PanelView: View {
             store.send(.rules(.toggleRulesTapped))
         }
         if !store.rules.enabledRules.isEmpty {
+            // Capped like the breakpoints row below: the console is a fixed-width
+            // popover, and an agent can create rules programmatically — 200 enabled
+            // rules must not make the panel 200 rows tall.
+            let enabled = store.rules.enabledRules
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(store.rules.enabledRules, id: \.self) { rule in
+                ForEach(enabled.prefix(3), id: \.self) { rule in
                     Label(rule, systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if enabled.count > 3 {
+                    Text("+\(enabled.count - 3) more")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

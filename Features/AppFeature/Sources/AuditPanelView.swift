@@ -222,17 +222,30 @@ private struct AuditDetailSheet: View {
         currentID = entries[next].id
     }
 
+    /// A write tool's `arguments` can embed a whole mock body — hundreds of KB —
+    /// and SwiftUI `Text` lays the entire string out synchronously. Cap what the
+    /// sheet renders and say so (never truncate silently); the durable audit row
+    /// keeps the full value.
+    private static let blockDisplayLimit = 20_000
+
     private func block(_ label: String, _ text: String, tint: Color) -> some View {
-        VStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
+        let truncated = text.count > Self.blockDisplayLimit
+        let shown = truncated ? String(text.prefix(Self.blockDisplayLimit)) : text
+        return VStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
             Text(label.uppercased())
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.tertiary)
-            Text(text)
+            Text(shown)
                 .font(.callout.monospaced())
                 .foregroundStyle(tint)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
+            if truncated {
+                Text("Showing the first \(Self.blockDisplayLimit) of \(text.count) characters — read the full entry via get_audit_log")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
