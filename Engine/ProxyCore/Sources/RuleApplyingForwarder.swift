@@ -15,6 +15,15 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         self.rules = rules
     }
 
+    /// True while any enabled rule is scoped to a source app — only then must
+    /// forwarding wait for the resolver (an app-scoped rule evaluated against a
+    /// nil app fails closed, which would silently skip the rule the user armed).
+    var requiresSourceAppResolution: Bool {
+        let state = rules.snapshot()
+        return (state.enabled && state.rules.contains { $0.isEnabled && !($0.match.sourceApp ?? "").isEmpty })
+            || base.requiresSourceAppResolution
+    }
+
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         // Fold our own event stream into a buffered result, so `forward` and
         // `forwardStream` are one production path that can never disagree.

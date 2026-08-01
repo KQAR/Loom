@@ -19,6 +19,14 @@ final class BreakpointForwarder: UpstreamForwarding {
         self.store = store
     }
 
+    /// True while any armed breakpoint is scoped to a source app — see
+    /// `RuleApplyingForwarder`: an app-scoped hold evaluated against a nil app
+    /// fails closed, silently not holding the exchange the operator armed for.
+    var requiresSourceAppResolution: Bool {
+        store.armed().contains { !($0.match.sourceApp ?? "").isEmpty }
+            || base.requiresSourceAppResolution
+    }
+
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         // Fold our own event stream (which owns the hold logic) into a buffered
         // result — one production path shared with `forwardStream`.
