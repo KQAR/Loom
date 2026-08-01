@@ -81,7 +81,7 @@ The agent is never a black box the human can't interrupt.
 
 ## Menu-bar icon & notifications
 
-- The **menu-bar icon is the ambient channel** and its glyph carries state: dimmed when the proxy is stopped; two-way arrows (`arrow.left.arrow.right`) when running; a branch glyph (`arrow.triangle.branch`) when map/rewrite rules are active. (Its `.task` also boots the capture subscription at launch, so state is live before the popover is ever opened.) Later: tint + count when faults are pending (M2).
+- The **menu-bar icon is the ambient channel**: it is where the human notices state without opening anything. Which glyph carries which state is DESIGN.md's call — see [`DESIGN.md`](DESIGN.md) § Brand mark (the custom `loom.mark` symbol: hollow node when traffic passes untouched, solid `loom.mark.intercept` when map/rewrite rules act on it, opacity for stopped, color for system-proxy). This doc fixes only the role, not the artwork. (The icon's `.task` also boots the capture subscription at launch, so state is live before the popover is ever opened.)
 - macOS notifications (opt-in, later) surface a **fault** for "away from the machine" — the same fault card, relocated, no new interaction concept.
 
 ## Build Order (mapped to ROADMAP)
