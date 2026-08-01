@@ -42,6 +42,14 @@ actor FlowStore {
     /// in-flight body isn't on disk yet — and only when a store backs us.
     private var bodyBytes = 0
     private let bodyBudget: Int
+    /// How many leading flows are known permanently body-free (completed and
+    /// slimmed/empty), so `enforceBodyBudget` starts scanning where bytes can
+    /// actually be reclaimed. Without it, every upsert past the budget — the
+    /// steady state of a long capture with large bodies — re-walked the whole
+    /// ring from the front just to re-skip flows slimmed long ago. Rebased on
+    /// eviction, reset on `clear()`, and pulled back if an upsert re-attaches
+    /// bodies behind it.
+    private var slimCursor = 0
     /// Push sink for embedders that own storage — fired alongside the stream on
     /// every insert/update. See `FlowObserving`.
     private let observer: FlowObserving?
@@ -125,6 +133,7 @@ actor FlowStore {
     /// ring (boot load), never on the hot path.
     private func reindex() {
         droppedFromFront = 0
+        slimCursor = 0
         positions = Dictionary(
             flows.enumerated().map { ($0.element.id, $0.offset) },
             uniquingKeysWith: { _, last in last }
@@ -179,6 +188,10 @@ actor FlowStore {
         if let idx = index(of: flow.id) {
             bodyBytes += bodySize(of: flow) - bodySize(of: flows[idx])
             flows[idx] = flow
+            // A replacement can re-attach bodies behind the slim cursor (e.g. a
+            // WebSocket frame landing on an old flow) — pull the cursor back so
+            // those bytes are reclaimable again.
+            if idx < slimCursor, bodySize(of: flow) > 0 { slimCursor = idx }
         } else {
             guard recording || force else { return }
             positions[flow.id] = droppedFromFront + flows.count
@@ -192,6 +205,7 @@ actor FlowStore {
                 }
                 flows.removeFirst(overflow)
                 droppedFromFront += overflow
+                slimCursor = max(0, slimCursor - overflow)
             }
         }
         // Persist only completed exchanges — in-flight flows live in the ring, so
@@ -209,16 +223,27 @@ actor FlowStore {
     /// No-op without a store (nothing to hydrate back from) or when in budget.
     private func enforceBodyBudget() {
         guard persistence != nil, bodyBytes > bodyBudget else { return }
-        for idx in flows.indices {
-            guard bodyBytes > bodyBudget else { break }
+        var idx = slimCursor
+        while idx < flows.count, bodyBytes > bodyBudget {
             let existing = flows[idx]
             // Only slim completed flows (an in-flight body isn't on disk yet) that
             // still carry bytes.
-            guard existing.completedAt != nil else { continue }
-            let size = bodySize(of: existing)
-            guard size > 0 else { continue }
-            flows[idx] = existing.strippingBodies()
-            bodyBytes -= size
+            if existing.completedAt != nil {
+                let size = bodySize(of: existing)
+                if size > 0 {
+                    flows[idx] = existing.strippingBodies()
+                    bodyBytes -= size
+                }
+            }
+            idx += 1
+        }
+        // Advance past the leading run that can never yield bytes again: completed
+        // and body-free. An in-flight flow parks the cursor (it becomes slimmable
+        // only once completed), which is fine — it either completes or evicts.
+        while slimCursor < flows.count,
+              flows[slimCursor].completedAt != nil,
+              bodySize(of: flows[slimCursor]) == 0 {
+            slimCursor += 1
         }
     }
 
@@ -276,6 +301,7 @@ actor FlowStore {
         positions.removeAll()
         droppedFromFront = 0
         bodyBytes = 0
+        slimCursor = 0
         connectedLANIPs.removeAll()
         for continuation in deviceCountContinuations.values { continuation.yield(0) }
         for continuation in clearedContinuations.values { continuation.yield(()) }

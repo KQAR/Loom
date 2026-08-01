@@ -61,6 +61,36 @@ import LoomSharedModels
         #expect(detailedA?.response?.body?.count == 600, "slimmed body re-attached from disk")
     }
 
+    /// The budget scan starts from a cursor past the leading already-slimmed run
+    /// (re-walking the ring per upsert was O(ring) at steady state). The cursor
+    /// must pull back when an upsert re-attaches bodies behind it — a WebSocket
+    /// frame landing on an old flow — or those bytes become unreclaimable.
+    @Test func bodyReattachedBehindTheCursor_isSlimmedAgain() async throws {
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        let store = FlowStore(capacity: 100, bodyBudget: 1000, persistence: persistence)
+        let a = completed(1, bodySize: 600)
+        let b = completed(2, bodySize: 600)
+        let c = completed(3, bodySize: 600)
+        await store.upsert(a) // slimmed by c's arrival…
+        await store.upsert(b)
+        await store.upsert(c) // …cursor now sits past a and b
+
+        // Re-attach a body to the oldest flow (behind the cursor), then push the
+        // total over budget again.
+        var fatA = a
+        fatA.outcome = .completed(
+            CapturedResponse(statusCode: 200, headers: [], body: Data(count: 600)),
+            at: Date(timeIntervalSince1970: 1.2)
+        )
+        await store.upsert(fatA)
+        await store.upsert(completed(4, bodySize: 600))
+
+        let ring = await store.recent(limit: 100)
+        #expect(ring.first(where: { $0.id == a.id })?.response?.body == nil,
+                "the re-attached body behind the cursor was reclaimed")
+        #expect(ring.first(where: { $0.id == c.id })?.response?.body == nil, "scan continued past the cursor")
+    }
+
     @Test func underBudget_keepsAllBodies() async throws {
         let persistence = try #require(FlowPersistence(fileURL: fileURL))
         let store = FlowStore(capacity: 100, bodyBudget: 10_000, persistence: persistence)
