@@ -258,6 +258,21 @@ public struct AppFeature: Sendable {
             status.capturedCount = 0
         }
 
+        /// O(1) emptiness for the selected category, answered from the incremental
+        /// aggregates. `requestArea` used to probe `displayFlows.isEmpty`, which
+        /// materializes the whole filtered array — a second full O(n) filter per
+        /// render, spent entirely on picking the empty state.
+        public var displayFlowsAreEmpty: Bool {
+            switch selectedCategory ?? .all {
+            case .all: return flows.isEmpty
+            case .rules, .audit, .breakpoints: return true // the panel replaces the table
+            case .errors: return errorCount == 0
+            case let .host(host): return hostCounts[host, default: 0] == 0
+            case let .app(key): return appCounts[key, default: 0] == 0
+            case let .device(ip): return deviceCounts[ip, default: 0] == 0
+            }
+        }
+
         /// Requests for the selected category, filtered by search, oldest-first
         /// (chronological — newest at the bottom, like a log/terminal).
         public var displayFlows: [Flow] {

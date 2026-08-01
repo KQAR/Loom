@@ -155,6 +155,34 @@ import Testing
         #expect(state.apps.map(\.app.groupingKey) == ["com.pinned", "com.busy"])
     }
 
+    /// The empty-state branch reads the O(1) aggregate probe; the table reads the
+    /// filtered array. The two must never disagree about emptiness, for any
+    /// category, or the window shows an empty state over a non-empty table.
+    @Test func displayFlowsAreEmpty_agreesWithDisplayFlows() {
+        var state = AppFeature.State()
+        let device = SourceDevice(ip: "192.168.1.9", kind: .lan, platform: nil, client: nil)
+        let app = SourceApp(name: "App", bundleID: "com.app", pid: 1)
+        state.recordFlow(flow(url: "https://a.test/1", status: 500))
+        state.recordFlow(flow(url: "https://b.test/1", app: app, device: device))
+
+        let categories: [FlowCategory?] = [
+            nil, .all, .errors, .host("a.test"), .host("missing.test"),
+            .app("com.app"), .app("com.other"), .device("192.168.1.9"), .device("10.0.0.1"),
+            .rules, .audit, .breakpoints,
+        ]
+        for category in categories {
+            state.selectedCategory = category
+            #expect(
+                state.displayFlowsAreEmpty == state.displayFlows.isEmpty,
+                "disagree under \(String(describing: category))"
+            )
+        }
+
+        state.forgetCapturedFlows()
+        state.selectedCategory = .all
+        #expect(state.displayFlowsAreEmpty)
+    }
+
     /// A whole stream batch lands through `recordFlows`, which trims the cap once
     /// at the end instead of per flow — the state it leaves must be exactly what
     /// per-flow recording produced, including the drop count, the aggregates, and

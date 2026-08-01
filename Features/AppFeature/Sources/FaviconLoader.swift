@@ -59,19 +59,26 @@ final class FaviconLoader {
     func ensure(_ host: String) {
         guard !host.isEmpty, icons[host] == nil, !inFlight.contains(host) else { return }
         inFlight.insert(host)
+        let cacheURL = cacheURL(for: host)
 
-        // Disk cache first — survives relaunches, avoids refetching.
-        if let cached = diskImage(for: host) {
-            store(cached, for: host)
-            inFlight.remove(host)
-            return
-        }
-
-        Task { [weak self] in
+        Task { [weak self, session] in
+            // Disk cache first — survives relaunches, avoids refetching. Read off
+            // the main actor: this used to be a synchronous Data(contentsOf:) +
+            // decode inline in `ensure`, i.e. main-thread file I/O once per new
+            // host, serialized across a first paint full of new hosts.
+            if let cached = await Task.detached(priority: .utility, operation: { Self.diskImage(at: cacheURL) }).value {
+                self?.store(cached, for: host)
+                self?.inFlight.remove(host)
+                return
+            }
             guard let self else { return }
-            let image = await Self.fetchFavicon(host: host, session: session)
-            if let image { writeDisk(image, for: host) }
-            store(image, for: host)    // nil marks "none available" so we don't retry
+            let fetched = await Self.fetchFavicon(host: host, session: session)
+            if let bytes = fetched?.bytes, let cacheURL {
+                // Cache the fetched bytes as-is (NSImage decodes ico and png alike
+                // on read) — re-encoding to PNG on the main actor was pure cost.
+                Task.detached(priority: .utility) { try? bytes.write(to: cacheURL, options: .atomic) }
+            }
+            store(fetched?.image, for: host) // nil marks "none available" so we don't retry
             inFlight.remove(host)
         }
     }
@@ -88,14 +95,14 @@ final class FaviconLoader {
 
     // MARK: - Fetch
 
-    private static func fetchFavicon(host: String, session: URLSession) async -> NSImage? {
+    private static func fetchFavicon(host: String, session: URLSession) async -> (image: NSImage, bytes: Data)? {
         guard let url = URL(string: "https://\(host)/favicon.ico") else { return nil }
         guard let (data, response) = try? await session.data(from: url),
               let http = response as? HTTPURLResponse, http.statusCode == 200,
               !data.isEmpty,
               let image = NSImage(data: data), image.isValid, image.size.width > 0
         else { return nil }
-        return image
+        return (image, data)
     }
 
     // MARK: - Disk cache
@@ -106,21 +113,15 @@ final class FaviconLoader {
         return diskDir?.appendingPathComponent("\(safe).png")
     }
 
-    private func diskImage(for host: String) -> NSImage? {
-        guard let url = cacheURL(for: host),
+    /// `nonisolated static` so the read runs on whatever detached task calls it —
+    /// never the main actor (see `ensure`). Writes are the fetched bytes, written
+    /// detached in `ensure` as well.
+    private nonisolated static func diskImage(at url: URL?) -> NSImage? {
+        guard let url,
               let data = try? Data(contentsOf: url), !data.isEmpty,
               let image = NSImage(data: data), image.isValid
         else { return nil }
         return image
-    }
-
-    private func writeDisk(_ image: NSImage, for host: String) {
-        guard let url = cacheURL(for: host),
-              let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:])
-        else { return }
-        try? png.write(to: url, options: .atomic)
     }
 }
 
