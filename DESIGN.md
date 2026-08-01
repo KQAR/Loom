@@ -70,7 +70,7 @@ components:
   main-window:
     structure: "HSplitView: sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. HSplitView deliberately, not NavigationSplitView: the latter defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). Sidebar collapse is hand-rolled: toolbar 'sidebar.left' button (.navigation placement), ⌃⌘S."
     defaultSize: "{metrics.main-window-default}"
-    toolbar: "centered chip (.principal): status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat — sharedBackgroundVisibility hidden on macOS 26): Record play/stop ('play.fill'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
+    toolbar: "centered chip (.principal): status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat — sharedBackgroundVisibility hidden on macOS 26): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Replayed (each Label + system .badge count) · Section 'Hosts' — one Label per host (globe icon + .badge count). Selection scopes the table."
@@ -229,7 +229,7 @@ control and its detail read as one unit.
   table on top, tabbed `inspector-panel` below (draggable divider); the inspector's ✕ (top-right) closes it by
   deselecting.
 - **Toolbar**: a centered chip — status dot + `LAN-IP:port` + three gray/green status toggles (System proxy,
-  SSL, Map/rewrite); right-aligned flat buttons `Record` (play/stop) + `Clear` (`xmark.bin`), with the macOS 26
+  SSL, Map/rewrite); right-aligned flat buttons `Record` (start/stop) + `Clear` (`xmark.bin`), with the macOS 26
   shared-glass container hidden. No search, no window title. System-proxy/SSL are M2, Map/rewrite and Record
   (interception) are M2/M3 — UI wired now, engines later.
 - **Spacing**: base 4pt; console internal padding `{spacing.md}`. If a value isn't a token, it's probably wrong.
@@ -313,9 +313,10 @@ rejecting what failed:
 
 - **`menu-panel`** — the console. Vibrant material, `{metrics.console-width}` wide: header (status) → config
   rows → `Open Main Window` → footer. **No traffic.**
-- **`config-row`** — SF Symbol (secondary, 20pt) + title (`{typography.body}`) over subtitle
-  (`{typography.callout}` `.tertiary`), trailing control on the right: a `.switch` Toggle (Proxy), a disabled
-  Toggle (System proxy, M2), or a status label (Rules, M3).
+- **`config-row`** — anatomy per `{components.config-row}`: one tappable full-width row, leading checkmark
+  slot (accent, shown when ON) · SF Symbol (secondary, 20pt) · title (`{typography.body}`) · trailing detail
+  (`{typography.callout}` `.tertiary`). **No switch/toggle controls in rows** — the row toggles on tap and
+  the checkmark is the state; the console's only switch is the proxy on/off in the header.
 - **`approval-card`** (M3) — the guardrail's atom, appears above the config rows. ~12% accent fill,
   `{rounded.md}`: tool + target in `{typography.mono}`, a one-line reason, and `[Deny] [Approve] [Always]`.
   Resolves in place.
@@ -324,8 +325,8 @@ rejecting what failed:
 ### Main window
 
 - **`main-window`** — `HSplitView` (not `NavigationSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque,
-  no sidebar/window title. Toolbar: `host:port` + status dot centered (`.principal`); `Intercept` toggle and
-  `Clear` right-aligned (`.primaryAction`). No search field.
+  no sidebar/window title. Toolbar per `{components.main-window}.toolbar` — centered status chip, Record +
+  Clear right-aligned, no search field.
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Replayed` as `Label`s with system
   `.badge` counts, then a `Hosts` section (one `Label` per host, globe + `.badge`). Selection scopes the table.
 - **`request-table`** — a SwiftUI `Table` (resizable columns, single selection): status-pill · Method · Host ·
@@ -334,9 +335,9 @@ rejecting what failed:
   status-class color 100% text / ~15% fill; `ERR` for transport errors; a small `ProgressView` while in flight.
 - **`inspector-panel`** — the bottom pane, opaque, shown only when a flow is selected. An `HSplitView` split into
   **Request** (left) and **Response** (right), each with its own text tab strip (selected tab = semibold + 2pt
-  accent underline). Left: `Summary · Headers(n) · Body · Diff`(replays) + a method badge, a `Replay` button, and a
-  copyable URL bar. Right: `Headers(n) · Body · Raw` + a status badge and a `✕` close (deselects). `Raw` uses a
-  line-number gutter. **Replay lives here.** Layout referenced from Proxyman, not copied.
+  accent underline). Tab sets, badges and per-pane chrome per `{components.inspector-panel}.requestPane` /
+  `.responsePane` — the YAML is the authority; don't restate the tab lists in prose. **Replay lives here** (the
+  Request pane's Replay button, same write path as the agent). Layout referenced from Proxyman, not copied.
 - **`empty-state`** — `ContentUnavailableView`: distinct copy for *proxy stopped* vs *running, nothing captured
   yet*. Never a custom illustration.
 
