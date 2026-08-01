@@ -17,17 +17,31 @@ public struct MainView: View {
     @State private var clearHovering = false
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
+    /// Sidebar visibility — hand-rolled because the container is `HSplitView`,
+    /// which has no built-in collapse (see the container note on `body`).
+    @State private var sidebarVisible = true
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
     }
 
+    /// `HSplitView`, deliberately not `NavigationSplitView`: inside the latter a
+    /// sidebar-category switch re-diffs the whole request table with every row
+    /// realized (row hosting views accumulate under live tail-follow), and AppKit's
+    /// per-view KVO observer teardown is quadratic in that count — measured 8.7 s
+    /// on this exact view at 2000 flows vs 143 ms under `HSplitView`, same sidebar,
+    /// same table (see CLAUDE.md § Known Issues). `HSplitView` is equally
+    /// `NSSplitView`-backed, so what's lost is only the free sidebar collapse —
+    /// reimplemented via `sidebarVisible` + the toolbar toggle.
     public var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
+        HSplitView {
+            if sidebarVisible {
+                sidebar
+            }
             content
                 .toolbar { toolbarContent }
+                .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
         }
         .task { store.send(.viewAppeared) }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
@@ -120,7 +134,10 @@ public struct MainView: View {
             }
         }
         .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+        // DESIGN.md: sidebar-width 180–300, ideal 220. `HSplitView` sizes panes by
+        // frame, not by `navigationSplitViewColumnWidth` (a no-op outside
+        // `NavigationSplitView`).
+        .frame(minWidth: 180, idealWidth: 220, maxWidth: 300)
     }
 
     /// Breakpoints category. While something is held the row goes orange and its
@@ -329,6 +346,18 @@ public struct MainView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
+        // The sidebar toggle NavigationSplitView used to provide; same glyph and
+        // the standard ⌃⌘S shortcut.
+        ToolbarItem(placement: .navigation) {
+            Button {
+                sidebarVisible.toggle()
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .keyboardShortcut("s", modifiers: [.control, .command])
+            .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+            .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        }
         ToolbarItem(placement: .principal) {
             HStack(spacing: LoomTheme.Space.xs) {
                 // green = proxy up & recording · yellow = up but paused · grey = off.
