@@ -1,7 +1,7 @@
 ---
 version: 3.0
 name: Loom-design-system
-description: A native macOS status-bar debugging proxy with two human surfaces. The primary operator is an AI agent over MCP; the human uses a compact menu-bar CONSOLE for config & control (proxy on/off, system-proxy state, active rules, plus an Open Main Window button) and a MAIN WINDOW for the request list + per-flow detail. The console is a vibrant system material and shows no traffic; the main window is an opaque NavigationSplitView (list | detail). Color multiplies only for HTTP status; one accent carries interactivity and marks agent-replayed flows. Everything from the wire is SF Mono.
+description: A native macOS status-bar debugging proxy with two human surfaces. The primary operator is an AI agent over MCP; the human uses a compact menu-bar CONSOLE for config & control (proxy on/off, system-proxy state, active rules, plus an Open Main Window button) and a MAIN WINDOW for the request list + per-flow detail. The console is a vibrant system material and shows no traffic; the main window is an opaque split layout (sidebar | detail). Color multiplies only for HTTP status; one accent carries interactivity and marks agent-replayed flows. Everything from the wire is SF Mono.
 
 colors:
   accent: "#007AFF"                # Color.accentColor — dark #0A84FF. Interactivity + "replayed by AI" marker.
@@ -68,7 +68,7 @@ components:
     anatomy: "SF Symbol + one-line fault · single fix action"
   # --- Main window (opaque) ---
   main-window:
-    structure: "NavigationSplitView: sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title."
+    structure: "HSplitView: sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. HSplitView deliberately, not NavigationSplitView: the latter defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). Sidebar collapse is hand-rolled: toolbar 'sidebar.left' button (.navigation placement), ⌃⌘S."
     defaultSize: "{metrics.main-window-default}"
     toolbar: "centered chip (.principal): status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat — sharedBackgroundVisibility hidden on macOS 26): Record play/stop ('play.fill'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
@@ -116,7 +116,7 @@ surfaces with sharply separated jobs:
 
 - **Status-bar console** — a compact 300pt popover of *config & control*: proxy on/off, system-proxy state,
   which rules are active, and an **Open Main Window** button. It shows **no traffic**. Vibrant system material.
-- **Main window** — the *working surface*: a three-column `NavigationSplitView` — category sidebar (All /
+- **Main window** — the *working surface*: a split layout (`HSplitView`; see main-window.structure for why not `NavigationSplitView`) — category sidebar (All /
   Errors / Replayed + per-host groups) | request list | per-flow detail (with Replay + diff). Opaque,
   resizable, opened from the console.
 
@@ -323,7 +323,7 @@ rejecting what failed:
 
 ### Main window
 
-- **`main-window`** — `NavigationSplitView`: `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque,
+- **`main-window`** — `HSplitView` (not `NavigationSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque,
   no sidebar/window title. Toolbar: `host:port` + status dot centered (`.principal`); `Intercept` toggle and
   `Clear` right-aligned (`.primaryAction`). No search field.
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Replayed` as `Label`s with system
