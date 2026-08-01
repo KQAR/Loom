@@ -291,7 +291,11 @@ private struct JSONNode: View {
     private func container<Children: View>(
         count: Int, open: String, close: String, @ViewBuilder children: () -> Children
     ) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
+        // Lazy, or expanding one 5000-element array instantiates 5000 child nodes
+        // (each with its own @State) in one update pass and re-diffs them on every
+        // inspector re-render. Lazy creation bounds that to the visible screenful;
+        // `Scrolled`'s ScrollView provides the viewport.
+        LazyVStack(alignment: .leading, spacing: 1) {
             Button {
                 expanded.toggle()
             } label: {

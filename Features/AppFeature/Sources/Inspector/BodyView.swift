@@ -11,18 +11,41 @@ struct BodyView: View {
     /// instead (which itself hands large bodies to the lazy `NSTextView`).
     private let jsonRenderLimit = 200_000
 
+    /// One-shot parse result for the current body. Outer nil = the parse for this
+    /// body hasn't landed yet; inner nil = parsed and not renderable as a tree
+    /// (malformed, scalar, or over the limit) — show raw. Parsing used to happen
+    /// inline in `content`, which re-parsed the whole body on every inspector
+    /// re-render — ~10×/s under live traffic, milliseconds each at the 200 KB
+    /// limit, and re-attempted even after the parse had already failed.
+    @State private var parsed: JSONValue??
+
     var body: some View {
         VStack(spacing: 0) {
             if let fullBodyBytes { truncationStrip(captured: data?.count ?? 0, wire: fullBodyBytes) }
             content
         }
+        // Keyed on the body bytes, not `identity`: the identity is deliberately
+        // stable across hydration (the body lands later under the same flow id),
+        // so keying on it would leave the tree stuck on the pre-hydration body.
+        .task(id: data) {
+            guard let data, !data.isEmpty, data.count <= jsonRenderLimit else {
+                parsed = .some(nil)
+                return
+            }
+            // Off the main actor — the parse walks a boxed Character array.
+            let json = await Task.detached { JSONValue.parse(data) }.value
+            guard !Task.isCancelled else { return }
+            parsed = .some(json?.isContainer == true ? json : nil)
+        }
     }
 
     @ViewBuilder private var content: some View {
         if let data, !data.isEmpty {
-            if data.count <= jsonRenderLimit, let json = JSONValue.parse(data), json.isContainer {
+            if let json = parsed.flatMap({ $0 }) {
                 Scrolled { JSONView(value: json) }
             } else {
+                // Also what shows for the frame or two while the one-shot parse is
+                // in flight: immediate and honest, then swaps to the tree.
                 RawView(text: String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>", identity: identity)
             }
         } else {
