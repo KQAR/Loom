@@ -185,7 +185,13 @@ actor FlowStore {
     /// `force` bypasses a capture pause — explicit actions like replay always
     /// record their result.
     func upsert(_ flow: Flow, force: Bool = false) {
+        var flow = flow
         if let idx = index(of: flow.id) {
+            // Attribution, once known, sticks: the resolver may backfill the
+            // source app concurrently with forwarding, and the relay's later
+            // upserts (streaming updates, completion) carry whatever it knew at
+            // start — a nil there must not erase an answer that already landed.
+            if flow.sourceApp == nil { flow.sourceApp = flows[idx].sourceApp }
             bodyBytes += bodySize(of: flow) - bodySize(of: flows[idx])
             flows[idx] = flow
             // A replacement can re-attach bodies behind the slim cursor (e.g. a
@@ -245,6 +251,21 @@ actor FlowStore {
               bodySize(of: flows[slimCursor]) == 0 {
             slimCursor += 1
         }
+    }
+
+    /// Backfill the originating app on an already-recorded flow, preserving
+    /// everything the exchange has recorded since. The resolver races the relay's
+    /// response upserts once resolution runs concurrently with forwarding, so a
+    /// whole-`Flow` re-upsert here could overwrite a completed outcome with a
+    /// stale pending copy — this mutates only the attribution.
+    func attributeSourceApp(id: UUID, _ app: SourceApp) {
+        guard let idx = index(of: id), flows[idx].sourceApp == nil else { return }
+        flows[idx].sourceApp = app
+        // A completed flow already persisted without the attribution — refresh it.
+        if flows[idx].completedAt != nil {
+            persistence?.save(flows[idx])
+        }
+        broadcast(flows[idx])
     }
 
     func recent(limit: Int) -> [Flow] {

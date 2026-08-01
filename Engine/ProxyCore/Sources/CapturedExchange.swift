@@ -105,20 +105,45 @@ enum CapturedExchange {
             // head is parsed rather than after `ProcessResolver.resolve` returns.
             // This also keeps the synchronous scan off the before-first-paint path.
             await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceDevice: sourceDevice))
-            // Backfill the originating app off the hot path, then re-upsert so the
-            // app icon fills in even while the request is still in flight. Safe from
-            // races: forwarding (below) hasn't started, so no response upsert can
-            // interleave. `nil` (e.g. a LAN device with no local pid) skips the
-            // redundant re-upsert.
-            let sourceApp = await ProcessResolver.resolve(
-                sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
-            )
-            if sourceApp != nil {
-                await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
+
+            // Whether forwarding must wait for the resolver: only when something
+            // in the chain matches on the source app (an app-scoped rule or
+            // breakpoint evaluated against nil fails closed — it would silently
+            // skip the very rule the operator armed). Otherwise the resolver's
+            // worst case — a full libproc pid/fd sweep, tens to hundreds of ms,
+            // serialized across a burst — was added to every request's TTFB for
+            // attribution the UI is happy to backfill.
+            let sourceApp: SourceApp?
+            if forwarder.requiresSourceAppResolution {
+                sourceApp = await ProcessResolver.resolve(
+                    sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+                )
+                if sourceApp != nil {
+                    // Safe as a whole-flow re-upsert: forwarding hasn't started,
+                    // so no response upsert can interleave.
+                    await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
+                }
+            } else {
+                sourceApp = nil
+                // Resolve concurrently and backfill just the attribution —
+                // `attributeSourceApp` merges into whatever the exchange has
+                // recorded by the time the resolver answers, and `upsert`
+                // preserves a landed attribution against the relay's later
+                // sourceApp-nil upserts.
+                Task {
+                    if let app = await ProcessResolver.resolve(
+                        sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+                    ) {
+                        await store.attributeSourceApp(id: flowID, app)
+                    }
+                }
             }
+
             await StreamRelay.relay(
                 // The origin travels with the request, so a rule or breakpoint scoped to
                 // one app/device is evaluated against the client that actually sent it.
+                // On the concurrent path `app` is nil by construction — nothing in the
+                // chain matches on it (device scoping needs no resolver).
                 stream: forwarder.forwardStream(
                     method: method, url: routing.url, headers: headers, body: body,
                     origin: RequestOrigin(app: sourceApp, device: sourceDevice)

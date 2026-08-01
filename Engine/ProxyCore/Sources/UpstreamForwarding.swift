@@ -48,9 +48,20 @@ protocol UpstreamForwarding: Sendable {
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
+
+    /// Whether anything in this forwarding chain currently matches on the
+    /// originating *app* — i.e. whether forwarding must wait for the libproc
+    /// resolver before the first byte goes upstream. Device scoping doesn't
+    /// count: the device is known from the connection, no resolver needed.
+    /// Consulted per exchange by `CapturedExchange`; when false, resolution
+    /// runs concurrently with the forward and only backfills the flow.
+    var requiresSourceAppResolution: Bool { get }
 }
 
 extension UpstreamForwarding {
+    /// A forwarder that matches on nothing never needs to wait for attribution.
+    var requiresSourceAppResolution: Bool { false }
+
     /// A forwarder that matches on nothing has no use for the origin.
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
