@@ -59,10 +59,26 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// point at a SOCKS proxy needs this number, and a `nil` means pointing it there
     /// would go nowhere.
     public var socksPort: Int?
+    /// Connections Loom accepted and then refused, newest first (bounded).
+    ///
+    /// The third answer to "why is nothing captured". `listenHost` and `socksPort`
+    /// cover "nothing could reach the proxy"; the system-proxy state covers
+    /// "nothing was routed here". Neither covers **something arrived and Loom said
+    /// no** — a SOCKS4 client, an HTTP request sent to the SOCKS port, an
+    /// unsupported command. Loom knows exactly what happened in those cases and
+    /// used to keep it to itself (an `os_log` line the human could find in Console
+    /// and an agent could not reach at all), so an empty capture looked identical
+    /// to a client that never started.
+    public var recentRefusals: [ConnectionRefusal]
+    /// Refusals since launch, including any already dropped from `recentRefusals`
+    /// — the difference between "this happened once" and "this is happening on
+    /// every request".
+    public var refusedConnections: Int
 
     public init(
         isRunning: Bool, port: Int, capturedCount: Int, isRecording: Bool = true,
-        listenHost: String = "127.0.0.1", socksPort: Int? = nil
+        listenHost: String = "127.0.0.1", socksPort: Int? = nil,
+        recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0
     ) {
         self.isRunning = isRunning
         self.port = port
@@ -70,10 +86,47 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.isRecording = isRecording
         self.listenHost = listenHost
         self.socksPort = socksPort
+        self.recentRefusals = recentRefusals
+        self.refusedConnections = refusedConnections
     }
 
     /// Reachable from other devices on the network, not just this Mac.
     public var isLANReachable: Bool { listenHost == "0.0.0.0" }
+}
+
+/// One connection Loom accepted and then closed without capturing anything.
+///
+/// Deliberately not a `Flow`: no exchange happened, there is no request to
+/// inspect, and putting these in the capture would mean every read surface had to
+/// learn about a row with no method and no URL. It answers one question — "did
+/// something reach the proxy and get turned away, and why" — so it carries only
+/// what that answer needs.
+public struct ConnectionRefusal: Equatable, Codable, Sendable, Identifiable {
+    /// Which listener refused it: a client aimed at the wrong one of the two ports
+    /// is the single most likely cause, so naming the port is half the diagnosis.
+    public enum Listener: String, Codable, Sendable {
+        case http
+        case socks
+    }
+
+    public var id: UUID
+    public var at: Date
+    public var listener: Listener
+    /// Peer address as seen by the listener, or nil if it was already gone.
+    public var peer: String?
+    /// What Loom refused and why, in terms the operator can act on.
+    public var reason: String
+
+    public init(
+        id: UUID = UUID(), at: Date = Date(), listener: Listener,
+        peer: String? = nil, reason: String
+    ) {
+        self.id = id
+        self.at = at
+        self.listener = listener
+        self.peer = peer
+        self.reason = reason
+    }
 }
 
 /// Whether this Mac's own traffic is routed through Loom, and the switch for it.

@@ -57,6 +57,23 @@ extension MCPToolExecutor {
         } else {
             payload["systemProxy"] = "unavailable"
         }
+        // Reported only when there are any, so the common case stays quiet — but
+        // when a capture is empty this is often the whole answer, and it used to
+        // exist only as an os_log line no agent could reach. `refusedConnections`
+        // is the all-time count (this happened once vs. it is happening to every
+        // request); `recentRefusals` is the bounded tail with the reasons.
+        if status.refusedConnections > 0 {
+            payload["refusedConnections"] = status.refusedConnections
+            payload["recentRefusals"] = status.recentRefusals.map { refusal in
+                var out: [String: Any] = [
+                    "at": Self.iso8601.string(from: refusal.at),
+                    "listener": refusal.listener.rawValue,
+                    "reason": refusal.reason,
+                ]
+                if let peer = refusal.peer { out["peer"] = peer }
+                return out
+            }
+        }
         return prettyJSON(payload)
     }
 

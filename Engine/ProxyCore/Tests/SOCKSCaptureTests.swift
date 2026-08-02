@@ -217,6 +217,65 @@ struct SOCKSCaptureTests {
         #expect(reply[1] == SOCKS5.Reply.commandNotSupported.rawValue)
     }
 
+    /// The third answer to "why is nothing captured".
+    ///
+    /// A client that speaks HTTP to the SOCKS port (`curl -x 127.0.0.1:<socks>`)
+    /// gets its connection accepted and immediately closed. Loom knows exactly what
+    /// happened — the first byte was `G`, not a SOCKS5 greeting — but that only ever
+    /// reached `os_log`, so over MCP an empty capture looked identical to a client
+    /// that never ran. The refusal is now readable from `get_proxy_status`.
+    @Test func aRefusedConnectionIsVisibleInTheStatus() throws {
+        RefusalLog.shared.reset()
+        let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
+        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
+        defer { runBlockingVoid { await engine.stop() } }
+        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { try? group.syncShutdownGracefully() }
+        let closed = group.next().makePromise(of: [UInt8].self)
+        let client = try ClientBootstrap(group: group)
+            .channelInitializer {
+                // "GET / HTTP/1.1" — an HTTP proxy request aimed at the SOCKS port.
+                $0.pipeline.addHandler(RawSOCKSProbe(request: Array("GET / HTTP/1.1\r\n\r\n".utf8), reply: closed))
+            }
+            .connect(host: "127.0.0.1", port: socksPort).wait()
+        defer { try? client.close().wait() }
+        _ = try? closed.futureResult.wait()   // the server closes without replying
+
+        // The status is polled: the refusal is recorded on the event loop handling
+        // that connection, which races the assertion otherwise.
+        var status = try runBlocking { await engine.status() }
+        for _ in 0 ..< 100 where status.refusedConnections == 0 {
+            usleep(20_000)
+            status = try runBlocking { await engine.status() }
+        }
+        #expect(status.refusedConnections == 1)
+        let refusal = try #require(status.recentRefusals.first)
+        #expect(refusal.listener == .socks)
+        // The reason has to be actionable, not just present: this exact mistake is
+        // fixed by aiming the client at the other port.
+        #expect(refusal.reason.contains("HTTP proxy port"), "got \(refusal.reason)")
+        #expect(refusal.reason.contains("0x47"), "the first byte is the evidence: \(refusal.reason)")
+        #expect(refusal.peer?.contains("127.0.0.1") == true)
+    }
+
+    /// Bounded like every other in-memory collection in the engine, and honest
+    /// about it: the tail is capped while the count keeps rising, so "this happened
+    /// once" stays distinguishable from "this is happening to every request".
+    @Test func refusalsAreBoundedButTheCountIsNot() {
+        let log = RefusalLog.shared
+        log.reset()
+        defer { log.reset() }
+        for index in 0 ..< (RefusalLog.capacity + 15) {
+            log.record(ConnectionRefusal(listener: .socks, reason: "refusal \(index)"))
+        }
+        let snapshot = log.snapshot()
+        #expect(snapshot.recent.count == RefusalLog.capacity)
+        #expect(snapshot.total == RefusalLog.capacity + 15)
+        #expect(snapshot.recent.first?.reason == "refusal \(RefusalLog.capacity + 14)", "newest first")
+    }
+
     // MARK: - async → sync bridges
 
     private func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
