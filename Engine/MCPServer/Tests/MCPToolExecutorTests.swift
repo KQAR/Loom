@@ -63,6 +63,47 @@ import LoomSharedModels
         #expect(advertised == handled, "every advertised tool has a handler and vice-versa")
     }
 
+    /// The tool surface must not promise that disabling the system proxy restores
+    /// whoever held it before. Loom deliberately does not (ROADMAP / AGENTS: an app
+    /// that may have exited would break every request on the machine), and the
+    /// runtime reply says so — but the *schema* went on claiming a restore for a
+    /// release after the reply was fixed, and the schema is what an agent reads at
+    /// `tools/list` and relays to the human. Prose is pinned here precisely because
+    /// nothing else can: a description is the one part of a tool the compiler will
+    /// never check.
+    @Test func noToolDescription_promisesToRestoreThePreviousProxyOwner() {
+        for definition in makeExecutor().toolDefinitions {
+            let name = definition["name"] as? String ?? "?"
+            for text in Self.descriptions(in: definition) {
+                let lowered = text.lowercased()
+                // "…never restores the previous…" is the correction, not the claim.
+                guard lowered.contains("restore") else { continue }
+                #expect(
+                    !lowered.contains("restore the previous") && !lowered.contains("restores the previous"),
+                    "\(name): a description promises to restore the previous proxy settings; Loom turns the proxy off instead"
+                )
+            }
+        }
+    }
+
+    /// Every `description` string anywhere in a tool definition, including the ones
+    /// nested inside its input schema's properties — where the drift above lived.
+    private static func descriptions(in value: Any) -> [String] {
+        switch value {
+        case let dictionary as [String: Any]:
+            var found: [String] = []
+            for (key, nested) in dictionary {
+                if key == "description", let text = nested as? String { found.append(text) }
+                found.append(contentsOf: descriptions(in: nested))
+            }
+            return found
+        case let array as [Any]:
+            return array.flatMap { descriptions(in: $0) }
+        default:
+            return []
+        }
+    }
+
     /// `-32602`, not `-32601`: `tools/call` was found, its `name` parameter wasn't, and
     /// that is the code the spec assigns to "unknown tool". `-32601` would tell the
     /// client the *method* is missing and invite it to stop calling `tools/call` at all.
