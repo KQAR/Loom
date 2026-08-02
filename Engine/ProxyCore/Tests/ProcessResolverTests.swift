@@ -63,12 +63,64 @@ import LoomSharedModels
     /// The regression this replaces: 200 distinct source ports used to mean 200
     /// full-system scans. One sweep now answers them all (plus at most one rescan
     /// for a possibly-stale table).
+    ///
+    /// The connections share an open time in the past, which is what a burst
+    /// actually looks like — they were all accepted before anyone asked. A sweep
+    /// taken after that instant is conclusive for every one of them, so the answer
+    /// is "one sweep" without any time-based guard doing the limiting.
     @Test func burstOfDistinctPorts_sharesOneScan() {
         let resolver = ProcessResolver()
+        let openedAt = Date().addingTimeInterval(-0.5)
         for port in 40_000 ..< 40_200 {
-            _ = resolver.resolve(sourcePort: UInt16(port), proxyPort: 9_090)
+            _ = resolver.resolve(sourcePort: UInt16(port), proxyPort: 9_090, connectionOpenedAt: openedAt)
         }
         #expect(resolver.scanCount <= 2, "expected one sweep for the burst, got \(resolver.scanCount)")
+    }
+
+    /// The bug behind the burst: a table cannot contain a connection that did not
+    /// exist when it was built, but a miss was cached as a definitive "unknown" for
+    /// 15 s anyway — so every connection after the first in a curl loop resolved to
+    /// nil, and an app-scoped rule (which fails closed on nil) matched 1 request in
+    /// 12, silently.
+    ///
+    /// A connection opened *after* the last sweep must therefore cost one more
+    /// sweep before its miss is believed.
+    @Test func aConnectionNewerThanTheTable_forcesOneMoreSweep() {
+        let resolver = ProcessResolver()
+        // Seed the table with an old connection: one sweep, conclusive for it.
+        _ = resolver.resolve(
+            sourcePort: 40_500, proxyPort: 9_090, connectionOpenedAt: Date().addingTimeInterval(-1)
+        )
+        let afterSeed = resolver.scanCount
+        #expect(afterSeed >= 1)
+
+        // A socket accepted after that sweep: the table never had a chance to see it.
+        _ = resolver.resolve(sourcePort: 40_501, proxyPort: 9_090, connectionOpenedAt: Date())
+        #expect(resolver.scanCount == afterSeed + 1,
+                "a connection the table predates deserves exactly one rescan, got \(resolver.scanCount - afterSeed)")
+    }
+
+    /// …and the rescan is *once*: the second lookup of the same port is answered
+    /// from the port cache, so a keep-alive connection whose owner is genuinely
+    /// unknowable can't sweep on every request.
+    @Test func aNewerConnectionThatStaysUnresolved_doesNotSweepRepeatedly() {
+        let resolver = ProcessResolver()
+        _ = resolver.resolve(sourcePort: 40_600, proxyPort: 9_090, connectionOpenedAt: Date())
+        let afterFirst = resolver.scanCount
+        for _ in 0 ..< 20 {
+            _ = resolver.resolve(sourcePort: 40_600, proxyPort: 9_090, connectionOpenedAt: Date())
+        }
+        #expect(resolver.scanCount == afterFirst, "the negative cache must still hold")
+    }
+
+    /// Callers that don't know when their connection opened keep the old
+    /// time-window behaviour, so nothing outside the capture path changes.
+    @Test func withoutAConnectionTime_theTimeWindowStillGoverns() {
+        let resolver = ProcessResolver()
+        for port in 40_700 ..< 40_760 {
+            _ = resolver.resolve(sourcePort: UInt16(port), proxyPort: 9_090)
+        }
+        #expect(resolver.scanCount <= 2, "unchanged for callers with no connection time")
     }
 
     @Test func repeatedLookupOfTheSamePort_isCached() {

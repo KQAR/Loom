@@ -83,7 +83,8 @@ enum CapturedExchange {
             let eventLoop = channel.eventLoop
             Task {
                 let sourceApp = await ProcessResolver.resolve(
-                    sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+                    sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer,
+                    connectionOpenedAt: startedAt
                 )
                 eventLoop.execute {
                     WebSocketRelay.start(
@@ -115,8 +116,14 @@ enum CapturedExchange {
             // attribution the UI is happy to backfill.
             let sourceApp: SourceApp?
             if forwarder.requiresSourceAppResolution {
+                // `startedAt` stands in for the connection's open time: for a new
+                // connection they are milliseconds apart, and for a keep-alive one it
+                // is *later*, which only ever costs an extra sweep the port cache
+                // then absorbs. Passing it is what stops a burst of short-lived
+                // clients from failing an app-scoped rule closed.
                 sourceApp = await ProcessResolver.resolve(
-                    sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+                    sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer,
+                    connectionOpenedAt: startedAt
                 )
                 if sourceApp != nil {
                     // Safe as a whole-flow re-upsert: forwarding hasn't started,
@@ -132,7 +139,8 @@ enum CapturedExchange {
                 // sourceApp-nil upserts.
                 Task {
                     if let app = await ProcessResolver.resolve(
-                        sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer
+                        sourcePort: sourcePort, proxyPort: proxyPort, isLoopbackPeer: isLoopbackPeer,
+                        connectionOpenedAt: startedAt
                     ) {
                         await store.attributeSourceApp(id: flowID, app)
                     }
