@@ -258,9 +258,10 @@ extension MCPToolExecutor {
             name: "get_stats",
             description: """
             Aggregate the capture instead of reading it: per-bucket flow counts, error rates, \
-            and TTFB / duration percentiles, plus the slowest exchanges by id. Answers "which \
-            endpoint is slow", "what share of calls to this host fail", "which app is chatty" \
-            in one call — don't pull flow summaries and do the arithmetic yourself, and note \
+            and TTFB / receive / duration percentiles, plus the slowest exchanges by id. \
+            Answers "which endpoint is slow", "what share of calls to this host fail", "which \
+            app is chatty" in one call — and `ttfbMS` vs `receiveMS` answers *why* it is slow: \
+            high TTFB is server think-time, high receive is payload transfer — don't pull flow summaries and do the arithmetic yourself, and note \
             that a percentile over one page of summaries isn't a percentile.
 
             Takes the same filters as `get_recent_flows` (so `since_seconds` + `host` scopes it \
@@ -406,7 +407,17 @@ extension MCPToolExecutor {
             inputSchema: [
                 "type": "object",
                 "properties": [
-                    "base": ["type": "string", "description": "Baseline flow UUID. If `compared` is omitted, this must be a replayed flow and it is diffed against its original (replayedFrom)."],
+                    "base": [
+                        "type": "string",
+                        "description": """
+                        Baseline flow UUID. If `compared` is omitted, pass the **replayed** \
+                        flow's id: it is diffed against its own original (`replayedFrom`), and \
+                        the reply reports that original as `baseId` and the replay as \
+                        `comparedId` — so the id you passed comes back under the other name. \
+                        That is deliberate: the diff always reads original → changed, whichever \
+                        end you had at hand.
+                        """,
+                    ],
                     "compared": ["type": "string", "description": "The changed flow UUID to compare against `base`. Optional when `base` is a replay."],
                 ],
                 "required": ["base"],
@@ -477,7 +488,10 @@ extension MCPToolExecutor {
             inputSchema: [
                 "type": "object",
                 "properties": [
-                    "pending_id": ["type": "string", "description": "The held exchange's id from list_pending."],
+                    "pending_id": [
+                        "type": "string",
+                        "description": "The held exchange's id from list_pending / wait_for_pending (where it is rendered as `id`; either argument name works here).",
+                    ],
                     "abort": ["type": "boolean", "description": "Fail the exchange with a 502 instead of continuing (default false)."],
                     "method": ["type": "string", "description": "Request-phase only: replace the HTTP method."],
                     "url": ["type": "string", "description": "Request-phase only: replace the full URL."],

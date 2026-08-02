@@ -77,6 +77,10 @@ extension MCPToolExecutor {
         if bucket.failed > 0 { out["failed"] = bucket.failed }
         if bucket.inFlight > 0 { out["inFlight"] = bucket.inFlight }
         if let ttfb = bucket.ttfb { out["ttfbMS"] = distribution(ttfb) }
+        // Reported next to TTFB rather than left as durationMS - ttfbMS: telling
+        // "the server is slow" from "the payload is big" is what this tool is for,
+        // and a percentile of a difference is not the difference of percentiles.
+        if let receive = bucket.receive { out["receiveMS"] = distribution(receive) }
         if let duration = bucket.duration { out["durationMS"] = distribution(duration) }
         // Only surfaced when it applies — but never omitted when it does, because it is
         // the difference between "this host sent 4 MB" and "at least 4 MB".
