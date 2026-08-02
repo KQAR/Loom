@@ -17,6 +17,16 @@ import NIOSSL
 /// like a reset. So the message reports the identity (or its absence) as a fact and
 /// leaves the inference to the reader. A confidently wrong diagnosis costs more
 /// than none.
+///
+/// **One class of failure is the exception, and it is not a judgement call.** When
+/// the handshake failed because *Loom* refused the server's certificate — expired,
+/// self-signed, wrong hostname — the mutual-TLS hypothesis is not merely unhelpful,
+/// it is provably wrong: Loom rejected the peer, so the peer never got as far as
+/// asking for anything. Saying "Loom presented no client certificate; install one
+/// with set_client_certificate" there sends the reader after a write action that
+/// needs the operator's private key and cannot possibly help. So that class is
+/// detected (`peerCertificateRejected`) and described for what it is. Every other
+/// failure keeps the neutral wording above.
 struct UpstreamTLSError: Error, LocalizedError {
     let host: String
     /// The identity presented, or nil if none matched this host.
@@ -25,7 +35,15 @@ struct UpstreamTLSError: Error, LocalizedError {
 
     var errorDescription: String? {
         var text = "TLS handshake with \(host) failed. "
-        if let identity {
+        if Self.peerCertificateRejected(underlying) {
+            // Loom is the side that said no, so nothing here is about *our* identity.
+            text += "Loom could not verify \(host)'s own certificate — it is expired, "
+            text += "self-signed, or not valid for this host. This is not a "
+            text += "client-certificate problem: Loom rejected the server, not the "
+            text += "other way round. To reach the origin anyway, take the host out of "
+            text += "the SSL-proxying scope with set_ssl_scope so Loom tunnels it "
+            text += "without decrypting, and the client can judge the certificate itself. "
+        } else if let identity {
             text += "Loom presented client certificate \(identity). "
         } else {
             text += "Loom presented no client certificate — none is configured for this host. "
@@ -34,6 +52,21 @@ struct UpstreamTLSError: Error, LocalizedError {
         }
         text += "Underlying error: \(underlying)"
         return text
+    }
+
+    /// Whether the handshake died because Loom refused the *server's* certificate.
+    ///
+    /// Two typed cases plus one string check. The string is the unpleasant part and
+    /// it is deliberate: BoringSSL's verify failure arrives as an opaque
+    /// `sslError([…])` whose only distinguishing feature is the reason text, and
+    /// NIOSSL exposes no typed reason for it. Matching narrowly on the reason is
+    /// still better than the alternative, which is telling every reader of an
+    /// expired certificate to go install a private key. A miss here is safe — it
+    /// falls through to the neutral wording.
+    static func peerCertificateRejected(_ error: Error) -> Bool {
+        if let extra = error as? NIOSSLExtraError, extra == .failedToValidateHostname { return true }
+        if let ssl = error as? NIOSSLError, case .unableToValidateCertificate = ssl { return true }
+        return String(describing: error).contains("CERTIFICATE_VERIFY_FAILED")
     }
 
     /// Wrap `error` when it is a TLS failure; hand anything else straight back.
