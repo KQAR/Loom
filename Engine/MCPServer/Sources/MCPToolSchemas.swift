@@ -95,13 +95,15 @@ extension MCPToolExecutor {
                 settings, may ask for an admin password, and also installs a pf rule blocking QUIC \
                 (UDP 443) so browsers fall back to TCP where a proxy can see them — browsers \
                 default to HTTP/3, which no TCP proxy can intercept. Turn it off when you're done; \
-                Loom also restores it on quit. Traffic from a phone or another device does NOT need \
+                Loom also turns it off on quit. Disabling never hands the setting back to whoever \
+                held it before — if `get_proxy_status` reported `"other"`, say so and let the human \
+                re-enable that app themselves. Traffic from a phone or another device does NOT need \
                 this (point that device at the proxy instead). This is a write action.
                 """,
                 "inputSchema": [
                     "type": "object",
                     "properties": [
-                        "enabled": ["type": "boolean", "description": "true = route this Mac through Loom, false = restore the previous settings."],
+                        "enabled": ["type": "boolean", "description": "true = route this Mac through Loom, false = turn the system proxy off (NOT restore a previous owner's settings)."],
                     ],
                     "required": ["enabled"],
                 ],

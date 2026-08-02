@@ -43,7 +43,9 @@ public struct PrivilegedHelperClient: Sendable {
     public var register: @Sendable () async -> HelperRegistration = { .failed("not wired") }
     /// Open System Settings > Login Items so the user can approve the daemon.
     public var openApprovalSettings: @Sendable () async -> Void
-    /// Point the system proxy at `127.0.0.1:port` (or restore when disabling).
+    /// Point the system proxy at `127.0.0.1:port`, or turn it **off** — disabling
+    /// never hands the setting back to a previous owner (owner decision: an app
+    /// that may have exited would break every request on the machine).
     public var setSystemProxy: @Sendable (_ enabled: Bool, _ port: Int) async -> HelperOutcome = { _, _ in .notWired }
     /// Whether the *effective* system proxy currently routes through Loom on
     /// `port`. Reading needs no privileges; used to sync the UI at boot.
