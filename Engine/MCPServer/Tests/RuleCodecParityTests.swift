@@ -206,6 +206,52 @@ import Testing
         }
     }
 
+    // MARK: - One match, two surfaces
+
+    /// A `RuleMatch` is scoping vocabulary shared by rules and breakpoints, and an
+    /// agent reads it back from both. It used to be *rendered* twice — identical
+    /// code in `rule(...)` and in `matchDict` — so a predicate added to one copy
+    /// would have made the same scoping read differently depending on which tool
+    /// you asked. Both now go through `matchDict`; this pins that, because the way
+    /// the duplication would come back is someone re-inlining one of them.
+    @Test func aMatchRendersIdentically_forARuleAndForABreakpoint() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+
+        // Every predicate the model has, so a field rendered by only one surface
+        // shows up as a difference rather than as two equally-empty objects.
+        let match: [String: Any] = [
+            "url_pattern": "https://api\\.example\\.com/.*",
+            "is_regex": true,
+            "host_pattern": "*.example.com",
+            "query": ["v": "2"],
+            "source_app": "com.example.app",
+            "device_ip": "192.168.1.42",
+            "methods": ["GET", "POST"],
+        ]
+        _ = try await executor.call(name: "set_rule", arguments: [
+            "name": "scoped", "match": match, "actions": ["block": true],
+        ])
+        let rule = try #require(engine.rules.rules.last)
+        let ruleJSON = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+        ) as? [String: Any])
+
+        let breakpointJSON = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "arm_breakpoint", arguments: ["match": match]).utf8)
+        ) as? [String: Any])
+
+        let fromRule = try #require(ruleJSON["match"] as? [String: Any])
+        let fromBreakpoint = try #require(breakpointJSON["match"] as? [String: Any])
+        #expect(
+            NSDictionary(dictionary: fromRule) == NSDictionary(dictionary: fromBreakpoint),
+            "the same match reads differently as a rule (\(fromRule)) and as a breakpoint (\(fromBreakpoint))"
+        )
+        // Not vacuous: the shared render must actually carry the predicates.
+        #expect(fromRule["hostPattern"] as? String == "*.example.com")
+        #expect(fromRule["deviceIP"] as? String == "192.168.1.42")
+    }
+
     // MARK: - Census: the model's fields vs. the two hand-written surfaces
 
     /// Field names the model encodes but the **input schema** deliberately doesn't

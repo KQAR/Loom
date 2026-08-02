@@ -106,10 +106,18 @@ loop, a guess, or an arithmetic detour:
 - **HAR both ways** — import (above) and redacted export, so a capture can arrive
   from a colleague and leave for a ticket.
 
-### M7 — Cross-surface parity (next)
+### M7 — Cross-surface parity (done)
 
 M1–M6 grew the agent's surface. This round audited the architecture behind both
 surfaces and fixed what had rotted; what it *found* is the phase.
+
+Closed with one capability built (breakpoint supervision — the only item that was
+a real supervision gap) and three items **decided rather than built**. That ratio
+is the phase's actual lesson: an audit produces a list, and a list read as a
+checklist quietly promotes "not done" into "to do". Each of the three was measured
+against the value hierarchy instead — does the human lose control of risk without
+it? does it cost more than it removes? — and each came back no. Written-down
+decisions with reopen conditions, so the next pass doesn't rediscover them as work.
 
 **Done — the drift is now caught by the compiler or by a test** (PRs #103–#110):
 
@@ -135,10 +143,10 @@ surfaces and fixed what had rotted; what it *found* is the phase.
   `LoomSharedModels` product into `LoomHelperProtocol`; `SetupFeature`'s view of
   the proxy projected from `status` instead of copied into it at three call sites.
 
-**Open — the phase itself.** Adding a capability the *engine* needs is cheap: the
+**The phase itself.** Adding a capability the *engine* needs is cheap: the
 decorator chain and the single choke point absorb it. Adding one that **both the
-agent and the human** need is still expensive, and that asymmetry is what M7 is
-about:
+agent and the human** need is more expensive, and that asymmetry is what M7 was
+about. All four items are now settled:
 
 1. ~~**Breakpoint supervision has no UI.**~~ **Done.** `BreakpointsFeature` mirrors
    armed + held state from the engine (boot seed → `pendingBreakpointStream` →
@@ -168,14 +176,49 @@ about:
    reasoning and a reopen condition: a routine hand-off performed with no agent at
    hand. `setRules` and `replayFlow` were already deliberate; `recordAudit` must
    stay single-writer or a UI action could forge an audit entry.
-3. **A cross-surface capability still costs ~5 edits**: protocol → engine →
-   `ProxyClient` field → `liveValue` wiring → feature/view. The guards make a miss
-   *loud* rather than silent; they don't make the work smaller. Worth deciding
-   whether `ProxyClient` should wrap `any ProxyControlling` directly (losing some
-   `@DependencyClient` test ergonomics) before the surface grows again.
-4. **Rule authoring still has four representations.** The census keeps them honest;
-   it doesn't merge them. If a fifth surface appears (a rule-import format, a
-   config file), collapse the codec first.
+3. ~~**A cross-surface capability still costs ~5 edits.**~~ **Decided: keep the
+   struct of closures.** The count was also understated — a full cross-surface
+   capability is ~9 edits (protocol, `ProxyCapability` case, engine, MCP schema
+   entry, MCP handler, `ProxyClient` field, `liveValue` line, feature, view) — but
+   wrapping `any ProxyControlling` removes exactly **two** of them, the field and
+   the `liveValue` line, and those two are the ones doing work:
+
+   - **`liveValue` completeness is compiler-enforced today.** `@DependencyClient`
+     strips an endpoint's default off the generated initializer, so all 40 fields
+     must be assigned; forgetting one doesn't compile. A protocol reference trades
+     that for "the engine implements it, the UI never calls it" — silent, and
+     precisely the drift `ProxyCapability` exists to catch.
+   - **54 test sites stub one endpoint at a time** (`$0.proxyClient.flow = { … }`),
+     and an *un*stubbed endpoint reports an unimplemented failure. Replacing this
+     with a mock conformance means hand-writing ~36 traps to keep that property.
+   - `ProxyClient` is also not the pure mirror the item assumed: 9 of its 40 fields
+     (engine start/stop, user-domain CA trust, phone onboarding, the connected-device
+     count) have no `ProxyControlling` requirement at all, so the struct survives the
+     refactor regardless — it just stops being readable as "what the human can do".
+
+   Reopen if the surface roughly doubles, or if a second feature-layer client
+   appears — two hand-written mirrors is a different problem from one.
+4. ~~**Rule authoring still has four representations.**~~ **Closed — one real
+   duplicate removed, the rest don't collapse.** Read closely, the four are not four
+   copies of one thing. `RuleMatch` was genuinely rendered **twice** (identical code
+   inline in `list_rules` and in `matchDict`, the breakpoint tools' renderer), so a
+   predicate added to one copy would have made the same scoping read back
+   differently depending on which tool an agent asked — that one is now shared, and
+   pinned by a test that renders one match through both surfaces. Its other two
+   sides were already single: one parser (`ruleMatch(from:)`, used by rules *and*
+   breakpoints) and one advertised schema (`matchSchema`).
+
+   What remains is not duplication. The input schema (snake_case, flattened route,
+   create-vs-update semantics) and the `list_rules` render (camelCase,
+   omit-when-default, truncated bodies) are deliberately *different shapes* for
+   different readers — merging them would mean inventing a third shape neither
+   wants. And `RuleDraft` is not a serialization at all: it is a form model, with
+   `String`-typed number fields, headers as a text blob, and five `carried*` fields
+   whose entire job is to preserve what the editor deliberately doesn't show.
+   Folding it into a codec means rewriting the editor to be generated, which costs
+   far more than the census it would replace. So the census stays as the guard; if a
+   *fifth* surface appears (a rule-import format, a config file), collapse before
+   adding it.
 
 ### M8 — Capture reach (done, 0.0.10)
 
