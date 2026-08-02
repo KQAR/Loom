@@ -37,10 +37,17 @@ final class ProcessResolver: @unchecked Sendable {
     /// Short: ephemeral ports are recycled, and a table older than this may not
     /// know about a just-opened connection.
     private let tableTTL: TimeInterval = 2
-    /// A miss may mean "the table predates this connection", which warrants a fresh
-    /// scan — but a burst of unresolvable ports must not turn into a scan each. A
-    /// table built within this window is treated as authoritative, so miss-driven
-    /// scans are bounded by time rather than by connection count.
+    /// Fallback for callers that don't know when their connection opened: a table
+    /// built within this window is treated as authoritative on a miss.
+    ///
+    /// It used to be the *only* rule, and it was the wrong one. A table cannot
+    /// contain a connection that did not exist when it was built, so "the table is
+    /// only 0.25 s old" says nothing about a socket opened 0.24 s ago — yet a miss
+    /// was cached as a definitive "unknown" for the next 15 s. Under a burst of
+    /// short-lived clients (a curl loop, a test runner) that is *every* connection
+    /// after the first, and an app-scoped rule evaluated against a nil source app
+    /// fails closed: measured 1 match out of 12 identical requests, silently. When
+    /// the caller passes `connectionOpenedAt`, that comparison replaces this window.
     private let rescanOnMissAfter: TimeInterval = 0.25
     /// Scans performed — a test seam for "one sweep serves the whole burst".
     private(set) var scanCount = 0
@@ -53,7 +60,11 @@ final class ProcessResolver: @unchecked Sendable {
     /// `resolve(sourcePort:proxyPort:isLoopbackPeer:)` over calling it from a
     /// `Task` — that one moves the sweep off the cooperative pool. This entry point
     /// stays for tests and for callers that already own a suitable thread.
-    func resolve(sourcePort: UInt16, proxyPort: UInt16) -> SourceApp? {
+    /// - Parameter connectionOpenedAt: when the client's socket was accepted, if the
+    ///   caller knows. A miss is only conclusive when the table was built *after*
+    ///   that instant — otherwise the socket simply didn't exist yet to be found,
+    ///   and one rescan is what separates "no owner" from "asked too early".
+    func resolve(sourcePort: UInt16, proxyPort: UInt16, connectionOpenedAt: Date? = nil) -> SourceApp? {
         lock.lock()
         defer { lock.unlock() }
 
@@ -67,15 +78,30 @@ final class ProcessResolver: @unchecked Sendable {
             scanned = true
         }
         var app = table[sourcePort].map(Self.appInfo(pid:))
-        if app == nil, !scanned, tableOlderThanLocked(rescanOnMissAfter) {
-            // The table predates this connection (it can be up to `tableTTL` old);
-            // a just-opened socket deserves one fresh scan before we conclude the
-            // owner is unknowable and cache that for `ttl`.
+        if app == nil, !scanned, missDeservesRescanLocked(connectionOpenedAt: connectionOpenedAt) {
             rebuildTableLocked(proxyPort: proxyPort)
             app = table[sourcePort].map(Self.appInfo(pid:))
         }
         remember(sourcePort: sourcePort, app: app)
         return app
+    }
+
+    /// Whether a miss is worth one more sweep.
+    ///
+    /// With a known connection time the test is exact and the cost is
+    /// self-limiting: a sweep at T answers every connection opened before T, so a
+    /// burst arriving together is served by one of them (resolution is serialized
+    /// on a single queue, so the second caller already sees the first's table). The
+    /// remaining case — connections strictly sequential, each opened after the last
+    /// sweep — is one sweep per request at a rate low enough to afford it: a sweep
+    /// measures ~3 ms on a normally loaded Mac, not the "tens to hundreds" this
+    /// file used to assume.
+    private func missDeservesRescanLocked(connectionOpenedAt: Date?) -> Bool {
+        guard let openedAt = connectionOpenedAt else {
+            return tableOlderThanLocked(rescanOnMissAfter)
+        }
+        guard let builtAt = tableBuiltAt else { return true }
+        return builtAt < openedAt
     }
 
     /// Convenience for the NIO handlers, which hold optional `Int` ports from
@@ -86,12 +112,15 @@ final class ProcessResolver: @unchecked Sendable {
     /// succeed — and worse, its *remote* ephemeral port could coincide with some
     /// local process's local port and mis-attribute the phone's traffic to a Mac
     /// app. Skipping is both correct and free.
-    static func resolve(sourcePort: Int?, proxyPort: Int?, isLoopbackPeer: Bool) -> SourceApp? {
+    static func resolve(
+        sourcePort: Int?, proxyPort: Int?, isLoopbackPeer: Bool, connectionOpenedAt: Date? = nil
+    ) -> SourceApp? {
         guard isLoopbackPeer else { return nil }
         guard let source = sourcePort, let proxy = proxyPort, source > 0, proxy > 0 else { return nil }
         return shared.resolve(
             sourcePort: UInt16(truncatingIfNeeded: source),
-            proxyPort: UInt16(truncatingIfNeeded: proxy)
+            proxyPort: UInt16(truncatingIfNeeded: proxy),
+            connectionOpenedAt: connectionOpenedAt
         )
     }
 
@@ -109,14 +138,17 @@ final class ProcessResolver: @unchecked Sendable {
     /// several pool workers. Serial is not a new constraint either: `resolve` holds
     /// one lock for its whole body, so these calls were already serialized — they
     /// just used to serialize while occupying the pool.
-    static func resolve(sourcePort: Int?, proxyPort: Int?, isLoopbackPeer: Bool) async -> SourceApp? {
+    static func resolve(
+        sourcePort: Int?, proxyPort: Int?, isLoopbackPeer: Bool, connectionOpenedAt: Date? = nil
+    ) async -> SourceApp? {
         guard isLoopbackPeer else { return nil }
         guard let source = sourcePort, let proxy = proxyPort, source > 0, proxy > 0 else { return nil }
         return await withCheckedContinuation { continuation in
             scanQueue.async {
                 continuation.resume(returning: shared.resolve(
                     sourcePort: UInt16(truncatingIfNeeded: source),
-                    proxyPort: UInt16(truncatingIfNeeded: proxy)
+                    proxyPort: UInt16(truncatingIfNeeded: proxy),
+                    connectionOpenedAt: connectionOpenedAt
                 ))
             }
         }
