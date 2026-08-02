@@ -18,78 +18,37 @@ struct MCPToolExecutor {
     /// embedder driving the engine as a library, or a test).
     var routing: SystemRoutingControlling?
 
-    /// Name → handler registry. Paired with the same-named entries in
-    /// `toolDefinitions`; `MCPServerTests` asserts the two never drift (every
-    /// advertised tool has a handler). Dispatch is a lookup, not a growing switch.
-    static let handlers: [String: (MCPToolExecutor, [String: Any]) async throws -> String] = [
-        "get_version": { ex, args in try await ex.handleGetVersion(args) },
-        "get_proxy_status": { ex, args in try await ex.handleGetProxyStatus(args) },
-        "set_system_proxy": { ex, args in try await ex.handleSetSystemProxy(args) },
-        "list_devices": { ex, args in try await ex.handleListDevices(args) },
-        "get_recent_flows": { ex, args in try await ex.handleGetRecentFlows(args) },
-        "get_stats": { ex, args in try await ex.handleGetStats(args) },
-        "wait_for_flow": { ex, args in try await ex.handleWaitForFlow(args) },
-        "wait_for_pending": { ex, args in try await ex.handleWaitForPending(args) },
-        "get_flow_detail": { ex, args in try await ex.handleGetFlowDetail(args) },
-        "get_audit_log": { ex, args in try await ex.handleGetAuditLog(args) },
-        "set_recording": { ex, args in try await ex.handleSetRecording(args) },
-        "clear_flows": { ex, args in try await ex.handleClearFlows(args) },
-        "diff_flows": { ex, args in try await ex.handleDiffFlows(args) },
-        "arm_breakpoint": { ex, args in try await ex.handleArmBreakpoint(args) },
-        "disarm_breakpoint": { ex, args in try await ex.handleDisarmBreakpoint(args) },
-        "list_pending": { ex, args in try await ex.handleListPending(args) },
-        "resume": { ex, args in try await ex.handleResume(args) },
-        "replay_flow": { ex, args in try await ex.handleReplayFlow(args) },
-        "get_certificate_status": { ex, args in try await ex.handleGetCertificateStatus(args) },
-        "export_ca_certificate": { ex, args in try await ex.handleExportCACertificate(args) },
-        "get_ssl_scope": { ex, args in try await ex.handleGetSSLScope(args) },
-        "set_ssl_scope": { ex, args in try await ex.handleSetSSLScope(args) },
-        "export_har": { ex, args in try await ex.handleExportHAR(args) },
-        "import_har": { ex, args in try await ex.handleImportHAR(args) },
-        "list_rules": { ex, args in try await ex.handleListRules(args) },
-        "set_rule": { ex, args in try await ex.handleSetRule(args) },
-        "delete_rule": { ex, args in try await ex.handleDeleteRule(args) },
-        "set_rules_enabled": { ex, args in try await ex.handleSetRulesEnabled(args) },
-        "set_group_enabled": { ex, args in try await ex.handleSetGroupEnabled(args) },
-        "list_client_certificates": { ex, args in try await ex.handleListClientCertificates(args) },
-        "set_client_certificate": { ex, args in try await ex.handleSetClientCertificate(args) },
-        "delete_client_certificate": { ex, args in try await ex.handleDeleteClientCertificate(args) },
-    ]
+    /// Name → tool, indexed from the one table in `MCPToolSchemas`. Dispatch is a
+    /// lookup, not a growing switch — and no longer a second list to keep in step
+    /// with the advertised one, because both come from the same values.
+    static let toolsByName: [String: MCPTool] = Dictionary(
+        tools.map { ($0.name, $0) },
+        // Two tools sharing a name is a programmer error, not a merge: the first
+        // would shadow the second's handler while both stayed advertised.
+        uniquingKeysWith: { first, _ in
+            assertionFailure("duplicate MCP tool name \"\(first.name)\"")
+            return first
+        }
+    )
 
-    /// Tools that touch real traffic — every one is audited (§ `call`). Kept as an
-    /// explicit set rather than string-matching the "This is a write action."
-    /// description marker, so a typo in a description can't silently stop auditing
-    /// a write. `MCPServerTests` asserts this set matches the marked definitions.
-    static let writeTools: Set<String> = [
-        "replay_flow",
-        "set_system_proxy",
-        "set_recording",
-        "clear_flows",
-        "arm_breakpoint",
-        "disarm_breakpoint",
-        "resume",
-        "export_ca_certificate",
-        "set_ssl_scope",
-        "export_har",
-        "import_har",
-        "set_rule",
-        "delete_rule",
-        "set_rules_enabled",
-        "set_group_enabled",
-        "set_client_certificate",
-        "delete_client_certificate",
-    ]
+    /// Tools that touch real traffic — every one is audited (§ `call`). Derived
+    /// from `MCPTool.isWrite` rather than maintained as a parallel set, so a new
+    /// write tool cannot be advertised and dispatched while quietly escaping the
+    /// audit trail. Still a flag rather than a search for the "This is a write
+    /// action." marker: a typo in prose must not be able to switch auditing off.
+    static let writeTools: Set<String> = Set(tools.lazy.filter(\.isWrite).map(\.name))
 
     /// Dispatch one `tools/call`. Returns the tool's text result, or throws a
     /// `MCPError` describing why the call could not be dispatched.
     func call(name: String, arguments: [String: Any]) async throws -> String {
-        guard let handler = Self.handlers[name] else {
+        guard let tool = Self.toolsByName[name] else {
             throw MCPError.unknownTool(name)
         }
+        let handler = tool.handler
         // Read tools run straight through. Write tools are the whole reason Loom
         // exists — record each in the audit trail (success or failure) so the
         // supervising human can see what the agent did to real traffic.
-        guard Self.writeTools.contains(name) else {
+        guard tool.isWrite else {
             return try await handler(self, arguments)
         }
         let renderedArgs = AuditEntry.truncate(Self.auditArguments(arguments))
