@@ -297,6 +297,60 @@ in CI), and the h2-stall instrumentation learned to say *whose* bug it is — by
 alone can't separate upstream's missing `WINDOW_UPDATE` from a Loom read-pump
 regression, since both park at exactly one flow-control window.
 
+### Cost under live traffic (done, 0.0.12)
+
+Again no new capability. AGENTS.md has called performance "a hard requirement, not
+a nice-to-have" since M5, and the rules it lists (lazy containers, O(1) upsert,
+bounded collections, bodies out-of-line, cheap row bodies) were all being followed.
+The round measured the app *while traffic was arriving* anyway, and every defect it
+found lived in the gap between "this collection is bounded" and "this work is
+bounded" — a capped structure re-walked, re-parsed or re-materialized per render or
+per upsert, indefinitely.
+
+- **The container itself was the worst offender.** A sidebar category switch inside
+  `NavigationSplitView` cost **8.7 s of main thread** after 600 flows had arrived
+  live; `HSplitView`, same view, same procedure: **143 ms**. The quadratic is AppKit
+  KVO teardown across accumulated row *hosting views* — so its N is what tail-follow
+  scrolling accumulated, not the row count, which is why a static rig never
+  reproduced it. Full record in [`docs/performance/navigation-split-view-kvo.md`](docs/performance/navigation-split-view-kvo.md).
+- **Render-time recomputation** — the inspector re-ran a recursive-descent JSON parse
+  over up to 200 KB on every re-render (~10/s under live traffic, and it retried a
+  parse that had already failed), rebuilt raw request/response strings from
+  multi-MB bodies, and materialized the filtered flow array a second time just to
+  test emptiness. Parses and joins now run once, off the main actor, keyed on the
+  bytes rather than the pane — identity is deliberately stable across hydration.
+- **Per-item work where per-batch was intended** — the display cap was enforced once
+  per flow inside a batch, and `IdentifiedArray.removeFirst` is O(count), so a list
+  pinned at its 2000 cap paid O(n·m) per 100 ms window forever. That is precisely
+  the shape the stream batching exists to prevent.
+- **Scans that restarted from zero** — `enforceBodyBudget` re-walked the ring from
+  index 0 on every over-budget upsert, and over-budget *is* the steady state of a
+  long capture. A slim cursor now marks the leading body-free run, and pulls back
+  when a late WebSocket frame re-attaches a body behind it.
+- **Synchronous disk on the actor** — `flow(id:)` / `recentHydrated` / the
+  `body_contains` path called persistence (`queue.sync`) from inside `FlowStore`, so
+  one HAR export or one unnarrowed body search parked the actor and queued *every*
+  in-flight capture upsert behind it. Hydration now runs on detached tasks off a
+  ring snapshot.
+- **A resolver wait nobody needed** — every forwarded request awaited
+  `ProcessResolver` (worst case a full libproc sweep, tens to hundreds of ms) so
+  that app-scoped rules could match. `UpstreamForwarding.requiresSourceAppResolution`
+  now asks the chain whether anything actually matches on the source app; when
+  nothing does, TTFB stops paying for it.
+- **Bounds an agent could blow past** — the console's rules row rendered one line per
+  enabled rule (200 rules → a 200-row popover), and the audit detail sheet handed a
+  write tool's full arguments to a single `Text`, which lays out synchronously and a
+  mock body is hundreds of KB. Both capped, with an honest "showing first N of M";
+  the durable row keeps the full value.
+
+The other half of the round was documentation: the specs had accumulated a dead
+approval-card design and "v2" vocabulary for a UI generation that no longer exists,
+AGENTS.md was mirroring ROADMAP narrative instead of pointing at it, and a skill
+claimed `set_system_proxy` restores the previous proxy owner — the opposite of the
+written decision. Same failure mode as the 0.0.11 audit, one layer up. CI now skips
+the build jobs on docs-only changes, and **ad-hoc signing is recorded as a decision**
+rather than a gap, which parks the privileged helper for good (§ M2).
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
