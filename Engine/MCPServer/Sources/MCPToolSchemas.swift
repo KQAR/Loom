@@ -645,7 +645,7 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "set_rule",
-            description: "Create or update a traffic rule (upsert). Omit `id` to create; pass `id` to update an existing rule. A rule matches requests by URL pattern (+ optional methods) and acts on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. On update, provided fields replace the existing ones (match/actions are replaced whole, not merged); toggle a single rule with just {id, enabled}. Rules apply to live traffic and replays, in list order. This is a write action.",
+            description: "Create or update a traffic rule (upsert). Omit `id` to create; pass `id` to update an existing rule. A rule matches requests by URL pattern (+ optional methods) and acts on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. On update, provided fields replace the existing ones (match/actions are replaced whole, not merged); toggle a single rule with just {id, enabled}. Rules apply to live traffic and replays, in list order. The reply carries `effective` — whether this rule will actually affect traffic — plus `ineffectiveReason` when it will not (most often the rules master switch is off, which silently neutralises every rule). Check it before reporting that a mock is in place. This is a write action.",
             inputSchema: [
                 "type": "object",
                 "properties": [

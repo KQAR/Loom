@@ -56,7 +56,7 @@ extension MCPToolExecutor {
         } catch let error as ProxyControlError {
             throw MCPToolFailure(error.message)
         }
-        return prettyJSON(Self.rule(rule, truncateBodies: false))
+        return prettyJSON(await writtenRule(rule))
     }
 
     func updateRule(_ arguments: [String: Any]) async throws -> String {
@@ -79,7 +79,33 @@ extension MCPToolExecutor {
         } catch let error as ProxyControlError {
             throw MCPToolFailure(error.message)
         }
-        return prettyJSON(Self.rule(rule, truncateBodies: false))
+        return prettyJSON(await writtenRule(rule))
+    }
+
+    /// A just-written rule, rendered, plus whether it will actually affect traffic.
+    ///
+    /// Without this the reply is indistinguishable from a rule that is live: it
+    /// echoes the rule back with its own `enabled: true`, which reads as
+    /// confirmation. If the master switch happens to be off, nothing in the
+    /// exchange says so — no error, no warning — and the agent reports a mock that
+    /// silently never fires. `effective` is always present, so its absence can't be
+    /// mistaken for "fine"; the reason names the tool that fixes it.
+    func writtenRule(_ rule: TrafficRule) async -> [String: Any] {
+        var out = Self.rule(rule, truncateBodies: false)
+        let masterEnabled = await engine.rulesState().enabled
+        out["effective"] = masterEnabled && rule.isEnabled
+        if !masterEnabled {
+            out["ineffectiveReason"] = """
+            The rules master switch is off, so no rule applies to traffic — including \
+            this one. Turn it on with set_rules_enabled(enabled: true).
+            """
+        } else if !rule.isEnabled {
+            out["ineffectiveReason"] = """
+            This rule is disabled, so it will not apply to traffic. Enable it with \
+            set_rule(id: …, enabled: true), or set_group_enabled if it belongs to a group.
+            """
+        }
+        return out
     }
 
     func handleDeleteRule(_ arguments: [String: Any]) async throws -> String {
@@ -113,7 +139,18 @@ extension MCPToolExecutor {
             throw MCPToolFailure("no rules in group \"\(group)\" — see list_rules")
         }
         await engine.setGroupEnabled(group: group, enabled: enabled)
-        return prettyJSON(["group": group, "enabled": enabled, "affected": members.count])
+        var out: [String: Any] = ["group": group, "enabled": enabled, "affected": members.count]
+        // Enabling a group under a closed master switch changes nothing observable —
+        // the same silent no-op as a freshly created rule, so it gets the same answer.
+        let masterEnabled = await engine.rulesState().enabled
+        out["effective"] = masterEnabled && enabled
+        if enabled, !masterEnabled {
+            out["ineffectiveReason"] = """
+            The rules master switch is off, so no rule applies to traffic — including \
+            this group. Turn it on with set_rules_enabled(enabled: true).
+            """
+        }
+        return prettyJSON(out)
     }
 
     /// Resolve the `id` argument to a stored rule or throw a structured error.

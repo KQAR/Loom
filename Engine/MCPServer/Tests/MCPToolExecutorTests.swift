@@ -652,6 +652,65 @@ import LoomSharedModels
         #expect(engine.addedRules.isEmpty, "update must not go through the create path")
     }
 
+    /// The write reply has to say whether the rule will actually do anything.
+    ///
+    /// Found by driving the tools: `set_rule` returned a clean echo — including the
+    /// rule's own `"enabled": true`, which reads as confirmation — while the master
+    /// switch was off, so the mock never fired. No error, no warning, and the only
+    /// way to notice was to independently call `list_rules` and read a field nothing
+    /// pointed at. The agent had already told the human the endpoint was mocked.
+    @Test func setRule_saysWhenTheMasterSwitchWillStopItFromApplying() async throws {
+        let engine = StubEngine()
+        engine.rules.enabled = false
+        let out = try json(try await makeExecutor(engine).call(name: "set_rule", arguments: [
+            "name": "mock order 500",
+            "match": ["url_pattern": "*/api/order/*"],
+            "actions": ["mock_response": ["status_code": 500]],
+        ]))
+        #expect(out["effective"] as? Bool == false)
+        let reason = try #require(out["ineffectiveReason"] as? String)
+        #expect(reason.contains("set_rules_enabled"), "the reason must name the fix: \(reason)")
+    }
+
+    @Test func setRule_reportsEffectiveWhenTheRuleWillApply() async throws {
+        let engine = StubEngine()   // master switch on by default
+        let out = try json(try await makeExecutor(engine).call(name: "set_rule", arguments: [
+            "name": "mock order 500",
+            "match": ["url_pattern": "*/api/order/*"],
+            "actions": ["mock_response": ["status_code": 500]],
+        ]))
+        // Always present, so a missing key can't be read as "fine".
+        #expect(out["effective"] as? Bool == true)
+        #expect(out["ineffectiveReason"] == nil)
+    }
+
+    @Test func setRule_saysWhenTheRuleItselfIsDisabled() async throws {
+        let engine = StubEngine()
+        let out = try json(try await makeExecutor(engine).call(name: "set_rule", arguments: [
+            "name": "parked", "enabled": false,
+            "match": ["url_pattern": "*/api/order/*"],
+            "actions": ["block": true],
+        ]))
+        #expect(out["effective"] as? Bool == false)
+        #expect((out["ineffectiveReason"] as? String)?.contains("disabled") == true)
+    }
+
+    /// Same silent no-op, reached the other way: enabling a group changes nothing
+    /// observable while the master switch is off.
+    @Test func setGroupEnabled_saysWhenTheMasterSwitchWillStopItFromApplying() async throws {
+        let engine = StubEngine()
+        engine.rules.enabled = false
+        engine.rules.rules = [TrafficRule(
+            name: "member", group: "failure-mode",
+            match: RuleMatch(urlPattern: "https://a/*"), actions: RuleActions(route: .block)
+        )]
+        let out = try json(try await makeExecutor(engine).call(name: "set_group_enabled", arguments: [
+            "group": "failure-mode", "enabled": true,
+        ]))
+        #expect(out["effective"] as? Bool == false)
+        #expect((out["ineffectiveReason"] as? String)?.contains("set_rules_enabled") == true)
+    }
+
     @Test func setRule_withUnknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "set_rule", arguments: [
