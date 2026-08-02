@@ -48,8 +48,13 @@ extension MCPToolExecutor {
     }
 
     func handleResume(_ arguments: [String: Any]) async throws -> String {
-        guard let idString = arguments["pending_id"] as? String, let id = UUID(uuidString: idString) else {
-            throw MCPError.invalidParams("`pending_id` must be a held-breakpoint UUID string")
+        // `id` is accepted as well as `pending_id` because the held exchange renders
+        // its own identifier as `id` (list_pending / wait_for_pending), so copying the
+        // field straight across — the obvious thing to do — used to fail validation
+        // and cost a round trip to discover.
+        let rawID = (arguments["pending_id"] ?? arguments["id"]) as? String
+        guard let idString = rawID, let id = UUID(uuidString: idString) else {
+            throw MCPError.invalidParams("`pending_id` (or `id`) must be a held-breakpoint UUID string")
         }
         let abort = (arguments["abort"] as? Bool) ?? false
         var setHeaders: [HeaderPair]?

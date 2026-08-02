@@ -146,6 +146,13 @@ public struct FlowStats: Equatable, Sendable {
         public var statusClasses: [String: Int]
         /// Server think-time (request sent → response head).
         public var ttfb: Distribution?
+        /// Body transfer (response head → last byte).
+        ///
+        /// Carried alongside `ttfb` rather than left as `duration - ttfb` for the
+        /// caller to subtract, because separating "the server is slow" from "the
+        /// payload is big" is the entire question this tool answers, and a
+        /// percentile of a difference is not the difference of percentiles.
+        public var receive: Distribution?
         /// Whole exchange (request start → last byte).
         public var duration: Distribution?
         public var requestBytes: Int
@@ -303,6 +310,7 @@ public struct FlowStats: Equatable, Sendable {
         var inFlight = 0
         var statusClasses: [String: Int] = [:]
         var ttfb: [Int] = []
+        var receive: [Int] = []
         var duration: [Int] = []
         var requestBytes = 0
         var responseBytes = 0
@@ -322,6 +330,7 @@ public struct FlowStats: Equatable, Sendable {
                 inFlight += 1
             }
             if let ttfbMS = flow.ttfbMS { ttfb.append(ttfbMS) }
+            if let receiveMS = flow.receiveMS { receive.append(receiveMS) }
             if let durationMS = flow.durationMS { duration.append(durationMS) }
 
             var unknown = false
@@ -342,7 +351,8 @@ public struct FlowStats: Equatable, Sendable {
             Bucket(
                 key: key, flows: flows, errors: errors, failed: failed, inFlight: inFlight,
                 statusClasses: statusClasses,
-                ttfb: Distribution.from(ttfb), duration: Distribution.from(duration),
+                ttfb: Distribution.from(ttfb), receive: Distribution.from(receive),
+                duration: Distribution.from(duration),
                 requestBytes: requestBytes, responseBytes: responseBytes,
                 sizeUnknownFlows: sizeUnknownFlows
             )

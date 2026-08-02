@@ -120,6 +120,27 @@ import LoomSharedModels
         #expect(stats.total.errorRate == 0.5)
     }
 
+    /// "Why is this slow" splits into server think-time and payload transfer, and
+    /// the aggregate has to carry both. It used to report only TTFB and duration,
+    /// leaving the caller to subtract — which is not the same number: a percentile
+    /// of a difference is not the difference of percentiles, and the tool that
+    /// exists to answer this question was the one place the split went missing.
+    @Test func bucketsCarryReceiveTimeNotJustTTFBAndDuration() throws {
+        // Server-slow: all the time is think-time. Transfer-slow: the head is
+        // immediate and the body drips.
+        let serverSlow = (1 ... 5).map { _ in flow(url: "https://api.example.com/slow", ttfbMS: 700, durationMS: 705) }
+        let transferSlow = (1 ... 5).map { _ in flow(url: "https://api.example.com/drip", ttfbMS: 3, durationMS: 1_030) }
+        let stats = FlowStats.compute(flows: serverSlow + transferSlow, grouping: .endpoint)
+
+        let slow = try #require(stats.buckets.first { $0.key.contains("/slow") })
+        #expect(try #require(slow.ttfb).p50 == 700)
+        #expect(try #require(slow.receive).p50 == 5, "705 - 700")
+
+        let drip = try #require(stats.buckets.first { $0.key.contains("/drip") })
+        #expect(try #require(drip.ttfb).p50 == 3)
+        #expect(try #require(drip.receive).p50 == 1_027, "the answer is in receive, not ttfb")
+    }
+
     @Test func percentilesAreExactSamples_neverInterpolated() {
         let flows = (1 ... 10).map { flow(ttfbMS: $0 * 10, durationMS: $0 * 100) }
         let ttfb = try! #require(FlowStats.compute(flows: flows, grouping: .none).total.ttfb)
