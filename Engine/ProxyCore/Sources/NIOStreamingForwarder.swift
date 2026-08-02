@@ -214,7 +214,13 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     private func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
         // IP-literal peers can't take an SNI/validation hostname.
         let serverName = Self.isIPLiteral(host) ? nil : host
-        let context = try clientIdentities?.context(forHost: host) ?? SharedTLS.clientContext
+        // Identity for this host → its context; otherwise the provider's own
+        // no-identity context (same trust settings, no client certificate), and only
+        // then the process-wide default. The middle step keeps both paths on one
+        // trust configuration; see `ClientIdentityProviding.baseContext()`.
+        let context = try clientIdentities?.context(forHost: host)
+            ?? clientIdentities?.baseContext()
+            ?? SharedTLS.clientContext
         return try NIOSSLClientHandler(context: context, serverHostname: serverName)
     }
 

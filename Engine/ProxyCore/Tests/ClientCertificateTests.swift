@@ -217,6 +217,12 @@ struct ClientCertificateTests {
             // States what Loom did, never what the server wanted — Loom cannot tell a
             // client-cert requirement from any other handshake failure.
             #expect(!message.lowercased().contains("requires a client certificate"), "got \(message)")
+            // …and this really is the mutual-TLS refusal, not us rejecting the
+            // server's certificate. Until `baseContext()` existed, the no-identity
+            // path used the shared default context, which does not trust this test's
+            // throwaway CA — so the handshake died at server-certificate
+            // verification and the assertions above passed for the wrong reason.
+            #expect(!message.contains("could not verify"), "got \(message)")
         }
     }
 
@@ -231,6 +237,64 @@ struct ClientCertificateTests {
         let message = wrapped.localizedDescription
         #expect(message.contains("Loom presented client certificate Corp API (*.corp.example)"), "got \(message)")
         #expect(!message.contains("set_client_certificate"), "advice for the wrong problem")
+    }
+
+    /// The failure this suite got wrong: an ordinary bad **server** certificate.
+    ///
+    /// Loom refuses the peer, so the peer never asked us for anything — yet the
+    /// message used to lead with "Loom presented no client certificate … install one
+    /// with set_client_certificate", pointing the reader at a write action that
+    /// needs their private key and cannot help. Found against a real expired-cert
+    /// host; reproduced here offline by declining to trust the test CA.
+    @Test func aRejectedServerCertificateIsNotReportedAsAClientCertificateProblem() async throws {
+        let material = try TLSMaterial.make()
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { try? group.syncShutdownGracefully() }
+        let server = try MutualTLSServer(material: material, group: group)
+        defer { server.stop() }
+
+        // No `baseConfiguration`, so the forwarder uses default trust roots and the
+        // test CA is unknown to it: a genuine CERTIFICATE_VERIFY_FAILED, not a stub.
+        let forwarder = NIOStreamingForwarder(
+            group: group,
+            clientIdentities: ClientCertificateConfig(certificates: [], fileURL: nil)
+        )
+        let url = try #require(URL(string: "https://127.0.0.1:\(server.port)/anything"))
+
+        do {
+            _ = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+            Issue.record("the handshake should have failed")
+        } catch {
+            let message = error.localizedDescription
+            #expect(message.contains("could not verify"), "got \(message)")
+            #expect(!message.contains("set_client_certificate"),
+                    "advice for the wrong problem — Loom rejected the server: \(message)")
+            #expect(!message.contains("no client certificate"), "got \(message)")
+            #expect(message.contains("127.0.0.1"), "got \(message)")
+        }
+    }
+
+    /// Hostname mismatch is the same class, reached through a typed NIOSSL error
+    /// rather than BoringSSL's reason string — so the classifier can't be passing
+    /// only because of the string check.
+    @Test func aHostnameMismatchIsAlsoAServerCertificateProblem() throws {
+        let wrapped = UpstreamTLSError.wrapping(
+            NIOSSLExtraError.failedToValidateHostname, host: "api.test", isTLS: true, identity: nil
+        )
+        let message = wrapped.localizedDescription
+        #expect(message.contains("could not verify"), "got \(message)")
+        #expect(!message.contains("set_client_certificate"), "got \(message)")
+    }
+
+    /// The neutral wording still applies to everything else: a handshake that failed
+    /// for a reason Loom can't attribute keeps reporting only what Loom did.
+    @Test func anUnattributableHandshakeFailureKeepsTheNeutralWording() throws {
+        let wrapped = UpstreamTLSError.wrapping(
+            NIOSSLError.handshakeFailed(.noError), host: "api.test", isTLS: true, identity: nil
+        )
+        let message = wrapped.localizedDescription
+        #expect(message.contains("no client certificate"), "got \(message)")
+        #expect(!message.contains("could not verify"), "got \(message)")
     }
 
     @Test func nonTLSFailuresAreLeftAlone() throws {

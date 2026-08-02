@@ -12,6 +12,17 @@ protocol ClientIdentityProviding: Sendable {
     /// Client context for `host`, or nil when no identity is configured for it.
     /// Throws only when an identity *is* configured and cannot be loaded.
     func context(forHost host: String) throws -> NIOSSLContext?
+    /// Context to use when no identity matches — same trust settings, no client
+    /// certificate. Nil means "use the process-wide shared default".
+    ///
+    /// It exists so the no-identity path runs through the *same* trust
+    /// configuration as the identity path. Without it a test that overrides the
+    /// base configuration to trust its throwaway CA only overrides half the
+    /// handshakes, and its no-identity case fails at server-certificate
+    /// verification instead of where it claims to — which is exactly how
+    /// `aRefusedHandshakeNamesWhetherAnIdentityWasPresented` passed while proving
+    /// nothing.
+    func baseContext() throws -> NIOSSLContext?
     /// Name of the identity that *would* be presented to `host`, for error context;
     /// nil when none matches.
     ///
@@ -50,16 +61,21 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
     /// a real mutual-TLS handshake can be exercised through this same code (rather
     /// than a parallel one that proves nothing about it).
     private let baseConfiguration: @Sendable () -> TLSConfiguration
+    /// Whether `baseConfiguration` was supplied by the caller. Only then is a
+    /// separate no-identity context worth building — see `baseContext()`.
+    private let isBaseConfigurationCustom: Bool
+    private var cachedBaseContext: NIOSSLContext?
 
     /// - Parameter fileURL: persistence backing; `nil` disables it (tests, and any
     ///   engine that must not read or clobber the real set).
     init(
         certificates: [ClientCertificate] = [],
         fileURL: URL? = ClientCertificateConfig.defaultFileURL,
-        baseConfiguration: @escaping @Sendable () -> TLSConfiguration = { .makeClientConfiguration() }
+        baseConfiguration: (@Sendable () -> TLSConfiguration)? = nil
     ) {
         self.fileURL = fileURL
-        self.baseConfiguration = baseConfiguration
+        self.isBaseConfigurationCustom = baseConfiguration != nil
+        self.baseConfiguration = baseConfiguration ?? { .makeClientConfiguration() }
         if let fileURL, let saved = Self.load(from: fileURL) {
             self.certificates = saved
         } else {
@@ -120,6 +136,26 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
         return identity.label == identity.hostPattern
             ? identity.hostPattern
             : "\(identity.label) (\(identity.hostPattern))"
+    }
+
+    /// Built once and cached: it is the same object for every host that has no
+    /// identity, and building one parses the trust store. `nil` when the base
+    /// configuration is the stock client one, so production keeps using the shared
+    /// context instead of holding a second identical copy.
+    func baseContext() throws -> NIOSSLContext? {
+        guard isBaseConfigurationCustom else { return nil }
+        lock.lock()
+        if let cached = cachedBaseContext {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let context = try NIOSSLContext(configuration: baseConfiguration())
+        lock.lock()
+        cachedBaseContext = context
+        lock.unlock()
+        return context
     }
 
     func context(forHost host: String) throws -> NIOSSLContext? {
