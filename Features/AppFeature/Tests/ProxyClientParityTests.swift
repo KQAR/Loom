@@ -37,8 +37,14 @@ import Testing
         case .recentFlowsMatching: return .wired(client.recentFlowsMatching)
         case .recentFlowsForExport:
             return .deliberatelyAbsent("""
-            HAR export is an agent action (export_har); the window has no export \
-            affordance, and a body-hydrating read is the wrong thing to hand a view.
+            HAR export stays an agent action (export_har), by decision rather than \
+            by omission. It is not a supervision gap: unlike a breakpoint, an export \
+            touches no live traffic, so the human loses no control over risk by \
+            reaching it through the agent — which also gets redaction for free. \
+            Building the human half would mean a save panel over a body-hydrating \
+            read, which is the wrong thing to hand a view and the exact work the \
+            value hierarchy calls chrome the AI never sees. Revisit if exporting \
+            becomes a routine hand-off done with no agent at hand.
             """)
         case .flowByID: return .wired(client.flow)
         case .flowStream: return .wired(client.flowStream)
@@ -62,8 +68,11 @@ import Testing
         // MARK: CaptureControlling
         case .importFlows:
             return .deliberatelyAbsent("""
-            HAR import is agent-only today (import_har). Wire this the moment the \
-            window grows a drop target — the flows land in the shared store either way.
+            HAR import stays an agent action (import_har), same reasoning as \
+            recentFlowsForExport above: it touches no live traffic, so its absence \
+            costs the human no control, and the flows land in the shared store \
+            either way — whoever asked, both surfaces then see them. Revisit if \
+            reading someone else's capture becomes routine with no agent at hand.
             """)
         case .setRecording: return .wired(client.setRecording)
         case .clearFlows: return .wired(client.clearFlows)

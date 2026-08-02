@@ -152,9 +152,22 @@ about:
    stays with the agent (`resume` + `BreakpointEdit` over MCP); the human gets
    proceed-unmodified and abort. Value #2 is no longer violated by the one write
    action that parks a live connection.
-2. **The parity guard records four deliberate omissions that are really UI gaps** —
-   HAR import/export and wholesale `setRules` are agent-only because the window has
-   no affordance for them, not because the human shouldn't have them.
+2. ~~**The parity guard records omissions that are really UI gaps.**~~ **Closed —
+   they stay agent-only, by decision.** HAR import/export read as unfinished work
+   ("wire this the moment the window grows a drop target"), so this item existed to
+   finish them. Judged against the value hierarchy rather than the checklist, they
+   don't survive: an import or an export **touches no live traffic**, so unlike
+   a breakpoint — which parks a real client connection and was the genuine
+   supervision gap item 1 closed — their absence costs the human no control over
+   risk. The agent's `import_har` / `export_har(redact:)` are complete, redaction
+   included, and imported flows land in the shared store where both surfaces see
+   them. Building the human half means a save panel over a body-hydrating read
+   (`recentFlowsForExport` pulls every blob — see 0.0.12's #171) for a low-frequency
+   action, which is precisely the "chrome the AI never sees" the positioning
+   section rules out. The two omissions are now recorded as decisions with that
+   reasoning and a reopen condition: a routine hand-off performed with no agent at
+   hand. `setRules` and `replayFlow` were already deliberate; `recordAudit` must
+   stay single-writer or a UI action could forge an audit entry.
 3. **A cross-surface capability still costs ~5 edits**: protocol → engine →
    `ProxyClient` field → `liveValue` wiring → feature/view. The guards make a miss
    *loud* rather than silent; they don't make the work smaller. Worth deciding
