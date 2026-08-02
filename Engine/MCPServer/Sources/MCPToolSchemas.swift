@@ -130,6 +130,12 @@ extension MCPToolExecutor {
             inspect it, which is not the same as off). On `"other"`, say so rather than calling \
             `set_system_proxy`: taking the setting works, but Loom does not put the other app's \
             configuration back, so that is the human's call to make.
+
+            When a capture is empty and routing looks fine, check `refusedConnections` / \
+            `recentRefusals` (present only when there are any): a client that reached Loom and \
+            was turned away — a SOCKS4 client, an HTTP request sent to the SOCKS port, an \
+            unsupported command — looks exactly like a client that never ran, and this is the \
+            difference.
             """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetProxyStatus(args) }

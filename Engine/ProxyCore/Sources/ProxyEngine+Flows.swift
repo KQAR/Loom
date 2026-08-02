@@ -7,13 +7,16 @@ import LoomSharedModels
 /// the engine only exposes them.
 extension ProxyEngine {
     public func status() async -> ProxyStatus {
-        ProxyStatus(
+        let refusals = RefusalLog.shared.snapshot()
+        return ProxyStatus(
             isRunning: running,
             port: boundPort,
             capturedCount: await store.count,
             isRecording: await store.isRecording,
             listenHost: currentBindHost,
-            socksPort: boundSOCKSPort
+            socksPort: boundSOCKSPort,
+            recentRefusals: refusals.recent,
+            refusedConnections: refusals.total
         )
     }
 

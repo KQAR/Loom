@@ -1,4 +1,5 @@
 import Foundation
+import LoomSharedModels
 import NIOCore
 import NIOPosix
 
@@ -93,6 +94,40 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
         context.fireChannelInactive()
     }
 
+    /// Log a refusal both ways: to `os_log` for the human tailing the console, and
+    /// to `RefusalLog` so `get_proxy_status` can answer an agent asking why nothing
+    /// was captured. Only the first channel existed before, which made "the client
+    /// never connected" and "Loom turned the client away" indistinguishable over
+    /// MCP — the exact ambiguity the routing fields exist to remove.
+    private func refuse(context: ChannelHandlerContext, reason: String) {
+        Log.proxy.error("\(reason, privacy: .public)")
+        RefusalLog.shared.record(ConnectionRefusal(
+            listener: .socks,
+            peer: context.channel.remoteAddress.map { String(describing: $0) },
+            reason: reason
+        ))
+    }
+
+    /// Turn a parse failure into something the operator can act on.
+    ///
+    /// `unsupportedVersion` is the one worth spelling out, and it can surface in
+    /// either phase depending on how many bytes the client sent: an HTTP request
+    /// aimed at the SOCKS port fails the greeting when it is short and the *request*
+    /// when it is long enough for the greeting's length field to be satisfied by
+    /// header bytes. Same mistake, same fix, so the guidance can't live in only one
+    /// branch — which is exactly how the first version of this shipped.
+    private static func reason(for failure: SOCKS5.Failure, phase: String) -> String {
+        if case let .unsupportedVersion(byte) = failure {
+            let printable = (32 ... 126).contains(byte) ? " ('\(Character(UnicodeScalar(byte)))')" : ""
+            return """
+            SOCKS \(phase) refused: first byte was 0x\(String(byte, radix: 16))\(printable), not SOCKS5. \
+            That is what an HTTP proxy request or a SOCKS4 client looks like here — \
+            point plain HTTP proxy clients at the HTTP proxy port instead.
+            """
+        }
+        return "SOCKS \(phase) refused (\(failure))."
+    }
+
     /// Drive the state machine as far as the buffered bytes allow.
     private func advance(context: ChannelHandlerContext) {
         while true {
@@ -104,14 +139,17 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
                 case let .failure(failure):
                     // A SOCKS4 client lands here (version byte 0x04). Refusing is
                     // right — SOCKS4 has a different frame and no way to say "speak 5".
-                    Log.proxy.error("SOCKS handshake refused: \(String(describing: failure), privacy: .public)")
+                    refuse(context: context, reason: Self.reason(for: failure, phase: "handshake"))
                     context.close(promise: nil)
                     phase = .done
                     return
                 case let .value(greeting, consumed):
                     pending.removeFirst(consumed)
                     guard greeting.offersNoAuthentication else {
-                        Log.proxy.error("SOCKS client offered no usable auth method; refusing")
+                        refuse(
+                            context: context,
+                            reason: "SOCKS client offered no authentication method Loom accepts (it requires \"no authentication\")."
+                        )
                         write(SOCKS5.methodSelection(.unacceptable), context: context, thenClose: true)
                         phase = .done
                         return
@@ -125,7 +163,7 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
                 case .needMore:
                     return
                 case let .failure(failure):
-                    Log.proxy.error("SOCKS request rejected: \(String(describing: failure), privacy: .public)")
+                    refuse(context: context, reason: Self.reason(for: failure, phase: "request"))
                     write(SOCKS5.reply(replyCode(for: failure)), context: context, thenClose: true)
                     phase = .done
                     return
@@ -134,7 +172,14 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
                     guard request.command == .connect else {
                         // BIND / UDP ASSOCIATE. UDP is what a QUIC client wants, and a
                         // TCP proxy cannot carry it — say so instead of stalling.
-                        Log.proxy.error("SOCKS \(String(describing: request.command), privacy: .public) not supported")
+                        refuse(
+                            context: context,
+                            reason: """
+                            SOCKS \(request.command) is not supported — Loom proxies TCP only. \
+                            A UDP ASSOCIATE usually means the client wants QUIC, which no TCP \
+                            proxy can carry.
+                            """
+                        )
                         write(SOCKS5.reply(.commandNotSupported), context: context, thenClose: true)
                         phase = .done
                         return
