@@ -57,10 +57,17 @@ import LoomSharedModels
         }
     }
 
-    @Test func handlerRegistry_exactlyMatchesAdvertisedTools() {
-        let advertised = Set(makeExecutor().toolDefinitions.compactMap { $0["name"] as? String })
-        let handled = Set(MCPToolExecutor.handlers.keys)
-        #expect(advertised == handled, "every advertised tool has a handler and vice-versa")
+    /// "Advertised but undispatchable" is now impossible by construction — one
+    /// `MCPTool` carries both — so what is left to check is the *index*: a duplicate
+    /// name would silently drop one tool's handler while both stayed advertised.
+    @Test func toolIndex_coversEveryToolExactlyOnce() {
+        let names = MCPToolExecutor.tools.map(\.name)
+        #expect(
+            MCPToolExecutor.toolsByName.count == names.count,
+            "duplicate tool name: \(names.count - MCPToolExecutor.toolsByName.count) tool(s) shadowed"
+        )
+        #expect(Set(names) == Set(MCPToolExecutor.toolsByName.keys))
+        #expect(Set(names) == Set(makeExecutor().toolDefinitions.compactMap { $0["name"] as? String }))
     }
 
     /// The tool surface must not promise that disabling the system proxy restores
@@ -687,16 +694,21 @@ import LoomSharedModels
 
     // MARK: Write-action audit log
 
-    /// The audited set must match exactly the tools whose definition is marked
-    /// "This is a write action." — a marker and a missed audit can't diverge.
-    @Test func writeToolSet_matchesMarkedDefinitions() {
+    /// `isWrite` decides auditing; the "This is a write action." marker is what
+    /// tells the *agent*. Those are two different readers of the same fact, so they
+    /// still have to be checked against each other — the flag can't be derived from
+    /// the prose (a typo would switch auditing off) and the prose can't be derived
+    /// from the flag (it's a sentence, not a label).
+    @Test func writeFlag_agreesWithTheAdvertisedMarker() {
         // Match without the trailing period: some markers read "This is a write
         // action (writes a file)." rather than "…action.".
-        let marked = Set(makeExecutor().toolDefinitions
-            .filter { ($0["description"] as? String)?.contains("This is a write action") == true }
-            .compactMap { $0["name"] as? String })
-        #expect(marked == MCPToolExecutor.writeTools,
-                "every write-marked tool is audited and vice-versa; diff: \(marked.symmetricDifference(MCPToolExecutor.writeTools))")
+        let marked = Set(MCPToolExecutor.tools
+            .filter { $0.description.contains("This is a write action") }
+            .map(\.name))
+        let flagged = Set(MCPToolExecutor.tools.filter(\.isWrite).map(\.name))
+        #expect(marked == flagged,
+                "a write tool must say so to the agent and be audited; diff: \(marked.symmetricDifference(flagged))")
+        #expect(flagged == MCPToolExecutor.writeTools)
     }
 
     @Test func writeTool_success_recordsAuditEntry() async throws {
