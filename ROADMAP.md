@@ -173,9 +173,27 @@ about:
    *loud* rather than silent; they don't make the work smaller. Worth deciding
    whether `ProxyClient` should wrap `any ProxyControlling` directly (losing some
    `@DependencyClient` test ergonomics) before the surface grows again.
-4. **Rule authoring still has four representations.** The census keeps them honest;
-   it doesn't merge them. If a fifth surface appears (a rule-import format, a
-   config file), collapse the codec first.
+4. ~~**Rule authoring still has four representations.**~~ **Closed — one real
+   duplicate removed, the rest don't collapse.** Read closely, the four are not four
+   copies of one thing. `RuleMatch` was genuinely rendered **twice** (identical code
+   inline in `list_rules` and in `matchDict`, the breakpoint tools' renderer), so a
+   predicate added to one copy would have made the same scoping read back
+   differently depending on which tool an agent asked — that one is now shared, and
+   pinned by a test that renders one match through both surfaces. Its other two
+   sides were already single: one parser (`ruleMatch(from:)`, used by rules *and*
+   breakpoints) and one advertised schema (`matchSchema`).
+
+   What remains is not duplication. The input schema (snake_case, flattened route,
+   create-vs-update semantics) and the `list_rules` render (camelCase,
+   omit-when-default, truncated bodies) are deliberately *different shapes* for
+   different readers — merging them would mean inventing a third shape neither
+   wants. And `RuleDraft` is not a serialization at all: it is a form model, with
+   `String`-typed number fields, headers as a text blob, and five `carried*` fields
+   whose entire job is to preserve what the editor deliberately doesn't show.
+   Folding it into a codec means rewriting the editor to be generated, which costs
+   far more than the census it would replace. So the census stays as the guard; if a
+   *fifth* surface appears (a rule-import format, a config file), collapse before
+   adding it.
 
 ### M8 — Capture reach (done, 0.0.10)
 

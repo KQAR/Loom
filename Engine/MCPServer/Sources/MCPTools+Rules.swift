@@ -251,17 +251,7 @@ extension MCPToolExecutor {
             "id": rule.id.uuidString,
             "name": rule.name,
             "enabled": rule.isEnabled,
-            "match": {
-                var match: [String: Any] = ["urlPattern": rule.match.urlPattern]
-                if rule.match.isRegex { match["isRegex"] = true }
-                if rule.match.isExact { match["isExact"] = true }
-                if let hostPattern = rule.match.hostPattern, !hostPattern.isEmpty { match["hostPattern"] = hostPattern }
-                if let query = rule.match.query, !query.isEmpty { match["query"] = query }
-                if let sourceApp = rule.match.sourceApp, !sourceApp.isEmpty { match["sourceApp"] = sourceApp }
-                if let deviceIP = rule.match.deviceIP, !deviceIP.isEmpty { match["deviceIP"] = deviceIP }
-                if !rule.match.methods.isEmpty { match["methods"] = rule.match.methods }
-                return match
-            }(),
+            "match": matchDict(rule.match),
             "createdAt": Self.iso8601.string(from: rule.createdAt),
         ]
         if let comment = rule.comment { out["comment"] = comment }
@@ -329,8 +319,12 @@ extension MCPToolExecutor {
         return out
     }
 
-    // MARK: - Breakpoint rendering
-
+    /// The one rendering of a `RuleMatch`, shared by `list_rules` and by the
+    /// breakpoint tools — the two surfaces that show an agent what a match says.
+    /// It was written twice, identically, and a predicate added to only one copy
+    /// would have meant a rule and a breakpoint scoped the same way reading back
+    /// differently. `RuleMatch` is already parsed once (`ruleMatch(from:)`) and
+    /// advertised once (`matchSchema`); this closes the third side.
     static func matchDict(_ match: RuleMatch) -> [String: Any] {
         var out: [String: Any] = ["urlPattern": match.urlPattern]
         if match.isRegex { out["isRegex"] = true }
