@@ -144,6 +144,58 @@ import LoomSharedModels
         #expect(!FlowQuery(bodyContains: "anything").matches(exchange()), "no body can't match")
     }
 
+    /// The search that started this: "which request carried this order id".
+    ///
+    /// A list endpoint's *response* usually contains every id in the system, so the
+    /// unscoped search answers with a page of noise around the one hit. Measured on a
+    /// real capture: 10 matches for one id, 8 of them the same list endpoint's
+    /// response. Without a side selector the caller can only guess (filter by method
+    /// and hope), which is a heuristic dressed as an answer.
+    @Test func bodyContains_canBeScopedToOneSideOfTheExchange() {
+        let listing = exchange(
+            requestBody: Data(),
+            responseBody: Data(#"{"orders":[{"id":"ORD-1013"},{"id":"ORD-1014"}]}"#.utf8)
+        )
+        let checkout = exchange(
+            requestBody: Data(#"{"orderRef":"ORD-1013","total":137}"#.utf8),
+            responseBody: Data(#"{"status":"confirmed"}"#.utf8)
+        )
+
+        // Both, as before — the default must not change.
+        #expect(FlowQuery(bodyContains: "ORD-1013").matches(listing))
+        #expect(FlowQuery(bodyContains: "ORD-1013").matches(checkout))
+
+        // Scoped to the request side: only the exchange that *sent* the id.
+        #expect(!FlowQuery(bodyContains: "ORD-1013", bodySide: .request).matches(listing))
+        #expect(FlowQuery(bodyContains: "ORD-1013", bodySide: .request).matches(checkout))
+
+        // …and the mirror question.
+        #expect(FlowQuery(bodyContains: "ORD-1013", bodySide: .response).matches(listing))
+        #expect(!FlowQuery(bodyContains: "ORD-1013", bodySide: .response).matches(checkout))
+    }
+
+    @Test func headerContains_canBeScopedToOneSideOfTheExchange() {
+        let flow = exchange(
+            requestHeaders: [HeaderPair(name: "Authorization", value: "Bearer eyJ")],
+            responseHeaders: [HeaderPair(name: "Set-Cookie", value: "session=eyJ")]
+        )
+        #expect(FlowQuery(headerContains: "eyJ").matches(flow), "both sides by default")
+
+        #expect(FlowQuery(headerContains: "eyJ", headerSide: .request).matches(flow))
+        #expect(!FlowQuery(headerContains: "set-cookie", headerSide: .request).matches(flow))
+        #expect(FlowQuery(headerContains: "set-cookie", headerSide: .response).matches(flow))
+        #expect(!FlowQuery(headerContains: "authorization", headerSide: .response).matches(flow))
+    }
+
+    /// A side selector must not change what an unscoped query means, or every
+    /// existing caller silently starts filtering.
+    @Test func aSideSelectorDefaultsToBothAndLeavesTheQueryEmpty() {
+        #expect(FlowQuery(bodySide: .any).isEmpty)
+        #expect(FlowQuery(headerSide: .any).isEmpty)
+        #expect(FlowQuery.all.bodySide == .any)
+        #expect(FlowQuery.all.headerSide == .any)
+    }
+
     @Test func bodyContains_worksOnNonUTF8Bytes_andNonASCIINeedles() {
         // A PNG header followed by a stray 0xFF — not decodable as UTF-8 at all.
         var binary = Data([0x89, 0x50, 0x4E, 0x47, 0xFF, 0xFE])

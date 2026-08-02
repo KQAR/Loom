@@ -71,21 +71,40 @@ extension MCPToolExecutor {
         "header_contains": [
             "type": "string",
             "description": """
-            Case-insensitive substring of any request or response header. Plain text \
-            matches a header name or value (`authorization`, `Bearer ey`); with a colon \
-            it means `name: value` and both halves must hit the same header \
-            (`x-env: staging`, or `set-cookie:` for "has this header at all").
+            Case-insensitive substring of a header. Plain text matches a header name or \
+            value (`authorization`, `Bearer ey`); with a colon it means `name: value` and \
+            both halves must hit the same header (`x-env: staging`, or `set-cookie:` for \
+            "has this header at all"). Searches both sides unless `header_in` narrows it.
+            """,
+        ],
+        "header_in": [
+            "type": "string",
+            "enum": ["any", "request", "response"],
+            "description": """
+            Which side `header_contains` searches; default `any`. Most header questions \
+            have a side — "who sent this auth header" is about requests, "who set this \
+            cookie" is about responses — and searching both buries the answer.
             """,
         ],
         "body_contains": [
             "type": "string",
             "description": """
-            Case-insensitive substring of the captured request or response body — the \
-            "which exchange carried this id/token/error string" filter. Matched over raw \
-            bytes, so non-UTF-8 payloads are searched too. Combine with `host` / \
-            `url_contains` / `since_seconds` to keep the scan narrow, and note a flow \
-            with `captureTruncated: true` holds only a body prefix, so a miss on one of \
-            those isn't proof.
+            Case-insensitive substring of a captured body — the "which exchange carried \
+            this id/token/error string" filter. Matched over raw bytes, so non-UTF-8 \
+            payloads are searched too. Searches both sides unless `body_in` narrows it. \
+            Combine with `host` / `url_contains` / `since_seconds` to keep the scan \
+            narrow, and note a flow with `captureTruncated: true` holds only a body \
+            prefix, so a miss on one of those isn't proof.
+            """,
+        ],
+        "body_in": [
+            "type": "string",
+            "enum": ["any", "request", "response"],
+            "description": """
+            Which side `body_contains` searches; default `any`. Use `request` for the \
+            usual question — "which request carried this order id" — because a list \
+            endpoint's *response* typically contains every id in the system, so searching \
+            both returns a page of noise around the one hit you wanted.
             """,
         ],
         "status": [

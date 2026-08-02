@@ -101,6 +101,17 @@ extension MCPToolExecutor {
     /// Parse the `get_recent_flows` filter arguments. Malformed input is rejected
     /// rather than silently ignored: a filter that quietly doesn't apply would hand
     /// an agent unfiltered traffic it believes is filtered — worse than an error.
+    /// Parse a side selector, rejecting an unknown value rather than silently
+    /// widening to "both" — a typo that quietly searches the other half too would
+    /// return the exact noise the selector exists to remove.
+    static func exchangeSide(_ raw: Any?, key: String) throws -> ExchangeSide {
+        guard let raw else { return .any }
+        guard let text = raw as? String, let side = ExchangeSide(rawValue: text) else {
+            throw MCPError.invalidParams("`\(key)` must be one of \"any\", \"request\", \"response\"")
+        }
+        return side
+    }
+
     static func flowQuery(from arguments: [String: Any]) throws -> FlowQuery {
         var query = FlowQuery()
         query.host = arguments["host"] as? String
@@ -108,7 +119,9 @@ extension MCPToolExecutor {
         query.deviceIP = arguments["device_ip"] as? String
         query.sourceApp = arguments["source_app"] as? String
         query.headerContains = arguments["header_contains"] as? String
+        query.headerSide = try Self.exchangeSide(arguments["header_in"], key: "header_in")
         query.bodyContains = arguments["body_contains"] as? String
+        query.bodySide = try Self.exchangeSide(arguments["body_in"], key: "body_in")
         query.onlyErrors = (arguments["only_errors"] as? Bool) ?? false
 
         switch arguments["method"] {

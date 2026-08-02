@@ -1,5 +1,21 @@
 import Foundation
 
+/// Which half of an exchange a content predicate searches.
+///
+/// `any` is the default and the old behaviour. The other two exist because the
+/// question usually has a side: "which request carried this id" is about request
+/// bodies, "who set this cookie" is about response headers. Searching both and
+/// letting the caller sort it out is not free — a list endpoint's response tends
+/// to contain every id in the system, so the noise scales with the data.
+public enum ExchangeSide: String, Equatable, Codable, Sendable {
+    case any
+    case request
+    case response
+
+    var includesRequest: Bool { self != .response }
+    var includesResponse: Bool { self != .request }
+}
+
 /// A filter over captured flows — the "find the exchange I care about" predicate
 /// shared by the MCP read tools and any embedder.
 ///
@@ -40,7 +56,8 @@ public struct FlowQuery: Equatable, Sendable {
     public var deviceIP: String?
     /// Originating local app, by bundle id or display name (`SourceApp.groupingKey`).
     public var sourceApp: String?
-    /// Substring of a request *or* response header, ASCII-case-insensitive.
+    /// Substring of a header, ASCII-case-insensitive. `headerSide` picks which
+    /// side is searched; the default is both.
     ///
     /// Without a colon the needle matches a header's name or its value (`authorization`
     /// finds the header; `Bearer ey` finds the token that carries it). With a colon it
@@ -48,14 +65,26 @@ public struct FlowQuery: Equatable, Sendable {
     /// `x-env: staging` can't be satisfied by an `x-env` header plus an unrelated
     /// `staging` elsewhere in the exchange.
     public var headerContains: String?
-    /// Substring of the captured request *or* response body, ASCII-case-insensitive
-    /// and matched over the raw bytes (so a non-UTF-8 payload is searched too, and a
-    /// non-ASCII needle works byte-for-byte).
+    /// Which side `headerContains` searches. "Who sent this auth header" is a
+    /// question about requests, and answering it over both sides buries the answer.
+    public var headerSide: ExchangeSide = .any
+    /// Substring of a captured body, ASCII-case-insensitive and matched over the raw
+    /// bytes (so a non-UTF-8 payload is searched too, and a non-ASCII needle works
+    /// byte-for-byte). `bodySide` picks which side is searched; the default is both.
     ///
     /// Matched against what Loom *captured*: a body over the capture cap is recorded
     /// as a prefix, and such a flow reports `isBodyTruncated`, so a miss on one of
     /// those isn't proof the bytes weren't on the wire.
     public var bodyContains: String?
+    /// Which side `bodyContains` searches.
+    ///
+    /// The reason this exists: "which request carried this order id" is the most
+    /// common content search there is, and it is a question about *request* bodies —
+    /// but a list endpoint's response usually contains every id in the system, so
+    /// searching both sides answers it with a page of noise around the one hit. The
+    /// caller could not narrow it, only guess (by method, say), which is a heuristic
+    /// dressed as an answer.
+    public var bodySide: ExchangeSide = .any
 
     public init(
         host: String? = nil,
@@ -68,7 +97,9 @@ public struct FlowQuery: Equatable, Sendable {
         deviceIP: String? = nil,
         sourceApp: String? = nil,
         headerContains: String? = nil,
-        bodyContains: String? = nil
+        headerSide: ExchangeSide = .any,
+        bodyContains: String? = nil,
+        bodySide: ExchangeSide = .any
     ) {
         self.host = host
         self.methods = methods
@@ -80,7 +111,9 @@ public struct FlowQuery: Equatable, Sendable {
         self.deviceIP = deviceIP
         self.sourceApp = sourceApp
         self.headerContains = headerContains
+        self.headerSide = headerSide
         self.bodyContains = bodyContains
+        self.bodySide = bodySide
     }
 
     /// The match-everything query.
@@ -133,7 +166,7 @@ public struct FlowQuery: Equatable, Sendable {
             else { return false }
         }
         if let headerContains, !headerContains.isEmpty {
-            guard Self.headerMatches(needle: headerContains, in: flow) else { return false }
+            guard Self.headerMatches(needle: headerContains, in: flow, side: headerSide) else { return false }
         }
         return true
     }
@@ -143,13 +176,14 @@ public struct FlowQuery: Equatable, Sendable {
     public func matchesBodies(_ flow: Flow) -> Bool {
         guard let bodyContains, !bodyContains.isEmpty else { return true }
         let needle = Array(bodyContains.utf8)
-        return ByteSearch.contains(needle, in: flow.request.body)
-            || ByteSearch.contains(needle, in: flow.response?.body)
+        let inRequest = bodySide.includesRequest && ByteSearch.contains(needle, in: flow.request.body)
+        let inResponse = bodySide.includesResponse && ByteSearch.contains(needle, in: flow.response?.body)
+        return inRequest || inResponse
     }
 
     // MARK: - Header matching
 
-    private static func headerMatches(needle: String, in flow: Flow) -> Bool {
+    private static func headerMatches(needle: String, in flow: Flow, side: ExchangeSide) -> Bool {
         // Split once per flow rather than per header. Substrings, so no copies.
         let namePart: Substring?
         let valuePart: Substring
@@ -175,7 +209,9 @@ public struct FlowQuery: Equatable, Sendable {
                     || ByteSearch.contains(value, in: header.value)
             }
         }
-        return hits(flow.request.headers) || hits(flow.response?.headers ?? [])
+        let inRequest = side.includesRequest && hits(flow.request.headers)
+        let inResponse = side.includesResponse && hits(flow.response?.headers ?? [])
+        return inRequest || inResponse
     }
 }
 
