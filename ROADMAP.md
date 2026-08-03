@@ -407,6 +407,57 @@ written decision. Same failure mode as the 0.0.11 audit, one layer up. CI now sk
 the build jobs on docs-only changes, and **ad-hoc signing is recorded as a decision**
 rather than a gap, which parks the privileged helper for good (§ M2).
 
+### What the agent can see (done, 0.0.13)
+
+The first round measured by **driving the MCP surface** instead of reading the
+code: eight scenarios a real operator hits — an empty capture, "which request
+carried this id", "why is this slow", a pinned/expired HTTPS host, replay-and-diff,
+mock a failure, scope a rule to one app, edit a request in flight. Three passed
+outright (`get_stats` answered "server or transport" in one call; capture → replay
+→ `diff_flows` in three; breakpoints held, edited and released). The other five
+produced eight defects, and half of them were the same defect wearing different
+clothes.
+
+**The pattern, and the rule that comes out of it.** In four cases Loom *knew* the
+thing that decided whether the agent's next action was correct, and had no way to
+say it:
+
+| Loom knew | The agent got |
+|---|---|
+| `CERTIFICATE_VERIFY_FAILED` — we refused the server's certificate | "Loom presented no client certificate … install one with `set_client_certificate`" |
+| the rules master switch is off | a clean `set_rule` echo, `"enabled": true` |
+| the first byte was `'G'`, not a SOCKS5 greeting | nothing at all |
+| the port table predates this connection | `null`, and an app-scoped rule failing closed |
+
+M5 established "the engine fails open by design — but never silently", and
+discharged it with `os_log`. That is one output, aimed at a human with Console
+open. **Loom's primary operator is an agent, and it cannot read `os_log`.** So the
+rule this round adds: *a fact the engine holds that determines whether an
+operator's action was correct must be reachable from a tool, not only from a log
+line.* Concretely — a refused connection is counted and described in
+`get_proxy_status`; a rule write reports `effective` and why not; a TLS failure
+that is provably ours to explain says which side rejected whom.
+
+Two of the eight were not silence but plain breakage, and both were invisible
+without running the thing: an app-scoped rule matched **1 of 12** identical
+requests (a freshness test asking "how old is the table" rather than "could the
+table have contained this connection"), and the wrong half of a TLS diagnosis
+pointed the agent at a write action needing the operator's private key. Two more
+were the tool answering a near-miss question — content search that could not say
+*which side* of the exchange to look at, and a latency aggregate missing the very
+number that separates a slow server from a big payload.
+
+Two methodology notes worth keeping, because both changed a conclusion:
+
+- **Measure before designing around a cost.** The resolver's 0.25 s rescan window
+  existed because a comment estimated a `libproc` sweep at "tens to hundreds of
+  ms". Measured: **~3 ms**. The guard the estimate justified was the bug.
+- **A green suite is not the experiment.** The mutual-TLS test had been passing
+  for the wrong reason (its no-identity path never trusted the test CA, so it died
+  at server-certificate verification rather than the refusal it claimed to prove),
+  and the burst failure only appeared through the running app. "Verified" keeps
+  meaning what M8 said it means: through the app, not through the suite.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
