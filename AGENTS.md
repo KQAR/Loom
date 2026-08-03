@@ -15,6 +15,8 @@ Loom is a personal macOS 14+ app: an **AI-operable debugging proxy** that lives 
 
 **Fail-open logging**: the engine fails open by design (a corrupt CA regenerates, an unreadable rules file starts empty, a bad SSL scope disables interception) — but never silently. Those paths log at error level through `Log` (`proxy`/`tls`/`forward`/`store`/`websocket`/`audit`/`rules`); read them with `log stream --predicate 'subsystem == "com.loom"'`.
 
+**…and a log line is not enough on its own.** `os_log` has exactly one reader: a human with Console open. Loom's primary operator is an agent, which cannot see it. So a fact the engine holds that decides whether an operator's action was *correct* must also be reachable from a tool — a refused connection is counted in `get_proxy_status.recentRefusals`, a rule write reports `effective` and why not, a TLS failure Loom can attribute says which side rejected whom. Log it for the human, return it for the agent; the 0.0.13 round (ROADMAP § What the agent can see) is four instances of getting only the first half right.
+
 ## Design System
 
 Three docs govern the product; each wins over code in its domain:
