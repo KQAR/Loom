@@ -134,10 +134,14 @@ public struct MainView: View {
             }
         }
         .listStyle(.sidebar)
-        // DESIGN.md: sidebar-width 180–300, ideal 220. `HSplitView` sizes panes by
-        // frame, not by `navigationSplitViewColumnWidth` (a no-op outside
-        // `NavigationSplitView`).
-        .frame(minWidth: 180, idealWidth: 220, maxWidth: 300)
+        // DESIGN.md: sidebar-width 300, fixed. `HSplitView` sizes panes by frame,
+        // not by `navigationSplitViewColumnWidth` (a no-op outside
+        // `NavigationSplitView`) — but it only honours `idealWidth` on the *first*
+        // layout. Hiding the sidebar removes the pane, and putting it back gave it
+        // `minWidth` instead, so every reopen came back at its narrowest. A single
+        // width is the only form that survives the round trip; the cost is that the
+        // divider no longer drags, which is the trade this deliberately takes.
+        .frame(width: 300)
     }
 
     /// Breakpoints category. While something is held the row goes orange and its
