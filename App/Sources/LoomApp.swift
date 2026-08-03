@@ -44,10 +44,20 @@ struct LoomApp: App {
         .menuBarExtraStyle(.window)
 
         // Main window: the request list + detail (the working surface).
+        //
+        // `.hiddenTitleBar` because DESIGN.md's main-window structure says "no
+        // sidebar/window title": the toolbar already carries the address chip and
+        // the capture controls, and a centred "Loom" above the sidebar repeats what
+        // the menu-bar icon and the app itself have already said. The window still
+        // needs a *name* — it is what `openWindow(id:)` restores and what the
+        // Window menu lists — so the title stays on the scene and only its
+        // presentation is hidden. Toolbar items are unaffected; they move into the
+        // unified bar.
         Window("Loom", id: "main") {
             MainView(store: store)
         }
         .defaultSize(width: 1040, height: 640)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 

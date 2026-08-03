@@ -45,7 +45,7 @@ spacing:
 metrics:
   console-width: 300px       # the menu-bar popover (config & control only)
   main-window-default: 1040x640
-  sidebar-width: 180-300     # category sidebar (ideal 220)
+  sidebar-width: 300         # category sidebar, fixed (HSplitView only honours an ideal width on first layout, so a hide/show cycle came back at the minimum)
   main-list-width: 320-520   # request list column (ideal 400)
 
 components:
