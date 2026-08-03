@@ -189,7 +189,7 @@ utility — closer to the system's own controls than to a themed Electron tool.
 │ 🛑 Breakpoints       1 held         │   config-row, conditional (orange)
 │ ──────────────────────────────────  │
 │ 📋 Open Main Window     N flows     │   action-row
-│ v0.0.12  Loom                Quit   │   footer
+│ v0.0.13  Loom                Quit   │   footer
 └──────────────────────────────────────┘
 ```
 
