@@ -225,7 +225,10 @@ struct SOCKSCaptureTests {
     /// reached `os_log`, so over MCP an empty capture looked identical to a client
     /// that never ran. The refusal is now readable from `get_proxy_status`.
     @Test func aRefusedConnectionIsVisibleInTheStatus() throws {
-        RefusalLog.shared.reset()
+        // No `reset()` and no exact count: `RefusalLog.shared` is process-wide and
+        // this suite runs in parallel, so another test's refusal may land in the
+        // same log. The assertion is about *this* refusal being findable, which is
+        // the property under test; pinning a total would be pinning test ordering.
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
         defer { runBlockingVoid { await engine.stop() } }
@@ -245,28 +248,28 @@ struct SOCKSCaptureTests {
 
         // The status is polled: the refusal is recorded on the event loop handling
         // that connection, which races the assertion otherwise.
-        var status = try runBlocking { await engine.status() }
-        for _ in 0 ..< 100 where status.refusedConnections == 0 {
-            usleep(20_000)
-            status = try runBlocking { await engine.status() }
+        var refusal: ConnectionRefusal?
+        for _ in 0 ..< 100 where refusal == nil {
+            let status = try runBlocking { await engine.status() }
+            refusal = status.recentRefusals.first { $0.reason.contains("0x47") }
+            if refusal == nil { usleep(20_000) }
         }
-        #expect(status.refusedConnections == 1)
-        let refusal = try #require(status.recentRefusals.first)
-        #expect(refusal.listener == .socks)
+        let found = try #require(refusal, "the refusal never reached the status")
+        #expect(found.listener == .socks)
         // The reason has to be actionable, not just present: this exact mistake is
         // fixed by aiming the client at the other port.
-        #expect(refusal.reason.contains("HTTP proxy port"), "got \(refusal.reason)")
-        #expect(refusal.reason.contains("0x47"), "the first byte is the evidence: \(refusal.reason)")
-        #expect(refusal.peer?.contains("127.0.0.1") == true)
+        #expect(found.reason.contains("HTTP proxy port"), "got \(found.reason)")
+        #expect(found.peer?.contains("127.0.0.1") == true)
     }
 
     /// Bounded like every other in-memory collection in the engine, and honest
     /// about it: the tail is capped while the count keeps rising, so "this happened
     /// once" stays distinguishable from "this is happening to every request".
     @Test func refusalsAreBoundedButTheCountIsNot() {
-        let log = RefusalLog.shared
-        log.reset()
-        defer { log.reset() }
+        // Its own instance, not `.shared`: the bound is a property of the type, and
+        // reaching for the singleton would make this test both depend on and
+        // clobber whatever else is recording refusals in parallel.
+        let log = RefusalLog()
         for index in 0 ..< (RefusalLog.capacity + 15) {
             log.record(ConnectionRefusal(listener: .socks, reason: "refusal \(index)"))
         }
