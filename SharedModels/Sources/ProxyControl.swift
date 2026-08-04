@@ -74,11 +74,20 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// — the difference between "this happened once" and "this is happening on
     /// every request".
     public var refusedConnections: Int
+    /// Reverse-proxy endpoints and whether each is listening.
+    ///
+    /// Here rather than only in `list_reverse_proxies` because this is the surface an
+    /// agent reads when traffic is missing, and an endpoint that exists in the config
+    /// but failed to bind (its port taken by the very dev server it was made for) is
+    /// exactly that case. A client pointed at a dead endpoint gets connection
+    /// refused, which looks like Loom isn't running at all.
+    public var reverseProxies: [ReverseProxyStatus]
 
     public init(
         isRunning: Bool, port: Int, capturedCount: Int, isRecording: Bool = true,
         listenHost: String = "127.0.0.1", socksPort: Int? = nil,
-        recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0
+        recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
+        reverseProxies: [ReverseProxyStatus] = []
     ) {
         self.isRunning = isRunning
         self.port = port
@@ -88,6 +97,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.socksPort = socksPort
         self.recentRefusals = recentRefusals
         self.refusedConnections = refusedConnections
+        self.reverseProxies = reverseProxies
     }
 
     /// Reachable from other devices on the network, not just this Mac.
@@ -107,6 +117,10 @@ public struct ConnectionRefusal: Equatable, Codable, Sendable, Identifiable {
     public enum Listener: String, Codable, Sendable {
         case http
         case socks
+        /// One of the reverse-proxy endpoints, which refuses for opposite reasons to
+        /// the forward port (a CONNECT it can't be asked for, rather than an
+        /// origin-form request it needs).
+        case reverseProxy
     }
 
     public var id: UUID
@@ -177,6 +191,8 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     case invalidBreakpoint(String)
     case invalidClientCertificate(String)
     case clientCertificateNotFound(UUID)
+    case invalidReverseProxy(String)
+    case reverseProxyNotFound(UUID)
 
     /// Human-readable text for surfacing to the operator (UI or AI), instead of a
     /// `String(describing:)` enum dump.
@@ -194,6 +210,8 @@ public enum ProxyControlError: Error, Equatable, Sendable {
         case let .invalidBreakpoint(reason): return "invalid breakpoint: \(reason)"
         case let .invalidClientCertificate(reason): return "invalid client certificate: \(reason)"
         case let .clientCertificateNotFound(id): return "no client certificate with id \(id.uuidString)"
+        case let .invalidReverseProxy(reason): return "invalid reverse proxy: \(reason)"
+        case let .reverseProxyNotFound(id): return "no reverse-proxy endpoint with id \(id.uuidString)"
         }
     }
 }
@@ -391,7 +409,7 @@ public protocol AuditControlling: Sendable {
     func clearAudit() async
 }
 
-public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling & AuditControlling & ClientCertificateControlling
+public typealias ProxyControlling = FlowProviding & FlowReplaying & TLSInterceptControlling & CaptureControlling & RulesControlling & BreakpointControlling & AuditControlling & ClientCertificateControlling & ReverseProxyControlling
 
 /// Every requirement of `ProxyControlling`, enumerated as a value.
 ///
@@ -456,4 +474,8 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     case clientCertificates
     case setClientCertificate
     case deleteClientCertificate
+    // ReverseProxyControlling
+    case reverseProxies
+    case createReverseProxy
+    case deleteReverseProxy
 }

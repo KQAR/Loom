@@ -24,6 +24,18 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     /// a consumer can see the HTTPS activity even though it wasn't MITM-decrypted.
     /// Off by default — the app UI doesn't want CONNECT noise; embedders opt in.
     private let observeTunnels: Bool
+    /// Set when this handler is serving a **reverse-proxy endpoint** rather than the
+    /// forward-proxy port: the client believes it is talking to an ordinary web
+    /// server, so it sends origin-form request lines and Loom supplies the
+    /// destination from configuration instead of from the request.
+    ///
+    /// Deliberately a mode on this handler rather than a second handler. Everything
+    /// after "which URL is this going to" — body streaming and its back-pressure,
+    /// the capture, rules, breakpoints, the WebSocket splice — must behave
+    /// identically on both entry points, and the way that stops being true is by
+    /// having two copies of it (the same reasoning `MITMPipeline` records for the
+    /// HTTP and SOCKS entry points).
+    private let reverseUpstream: ReverseProxyEndpoint?
 
     private var requestHead: HTTPRequestHead?
     private var requestURL: URL?
@@ -42,7 +54,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         forwarder: UpstreamForwarding,
         ca: CertificateAuthority?,
         config: InterceptionConfig,
-        observeTunnels: Bool = false
+        observeTunnels: Bool = false,
+        reverseUpstream: ReverseProxyEndpoint? = nil
     ) {
         self.store = store
         self.group = group
@@ -50,25 +63,25 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         self.ca = ca
         self.config = config
         self.observeTunnels = observeTunnels
+        self.reverseUpstream = reverseUpstream
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         switch unwrapInboundIn(data) {
         case let .head(head):
-            if head.method == .CONNECT {
+            if head.method == .CONNECT, reverseUpstream == nil {
                 // Defer the pipeline surgery until `.end`, so the decoder has
                 // finished emitting the CONNECT's HTTP parts before we swap it out.
                 connectHead = head
                 return
             }
-            // Proxied requests carry an absolute URI in the request line.
-            guard let url = URL(string: head.uri), url.scheme != nil else {
+            guard let resolved = resolveDestination(head) else {
                 refuse(context: context, head: head)
                 droppingRequest = true
                 return
             }
-            requestHead = head
-            requestURL = url
+            requestHead = resolved.head
+            requestURL = resolved.url
         case var .body(chunk):
             if droppingRequest { return }
             // First body chunk: begin streaming. Pausing auto-read (mirrors the
@@ -139,10 +152,10 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     /// reporting no problem — indistinguishable from a client that never ran, which
     /// is the exact ambiguity the SOCKS listener already fixed for its own refusals.
     private func refuse(context: ChannelHandlerContext, head: HTTPRequestHead) {
-        let reason = Self.refusalReason(for: head)
+        let reason = Self.refusalReason(for: head, reverseUpstream: reverseUpstream)
         Log.proxy.error("\(reason, privacy: .public)")
         RefusalLog.shared.record(ConnectionRefusal(
-            listener: .http,
+            listener: reverseUpstream == nil ? .http : .reverseProxy,
             peer: context.channel.remoteAddress.map { String(describing: $0) },
             reason: reason
         ))
@@ -158,11 +171,32 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     /// origin. A dev server forwarding `/api` to `http://127.0.0.1:9090` is the
     /// common way to arrive here, and the fix is a different one from "your client
     /// sent garbage", so the two must not read the same.
-    static func refusalReason(for head: HTTPRequestHead) -> String {
+    /// On a reverse endpoint the advice inverts — the client is *supposed* to send
+    /// origin-form there — so the two ports must not share one message.
+    static func refusalReason(for head: HTTPRequestHead, reverseUpstream: ReverseProxyEndpoint? = nil) -> String {
         let target = clamp(head.uri)
         // Both halves are client-supplied and land in a durable-ish log; clamp them
         // so a pathological URL can't bloat every refusal entry.
         let host = head.headers.first(name: "Host").map { clamp($0) } ?? "absent"
+        if let endpoint = reverseUpstream {
+            let upstream = clamp(endpoint.upstream)
+            guard head.method == .CONNECT else {
+                // Only reachable when the configured upstream can't be joined with the
+                // request target — a hand-edited config file, since creation validates.
+                return """
+                Reverse-proxy endpoint refused: could not build an upstream URL from \
+                \(upstream) and request target \(target). The endpoint's upstream is not \
+                usable; recreate it with a valid origin. Nothing was captured.
+                """
+            }
+            return """
+            Reverse-proxy endpoint refused: CONNECT \(target). This port stands in for \
+            \(upstream) as an ordinary web server, not as a proxy — a client should request \
+            paths on it directly over plain HTTP (GET /api/… to http://127.0.0.1:<port>), \
+            and Loom does the TLS to the upstream. To use Loom as a proxy instead, point the \
+            client at the forward-proxy port. Nothing was captured for this request.
+            """
+        }
         guard head.uri.hasPrefix("/") else {
             return """
             HTTP proxy refused: request target \(target) is neither an absolute URL \
@@ -183,6 +217,49 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     private static func clamp(_ value: String, limit: Int = 120) -> String {
         value.count <= limit ? value : value.prefix(limit) + "…"
+    }
+
+    // MARK: - Where this request is going
+
+    /// Resolve the upstream URL for a request, and the head to forward with it.
+    /// `nil` means the request can't be served on this port at all (→ `refuse`).
+    ///
+    /// The two ports answer the question from opposite ends. On the forward-proxy
+    /// port the *client* states the destination, so the request line must be
+    /// absolute. On a reverse endpoint the *configuration* states it, so the client's
+    /// own target only supplies path and query.
+    private func resolveDestination(_ head: HTTPRequestHead) -> (head: HTTPRequestHead, url: URL)? {
+        guard let endpoint = reverseUpstream else {
+            guard let url = URL(string: head.uri), url.scheme != nil else { return nil }
+            return (head, url)
+        }
+        guard let url = endpoint.forwardURL(requestTarget: Self.requestTarget(head.uri)) else { return nil }
+        var rewritten = head
+        // Rewrite the request line to the absolute upstream URL: it is what the flow
+        // records, so a captured reverse-proxied exchange carries the URL the
+        // developer thinks in terms of (`https://api.example.com/users`) rather than
+        // `127.0.0.1:9200`. Rules and breakpoints then match it like any other flow —
+        // if the local port leaked into the URL here, every rule an agent wrote
+        // against the real host would silently stop matching.
+        rewritten.uri = url.absoluteString
+        if !endpoint.keepHostHeader {
+            // Drop it rather than compute a replacement: the forwarder already
+            // synthesizes `Host` (with the port elided when it's the scheme default)
+            // for a request that arrives without one, and that is the same code path
+            // a map-remote rule's default uses. Two ways to spell "follow the new
+            // origin" is one too many.
+            rewritten.headers.remove(name: "Host")
+        }
+        return (rewritten, url)
+    }
+
+    /// The path+query of a request target, whichever form it arrived in. A client
+    /// that sends absolute-form to a reverse endpoint is still talking *to that
+    /// endpoint*; honoring its URL would route past the upstream the endpoint exists
+    /// to reach, which is the one thing a reverse proxy must not do.
+    private static func requestTarget(_ uri: String) -> String {
+        guard let url = URL(string: uri), url.scheme != nil else { return uri }
+        return originForm(url)
     }
 
     // MARK: - Plain HTTP forwarding

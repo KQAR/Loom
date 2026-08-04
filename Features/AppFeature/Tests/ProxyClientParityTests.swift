@@ -116,6 +116,11 @@ import Testing
         case .clientCertificates: return .wired(client.clientCertificates)
         case .setClientCertificate: return .wired(client.setClientCertificate)
         case .deleteClientCertificate: return .wired(client.deleteClientCertificate)
+
+        // MARK: ReverseProxyControlling
+        case .reverseProxies: return .wired(client.reverseProxies)
+        case .createReverseProxy: return .wired(client.createReverseProxy)
+        case .deleteReverseProxy: return .wired(client.deleteReverseProxy)
         }
     }
 

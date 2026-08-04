@@ -74,6 +74,13 @@ extension MCPToolExecutor {
                 return out
             }
         }
+        // Same rule as refusals — reported only when there are any. An endpoint in the
+        // list with no `localURL` is not listening (its `error` says why), and that is
+        // the "why is nothing captured" case for this feature: a client pointed at a
+        // dead endpoint sees connection refused, which reads like Loom isn't running.
+        if !status.reverseProxies.isEmpty {
+            payload["reverseProxies"] = status.reverseProxies.map(Self.renderReverseProxy)
+        }
         return prettyJSON(payload)
     }
 

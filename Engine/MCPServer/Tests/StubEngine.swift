@@ -25,7 +25,13 @@ final class StubEngine: ProxyControlling {
     var replayError: Error?
 
     // FlowProviding
-    func status() async -> ProxyStatus { proxyStatus }
+    /// Endpoints are folded in the way the real engine does (it reads them from its
+    /// config), so a tool that renders them from the status sees them here too.
+    func status() async -> ProxyStatus {
+        var status = proxyStatus
+        status.reverseProxies = storedReverseProxies
+        return status
+    }
     func recentFlows(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
     func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow] {
         Array(flows.lazy.filter(query.matches).prefix(limit))
@@ -260,5 +266,33 @@ final class StubEngine: ProxyControlling {
             throw ProxyControlError.clientCertificateNotFound(id)
         }
         storedClientCertificates.removeAll { $0.id == id }
+    }
+
+    // MARK: ReverseProxyControlling
+
+    /// Endpoints plus a fake bound port, so the tools can be exercised without
+    /// opening a real socket. The port allocation is deliberately trivial (a
+    /// counter): what the tools are responsible for is validation, rendering and
+    /// audit, not binding.
+    private(set) var storedReverseProxies: [ReverseProxyStatus] = []
+    private var nextStubPort = 9200
+
+    func reverseProxies() async -> [ReverseProxyStatus] { storedReverseProxies }
+
+    func createReverseProxy(_ endpoint: ReverseProxyEndpoint) async throws -> ReverseProxyStatus {
+        var endpoint = endpoint
+        endpoint.upstream = try ReverseProxyEndpoint.normalizedUpstream(endpoint.upstream)
+        let port = endpoint.requestedPort == 0 ? nextStubPort : endpoint.requestedPort
+        nextStubPort += 1
+        let status = ReverseProxyStatus(endpoint: endpoint, boundPort: port)
+        storedReverseProxies.append(status)
+        return status
+    }
+
+    func deleteReverseProxy(id: UUID) async throws {
+        guard storedReverseProxies.contains(where: { $0.endpoint.id == id }) else {
+            throw ProxyControlError.reverseProxyNotFound(id)
+        }
+        storedReverseProxies.removeAll { $0.endpoint.id == id }
     }
 }

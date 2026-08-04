@@ -16,7 +16,8 @@ extension ProxyEngine {
             listenHost: currentBindHost,
             socksPort: boundSOCKSPort,
             recentRefusals: refusals.recent,
-            refusedConnections: refusals.total
+            refusedConnections: refusals.total,
+            reverseProxies: reverseProxyConfig.snapshot()
         )
     }
 

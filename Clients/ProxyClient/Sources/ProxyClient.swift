@@ -92,6 +92,20 @@ public struct ProxyClient: Sendable {
     /// Add or replace by id; throws when the PKCS#12 bundle can't be opened.
     public var setClientCertificate: @Sendable (_ certificate: ClientCertificate) async throws -> Void
     public var deleteClientCertificate: @Sendable (_ id: UUID) async throws -> Void
+
+    // MARK: - Reverse-proxy endpoints
+    //
+    // Wired rather than left agent-only for the same reason as client certificates:
+    // an endpoint is a *listening port on this machine* that an agent opened, and one
+    // that outlives the debugging session keeps quietly capturing (and keeps a dev
+    // server's config pointed at Loom). The human has to be able to see the list and
+    // close one.
+
+    public var reverseProxies: @Sendable () async -> [ReverseProxyStatus] = { [] }
+    /// Validate, bind and persist. Throws when the upstream is unusable or the port
+    /// can't be bound — it never returns an endpoint that isn't listening.
+    public var createReverseProxy: @Sendable (_ endpoint: ReverseProxyEndpoint) async throws -> ReverseProxyStatus
+    public var deleteReverseProxy: @Sendable (_ id: UUID) async throws -> Void
 }
 
 extension ProxyClient: DependencyKey {
@@ -141,7 +155,10 @@ extension ProxyClient: DependencyKey {
             resumeBreakpoint: { try await engine.resumeBreakpoint(pendingID: $0, abort: $1, edit: $2) },
             clientCertificates: { await engine.clientCertificates() },
             setClientCertificate: { try await engine.setClientCertificate($0) },
-            deleteClientCertificate: { try await engine.deleteClientCertificate(id: $0) }
+            deleteClientCertificate: { try await engine.deleteClientCertificate(id: $0) },
+            reverseProxies: { await engine.reverseProxies() },
+            createReverseProxy: { try await engine.createReverseProxy($0) },
+            deleteReverseProxy: { try await engine.deleteReverseProxy(id: $0) }
         )
     }()
 
