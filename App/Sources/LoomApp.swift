@@ -18,6 +18,13 @@ struct LoomApp: App {
     )
 
     init() {
+        // Claim the MCP port before *either* listener starts — synchronously, because
+        // this is the race it exists to prevent: a reverse-proxy endpoint persisted on
+        // 9092 gets bound during the engine's start, and if it wins, Loom comes up with
+        // its whole control plane unreachable. The engine refuses its own two ports by
+        // number, but it must not know what an MCP server is, so the number is declared
+        // from here (see `ReservedPorts`).
+        ReservedPorts.shared.reserve(MCPServer.defaultPort, holder: "Loom's MCP control port")
         // The proxy is started by AppFeature's one-shot boot effect (fired by the
         // always-present menu-bar label at launch) — the single start owner, so we
         // don't race a second bind here. The MCP server is independent; start it.

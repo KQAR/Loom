@@ -28,11 +28,8 @@ extension ProxyEngine {
         guard endpoint.requestedPort >= 0, endpoint.requestedPort <= 65_535 else {
             throw ProxyControlError.invalidReverseProxy("port \(endpoint.requestedPort) is out of range (0–65535; 0 = pick a free one)")
         }
-        // A port Loom is already using for something else would "work" and then
-        // shadow the proxy or the MCP server, which is far worse than refusing.
-        if endpoint.requestedPort != 0, endpoint.requestedPort == boundPort || endpoint.requestedPort == boundSOCKSPort {
-            throw ProxyControlError.invalidReverseProxy(
-                "port \(endpoint.requestedPort) is already Loom's own \(endpoint.requestedPort == boundPort ? "proxy" : "SOCKS") port")
+        if let conflict = Self.loomPortConflict(endpoint.requestedPort, proxyPort: boundPort, socksPort: boundSOCKSPort) {
+            throw ProxyControlError.invalidReverseProxy(conflict)
         }
 
         let port: Int
@@ -65,6 +62,28 @@ extension ProxyEngine {
         _ = reverseProxyConfig.delete(id: id)
     }
 
+    /// Whether `port` is one Loom itself holds, and how to say so.
+    ///
+    /// Taking one of these would "work" and then shadow the thing that owns it. The
+    /// two listeners are known by number here; anything else — the MCP control port
+    /// above all — is declared by the app through `ReservedPorts`, because the engine
+    /// must not know what an MCP server is.
+    ///
+    /// Checked rather than left to `bind()`: an already-bound port fails with
+    /// `Address already in use` anyway, but only if the owner got there first. A
+    /// persisted endpoint bound during engine start can beat the MCP server to 9092,
+    /// and then the control plane is silently unreachable — the one failure an agent
+    /// can never report, since it would have to report it over that port.
+    static func loomPortConflict(_ port: Int, proxyPort: Int, socksPort: Int?) -> String? {
+        guard port != 0 else { return nil } // 0 = let the OS pick, never a conflict
+        if port == proxyPort { return "port \(port) is already Loom's own proxy port" }
+        if port == socksPort { return "port \(port) is already Loom's own SOCKS port" }
+        if let holder = ReservedPorts.shared.holder(of: port) {
+            return "port \(port) is reserved for \(holder)"
+        }
+        return nil
+    }
+
     /// Bind every persisted endpoint at startup.
     ///
     /// Fails **open per endpoint**: one port being taken must not stop the others or
@@ -74,6 +93,19 @@ extension ProxyEngine {
     /// path, which throws — there, a human or agent is waiting for an answer.
     func startReverseProxies() async {
         for endpoint in reverseProxyConfig.all() {
+            // The conflict check runs here too, not only on create: this endpoint was
+            // written to disk by an earlier session, possibly before the port belonged
+            // to anything, and binding it now is what would shadow the owner.
+            if let conflict = Self.loomPortConflict(
+                endpoint.requestedPort, proxyPort: boundPort, socksPort: boundSOCKSPort
+            ) {
+                reverseProxyConfig.noteFailure(id: endpoint.id, error: conflict)
+                Log.proxy.error("""
+                Reverse proxy for \(endpoint.upstream, privacy: .public) not started: \
+                \(conflict, privacy: .public) — delete it or recreate it on a free port
+                """)
+                continue
+            }
             do {
                 let port = try await reverseServer.start(
                     endpoint: endpoint, store: store, forwarder: forwarder,
