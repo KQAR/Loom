@@ -63,8 +63,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             }
             // Proxied requests carry an absolute URI in the request line.
             guard let url = URL(string: head.uri), url.scheme != nil else {
-                HTTPUtil.writeResponse(channel: context.channel, status: 400, headers: [],
-                                       body: Data("Loom: expected absolute request URI\n".utf8), keepAlive: false)
+                refuse(context: context, head: head)
                 droppingRequest = true
                 return
             }
@@ -125,6 +124,65 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         requestHead = nil
         requestURL = nil
         bridge.abort(reason: reason)
+    }
+
+    // MARK: - Refusals
+
+    /// Turn away a request this port can't serve, and say why in all three places
+    /// that have a reader: the HTTP response (whoever ran the client), `os_log` (the
+    /// human with Console open) and `RefusalLog` (the agent, via
+    /// `get_proxy_status.recentRefusals`).
+    ///
+    /// The third one is the point. The old behaviour wrote a bare
+    /// `400 expected absolute request URI` to the socket and recorded nothing, so an
+    /// agent asking why nothing was captured saw an empty flow list and a status
+    /// reporting no problem — indistinguishable from a client that never ran, which
+    /// is the exact ambiguity the SOCKS listener already fixed for its own refusals.
+    private func refuse(context: ChannelHandlerContext, head: HTTPRequestHead) {
+        let reason = Self.refusalReason(for: head)
+        Log.proxy.error("\(reason, privacy: .public)")
+        RefusalLog.shared.record(ConnectionRefusal(
+            listener: .http,
+            peer: context.channel.remoteAddress.map { String(describing: $0) },
+            reason: reason
+        ))
+        HTTPUtil.writeResponse(channel: context.channel, status: 400, headers: [],
+                               body: Data("Loom: \(reason)\n".utf8), keepAlive: false)
+    }
+
+    /// Why the request line was unusable, in terms the operator can act on.
+    ///
+    /// Origin-form is worth its own branch rather than a generic "malformed": it is
+    /// not a malformed proxy request at all, it is a *well-formed request to a web
+    /// server*, which means the client was pointed at Loom as if Loom were the
+    /// origin. A dev server forwarding `/api` to `http://127.0.0.1:9090` is the
+    /// common way to arrive here, and the fix is a different one from "your client
+    /// sent garbage", so the two must not read the same.
+    static func refusalReason(for head: HTTPRequestHead) -> String {
+        let target = clamp(head.uri)
+        // Both halves are client-supplied and land in a durable-ish log; clamp them
+        // so a pathological URL can't bloat every refusal entry.
+        let host = head.headers.first(name: "Host").map { clamp($0) } ?? "absent"
+        guard head.uri.hasPrefix("/") else {
+            return """
+            HTTP proxy refused: request target \(target) is neither an absolute URL \
+            (http://host/path, what a forward proxy expects) nor origin-form (/path). \
+            Nothing was captured for it.
+            """
+        }
+        return """
+        HTTP proxy refused: request line was origin-form — \(head.method) \(target) with \
+        Host: \(host) — but this is Loom's forward-proxy port, which needs the absolute form \
+        (\(head.method) http://\(host)\(target)). A client that sends origin-form here was \
+        pointed at Loom as if Loom were the destination server; the usual case is a dev \
+        server whose proxy target is Loom's own port. Aim the client at Loom as a proxy \
+        instead (curl -x 127.0.0.1:<port>, HTTP_PROXY/HTTPS_PROXY, or the system proxy \
+        switch). Nothing was captured for this request.
+        """
+    }
+
+    private static func clamp(_ value: String, limit: Int = 120) -> String {
+        value.count <= limit ? value : value.prefix(limit) + "…"
     }
 
     // MARK: - Plain HTTP forwarding
