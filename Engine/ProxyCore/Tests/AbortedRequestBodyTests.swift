@@ -23,7 +23,6 @@ struct AbortedRequestBodyTests {
         let forwarder = BodyStreamRecorder()
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
         let port = try await engine.start(port: 0)
-        defer { Task { await engine.stop() } }
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { try? group.syncShutdownGracefully() }
@@ -40,6 +39,7 @@ struct AbortedRequestBodyTests {
 
         let error = try #require(await forwarder.awaitFailure(), "the body stream should fail, not hang or finish")
         #expect(error is RequestBodyAborted, "got \(error)")
+        await engine.stopForTest()
     }
 
     /// MITM path (`TLSInterceptHandler`). Driven over a plain socket with the same
