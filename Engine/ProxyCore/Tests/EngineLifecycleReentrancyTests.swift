@@ -58,7 +58,6 @@ struct EngineLifecycleReentrancyTests {
     func concurrentPhoneOnboarding_onlyOneWins() async throws {
         let engine = makeEngine()
         _ = try await engine.start(port: 0)
-        defer { Task { await engine.stop() } }
 
         let outcomes = await withTaskGroup(of: Bool.self, returning: [Bool].self) { group in
             for _ in 0..<3 {
@@ -76,6 +75,7 @@ struct EngineLifecycleReentrancyTests {
         // The winner's server is the live one, so onboarding info is published.
         #expect(await engine.phoneOnboardingInfo() != nil)
         await engine.stopPhoneOnboarding()
+        await engine.stopForTest()
     }
 }
 

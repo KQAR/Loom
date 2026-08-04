@@ -66,7 +66,6 @@ import LoomSharedModels
     @Test func aRefusedRequestIsVisibleInTheStatus() async throws {
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         let port = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         // A unique path, because `RefusalLog.shared` is process-wide and this suite
         // runs in parallel with everything else that records refusals. Asserting on
@@ -89,6 +88,7 @@ import LoomSharedModels
         #expect(refusal.listener == .http, "attributed to the HTTP port, not SOCKS")
         #expect(refusal.peer?.contains("127.0.0.1") == true)
         #expect(status.refusedConnections > 0)
+        await engine.stopForTest()
     }
 
     /// The response body is the *other* reader — whoever ran the client sees only
@@ -96,7 +96,6 @@ import LoomSharedModels
     @Test func theClientAlsoGetsTheExplanation() async throws {
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         let port = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
@@ -105,6 +104,7 @@ import LoomSharedModels
         let body = String(decoding: data, as: UTF8.self)
         #expect(body.contains("origin-form"), "got \(body)")
         #expect(body.contains("HTTP_PROXY"), "got \(body)")
+        await engine.stopForTest()
     }
 
     /// A refusal must not leave the exchange half-started: no flow is recorded for a
@@ -113,7 +113,6 @@ import LoomSharedModels
     @Test func aRefusedRequestRecordsNoFlow() async throws {
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         let port = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.connectionProxyDictionary = [:]
@@ -122,5 +121,6 @@ import LoomSharedModels
 
         let flows = await engine.recentFlows(limit: 50)
         #expect(!flows.contains { $0.request.url.contains("never-forwarded") })
+        await engine.stopForTest()
     }
 }

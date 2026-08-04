@@ -70,11 +70,11 @@ import LoomSharedModels
     @Test func loomsOwnPortsAreRefused() async throws {
         let engine = makeEngine(StubForwarder(status: 200, body: Data()))
         let port = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
         await #expect(throws: ProxyControlError.self) {
             _ = try await engine.createReverseProxy(
                 ReverseProxyEndpoint(requestedPort: port, upstream: "https://api.example.com"))
         }
+        await engine.stopForTest()
     }
 
     // MARK: Forwarding and capture
@@ -83,7 +83,6 @@ import LoomSharedModels
         let forwarder = StubForwarder(status: 200, body: Data("{}".utf8))
         let engine = makeEngine(forwarder)
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let status = try await engine.createReverseProxy(ReverseProxyEndpoint(upstream: "https://api.example.com"))
         let local = try #require(status.localURL)
@@ -91,6 +90,7 @@ import LoomSharedModels
 
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(forwarder.lastURL?.absoluteString == "https://api.example.com/users?page=2")
+        await engine.stopForTest()
     }
 
     /// The flow must record the **upstream** URL. If `127.0.0.1:port` leaked in here,
@@ -99,7 +99,6 @@ import LoomSharedModels
     @Test func theCapturedFlowCarriesTheUpstreamURL() async throws {
         let engine = makeEngine(StubForwarder(status: 201, body: Data()))
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let status = try await engine.createReverseProxy(ReverseProxyEndpoint(upstream: "https://api.example.com"))
         let local = try #require(status.localURL)
@@ -113,6 +112,7 @@ import LoomSharedModels
         let captured = try #require(flow, "nothing was captured for the reverse-proxied request")
         #expect(captured.request.url == "https://api.example.com/orders")
         #expect(!captured.request.url.contains("127.0.0.1"))
+        await engine.stopForTest()
     }
 
     /// Default: the client's `Host` (127.0.0.1:port) is dropped so the forwarder
@@ -122,7 +122,6 @@ import LoomSharedModels
         let forwarder = StubForwarder(status: 200, body: Data())
         let engine = makeEngine(forwarder)
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let status = try await engine.createReverseProxy(ReverseProxyEndpoint(upstream: "https://api.example.com"))
         let local = try #require(status.localURL)
@@ -136,12 +135,12 @@ import LoomSharedModels
         let headers = try #require(flow?.request.headers)
         let host = headers.first { $0.name.lowercased() == "host" }
         #expect(host == nil, "the loopback Host should not be forwarded: \(String(describing: host))")
+        await engine.stopForTest()
     }
 
     @Test func keepHostHeaderPreservesTheClientsHost() async throws {
         let engine = makeEngine(StubForwarder(status: 200, body: Data()))
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let status = try await engine.createReverseProxy(
             ReverseProxyEndpoint(upstream: "https://api.example.com", keepHostHeader: true))
@@ -155,6 +154,7 @@ import LoomSharedModels
         }
         let headers = try #require(flow?.request.headers)
         #expect(headers.contains { $0.name.lowercased() == "host" && $0.value.contains("127.0.0.1") })
+        await engine.stopForTest()
     }
 
     // MARK: Lifecycle
@@ -162,7 +162,6 @@ import LoomSharedModels
     @Test func deletingAnEndpointClosesItsPort() async throws {
         let engine = makeEngine(StubForwarder(status: 200, body: Data()))
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let status = try await engine.createReverseProxy(ReverseProxyEndpoint(upstream: "https://api.example.com"))
         try await engine.deleteReverseProxy(id: status.endpoint.id)
@@ -174,6 +173,7 @@ import LoomSharedModels
         await #expect(throws: (any Error).self) {
             _ = try await self.directSession().data(from: try #require(URL(string: "\(local)/after-delete")))
         }
+        await engine.stopForTest()
     }
 
     @Test func deletingAnUnknownEndpointThrows() async {
@@ -218,7 +218,6 @@ import LoomSharedModels
         let forwarder = StubForwarder(status: 200, body: Data())
         let engine = makeEngine(forwarder)
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
         let status = try await engine.createReverseProxy(ReverseProxyEndpoint(upstream: "https://api.example.com"))
         let port = try #require(status.boundPort)
 
@@ -233,6 +232,7 @@ import LoomSharedModels
             if seen == nil { try await Task.sleep(nanoseconds: 20_000_000) }
         }
         #expect(seen?.absoluteString == "https://api.example.com/steal", "got \(String(describing: seen))")
+        await engine.stopForTest()
     }
 
     // MARK: Persistence
