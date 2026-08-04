@@ -14,14 +14,47 @@ import LoomSharedModels
 /// `ProxyHandler.reverseUpstream`). Where the other two listeners require the client
 /// to cooperate (an absolute request line, a SOCKS handshake), this one requires
 /// nothing of it: it looks like the origin server.
-final class ReverseProxyServer {
+final class ReverseProxyServer: @unchecked Sendable {
     private let group: EventLoopGroup
     /// Endpoint id → its listening channel. Only listening endpoints appear; one
     /// that failed to bind is remembered by the config, not here.
+    ///
+    /// Lock-guarded, and the lock is **never held across an `await`**: every mutation
+    /// below takes the channel out (or puts it in) and then does the I/O outside.
+    ///
+    /// Why a lock at all, when this is only reached from the `ProxyEngine` actor:
+    /// these are `async` methods on a plain class, so their bodies do **not** run on
+    /// the actor's executor. Two engine calls that overlap — an agent creating one
+    /// endpoint while deleting another, which the MCP surface allows — interleave in
+    /// here on different threads.
+    private let lock = NSLock()
     private var channels: [UUID: Channel] = [:]
 
     init(group: EventLoopGroup) {
         self.group = group
+    }
+
+    private func takeChannel(id: UUID) -> Channel? {
+        lock.lock()
+        defer { lock.unlock() }
+        return channels.removeValue(forKey: id)
+    }
+
+    /// Named `remember` rather than `store`: `start(…)` already takes a `store:`
+    /// (the FlowStore), and the parameter shadows a method of that name.
+    private func remember(_ channel: Channel, id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        channels[id] = channel
+    }
+
+    /// Remove and return every channel at once — the snapshot `stopAll` needs.
+    private func takeAllChannels() -> [Channel] {
+        lock.lock()
+        defer { lock.unlock() }
+        let all = Array(channels.values)
+        channels.removeAll()
+        return all
     }
 
     /// Bind one endpoint and return the port actually bound. Throws the bind error —
@@ -64,19 +97,36 @@ final class ReverseProxyServer {
             }
 
         let channel = try await bootstrap.bind(host: host, port: endpoint.requestedPort).get()
-        channels[endpoint.id] = channel
+        remember(channel, id: endpoint.id)
         return channel.localAddress?.port ?? endpoint.requestedPort
     }
 
     /// Stop one endpoint's listener. No-op when it isn't listening.
     func stop(id: UUID) async {
-        guard let channel = channels.removeValue(forKey: id) else { return }
+        guard let channel = takeChannel(id: id) else { return }
         try? await channel.close().get()
     }
 
+    /// Stop every listener.
+    ///
+    /// The channels are taken out **first**, in one step, and only then closed. The
+    /// obvious spelling — `for id in channels.keys { await stop(id: id) }` — iterates a
+    /// lazy view over the dictionary's storage while `stop` removes from that same
+    /// storage, across a suspension point: undefined behaviour, and the cause of the
+    /// intermittent ThreadSanitizer failure this suite showed from the moment it
+    /// landed (a corrupt read surfacing as a race report in NIO's continuation bridge
+    /// plus an `abort()`, attributed to whichever test was unlucky). Every
+    /// `engine.stop()` ran it, which is why making test teardown deterministic made it
+    /// *more* frequent rather than less.
     func stopAll() async {
-        for id in channels.keys { await stop(id: id) }
+        for channel in takeAllChannels() {
+            try? await channel.close().get()
+        }
     }
 
-    func isListening(id: UUID) -> Bool { channels[id] != nil }
+    func isListening(id: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return channels[id] != nil
+    }
 }
