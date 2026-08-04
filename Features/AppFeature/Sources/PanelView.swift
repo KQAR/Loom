@@ -48,17 +48,39 @@ public struct PanelView: View {
 
     // MARK: Header
 
+    /// Width of the capture dot, and the indent the extra listener lines hang under
+    /// so they start where the address does.
+    private static let captureDotSize: CGFloat = 7
+
     private var header: some View {
-        HStack(spacing: LoomTheme.Space.xs) {
-            // Capture state (mirrors the main-window toolbar dot): green when the
-            // proxy is up and recording, yellow when up but recording is paused,
-            // grey when the proxy is off. Proxy on/off is the switch on the right.
-            Circle()
-                .fill(captureDotColor)
-                .frame(width: 7, height: 7)
-            VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 1) {
+            // One row, three controls, all centred on the same horizontal line: the
+            // capture dot, the address, and the proxy switch. The extra listener lines
+            // hang *below* this row rather than sharing it — nesting them in a VStack
+            // between the dot and the switch made both drift down to the centre of the
+            // whole block, so the top line no longer read as one control strip.
+            HStack(spacing: LoomTheme.Space.xs) {
+                // Capture state (mirrors the main-window toolbar dot): green when the
+                // proxy is up and recording, yellow when up but recording is paused,
+                // grey when the proxy is off. Proxy on/off is the switch on the right.
+                Circle()
+                    .fill(captureDotColor)
+                    .frame(width: Self.captureDotSize, height: Self.captureDotSize)
                 Text(verbatim: "\(store.displayHost):\(store.status.port)")
                     .font(.headline.monospaced())
+                Spacer(minLength: LoomTheme.Space.xs)
+                // The proxy on/off control (replaces the old Proxy row + "Running" text).
+                Toggle("", isOn: Binding(
+                    get: { store.status.isRunning },
+                    set: { _ in store.send(.toggleProxyTapped) }
+                ))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .help(store.status.isRunning ? "Proxy running — tap to stop" : "Proxy stopped — tap to start")
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
                 // The second listener, named only when it is actually up. A client
                 // that ignores HTTP proxy settings but has a SOCKS field needs this
                 // number, and it is not derivable from the one above (the engine
@@ -68,17 +90,30 @@ public struct PanelView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
+                // Reverse-proxy endpoints, in the same slot as the SOCKS line and for
+                // the same reason: they are ports on this machine a client gets pointed
+                // at, and the number is not derivable from anything above it. Bound to
+                // loopback only, so the LAN address above never applies to them.
+                let reverse = ReverseProxyHeaderLines.lines(for: store.status.reverseProxies)
+                ForEach(reverse.lines) { line in
+                    Text(verbatim: line.text)
+                        .font(.caption.monospaced())
+                        // Not-listening is a fault, not a quieter detail: its client
+                        // sees connection refused, which reads as Loom being down.
+                        .foregroundStyle(line.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                        .help(line.help)
+                }
+                if reverse.hidden > 0 {
+                    // Never silently truncated — the count says what is missing.
+                    Text(verbatim: "+\(reverse.hidden) more reverse \(reverse.hidden == 1 ? "proxy" : "proxies")")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .help("Open the main window's Audit panel, or ask the agent for list_reverse_proxies, to see them all.")
+                }
             }
-            Spacer(minLength: LoomTheme.Space.xs)
-            // The proxy on/off control (replaces the old Proxy row + "Running" text).
-            Toggle("", isOn: Binding(
-                get: { store.status.isRunning },
-                set: { _ in store.send(.toggleProxyTapped) }
-            ))
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .labelsHidden()
-            .help(store.status.isRunning ? "Proxy running — tap to stop" : "Proxy stopped — tap to start")
+            // Indented to the address's leading edge, so the block reads as detail
+            // under it rather than as a second column starting at the dot.
+            .padding(.leading, Self.captureDotSize + LoomTheme.Space.xs)
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.sm)

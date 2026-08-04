@@ -147,12 +147,18 @@ import Testing
             AppFeature()
         } withDependencies: {
             $0.proxyClient.stop = {}
+            // `proxyStarted` re-reads the engine's listener facts (the SOCKS and
+            // reverse-proxy ports only exist once `start()` has returned).
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9191, capturedCount: 0, socksPort: 9192) }
         }
         #expect(store.state.setup.proxyRunning == false)
 
         await store.send(.proxyStarted(port: 9191)) {
             $0.status.isRunning = true
             $0.status.port = 9191
+        }
+        await store.receive(\.engineStatusRefreshed) {
+            $0.status.socksPort = 9192
         }
         #expect(store.state.setup.proxyRunning, "started proxy, stale child")
         #expect(store.state.setup.port == 9191, "rebound port, stale child")
