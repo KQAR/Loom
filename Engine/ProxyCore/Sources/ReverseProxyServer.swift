@@ -14,20 +14,19 @@ import LoomSharedModels
 /// `ProxyHandler.reverseUpstream`). Where the other two listeners require the client
 /// to cooperate (an absolute request line, a SOCKS handshake), this one requires
 /// nothing of it: it looks like the origin server.
-final class ReverseProxyServer: @unchecked Sendable {
+///
+/// An **actor**, not a lock-guarded class, unlike the other holders of mutable state
+/// in this module. The distinction is which side reads it: `RulesConfig`,
+/// `InterceptionConfig` and `RefusalLog` are read *on the event loop* for every
+/// request, where nothing can be awaited, so they have to be lock-based;
+/// `ReservedPorts` has to be writable synchronously at launch before an executor
+/// exists. Neither applies here — every caller is an `await` from the `ProxyEngine`
+/// actor — so the state is protected by construction instead of by remembering to
+/// never hold a lock across a suspension.
+actor ReverseProxyServer {
     private let group: EventLoopGroup
     /// Endpoint id → its listening channel. Only listening endpoints appear; one
     /// that failed to bind is remembered by the config, not here.
-    ///
-    /// Lock-guarded, and the lock is **never held across an `await`**: every mutation
-    /// below takes the channel out (or puts it in) and then does the I/O outside.
-    ///
-    /// Why a lock at all, when this is only reached from the `ProxyEngine` actor:
-    /// these are `async` methods on a plain class, so their bodies do **not** run on
-    /// the actor's executor. Two engine calls that overlap — an agent creating one
-    /// endpoint while deleting another, which the MCP surface allows — interleave in
-    /// here on different threads.
-    private let lock = NSLock()
     private var channels: [UUID: Channel] = [:]
 
     init(group: EventLoopGroup) {
@@ -35,23 +34,26 @@ final class ReverseProxyServer: @unchecked Sendable {
     }
 
     private func takeChannel(id: UUID) -> Channel? {
-        lock.lock()
-        defer { lock.unlock() }
-        return channels.removeValue(forKey: id)
+        channels.removeValue(forKey: id)
     }
 
-    /// Named `remember` rather than `store`: `start(…)` already takes a `store:`
-    /// (the FlowStore), and the parameter shadows a method of that name.
-    private func remember(_ channel: Channel, id: UUID) {
-        lock.lock()
-        defer { lock.unlock() }
+    /// Record the channel for `id`, returning any channel it displaced.
+    ///
+    /// Named `remember` rather than `store` because `start(…)` takes a `store:`
+    /// (the FlowStore) that would shadow it. The return value is the reentrancy
+    /// guard: actor isolation makes the dictionary write safe, but it does **not**
+    /// serialize `start`'s check-bind-record sequence across its `await` on `bind()`.
+    /// Two overlapping starts for one id would both bind, and the loser used to be
+    /// overwritten here — a listening socket with nothing left holding a reference to
+    /// close it. The caller closes what it displaces.
+    private func remember(_ channel: Channel, id: UUID) -> Channel? {
+        let displaced = channels[id]
         channels[id] = channel
+        return displaced
     }
 
     /// Remove and return every channel at once — the snapshot `stopAll` needs.
     private func takeAllChannels() -> [Channel] {
-        lock.lock()
-        defer { lock.unlock() }
         let all = Array(channels.values)
         channels.removeAll()
         return all
@@ -71,8 +73,9 @@ final class ReverseProxyServer: @unchecked Sendable {
         ca: CertificateAuthority?,
         config: InterceptionConfig
     ) async throws -> Int {
-        // Rebinding an id that is already listening would leak the old channel and
-        // leave two listeners for one endpoint.
+        // Fast path for the ordinary rebind: close the old listener before binding
+        // rather than after, so one endpoint isn't briefly served by two sockets.
+        // `remember` still closes a displacement, for the interleaving this can't see.
         await stop(id: endpoint.id)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
@@ -97,7 +100,11 @@ final class ReverseProxyServer: @unchecked Sendable {
             }
 
         let channel = try await bootstrap.bind(host: host, port: endpoint.requestedPort).get()
-        remember(channel, id: endpoint.id)
+        // Close whatever this displaced (see `remember`): a concurrent start for the
+        // same id would otherwise leave a bound socket nobody can reach.
+        if let displaced = remember(channel, id: endpoint.id) {
+            try? await displaced.close().get()
+        }
         return channel.localAddress?.port ?? endpoint.requestedPort
     }
 
@@ -125,8 +132,6 @@ final class ReverseProxyServer: @unchecked Sendable {
     }
 
     func isListening(id: UUID) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return channels[id] != nil
+        channels[id] != nil
     }
 }
