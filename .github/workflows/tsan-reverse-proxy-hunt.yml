@@ -10,8 +10,16 @@ name: TSan hunt (reverse proxy)
 # at all (macOS 26 — its runtime segfaults during its own init), so CI is the only
 # place it can be studied.
 #
-# `suite` narrows what runs; `iterations` repeats it in one process, which is what
-# makes an intermittent race show up in a single job. Read the log, not the exit code.
+# `suite` narrows what runs and `skip` excludes part of it; `iterations` repeats the
+# selection in one process, which is what makes an intermittent race show up in a
+# single job. Read the log, not the exit code.
+#
+# `skip` earns its keep on the question the first rounds could not answer: the failure
+# is attributed to a ReverseProxyTests case, but its rate tracks how many *engines*
+# the process has built, not which suite is selected — 25 clean runs of
+# ReverseProxyTests alone, then a hit on iteration 2 of the whole suite. Running
+# everything *except* those tests separates "these tests are broken" from "these tests
+# are the ones unlucky enough to be running when something older goes wrong".
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +31,10 @@ on:
         description: 'Test iterations in one process'
         required: false
         default: '20'
+      skip:
+        description: 'Test identifier to EXCLUDE (e.g. ProxyCoreTests/ReverseProxyTests). Empty = exclude nothing.'
+        required: false
+        default: ''
 
 jobs:
   hunt:
@@ -60,6 +72,7 @@ jobs:
             -derivedDataPath "${{ runner.temp }}/DerivedData" \
             -enableThreadSanitizer YES \
             -only-testing:'${{ inputs.suite }}' \
+            ${{ inputs.skip != '' && format('-skip-testing:{0}', inputs.skip) || '' }} \
             -test-iterations '${{ inputs.iterations }}' \
             -run-tests-until-failure \
             -resultBundlePath "${{ runner.temp }}/TSanHunt.xcresult" \
@@ -72,7 +85,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          echo "### TSan hunt: ${{ inputs.suite }} × ${{ inputs.iterations }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### TSan hunt: ${{ inputs.suite }} × ${{ inputs.iterations }} (skip: '${{ inputs.skip }}')" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "races reported: $(grep -c 'WARNING: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" || true)" \
             >> "$GITHUB_STEP_SUMMARY"
