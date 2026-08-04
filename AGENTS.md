@@ -131,13 +131,19 @@ Dual-era is one-way: a modern client probes and falls back, a **legacy client ca
 
 **Plugin packaging.** The repo root doubles as a Claude Code / Cursor plugin (modelled on KQAR/Reticle): `.claude-plugin/` + `.cursor-plugin/` (`plugin.json` + `marketplace.json`, `source: "./"`), a shared root `.mcp.json` (the HTTP server above), and `skills/loom/SKILL.md` documenting the tools + the debug loop. The MCP endpoint stays **loopback-only on its own port** — deliberately NOT the proxy's `9090`, which binds `0.0.0.0` when LAN device connection is on and would otherwise expose the write-capable, token-optional control plane to the whole Wi-Fi.
 
-**Two skill directories, two audiences — they are not duplicates, don't merge them.** `skills/` ships *with the plugin* to its users (`skills/loom/SKILL.md`: the tool surface, the debug loop, and the scrub-before-you-file rules for reporting a Loom bug). `.claude/skills/` is for whoever is *working on this repo* (`release`, `embed-engine`) and is auto-discovered when the project is opened. Moving the latter into `skills/` would ship maintainer procedure — EdDSA key handling included — to every plugin user; moving the former into `.claude/skills/` breaks the plugin, whose skills path is fixed at `<plugin-root>/skills/` (and hard-coded in `.cursor-plugin/plugin.json`). Both stay tracked in git: this file delegates authoritative content to them. Only `.claude/settings.local.json` is ignored.
+**Two skill directories, two audiences — they are not duplicates, don't merge them.** `skills/` ships *with the plugin* to its users (`skills/loom/SKILL.md` + its `references/`: the tool index, the debug loop, the per-task recipes, and the scrub-before-you-file rules for reporting a Loom bug). `.claude/skills/` is for whoever is *working on this repo* (`release`, `embed-engine`) and is auto-discovered when the project is opened. Moving the latter into `skills/` would ship maintainer procedure — EdDSA key handling included — to every plugin user; moving the former into `.claude/skills/` breaks the plugin, whose skills path is fixed at `<plugin-root>/skills/` (and hard-coded in `.cursor-plugin/plugin.json`). Both stay tracked in git: this file delegates authoritative content to them. Only `.claude/settings.local.json` is ignored.
 
 ### MCP Tools
 
-The full tool list — names, kinds, arguments, and the debug loop they compose into — lives in
-[`skills/loom/SKILL.md`](skills/loom/SKILL.md) (lazy-loaded) and, authoritatively, in the registry
-at `Engine/MCPServer/Sources`. Don't mirror it here; it drifts.
+Each tool's arguments and edge cases live **only** in its `description` in the registry at
+`Engine/MCPServer/Sources` — that text ships with `tools/list`, so the agent already has it, and a
+second copy anywhere else is a copy that drifts. [`skills/loom/SKILL.md`](skills/loom/SKILL.md)
+(lazy-loaded) carries an *index* — name → what it's for, read/write grouping, the debug loop they
+compose into — and delegates the rest: `references/workflows.md` (recipe per task + what an empty
+capture or a blind tunnel actually means), `references/filing-a-bug.md` (known non-bugs + the
+scrub-before-you-post rules). Progressive disclosure is the reason for the split, so don't grow the
+SKILL body back: a new per-tool caveat belongs in the tool's `description`, a new recipe in
+`workflows.md`. Don't mirror any of it here.
 
 That registry is split by concern: `MCPToolSchemas.swift` is everything `tools/list`
 advertises, `MCPToolExecutor.swift` is the state + the `call` dispatch/audit choke point, and
