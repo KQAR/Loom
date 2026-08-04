@@ -105,6 +105,10 @@ extension MCPToolExecutor {
             set_rule(id: …, enabled: true), or set_group_enabled if it belongs to a group.
             """
         }
+        // A body that was meant to be JSON and isn't gets written as asked — a
+        // malformed payload is a legitimate thing to mock — but never silently
+        // (`MCPBodyWarnings`).
+        Self.attach(warnings: Self.bodyWarnings(for: rule.actions), to: &out)
         return out
     }
 
