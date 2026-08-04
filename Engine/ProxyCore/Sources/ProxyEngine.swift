@@ -28,11 +28,17 @@ public actor ProxyEngine: ProxyControlling {
     /// a SOCKS proxy (or aren't speaking HTTP at all). Lives and dies with the HTTP
     /// listener rather than having its own switch — see `start(port:host:…)`.
     lazy var socksServer = SOCKSServer(group: group)
+    /// Listeners for the reverse-proxy endpoints — one per endpoint, for clients that
+    /// can't be pointed at a proxy at all (see `ReverseProxyServer`).
+    lazy var reverseServer = ReverseProxyServer(group: group)
 
     let forwarder: UpstreamForwarding
     let caStore: CAStore
     let config: InterceptionConfig
     let rulesConfig: RulesConfig
+    /// Configured reverse-proxy endpoints + this run's bind state. Persisted, because
+    /// their ports live in a dev server's config file that Loom's restart doesn't edit.
+    let reverseProxyConfig: ReverseProxyConfig
     /// Mutual-TLS identities Loom presents upstream, read per request by the
     /// forwarder (so it never has to hop to this actor) and mutated through
     /// `ClientCertificateControlling`. Named for the store, not the protocol
@@ -146,6 +152,7 @@ public actor ProxyEngine: ProxyControlling {
         let rulesConfig = durable ? RulesConfig() : RulesConfig(fileURL: nil)
         self.rulesConfig = rulesConfig
         self.config = durable ? InterceptionConfig() : InterceptionConfig(defaults: nil)
+        self.reverseProxyConfig = durable ? ReverseProxyConfig() : ReverseProxyConfig(fileURL: nil)
 
         // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
         // this one forwarder, so decorating it applies breakpoints and traffic
@@ -217,6 +224,7 @@ public actor ProxyEngine: ProxyControlling {
             lastObserveTunnels = observeTunnels
             requestedSOCKSPort = socksPort
             await startSOCKSIfRequested(host: host)
+            await startReverseProxies()
             return boundPort
         } catch {
             running = false
@@ -236,6 +244,10 @@ public actor ProxyEngine: ProxyControlling {
         phoneInfo = nil
         await server.stop()
         await socksServer.stop()
+        await reverseServer.stopAll()
+        // The endpoints stay configured (they are persisted); only this run's bind
+        // state goes away, so a status read after stop() doesn't claim a live port.
+        reverseProxyConfig.clearBindState()
         boundSOCKSPort = nil
         running = false
         stopping = false
@@ -279,6 +291,7 @@ public actor ProxyEngine: ProxyControlling {
         rulesConfig.flush()
         config.flush()
         clientIdentities.flush()
+        reverseProxyConfig.flush()
     }
 
     // MARK: - Certificate authority

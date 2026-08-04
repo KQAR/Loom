@@ -60,6 +60,18 @@ arguments; this file is about sequence and interpretation.
   it from here. They stay labelled `importedFrom`, so don't report them as
   traffic observed on this machine.
 
+- **"My dev server proxies `/api` to a backend and Loom captures nothing"** →
+  the browser→dev-server hop is loopback, which browsers hard-code to bypass a
+  proxy, and the dev-server→backend hop is made by a client that may ignore proxy
+  settings entirely (Node's global `fetch`/undici does; axios and Python/Go
+  clients read `HTTP_PROXY` and need nothing). For the forwarding hop, use
+  `create_reverse_proxy(upstream: "https://api.example.com")` and have the user
+  change the dev server's proxy target to the `localURL` it returns — one line of
+  config, no source patch, and no CA trust needed on that hop because it is plain
+  HTTP. Captured flows carry the **upstream** URL, so rules and breakpoints match
+  them normally. Close it with `delete_reverse_proxy` when done, and say that a
+  config still pointing at the port will then get connection refused.
+
 ## Honest failure modes (report, don't fabricate)
 
 - `loom` tools missing / connection refused on `127.0.0.1:9092` → **the Loom app
@@ -81,6 +93,13 @@ arguments; this file is about sequence and interpretation.
     the **SOCKS5 listener** instead — `get_proxy_status.socksPort` (normally one
     above the HTTP port, e.g. `ALL_PROXY=socks5://127.0.0.1:9091`). It captures
     HTTP and MITM-able TLS the same way, and relays anything else untouched;
+  - `reverseProxies` present with `listening: false` → that endpoint's port is not
+    bound (its `error` says why, usually taken by the very dev server it was made
+    for). A client pointed at it gets connection refused, which looks like Loom is
+    down — recreate it on a free port;
+  - the client may ignore proxy configuration altogether (Node's `fetch`/undici
+    does, whatever the environment says). Neither port helps there: open a
+    `create_reverse_proxy` endpoint and re-point the client at it;
   - otherwise nothing has been routed through the proxy yet (client not pointed at
     it, or recording paused). Say so.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not

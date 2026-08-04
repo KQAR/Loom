@@ -155,6 +155,10 @@ extension MCPToolExecutor {
             was turned away — a SOCKS4 client, an HTTP request sent to the SOCKS port, an \
             unsupported command — looks exactly like a client that never ran, and this is the \
             difference.
+
+            `reverseProxies` (present only when some exist) lists the local stand-in ports and \
+            whether each is listening; one that is not carries `error`, and a client pointed at it \
+            gets connection refused, which reads like Loom is down.
             """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetProxyStatus(args) }
@@ -184,6 +188,79 @@ extension MCPToolExecutor {
             ],
             isWrite: true,
             handler: { ex, args in try await ex.handleSetSystemProxy(args) }
+        ),
+        MCPTool(
+            name: "list_reverse_proxies",
+            description: """
+            List the reverse-proxy endpoints: local ports that stand in for an upstream origin. \
+            Each reports `localURL` (what to point a client at) and `listening`; an endpoint that \
+            is not listening carries `error` explaining why (usually its port is taken), and a \
+            client aimed at it gets connection refused rather than reaching Loom.
+            """,
+            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            handler: { ex, args in try await ex.handleListReverseProxies(args) }
+        ),
+        MCPTool(
+            name: "create_reverse_proxy",
+            description: """
+            Open a local port that stands in for `upstream`, capturing everything sent to it. \
+            Use this for a client that CANNOT be pointed at a proxy — the case that matters in \
+            practice is a Node dev server forwarding `/api` to a backend, because Node's global \
+            `fetch`/undici ignores `HTTP_PROXY` entirely, so the hop is invisible however the \
+            environment is set (axios and Python/Go clients do read it, and need no endpoint). \
+            Instead of patching the client's source, change its target to this endpoint's \
+            `localURL`.
+
+            Two things this buys over the proxy ports. The inbound hop is plain HTTP even when \
+            `upstream` is https, so the client needs NO CA trust (no NODE_EXTRA_CA_CERTS, no \
+            keychain step) — Loom does the TLS to the upstream itself. And the captured flow \
+            carries the UPSTREAM url, not 127.0.0.1, so rules, breakpoints and diff_flows match \
+            it like any other traffic.
+
+            The endpoint persists across relaunches, because its port lives in a dev server's \
+            config file that Loom restarting does not edit. It is NOT a proxy port: send it \
+            paths directly (GET /api/users), not CONNECT or absolute URLs. Creation fails if the \
+            upstream is not a valid http(s) origin or the port cannot be bound — it never \
+            reports an endpoint that isn't listening. This is a write action.
+            """,
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "upstream": [
+                        "type": "string",
+                        "description": "Origin to forward to, e.g. https://api.example.com. A base path is allowed (https://api.example.com/v2) and is prefixed to each request's path. No query or fragment.",
+                    ],
+                    "port": [
+                        "type": "integer",
+                        "description": "Local port to listen on. Omit or 0 to let the OS pick a free one — but a dev server's config names a fixed port, so usually pin it.",
+                    ],
+                    "label": ["type": "string", "description": "Optional note: which project or scenario this endpoint is for."],
+                    "keep_host_header": [
+                        "type": "boolean",
+                        "description": "Keep the client's Host header (127.0.0.1:port) instead of rewriting it to the upstream host. Default false — a real server usually vhost-routes on Host, and sending it 127.0.0.1 yields a 404 that looks like Loom broke the request.",
+                    ],
+                ],
+                "required": ["upstream"],
+            ],
+            isWrite: true,
+            handler: { ex, args in try await ex.handleCreateReverseProxy(args) }
+        ),
+        MCPTool(
+            name: "delete_reverse_proxy",
+            description: """
+            Close a reverse-proxy endpoint and forget it (see list_reverse_proxies for ids). \
+            Any client still pointed at that port will get connection refused afterwards, so \
+            check whether a dev server config still names it. This is a write action.
+            """,
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "id": ["type": "string", "description": "Endpoint UUID from list_reverse_proxies."],
+                ],
+                "required": ["id"],
+            ],
+            isWrite: true,
+            handler: { ex, args in try await ex.handleDeleteReverseProxy(args) }
         ),
         MCPTool(
             name: "list_devices",

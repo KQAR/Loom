@@ -458,6 +458,61 @@ Two methodology notes worth keeping, because both changed a conclusion:
   and the burst failure only appeared through the running app. "Verified" keeps
   meaning what M8 said it means: through the app, not through the suite.
 
+### Reverse-proxy endpoints (done, 0.0.15)
+
+A local port that stands in for one upstream origin: Loom accepts plain HTTP on it,
+captures, and forwards to the configured upstream. Charles has had this for years
+("useful if you have a client application that doesn't support the use of an HTTP
+proxy, or you want to avoid configuring it to use a proxy"), and its absence here
+was the one real capability gap behind a complaint that Loom "can't see a dev
+server's forwarded requests".
+
+**The premise was half wrong, which is why this got measured before it got built.**
+Same Node process, same `HTTP_PROXY`, same target, only the HTTP library changed:
+axios captured, global `fetch` (undici) not. Node's built-in client ignores proxy
+environment variables entirely (`NODE_USE_ENV_PROXY` is 24+; this machine is on
+v20), so "Charles caught it" nearly always means that hop used a library that reads
+the environment — not that Charles reaches further into the process. What Loom was
+actually missing was the escape hatch for the *other* half.
+
+Why this shape rather than the alternatives:
+
+1. **Not transparent interception.** M8 § 4 still stands — pf `rdr` plus
+   `DIOCNATLOOK` is the most expensive item on the list and the one an agent can
+   never perceive. A reverse endpoint reaches the same clients for a fraction of the
+   cost, and an agent can create one itself.
+2. **Inbound is plain HTTP even when the upstream is `https://`.** This is the
+   ergonomic win, not an omission: the client needs **no CA trust** — no
+   `NODE_EXTRA_CA_CERTS`, no keychain step — because Loom terminates nothing and
+   does the upstream TLS itself. An HTTPS *inbound* endpoint (which Charles offers)
+   would hand that step straight back, so it is deliberately absent.
+3. **The flow records the upstream URL**, never `127.0.0.1:port`. The local port is
+   transport, not identity; if it leaked into the URL, every rule and breakpoint
+   written against the real host would silently stop matching traffic that arrived
+   this way — a failure that looks like the rule engine broke.
+4. **A mode on `ProxyHandler`, not a second handler.** Everything after "which URL
+   is this going to" — body streaming and its back-pressure, capture, rules,
+   breakpoints, the WebSocket splice — must be identical on both entry points, and
+   the way that stops being true is by having two copies (the lesson `MITMPipeline`
+   already records for the HTTP and SOCKS entry points).
+5. **Create binds before it persists; boot fails open per endpoint.** A create has a
+   caller waiting for an answer, so it throws rather than register an endpoint whose
+   port refuses every connection. A relaunch has no such caller, so one taken port
+   must not stop the others — the reason lands in `ReverseProxyStatus.error` and in
+   `get_proxy_status.reverseProxies`, because "configured but not listening" is
+   experienced by the client as connection refused, i.e. as Loom being down.
+
+Endpoints persist (`reverse-proxies.json`), because their port is written into a dev
+server's config file that Loom restarting does not edit — an endpoint that evaporated
+on quit would break the developer's setup every morning, silently.
+
+Shipped alongside it, from the same investigation: the forward-proxy port's `400` for
+an origin-form request line now records a **refusal** (`RefusalLog`, so
+`get_proxy_status.recentRefusals`) with advice specific to that mistake. Pointing a
+dev server's proxy target at Loom's proxy port is exactly the right instinct and
+exactly the wrong port, and the old bare `400` left the agent looking at an empty
+capture and a status reporting no problem.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
