@@ -14,7 +14,16 @@ import LoomSharedModels
 /// `ProxyHandler.reverseUpstream`). Where the other two listeners require the client
 /// to cooperate (an absolute request line, a SOCKS handshake), this one requires
 /// nothing of it: it looks like the origin server.
-final class ReverseProxyServer {
+///
+/// An **actor**, not a lock-guarded class, unlike the other holders of mutable state
+/// in this module. The distinction is which side reads it: `RulesConfig`,
+/// `InterceptionConfig` and `RefusalLog` are read *on the event loop* for every
+/// request, where nothing can be awaited, so they have to be lock-based;
+/// `ReservedPorts` has to be writable synchronously at launch before an executor
+/// exists. Neither applies here — every caller is an `await` from the `ProxyEngine`
+/// actor — so the state is protected by construction instead of by remembering to
+/// never hold a lock across a suspension.
+actor ReverseProxyServer {
     private let group: EventLoopGroup
     /// Endpoint id → its listening channel. Only listening endpoints appear; one
     /// that failed to bind is remembered by the config, not here.
@@ -22,6 +31,32 @@ final class ReverseProxyServer {
 
     init(group: EventLoopGroup) {
         self.group = group
+    }
+
+    private func takeChannel(id: UUID) -> Channel? {
+        channels.removeValue(forKey: id)
+    }
+
+    /// Record the channel for `id`, returning any channel it displaced.
+    ///
+    /// Named `remember` rather than `store` because `start(…)` takes a `store:`
+    /// (the FlowStore) that would shadow it. The return value is the reentrancy
+    /// guard: actor isolation makes the dictionary write safe, but it does **not**
+    /// serialize `start`'s check-bind-record sequence across its `await` on `bind()`.
+    /// Two overlapping starts for one id would both bind, and the loser used to be
+    /// overwritten here — a listening socket with nothing left holding a reference to
+    /// close it. The caller closes what it displaces.
+    private func remember(_ channel: Channel, id: UUID) -> Channel? {
+        let displaced = channels[id]
+        channels[id] = channel
+        return displaced
+    }
+
+    /// Remove and return every channel at once — the snapshot `stopAll` needs.
+    private func takeAllChannels() -> [Channel] {
+        let all = Array(channels.values)
+        channels.removeAll()
+        return all
     }
 
     /// Bind one endpoint and return the port actually bound. Throws the bind error —
@@ -38,8 +73,9 @@ final class ReverseProxyServer {
         ca: CertificateAuthority?,
         config: InterceptionConfig
     ) async throws -> Int {
-        // Rebinding an id that is already listening would leak the old channel and
-        // leave two listeners for one endpoint.
+        // Fast path for the ordinary rebind: close the old listener before binding
+        // rather than after, so one endpoint isn't briefly served by two sockets.
+        // `remember` still closes a displacement, for the interleaving this can't see.
         await stop(id: endpoint.id)
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 256)
@@ -64,19 +100,38 @@ final class ReverseProxyServer {
             }
 
         let channel = try await bootstrap.bind(host: host, port: endpoint.requestedPort).get()
-        channels[endpoint.id] = channel
+        // Close whatever this displaced (see `remember`): a concurrent start for the
+        // same id would otherwise leave a bound socket nobody can reach.
+        if let displaced = remember(channel, id: endpoint.id) {
+            try? await displaced.close().get()
+        }
         return channel.localAddress?.port ?? endpoint.requestedPort
     }
 
     /// Stop one endpoint's listener. No-op when it isn't listening.
     func stop(id: UUID) async {
-        guard let channel = channels.removeValue(forKey: id) else { return }
+        guard let channel = takeChannel(id: id) else { return }
         try? await channel.close().get()
     }
 
+    /// Stop every listener.
+    ///
+    /// The channels are taken out **first**, in one step, and only then closed. The
+    /// obvious spelling — `for id in channels.keys { await stop(id: id) }` — iterates a
+    /// lazy view over the dictionary's storage while `stop` removes from that same
+    /// storage, across a suspension point: undefined behaviour, and the cause of the
+    /// intermittent ThreadSanitizer failure this suite showed from the moment it
+    /// landed (a corrupt read surfacing as a race report in NIO's continuation bridge
+    /// plus an `abort()`, attributed to whichever test was unlucky). Every
+    /// `engine.stop()` ran it, which is why making test teardown deterministic made it
+    /// *more* frequent rather than less.
     func stopAll() async {
-        for id in channels.keys { await stop(id: id) }
+        for channel in takeAllChannels() {
+            try? await channel.close().get()
+        }
     }
 
-    func isListening(id: UUID) -> Bool { channels[id] != nil }
+    func isListening(id: UUID) -> Bool {
+        channels[id] != nil
+    }
 }
