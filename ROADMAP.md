@@ -513,6 +513,35 @@ dev server's proxy target at Loom's proxy port is exactly the right instinct and
 exactly the wrong port, and the old bare `400` left the agent looking at an empty
 capture and a status reporting no problem.
 
+### The TSan hunt (0.0.15) — three real bugs, and the one that wasn't ours
+
+The reverse-proxy round turned the `Thread Sanitizer (ProxyCore)` job intermittently
+red. Chasing it took four wrong turns worth writing down, because each one was wrong in
+a way that looked convincing:
+
+1. **"It's the stale `defer`."** The first crash was attributed to a `defer` in a test
+   that had already finished — real, fixed, not the cause.
+2. **"It's `stopAll` iterating what it mutates."** Also real (undefined behaviour on
+   every engine stop), also fixed, also not the cause.
+3. **"25 clean iterations prove it."** They did not: the clean run tested one suite and
+   the failing runs tested the whole thing. **Comparing across different selections is
+   not a before/after** — the single most expensive mistake of the round, because it
+   ended the investigation for a while.
+4. **"It's the leaked event-loop groups."** `ProxyEngine` never shut its
+   `MultiThreadedEventLoopGroup` down, so a run left hundreds of loops alive. A real
+   defect for embedders, fixed — and the control still reproduced at iteration 2.
+
+What settled it was a **control**, not another theory: run the whole suite with the
+reverse-proxy tests excluded. It still reproduced. Every racing frame belongs to NIOCore
+or the Swift runtime, the signature matches `swiftlang/swift#57803`, and
+`Tools/tsan-continuation-repro/` shows it in ten lines with no NIO and no Loom.
+
+Two things this round earns beyond the fixes: the dispatch-only hunt workflow (narrow by
+`suite`, exclude by `skip`, repeat by `iterations` — repetition in one process is what
+makes an intermittent race appear inside a single job), and the habit that produced the
+answer: **when a failure is attributed to your new code, the cheapest decisive
+experiment is to run everything without it.**
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:

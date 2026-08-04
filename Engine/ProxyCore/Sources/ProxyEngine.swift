@@ -57,6 +57,9 @@ public actor ProxyEngine: ProxyControlling {
     var ca: CertificateAuthority?
 
     var running = false
+    /// Set by `shutdown()`; the engine is terminal afterwards (its event-loop group
+    /// cannot be restarted, so neither can it).
+    var didShutDown = false
     /// Set for the duration of `stop()` so a reentrant stop bails instead of
     /// tearing the server down twice (see `stop()`).
     var stopping = false
@@ -202,6 +205,10 @@ public actor ProxyEngine: ProxyControlling {
     public func start(
         port: Int = 9090, host: String = "127.0.0.1", observeTunnels: Bool = false, socksPort: Int? = nil
     ) async throws -> Int {
+        guard !didShutDown else {
+            // A dead group can't bind, and NIO's error for it is not self-explanatory.
+            throw ProxyControlError.replayFailed("this engine was shut down and cannot be started again")
+        }
         guard !running else { return boundPort }
         // Claim `running` synchronously, before the first await, so a reentrant
         // start() (actor reentrancy during the awaits below) bails at the guard
@@ -252,6 +259,37 @@ public actor ProxyEngine: ProxyControlling {
         running = false
         stopping = false
         currentBindHost = "127.0.0.1"
+    }
+
+    /// Stop the listeners **and release the event-loop threads**. Terminal: this engine
+    /// cannot be started again afterwards.
+    ///
+    /// `stop()` deliberately keeps the group alive so the proxy can be toggled off and
+    /// on — that is the panel's switch, and the app owns one engine for its whole life,
+    /// so nothing there ever needed this. But the group was *never* shut down by
+    /// anything, which makes an engine cost two permanently running threads for the rest of the
+    /// process:
+    ///
+    /// - For an embedder of `LoomProxyCore` (where the engine is not a singleton) that
+    ///   is a plain resource leak with no way to reclaim it.
+    /// - For the test suite it is worse than a leak. Several hundred engines are built
+    ///   across a run, so several hundred event loops keep running against memory that
+    ///   has since been freed and reused — the shape of the intermittent
+    ///   ThreadSanitizer report that this suite has had for a while (a race on a
+    ///   continuation heap block, attributed to whichever test was unlucky).
+    ///
+    /// Idempotent, and safe to call on an engine that was never started.
+    public func shutdown() async {
+        guard !didShutDown else { return }
+        didShutDown = true
+        await stop()
+        // Never throws in practice for a group nothing else shares; log rather than
+        // propagate, since a caller tearing an engine down has nothing to do about it.
+        do {
+            try await group.shutdownGracefully()
+        } catch {
+            Log.proxy.error("Event-loop group shutdown failed: \(String(describing: error))")
+        }
     }
 
     /// Bind the SOCKS listener if one was asked for. Fail-open: a bind error leaves
