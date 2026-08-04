@@ -196,6 +196,7 @@ import LoomSharedModels
         #expect(after.first?.endpoint.id == created.endpoint.id)
         #expect(after.first?.isListening == false)
         #expect(after.first?.localURL == nil)
+        await engine.stopForTest()
     }
 
     // MARK: It is not a proxy port

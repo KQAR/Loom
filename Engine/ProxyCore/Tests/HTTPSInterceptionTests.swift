@@ -22,7 +22,7 @@ struct HTTPSInterceptionTests {
         runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
         let caPEM = try runBlocking { try await engine.exportCACertificate() }
         let caText = try String(contentsOf: caPEM)
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
 
         // Client that trusts Loom's CA (as a machine would after install).
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -85,7 +85,7 @@ struct HTTPSInterceptionTests {
         let forwarder = StubForwarder(status: 201, body: Data("created".utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
         let port = try runBlocking { try await engine.start(port: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
@@ -113,7 +113,7 @@ struct HTTPSInterceptionTests {
         let forwarder = StubForwarder(status: 200, body: Data("ok".utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
         let port = try runBlocking { try await engine.start(port: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
 
         // ~2 MB with a non-repeating pattern so a truncation/reorder bug can't hide.
         var payload = Data(count: 2_000_000)

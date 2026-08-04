@@ -19,7 +19,7 @@ struct SOCKSCaptureTests {
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
         _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -64,7 +64,7 @@ struct SOCKSCaptureTests {
         runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
         let caPEM = try runBlocking { try await engine.exportCACertificate() }
         let caText = try String(contentsOf: caPEM)
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -116,7 +116,7 @@ struct SOCKSCaptureTests {
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         _ = try runBlocking { try await engine.start(port: 0, observeTunnels: true, socksPort: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let loop = group.next()
@@ -168,7 +168,7 @@ struct SOCKSCaptureTests {
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let loop = group.next()
@@ -196,7 +196,7 @@ struct SOCKSCaptureTests {
         // client falls back instead of waiting on a reply that never comes.
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -231,7 +231,7 @@ struct SOCKSCaptureTests {
         // the property under test; pinning a total would be pinning test ordering.
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.stop() } }
+        defer { runBlockingVoid { await engine.shutdown() } }
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)

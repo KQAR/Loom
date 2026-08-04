@@ -33,7 +33,7 @@ struct EngineLifecycleReentrancyTests {
         // left the event-loop group in a state where this rebind fails.
         let port = try await engine.start(port: 0)
         #expect(port > 0)
-        await engine.stop()
+        await engine.stopForTest()
     }
 
     /// `stop()` on an engine that was never started is a no-op, not a crash.
@@ -41,6 +41,7 @@ struct EngineLifecycleReentrancyTests {
         let engine = makeEngine()
         await engine.stop()
         #expect(await engine.isRunning == false)
+        await engine.stopForTest()
     }
 
     /// Concurrent `startPhoneOnboarding()` calls must not both build a provisioning

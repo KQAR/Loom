@@ -26,7 +26,10 @@ struct HTTP2InterceptionTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
             try? group.syncShutdownGracefully()
-            Task { await engine.stop() }
+            // Blocking, not `Task { … }`: a detached teardown runs during the *next*
+            // test (see `EngineTeardown.swift`), and `shutdown()` rather than `stop()`
+            // so this engine's event-loop threads actually go away.
+            runBlockingVoid { await engine.shutdown() }
         }
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -96,7 +99,10 @@ struct HTTP2InterceptionTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
             try? group.syncShutdownGracefully()
-            Task { await engine.stop() }
+            // Blocking, not `Task { … }`: a detached teardown runs during the *next*
+            // test (see `EngineTeardown.swift`), and `shutdown()` rather than `stop()`
+            // so this engine's event-loop threads actually go away.
+            runBlockingVoid { await engine.shutdown() }
         }
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
