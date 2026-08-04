@@ -57,7 +57,6 @@ import LoomSharedModels
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
         _ = try await engine.start(port: 0, socksPort: 0)
-        defer { Task { await engine.stop() } }
 
         let error = await #expect(throws: ProxyControlError.self) {
             _ = try await engine.createReverseProxy(
@@ -68,6 +67,7 @@ import LoomSharedModels
         // point of checking rather than leaving it to the OS.
         #expect(try #require(error).message.contains("a test's imaginary service"))
         #expect(await engine.reverseProxies().isEmpty)
+        await engine.stopForTest()
     }
 
     /// The check has to run on the boot path too, not only on create: the endpoint was
