@@ -17,32 +17,68 @@ public struct MainView: View {
     @State private var clearHovering = false
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
-    /// Sidebar visibility — hand-rolled because the container is `HSplitView`,
-    /// which has no built-in collapse (see the container note on `body`).
+    /// Sidebar visibility — hand-rolled because the container has no built-in collapse
+    /// (see the container note on `body`).
     @State private var sidebarVisible = true
+
+    /// DESIGN.md: sidebar-width 300, fixed. One constant because two consumers have to
+    /// agree on it — the sidebar's own frame and the toolbar chip's centring offset (see
+    /// `toolbarContent`). Drift between them shows as a chip off-centre by half the
+    /// disagreement.
+    private static let sidebarWidth: CGFloat = 300
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
     }
 
-    /// `HSplitView`, deliberately not `NavigationSplitView`: inside the latter a
-    /// sidebar-category switch re-diffs the whole request table with every row
-    /// realized (row hosting views accumulate under live tail-follow), and AppKit's
-    /// per-view KVO observer teardown is quadratic in that count — measured 8.7 s
-    /// on this exact view at 2000 flows vs 143 ms under `HSplitView`, same sidebar,
-    /// same table (see CLAUDE.md § Known Issues). `HSplitView` is equally
-    /// `NSSplitView`-backed, so what's lost is only the free sidebar collapse —
-    /// reimplemented via `sidebarVisible` + the toolbar toggle.
+    /// A plain `HStack`, and each of the alternatives was tried on this exact view before
+    /// settling here:
+    ///
+    /// - `NavigationSplitView` must never come back: a sidebar-category switch re-diffs the
+    ///   whole request table with every row realized (row hosting views accumulate under
+    ///   live tail-follow), and AppKit's per-view KVO teardown is quadratic in that count —
+    ///   8.7 s vs 143 ms, measured (CLAUDE.md § Known Issues).
+    /// - `HSplitView` is a bare `NSSplitView`: no collapse semantics, so there is no
+    ///   `isCollapsed` to animate and the sidebar could only be inserted and removed, which
+    ///   pops. Its divider was already fixed and undraggable here, so it was buying nothing.
+    /// - An `NSSplitViewController` bridge is the only way to get AppKit's own sidebar — its
+    ///   drawer animation and the system `.toggleSidebar` toolbar item — but on macOS 26 a
+    ///   `.sidebar` split item is a floating glass card: measured
+    ///   `NSContainerConcentricGlassEffectView f=(8,8,300,821)` in an 869pt-tall pane, i.e.
+    ///   8pt margins and **40pt off the top** (32pt titlebar + its own 8). The pane is full
+    ///   height and the window carries `.fullSizeContentView`, so that inset is the card's
+    ///   own, placed by an AppKit constraint (`wrapper.top == card.top - 40`); overriding
+    ///   the frame is undone next layout, and changing that constraint's constant had no
+    ///   effect. Owner's call: keep the flush sidebar, hand-roll the collapse.
+    ///
+    /// So the collapse animates the pane's *width* — a real push, not an insertion.
     public var body: some View {
-        HSplitView {
-            if sidebarVisible {
-                sidebar
-            }
+        HStack(spacing: 0) {
+            sidebar
+                // The inner frame pins the content at full width; the outer one animates.
+                // Trailing alignment is what makes it a push: at width 0 the content sits
+                // entirely off the leading edge and slides in as the box grows, instead of
+                // squashing from 300pt to nothing.
+                .frame(width: Self.sidebarWidth)
+                .overlay(alignment: .trailing) { Divider() }
+                .frame(width: sidebarVisible ? Self.sidebarWidth : 0, alignment: .trailing)
+                .clipped()
             content
                 .toolbar { toolbarContent }
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
-                .layoutPriority(1)
         }
+        // The lighter band across the window's top is macOS 26's scroll edge effect, and
+        // nothing here can turn it off. AppKit draws an `NSScrollPocket` at the top of every
+        // scroll view meeting that edge — measured as `f=(0,0,1160,80)` over the table and
+        // `f=(0,0,300,52)` over the sidebar, whose visible `BackdropView` is what shows.
+        // Ruled out by measurement, in order: the titlebar's own fill
+        // (`NSTitlebarBackgroundView` is already hidden by `titlebarAppearsTransparent`, and
+        // hiding the remaining titlebar backdrop view changed nothing on screen), the
+        // toolbar item's shared glass, and SwiftUI's `scrollEdgeEffectHidden(true, for: .top)`
+        // — which leaves the pocket's backdrop visible on these AppKit-backed scroll views.
+        // AppKit's own `NSScrollEdgeEffectStyle` is macOS 26.1 and settable only on split-view
+        // and titlebar *accessory* controllers, not on `NSScrollView`. It predates this
+        // change: the collapse animation did not introduce it.
         .task { store.send(.viewAppeared) }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
             RuleEditorView(store: editorStore)
@@ -134,14 +170,10 @@ public struct MainView: View {
             }
         }
         .listStyle(.sidebar)
-        // DESIGN.md: sidebar-width 300, fixed. `HSplitView` sizes panes by frame,
-        // not by `navigationSplitViewColumnWidth` (a no-op outside
-        // `NavigationSplitView`) — but it only honours `idealWidth` on the *first*
-        // layout. Hiding the sidebar removes the pane, and putting it back gave it
-        // `minWidth` instead, so every reopen came back at its narrowest. A single
-        // width is the only form that survives the round trip; the cost is that the
-        // divider no longer drags, which is the trade this deliberately takes.
-        .frame(width: 300)
+        // Width is applied by `body`, which animates exactly that value on collapse; this
+        // only needs to fill vertically. (`navigationSplitViewColumnWidth` is a no-op
+        // outside `NavigationSplitView`, and the divider is deliberately not draggable.)
+        .frame(maxHeight: .infinity)
     }
 
     /// Breakpoints category. While something is held the row goes orange and its
@@ -352,12 +384,12 @@ public struct MainView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        // The sidebar toggle NavigationSplitView used to provide; same glyph and
-        // the standard ⌃⌘S shortcut.
+        // Hand-rolled, and it has to be: AppKit's `.toggleSidebar` item sends
+        // `toggleSidebar(_:)` down the responder chain, and only `NSSplitViewController`
+        // answers it — the container this view deliberately doesn't use (see `body`). Same
+        // glyph as the system item, and the standard ⌃⌘S.
         ToolbarItem(placement: .navigation) {
-            Button {
-                sidebarVisible.toggle()
-            } label: {
+            Button(action: toggleSidebar) {
                 Image(systemName: "sidebar.left")
             }
             .keyboardShortcut("s", modifiers: [.control, .command])
@@ -365,39 +397,60 @@ public struct MainView: View {
             .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
         }
         ToolbarItem(placement: .principal) {
-            HStack(spacing: LoomTheme.Space.xs) {
-                // green = proxy up & recording · yellow = up but paused · grey = off.
-                Circle()
-                    .fill(captureDotColor)
-                    .frame(width: 7, height: 7)
-                Text(verbatim: store.status.isRunning
-                    ? "\(store.displayHost):\(store.status.port)"
-                    : "Proxy stopped")
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-
-                if store.status.isRunning { phoneButton }
-
-                Divider().frame(height: 14)
-
-                statusIcon("globe", on: store.setup.isSystemProxy,
-                           help: store.setup.isSystemProxy ? "System proxy: on" : "System proxy: off") {
-                    store.send(.setup(.toggleSystemProxyTapped))
-                }
-                sslButton
-                statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
-                           help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
-                    store.send(.rules(.toggleRulesTapped))
-                }
-
-                // Record lives at the right end of the ip toolbar, split from the
-                // status toggles by a divider. Clear is a floating button in the
-                // flow list (`clearFAB`), so the trailing toolbar group is gone.
-                Divider().frame(height: 14)
-                recordButton
-            }
-            .padding(.horizontal, LoomTheme.Space.sm)
+            statusChip
         }
+    }
+
+    /// Both the button and ⌃⌘S land here, so the animation is stated once. `.snappy` rather
+    /// than a longer spring: the slide resizes the content pane every frame and the request
+    /// table relayouts with it, so a long animation makes that visible at a full ring.
+    private func toggleSidebar() {
+        withAnimation(.snappy(duration: 0.2)) {
+            sidebarVisible.toggle()
+        }
+    }
+
+    /// The status chip: capture dot + address, then the state toggles. Extracted only so
+    /// `toolbarContent` stays readable; the toolbar item draws its own background.
+    ///
+    /// It centres on the *window*, not on the content pane, because that is what
+    /// `.principal` does. Two ways to shift it onto the pane were tried and both cost more
+    /// than they fix: padding the item's leading edge by a sidebar width stretches the
+    /// shared-glass capsule by the same 300pt, and hiding that shared background to draw
+    /// the capsule here leaves the toolbar rendering a full-width backdrop instead.
+    private var statusChip: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            // green = proxy up & recording · yellow = up but paused · grey = off.
+            Circle()
+                .fill(captureDotColor)
+                .frame(width: 7, height: 7)
+            Text(verbatim: store.status.isRunning
+                ? "\(store.displayHost):\(store.status.port)"
+                : "Proxy stopped")
+                .font(.callout.monospaced())
+                .foregroundStyle(.secondary)
+
+            if store.status.isRunning { phoneButton }
+
+            Divider().frame(height: 14)
+
+            statusIcon("globe", on: store.setup.isSystemProxy,
+                       help: store.setup.isSystemProxy ? "System proxy: on" : "System proxy: off") {
+                store.send(.setup(.toggleSystemProxyTapped))
+            }
+            sslButton
+            statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
+                       help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
+                store.send(.rules(.toggleRulesTapped))
+            }
+
+            // Record lives at the right end of the ip toolbar, split from the
+            // status toggles by a divider. Clear is a floating button in the
+            // flow list (`clearFAB`), so the trailing toolbar group is gone.
+            Divider().frame(height: 14)
+            recordButton
+        }
+        .padding(.horizontal, LoomTheme.Space.sm)
     }
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.

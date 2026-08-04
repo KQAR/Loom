@@ -45,7 +45,7 @@ spacing:
 metrics:
   console-width: 300px       # the menu-bar popover (config & control only)
   main-window-default: 1040x640
-  sidebar-width: 300         # category sidebar, fixed (HSplitView only honours an ideal width on first layout, so a hide/show cycle came back at the minimum)
+  sidebar-width: 300         # category sidebar, fixed; also the collapse animation's travel, and the value MainView.sidebarWidth single-sources
   main-list-width: 320-520   # request list column (ideal 400)
 
 components:
@@ -64,9 +64,9 @@ components:
     anatomy: "SF Symbol + one-line fault · single fix action"
   # --- Main window (opaque) ---
   main-window:
-    structure: "HSplitView: sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. HSplitView deliberately, not NavigationSplitView: the latter defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). Sidebar collapse is hand-rolled: toolbar 'sidebar.left' button (.navigation placement), ⌃⌘S."
+    structure: "HStack(spacing: 0): sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its divider was already fixed and undraggable here. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH 300↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
     defaultSize: "{metrics.main-window-default}"
-    toolbar: "centered chip (.principal): status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat — sharedBackgroundVisibility hidden on macOS 26): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
+    toolbar: "chip centred on the WINDOW via .principal — not on the content pane: padding the item to shift it stretches the macOS 26 shared-glass capsule by the same amount, and hiding that shared background to draw the capsule ourselves makes the toolbar render a full-width backdrop instead. Both were measured and rejected. Chip: status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat — sharedBackgroundVisibility hidden on macOS 26): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Replayed (each Label + system .badge count) · Section 'Hosts' — one Label per host (globe icon + .badge count). Selection scopes the table."
@@ -112,7 +112,7 @@ surfaces with sharply separated jobs:
 
 - **Status-bar console** — a compact 300pt popover of *config & control*: proxy on/off, system-proxy state,
   which rules are active, and an **Open Main Window** button. It shows **no traffic**. Vibrant system material.
-- **Main window** — the *working surface*: a split layout (`HSplitView`; see main-window.structure for why not `NavigationSplitView`) — category sidebar (All /
+- **Main window** — the *working surface*: a split layout (`HStack`; see main-window.structure for why neither `NavigationSplitView` nor `HSplitView`) — category sidebar (All /
   Errors / Replayed + per-host groups) | request list | per-flow detail (with Replay + diff). Opaque,
   resizable, opened from the console.
 
@@ -317,7 +317,7 @@ rejecting what failed:
 
 ### Main window
 
-- **`main-window`** — `HSplitView` (not `NavigationSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque,
+- **`main-window`** — `HStack` (not `NavigationSplitView`, not `HSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque,
   no sidebar/window title. Toolbar per `{components.main-window}.toolbar` — centered status chip, Record +
   Clear right-aligned, no search field.
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Replayed` as `Label`s with system
