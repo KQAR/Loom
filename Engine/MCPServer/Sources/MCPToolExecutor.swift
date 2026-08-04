@@ -44,6 +44,12 @@ struct MCPToolExecutor {
         guard let tool = Self.toolsByName[name] else {
             throw MCPError.unknownTool(name)
         }
+        // Before the handler, and before any audit entry: an argument the schema
+        // doesn't declare means the call as written was never understood, so
+        // running it would answer a different question than the one asked (see
+        // `MCPArgumentValidation`). Nothing touched real traffic, so this is a
+        // dispatch refusal like an unknown tool name, not an audited failure.
+        try Self.validateArguments(arguments, against: tool)
         let handler = tool.handler
         // Read tools run straight through. Write tools are the whole reason Loom
         // exists — record each in the audit trail (success or failure) so the
