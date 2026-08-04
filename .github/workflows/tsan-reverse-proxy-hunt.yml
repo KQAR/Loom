@@ -1,0 +1,91 @@
+name: TSan hunt (reverse proxy)
+
+# Dispatch-only, like h2-stall-hunt: a bisection harness for the intermittent
+# ThreadSanitizer failure in ReverseProxyTests, not a gate.
+#
+# The failure (first seen on main at 92da1f0, the reverse-proxy merge) is a data race
+# reported inside NIOCore's `EventLoopFuture.get()` continuation bridge, plus an
+# `abort()` attributed to whichever ReverseProxyTests case is unlucky. It reproduces
+# only under TSan and only sometimes, and TSan cannot run on the maintainer's machine
+# at all (macOS 26 — its runtime segfaults during its own init), so CI is the only
+# place it can be studied.
+#
+# `suite` narrows what runs; `iterations` repeats it in one process, which is what
+# makes an intermittent race show up in a single job. Read the log, not the exit code.
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: 'Test identifier to run (e.g. ProxyCoreTests/ReverseProxyTests, or one test)'
+        required: false
+        default: 'ProxyCoreTests/ReverseProxyTests'
+      iterations:
+        description: 'Test iterations in one process'
+        required: false
+        default: '20'
+
+jobs:
+  hunt:
+    name: Repeat under TSan
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - name: Install dependencies
+        run: tuist install
+
+      - name: Generate project
+        run: tuist generate --no-open
+
+      - name: Make copied module maps writable
+        run: |
+          find "${{ runner.temp }}/DerivedData/Build/Products" -name module.modulemap ! -perm -u+w \
+            -exec chmod u+w {} + 2>/dev/null || true
+
+      # `-test-iterations` + `-run-tests-until-failure` stops at the first bad run, so
+      # the tail of the log is the failure rather than dozens of clean runs after it.
+      - name: Repeat under TSan
+        id: hunt
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -workspace Loom.xcworkspace \
+            -scheme ProxyCoreTests \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath "${{ runner.temp }}/DerivedData" \
+            -enableThreadSanitizer YES \
+            -only-testing:'${{ inputs.suite }}' \
+            -test-iterations '${{ inputs.iterations }}' \
+            -run-tests-until-failure \
+            -resultBundlePath "${{ runner.temp }}/TSanHunt.xcresult" \
+            CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
+            2>&1 | tee "${{ runner.temp }}/tsan-hunt.log"
+
+      # The whole point: how many races, in what, and which test aborted. A run that
+      # reproduced nothing is a real answer too (raise `iterations`), so this always
+      # prints rather than only on failure.
+      - name: Summarize
+        if: always()
+        run: |
+          echo "### TSan hunt: ${{ inputs.suite }} × ${{ inputs.iterations }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "races reported: $(grep -c 'WARNING: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" || true)" \
+            >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'SUMMARY: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" | sort -u | head -5 \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          grep -E '✗|crashed with signal' "${{ runner.temp }}/tsan-hunt.log" | head -10 \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-hunt-log
+          path: ${{ runner.temp }}/tsan-hunt.log
+          if-no-files-found: warn
