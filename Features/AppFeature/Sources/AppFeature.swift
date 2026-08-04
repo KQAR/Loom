@@ -55,6 +55,14 @@ public struct AppFeature: Sendable {
         /// store keeps more, surfaced via the `get_audit_log` MCP tool.
         public static let auditDisplayCap = 500
 
+        /// Write tools that change which ports Loom is listening on, so the header's
+        /// address block has to be re-read when one is recorded. A `Set` rather than a
+        /// prefix match: "any tool starting with create_" would silently start
+        /// refreshing on unrelated writes as tools are added.
+        public static let listenerAffectingAuditTools: Set<String> = [
+            "create_reverse_proxy", "delete_reverse_proxy",
+        ]
+
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
         /// The M2 setup surface (system proxy, SSL interception, CA trust) — split
@@ -377,6 +385,10 @@ public struct AppFeature: Sendable {
         case localIPResolved(String?)
         case toggleProxyTapped
         case proxyStarted(port: Int)
+        /// The engine's own view of the listeners — the ports it actually bound and
+        /// the reverse-proxy endpoints. Everything else in `status` is maintained
+        /// locally (see the merge in the reducer).
+        case engineStatusRefreshed(ProxyStatus)
         case proxyStartFailed(String)
         /// Stamp a rule out of a captured flow and open the editor (parent-owned
         /// because it reads the flow store); forwarded to `RulesFeature`.
@@ -560,6 +572,12 @@ public struct AppFeature: Sendable {
                     .send(.setup(.refresh)),
                     .send(.rules(.refreshRules)),
                     .send(.breakpoints(.refresh)),
+                    // The listener facts only the engine knows: which ports it bound
+                    // (SOCKS fails open, so its number isn't derivable from the HTTP
+                    // one) and the reverse-proxy endpoints. Nothing read them before,
+                    // which is why the console's SOCKS line — drawn in DESIGN.md —
+                    // could never render.
+                    .run { send in await send(.engineStatusRefreshed(proxyClient.status())) },
                     // Silent, self-gated to once a day — cheap to call on every open.
                     .run { _ in await updaterClient.checkInBackgroundIfDue() }
                 )
@@ -597,6 +615,20 @@ public struct AppFeature: Sendable {
             case let .proxyStarted(port):
                 state.status.isRunning = true
                 state.status.port = port
+                // The other listeners bind inside `start()`, so their ports only
+                // exist once it has returned.
+                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
+
+            case let .engineStatusRefreshed(status):
+                // Merge, don't assign: `capturedCount` counts the *window's* list
+                // (bounded, and what the "N flows" row means), and `isRunning` is
+                // driven by the toggle here. Everything else is the engine's to know.
+                state.status.port = status.port
+                state.status.listenHost = status.listenHost
+                state.status.socksPort = status.socksPort
+                state.status.reverseProxies = status.reverseProxies
+                state.status.recentRefusals = status.recentRefusals
+                state.status.refusedConnections = status.refusedConnections
                 return .none
 
             case let .flowsReceived(flows):
@@ -634,7 +666,12 @@ public struct AppFeature: Sendable {
                         state.auditEntries.removeFirst(state.auditEntries.count - State.auditDisplayCap)
                     }
                 }
-                return .none
+                // An agent opening or closing a listening port has to show up in the
+                // header without waiting for the panel to be reopened — same reason
+                // `BreakpointsFeature` re-syncs after every write. The audit stream is
+                // already the one signal every write tool passes through.
+                guard State.listenerAffectingAuditTools.contains(entry.tool) else { return .none }
+                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
 
             case .auditClearTapped:
                 state.auditEntries.removeAll()

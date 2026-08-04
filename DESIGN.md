@@ -181,6 +181,8 @@ utility — closer to the system's own controls than to a themed Electron tool.
 ```
 ┌─ ● 127.0.0.1:9090            [◉] ──┐   header: capture dot + address + proxy switch
 │    SOCKS5 127.0.0.1:9091            │   second listener, only while it is bound
+│    :9200 → api.github.com           │   reverse-proxy endpoint, one line each
+│    :9333 ✕ api.example.com          │   …orange when it isn't listening (tooltip: why)
 │ 📱 Connect Device            2      │   action-row (phone onboarding)
 │ 🌍 System Proxy      in use by …    │   config-row (three-valued: loom/off/other)
 │ 🔒 HTTPS (SSL)       decrypting     │   config-row
@@ -192,6 +194,13 @@ utility — closer to the system's own controls than to a themed Electron tool.
 │ v0.0.14  Loom                Quit   │   footer
 └──────────────────────────────────────┘
 ```
+
+The address block is every port a client can be pointed at, in one place: the proxy
+address, the SOCKS listener while it is bound, then a line per reverse-proxy endpoint
+(`:port → host`, at most 3 before the rest collapse into `+N more`). They belong here
+and not in a state row because there is nothing to toggle — endpoints come and go with
+the engine, and a row would imply a switch. Faults sort to the top and draw orange: an
+endpoint that isn't listening is experienced by its client as connection refused.
 
 Rows marked **conditional** are absent rather than empty: Breakpoints appears only
 while something is armed or held, Client Certificates only while HTTPS is on or an
