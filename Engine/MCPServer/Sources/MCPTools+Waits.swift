@@ -85,15 +85,20 @@ extension MCPToolExecutor {
         let seconds = try Self.waitSeconds(from: arguments)
         let limit = max(1, (arguments["limit"] as? Int) ?? 1)
         let until = try Self.waitUntil(from: arguments)
-        var query = try Self.flowQuery(from: arguments)
+        var draftQuery = try Self.flowQuery(from: arguments)
         let startedWaitingAt = Date()
         // A wait needs *some* window: inheriting `get_recent_flows`' match-everything
         // default would return the oldest retained flow instantly, which is never what
         // "wait for the request I'm about to trigger" means. See `defaultWaitLookback`
         // for why the default window starts slightly in the past rather than at `now`.
-        if query.since == nil {
-            query.since = startedWaitingAt.addingTimeInterval(-Self.defaultWaitLookback)
+        if draftQuery.since == nil {
+            draftQuery.since = startedWaitingAt.addingTimeInterval(-Self.defaultWaitLookback)
         }
+        // Frozen before the `accepts` closure below captures it. That closure runs on
+        // whichever task drains the flow stream, and a captured `var` is a shared
+        // mutable reference rather than a copy — the one thing strict concurrency
+        // will not allow across that boundary.
+        let query = draftQuery
         let windowFrom = query.since ?? startedWaitingAt
 
         let stream = await engine.flowStream()

@@ -7,11 +7,17 @@ import LoomSharedModels
 extension MCPToolExecutor {
     /// `ISO8601DateFormatter` is expensive to allocate; render every timestamp
     /// through one shared instance.
-    static let iso8601 = ISO8601DateFormatter()
+    ///
+    /// `nonisolated(unsafe)`: Foundation's formatters are documented thread-safe
+    /// for formatting as long as nothing mutates them after configuration, which
+    /// nothing here does — both instances are configured in their initializer and
+    /// only ever asked to `string(from:)` / `date(from:)`. The class simply isn't
+    /// marked `Sendable`. Do not add a `formatOptions` write anywhere else.
+    nonisolated(unsafe) static let iso8601 = ISO8601DateFormatter()
 
     /// Parse-only companion: agents (and JS clients) routinely send fractional
     /// seconds, which the default formatter rejects.
-    static let iso8601Fractional: ISO8601DateFormatter = {
+    nonisolated(unsafe) static let iso8601Fractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
