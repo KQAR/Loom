@@ -48,8 +48,11 @@ enum MITMPipeline {
     /// Install the cleartext HTTP capture stack — same handlers as the decrypted
     /// h1 path, but the exchange is recorded and re-sent as `http://`.
     ///
-    /// Only reachable over SOCKS: the HTTP proxy port learns a plaintext request's
-    /// destination from its absolute request URI, so it never needs this.
+    /// Reached whenever a tunnel turns out to carry cleartext HTTP (see
+    /// `TunnelSniffHandler`): over SOCKS, and over a `CONNECT` whose payload isn't
+    /// TLS — a browser's `ws://` being the case that matters. A plaintext request
+    /// arriving *directly* on the HTTP proxy port never needs this, because it carries
+    /// its destination in an absolute request URI.
     static func installPlaintextHTTP(
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding
