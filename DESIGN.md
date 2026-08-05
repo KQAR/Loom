@@ -226,8 +226,12 @@ trailing detail is the count, or a not-listening count in orange, which also tak
 icon: a fault has to read as a fault rather than as an active feature — an endpoint whose port didn't bind is
 experienced by its client as connection refused, i.e. as Loom being down.
 
-Its card is the list (local URL, selectable, over `→ upstream`; faults first, capped at
-6 with the rest collapsed into a count) followed by an **Add** button at the
+Its card's leading edge lines up with the **row's icon**, not with the panel margin — a
+card belongs to the row above it and must not start further left than anything in it. The
+card is the list (local URL, selectable, over `→ upstream`; no per-row icon, since the
+row's own icon already says what these are and the one state an icon would carry —
+not listening — is in the caption in words and in orange, where it can name the reason;
+faults first, capped at 6 with the rest collapsed into a count) followed by an **Add** button at the
 bottom-right, which swaps in the form. The button trails the list rather than heading
 it: the list is what the card is for.
 

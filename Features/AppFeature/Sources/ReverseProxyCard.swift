@@ -106,10 +106,9 @@ struct ReverseProxyCard: View {
             },
             disabled: store.reverseProxyBusy
         ) {
-            Image(systemName: status.isListening ? "arrow.left.arrow.right" : "exclamationmark.triangle.fill")
-                .font(LoomTheme.Icon.badge)
-                .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                .frame(width: 14)
+            // No leading icon. The card is already inset under the row whose icon says
+            // what these are, and the state an icon would carry — not listening — is in
+            // the caption below in words and in orange, where it can name the reason.
             VStack(alignment: .leading, spacing: 1) {
                 // The local URL is what goes into a config file, so it's the primary
                 // line and it's selectable — retyping a port by eye is how the wrong

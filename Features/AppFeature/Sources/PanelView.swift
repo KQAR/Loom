@@ -244,7 +244,11 @@ public struct PanelView: View {
         }
         if store.reverseProxiesExpanded {
             ReverseProxyCard(store: store)
-                .padding(.horizontal, LoomTheme.Space.md)
+                // Leading edge lines up with the row's icon rather than with the panel
+                // margin: the card belongs to the row above it, so it must not start
+                // further left than anything in it.
+                .padding(.leading, LoomTheme.Space.md + PanelRow.iconLeadingInset)
+                .padding(.trailing, LoomTheme.Space.md)
                 .padding(.top, LoomTheme.Space.xxs)
         }
     }
@@ -529,6 +533,11 @@ private struct PanelRow: View {
     /// Leading inset of the title = checkmark slot + icon slot + their spacings.
     /// Sub-rows (inline notes, rule list) align to this so they sit under the title.
     static let titleLeadingInset: CGFloat = 16 + LoomTheme.Space.xs + 20 + LoomTheme.Space.sm
+
+    /// Leading inset of the row's *icon* = the checkmark slot and its spacing. A card
+    /// hanging under a row aligns its own leading edge here, so the card starts where the
+    /// row's icon does instead of reaching further left than anything above it.
+    static let iconLeadingInset: CGFloat = 16 + LoomTheme.Space.xs
 
     @State private var hovering = false
 
