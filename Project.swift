@@ -22,7 +22,15 @@ let project = Project(
             sources: ["App/Sources/**"],
             resources: ["App/Resources/**"], // Assets.xcassets → AppIcon
             infoPlist: .extendingDefault(with: [
-                "LSUIElement": true, // agent app: no Dock icon, status bar only
+                // Regular app, not an agent: Loom shows in the Dock and the app
+                // switcher. It was `LSUIElement: true` (status-bar only) — but the
+                // main window is the working surface, opened at launch, and a
+                // Dock-less app gives no way back to it once it's closed: no Dock
+                // click, no ⌘-Tab, only the panel. The status-bar console stays the
+                // primary surface (DESIGN/INTERACTION v3); the Dock icon is the
+                // second way in, not a replacement. Closing the window does not
+                // quit — `AppDelegate.applicationShouldHandleReopen` reopens it.
+                "LSUIElement": false,
                 // Render in the pre-26 (macOS 14/15) system design rather than Liquid
                 // Glass. Not a compatibility hedge — a deliberate look: DESIGN.md's
                 // baseline is macOS 14 (§ Known Gaps: use `.bordered`/`.borderedProminent`,

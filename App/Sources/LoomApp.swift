@@ -68,6 +68,34 @@ struct LoomApp: App {
     }
 }
 
+/// One-way, payload-free channel from `AppDelegate` to the view that holds
+/// SwiftUI's `openWindow`: "reopen the main window".
+///
+/// An `AsyncStream` rather than a `NotificationCenter` post + Combine publisher.
+/// The typed API here is worth more than the indirection it replaces: the element
+/// is `Void` instead of a non-`Sendable` `Notification` that Swift 6 would make us
+/// launder across the isolation boundary, the consumer is a plain `for await` in
+/// the view's existing `.task` (so cancellation follows the view's lifetime with no
+/// subscription to store), and there is no string-keyed name any other component
+/// could post or observe by accident. `@MainActor` because both ends are main-actor
+/// code — AppKit's delegate callback and a SwiftUI view.
+@MainActor
+final class MainWindowRequests {
+    static let shared = MainWindowRequests()
+
+    /// `.bufferingNewest(1)` deliberately: with the window closed, a burst of Dock
+    /// clicks means one reopen, and a request that arrives while the view's `.task`
+    /// is between iterations is still delivered rather than dropped.
+    private let continuation: AsyncStream<Void>.Continuation
+    let stream: AsyncStream<Void>
+
+    private init() {
+        (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+    }
+
+    func request() { continuation.yield() }
+}
+
 private let appVersion: String =
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.1"
 
@@ -119,6 +147,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Dock click / app-switcher activation with no window open → reopen the main
+    /// window. Loom is a regular (Dock-visible) app whose last window closing does
+    /// *not* quit it — the proxy and the MCP server keep running behind the
+    /// status-bar console — so without this the Dock icon would be inert once the
+    /// window was closed. Returning `false` tells AppKit we handled it ourselves.
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication, hasVisibleWindows flag: Bool
+    ) -> Bool {
+        guard !flag else { return true }
+        // AppKit calls delegate methods on the main thread; the method itself is
+        // `nonisolated`, so state the guarantee rather than hopping (a `Task` would
+        // return `false` to AppKit before the request was even queued).
+        MainActor.assumeIsolated {
+            NSApp.activate(ignoringOtherApps: true)
+            // The delegate can't reach SwiftUI's `openWindow` (it's an Environment
+            // value), so it asks the always-present menu-bar label to do it — that
+            // view is the one place already holding the environment. `Window` is a
+            // singleton scene, so this restores the one window, not a second.
+            MainWindowRequests.shared.request()
+        }
+        return false
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let helper = PrivilegedHelperClient.liveValue
         Task.detached {
@@ -158,12 +209,19 @@ private struct MenuBarLabel: View {
             .task {
                 store.send(.task)
                 // Open the main window on launch so the app presents its working
-                // surface by default (it's a Dock-less menu-bar app; without this
-                // the human would have to open the window from the panel first).
-                // `.task` runs once for this always-present label, and `Window` is a
-                // singleton scene, so this opens exactly one main window.
+                // surface by default (the status-bar console is the primary human
+                // surface, but the window is where traffic is read). `.task` runs
+                // once for this always-present label, and `Window` is a singleton
+                // scene, so this opens exactly one main window.
                 openWindow(id: "main")
                 NSApplication.shared.activate(ignoringOtherApps: true)
+                // Then stay parked on the reopen channel for the app's lifetime:
+                // a Dock click or app-switcher activation with the window closed
+                // lands here, because the delegate has no `openWindow`. Same
+                // `.task`, so it ends when this always-present label does.
+                for await _ in MainWindowRequests.shared.stream {
+                    openWindow(id: "main")
+                }
             }
     }
 }
