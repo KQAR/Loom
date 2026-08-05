@@ -60,7 +60,7 @@ components:
   menu-panel:
     material: "{colors.panel-material}"
     width: "{metrics.console-width}"
-    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / System Proxy / HTTPS / Client Certificates / Rules / Breakpoints — Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
+    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / System Proxy / Reverse Proxies / HTTPS / Client Certificates / Rules / Breakpoints — Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
     note: "config & control only — NO request list here"
   config-row:
     anatomy: "one tappable full-width row: leading checkmark slot (accent, shown when the state is ON) · SF Symbol (secondary, 20pt) · title ({typography.body}) · trailing detail ({typography.callout} .tertiary). NO switch/toggle controls — the row toggles on tap and the checkmark is the state. Hover fills the row with {colors.panel-selection}."
@@ -193,6 +193,7 @@ utility — closer to the system's own controls than to a themed Electron tool.
 │    :9333 ✕ api.example.com          │   …orange when it isn't listening (tooltip: why)
 │ 📱 Connect Device            2      │   action-row (phone onboarding)
 │ 🌍 System Proxy      in use by …    │   config-row (three-valued: loom/off/other)
+│ ⇄  Reverse Proxies           2      │   action-row — expands a card (list + Add form)
 │ 🔒 HTTPS (SSL)       decrypting     │   config-row
 │ 🔑 Client Certificates       1      │   config-row, conditional — expands a card
 │ ⚙︎ Rules             2 active       │   config-row
@@ -205,10 +206,19 @@ utility — closer to the system's own controls than to a themed Electron tool.
 
 The address block is every port a client can be pointed at, in one place: the proxy
 address, the SOCKS listener while it is bound, then a line per reverse-proxy endpoint
-(`:port → host`, at most 3 before the rest collapse into `+N more`). They belong here
-and not in a state row because there is nothing to toggle — endpoints come and go with
-the engine, and a row would imply a switch. Faults sort to the top and draw orange: an
-endpoint that isn't listening is experienced by its client as connection refused.
+(`:port → host`, at most 3 before the rest collapse into `+N more`). Faults sort to the
+top and draw orange: an endpoint that isn't listening is experienced by its client as
+connection refused.
+
+Reverse proxies are **reported** there and **configured** in their own row — an
+`action-row`, never a `config-row`, because there is nothing here to toggle: endpoints
+are added and removed one at a time, and the console's only switch stays the proxy
+on/off in the header. The row exists because creating one is the human's job even
+though an agent can also do it: an endpoint is a listening port whose number goes into
+a dev server's config file, and only the human edits that file. Its card is the list
+plus an Add form (upstream · optional port · optional label · keep-Host-header), and a
+removal is confirmed — whatever still names that port starts getting connection
+refused, which Loom cannot undo from here.
 
 Rows marked **conditional** are absent rather than empty: Breakpoints appears only
 while something is armed or held, Client Certificates only while HTTPS is on or an
@@ -216,8 +226,8 @@ identity exists. A row that is always visible but usually says "none" spends the
 console's scarcest resource — vertical space — on nothing.
 
 Cards appear directly under the row they belong to (root-CA trust under HTTPS, the
-client-certificate list under its own row) rather than in a fixed slot, so the
-control and its detail read as one unit.
+client-certificate and reverse-proxy lists under their own rows) rather than in a fixed
+slot, so the control and its detail read as one unit.
 
 ### Main window — sidebar + vertical split (standard debugger layout)
 

@@ -3,12 +3,13 @@ import LoomSharedModels
 
 /// The reverse-proxy endpoints as caption lines under the console header's address.
 ///
-/// They belong **with** the address rather than in a row of their own: an endpoint is
-/// a listening port on this machine, the same kind of fact as `127.0.0.1:9090` and
-/// the SOCKS line, and a client is pointed at it the same way. A separate state row
-/// would imply a thing to toggle — there isn't one; endpoints come and go with the
-/// engine, not with a switch (§ DESIGN.md, "the console's only switch is the proxy
-/// on/off in the header").
+/// They are *reported* here, **with** the address, because an endpoint is a listening
+/// port on this machine — the same kind of fact as `127.0.0.1:9090` and the SOCKS
+/// line, and a client is pointed at it the same way. They are *configured* in the
+/// Reverse Proxies row below (`ReverseProxyCard`), which is an **action** row and not
+/// a state row for the reason this block exists: there is no switch here to flip,
+/// endpoints are added and removed one at a time, and the console's only switch stays
+/// the proxy on/off in the header (§ DESIGN.md).
 ///
 /// Derivation is pulled out of the view so it can be tested: what makes this worth
 /// showing at all is the *failed* case, and that is the one a human never manages to

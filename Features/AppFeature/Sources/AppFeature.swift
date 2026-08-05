@@ -131,6 +131,23 @@ public struct AppFeature: Sendable {
         /// Auto-update state (Sparkle). `.available` flips the footer button to
         /// its prominent "Update" style; a silent daily probe keeps it fresh.
         public var updateAvailability: UpdateAvailability = .unknown
+
+        // MARK: Reverse-proxy endpoints (console config section)
+        //
+        // The endpoints themselves live in `status.reverseProxies` — one mirror,
+        // refreshed by `engineStatusRefreshed` — so nothing is duplicated here. What
+        // lives here is only the *console section's* own state: whether it's open, and
+        // the outcome of the human's last create/delete.
+
+        /// Whether the console's Reverse Proxies section is expanded. Collapsed by
+        /// default, like Client Certificates: a dev server is pointed at an endpoint
+        /// once and then the endpoint just sits there.
+        public var reverseProxiesExpanded = false
+        /// A create or delete is in flight (a create binds a port, so it can fail).
+        public var reverseProxyBusy = false
+        /// Why the last create/delete failed, verbatim from the engine. Nil on success:
+        /// the new (or now-absent) endpoint in the list is the confirmation.
+        public var reverseProxyMessage: String?
         var didBoot = false                      // guards the one-shot boot effect
 
         public var displayHost: String { localIP ?? "127.0.0.1" }
@@ -430,6 +447,23 @@ public struct AppFeature: Sendable {
         case checkForUpdatesTapped
         /// A new availability learned from the updater (silent probe or a check).
         case updateAvailabilityChanged(UpdateAvailability)
+
+        // MARK: Reverse-proxy endpoints
+        //
+        // The human's half of a capability that was agent-only: an endpoint is a
+        // listening port on this machine that keeps a dev server's config pointed at
+        // Loom, so the console has to be able to open and close one — not just report
+        // what an agent opened.
+
+        /// Console section header tapped — expands/collapses, and re-reads on open
+        /// (the other writer is an agent).
+        case reverseProxiesExpandTapped
+        /// Create an endpoint from the console form. `port` 0 asks the OS for a free
+        /// one; a real setup pins the port its dev server config names.
+        case addReverseProxyTapped(upstream: String, port: Int, label: String?, keepHostHeader: Bool)
+        case deleteReverseProxyTapped(id: UUID)
+        /// A create/delete settled. `message` is non-nil only on failure.
+        case reverseProxyFinished(message: String?)
     }
 
     @Dependency(\.proxyClient) var proxyClient
@@ -791,6 +825,59 @@ public struct AppFeature: Sendable {
 
             case let .updateAvailabilityChanged(availability):
                 state.updateAvailability = availability
+                return .none
+
+            // MARK: Reverse-proxy endpoints
+
+            case .reverseProxiesExpandTapped:
+                state.reverseProxiesExpanded.toggle()
+                // Opening is also a re-read, same as the client-certificate section:
+                // an agent can have created or removed an endpoint since the last
+                // status refresh, and the list is only as fresh as its last load.
+                guard state.reverseProxiesExpanded else { return .none }
+                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
+
+            case let .addReverseProxyTapped(upstream, port, label, keepHostHeader):
+                state.reverseProxyBusy = true
+                state.reverseProxyMessage = nil
+                return .run { send in
+                    do {
+                        _ = try await proxyClient.createReverseProxy(ReverseProxyEndpoint(
+                            requestedPort: port, upstream: upstream,
+                            label: label, keepHostHeader: keepHostHeader
+                        ))
+                        // The create binds before it persists, so a success means the
+                        // port is listening — re-read to pick up the *bound* port,
+                        // which is the number the human points their client at (and is
+                        // not the requested one when 0 asked the OS to choose).
+                        await send(.engineStatusRefreshed(proxyClient.status()))
+                        await send(.reverseProxyFinished(message: nil))
+                    } catch {
+                        // The engine validates the upstream and the bind on the way in,
+                        // so its message already names what the human can fix (no
+                        // scheme, port in use). Relay it verbatim.
+                        let message = (error as? ProxyControlError)?.message ?? error.localizedDescription
+                        await send(.reverseProxyFinished(message: message))
+                    }
+                }
+
+            case let .deleteReverseProxyTapped(id):
+                state.reverseProxyBusy = true
+                state.reverseProxyMessage = nil
+                return .run { send in
+                    do {
+                        try await proxyClient.deleteReverseProxy(id)
+                        await send(.engineStatusRefreshed(proxyClient.status()))
+                        await send(.reverseProxyFinished(message: nil))
+                    } catch {
+                        let message = (error as? ProxyControlError)?.message ?? error.localizedDescription
+                        await send(.reverseProxyFinished(message: message))
+                    }
+                }
+
+            case let .reverseProxyFinished(message):
+                state.reverseProxyBusy = false
+                state.reverseProxyMessage = message
                 return .none
             }
         }

@@ -22,6 +22,7 @@ public struct PanelView: View {
             VStack(spacing: 0) {
                 devicesRow
                 systemProxyRow
+                reverseProxyRow
                 sslRow
                 rulesRow
                 breakpointsRow
@@ -230,6 +231,47 @@ public struct PanelView: View {
         case .off:
             return nil
         }
+    }
+
+    /// Third way traffic reaches Loom, after Connect Device and System Proxy — and the
+    /// only one that needs no cooperation from the client, because it looks like the
+    /// origin server. Sits with those two for that reason.
+    ///
+    /// An **action** row (chevron), never a state row: there is nothing here to toggle
+    /// — endpoints are created and removed individually, and the console's only switch
+    /// stays the proxy on/off in the header (DESIGN.md). The header's caption lines
+    /// still report the endpoints with the other listener addresses; this row is where
+    /// they are *configured*, which they previously couldn't be without an agent.
+    @ViewBuilder private var reverseProxyRow: some View {
+        PanelRow(
+            kind: .action,
+            icon: "arrow.left.arrow.right",
+            iconTint: brokenReverseProxies == 0 ? nil : .orange,
+            title: "Reverse Proxies",
+            detail: reverseProxyDetail,
+            help: "Local ports that stand in for an upstream origin — for clients that ignore proxy settings"
+        ) {
+            store.send(.reverseProxiesExpandTapped)
+        }
+        if store.reverseProxiesExpanded {
+            ReverseProxyCard(store: store)
+                .padding(.horizontal, LoomTheme.Space.md)
+                .padding(.top, LoomTheme.Space.xxs)
+        }
+    }
+
+    /// Endpoints that exist in the config but aren't listening. Their client gets
+    /// connection refused, which reads as Loom being down — so the count is surfaced
+    /// on the collapsed row rather than waiting to be opened.
+    private var brokenReverseProxies: Int {
+        store.status.reverseProxies.count { !$0.isListening }
+    }
+
+    private var reverseProxyDetail: String {
+        let broken = brokenReverseProxies
+        if broken > 0 { return "\(broken) not listening" }
+        let total = store.status.reverseProxies.count
+        return total == 0 ? "none" : "\(total)"
     }
 
     @ViewBuilder private var sslRow: some View {
