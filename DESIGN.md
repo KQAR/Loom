@@ -247,6 +247,14 @@ Cards appear directly under the row they belong to (root-CA trust under HTTPS, t
 client-certificate and reverse-proxy lists under their own rows) rather than in a fixed
 slot, so the control and its detail read as one unit.
 
+**Nothing in the console may present its own window** — no `confirmationDialog`, no
+`sheet`, no `alert`. The console is a `MenuBarExtra` popover and it closes the moment it
+stops being the key window, which is exactly what presenting takes: the dialog's buttons
+end up unclickable and the orphaned dialog is still waiting when the panel is next
+opened. Destructive actions confirm **inline in their own row** instead — the row swaps
+its caption for what will break and its trash icon for Cancel / Remove. (A file picker
+is the one unavoidable exception, because choosing a file needs a real window.)
+
 ### Main window — sidebar + vertical split (standard debugger layout)
 
 ```
@@ -389,10 +397,11 @@ opaque surfaces for the window; route interactivity through `{colors.accent}`; p
 numeric code; monospace everything from the wire; use system sidebar `.badge` counts; test light/dark/
 increased-contrast/Reduce-Transparency without code branches.
 
-**Don't** — show the request list in the console or config in the window; put opaque white cards on the console
-material; hardcode hex/RGB; add a second accent or any gradient; `.shadow()` manually; color the method by
-status; fix UI font sizes with `Font.system(size:)`; nest cards; let AI-slop in (emoji in UI copy, an SF Symbol
-on every label).
+**Don't** — show the request list in the console or config in the window; present a dialog / sheet / alert from
+the console (it closes the popover out from under itself — confirm inline in the row); put opaque white cards on
+the console material; hardcode hex/RGB; add a second accent or any gradient; `.shadow()` manually; color the
+method by status; fix UI font sizes with `Font.system(size:)`; nest cards; let AI-slop in (emoji in UI copy, an
+SF Symbol on every label).
 
 ## Iteration Guide
 

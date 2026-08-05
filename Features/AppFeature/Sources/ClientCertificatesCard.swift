@@ -81,52 +81,71 @@ struct ClientCertificatesCard: View {
                 label = ""
             }
         }
-        .confirmationDialog(
-            "Remove this client certificate?",
-            isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
-            presenting: pendingDeletion
-        ) { summary in
-            Button("Remove", role: .destructive) {
-                store.send(.deleteClientCertificateTapped(id: summary.id))
-                pendingDeletion = nil
-            }
-            Button("Cancel", role: .cancel) { pendingDeletion = nil }
-        } message: { summary in
-            // Confirmed because it isn't undoable from here: the key lives only in
-            // Loom's store, so putting it back means finding the original .p12 again.
-            Text("\(summary.hostPattern) will go back to failing the handshake if that origin requires a certificate. You'll need the original .p12 to add it again.")
-        }
     }
 
     // MARK: Rows
 
-    private func row(_ summary: ClientCertificateSummary) -> some View {
+    /// One identity. Removal confirms **inline, inside this row** — never in a
+    /// `confirmationDialog` or a sheet.
+    ///
+    /// This card lives in a `MenuBarExtra` popover, and that popover closes the moment it
+    /// stops being the key window. A dialog takes key focus to present, so the popover
+    /// went away underneath it: the buttons were unclickable, and the orphaned dialog was
+    /// still waiting the next time the panel opened. Any presentation that needs its own
+    /// window has the same defect here — the fix is to need no second window.
+    @ViewBuilder private func row(_ summary: ClientCertificateSummary) -> some View {
+        let confirming = pendingDeletion?.id == summary.id
         HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
-            Image(systemName: summary.problem != nil ? "exclamationmark.triangle.fill" : "person.badge.key")
+            Image(systemName: confirming ? "trash" : (summary.problem != nil ? "exclamationmark.triangle.fill" : "person.badge.key"))
                 .font(LoomTheme.Icon.badge)
-                .foregroundStyle(tint(for: summary))
+                .foregroundStyle(confirming ? Color.orange : tint(for: summary))
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 1) {
                 Text(summary.hostPattern)
                     .font(.callout.monospaced())
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(caption(for: summary))
-                    .font(.caption2)
-                    .foregroundStyle(summary.problem != nil || summary.isExpired() ? Color.orange : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                if confirming {
+                    // Says why this is confirmed at all: the key lives only in Loom's
+                    // store, so putting it back means finding the original .p12 again.
+                    Text("Handshakes to this host start failing again. You'll need the original .p12 to add it back.")
+                        .font(.caption2)
+                        .foregroundStyle(Color.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(caption(for: summary))
+                        .font(.caption2)
+                        .foregroundStyle(summary.problem != nil || summary.isExpired() ? Color.orange : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: LoomTheme.Space.xs)
-            Button {
-                pendingDeletion = summary
-            } label: {
-                Image(systemName: "trash")
+            if confirming {
+                HStack(spacing: LoomTheme.Space.xs) {
+                    Button("Cancel") { pendingDeletion = nil }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Remove") {
+                        store.send(.deleteClientCertificateTapped(id: summary.id))
+                        pendingDeletion = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.red)
+                    .disabled(store.clientCertBusy)
+                }
+            } else {
+                Button {
+                    pendingDeletion = summary
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(store.clientCertBusy)
+                .accessibilityLabel("Remove the certificate for \(summary.hostPattern)")
+                .help("Remove this client certificate")
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .disabled(store.clientCertBusy)
-            .accessibilityLabel("Remove the certificate for \(summary.hostPattern)")
-            .help("Remove this client certificate")
         }
     }
 

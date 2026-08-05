@@ -89,31 +89,24 @@ struct ReverseProxyCard: View {
         }
         .padding(LoomTheme.Space.sm)
         .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-        .confirmationDialog(
-            "Remove this reverse proxy?",
-            isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
-            presenting: pendingDeletion
-        ) { status in
-            Button("Remove", role: .destructive) {
-                store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
-                pendingDeletion = nil
-            }
-            Button("Cancel", role: .cancel) { pendingDeletion = nil }
-        } message: { status in
-            // Confirmed because the damage is outside Loom: whatever config still names
-            // this port (a dev server, a container env) starts getting connection
-            // refused, and Loom can't put that back.
-            Text("Port \(String(status.boundPort ?? status.endpoint.requestedPort)) stops listening. Anything still pointed at it — a dev server's proxy target, an env var — gets connection refused until you change it back to \(status.endpoint.upstream).")
-        }
     }
 
     // MARK: Rows
 
-    private func row(_ status: ReverseProxyStatus) -> some View {
+    /// One endpoint. Removal confirms **inline, inside this row** — never in a
+    /// `confirmationDialog` or a sheet.
+    ///
+    /// This card lives in a `MenuBarExtra` popover, and that popover closes the moment it
+    /// stops being the key window. A dialog takes key focus to present, so the popover
+    /// went away underneath it: the buttons were unclickable, and the orphaned dialog was
+    /// still waiting the next time the panel opened. Any presentation that needs its own
+    /// window has the same defect here — the fix is to need no second window.
+    @ViewBuilder private func row(_ status: ReverseProxyStatus) -> some View {
+        let confirming = pendingDeletion?.id == status.id
         HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
-            Image(systemName: status.isListening ? "arrow.left.arrow.right" : "exclamationmark.triangle.fill")
+            Image(systemName: rowIcon(for: status, confirming: confirming))
                 .font(LoomTheme.Icon.badge)
-                .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                .foregroundStyle(status.isListening && !confirming ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 1) {
                 // The local URL is what goes into a config file, so it's the primary
@@ -124,23 +117,53 @@ struct ReverseProxyCard: View {
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(ReverseProxyList.caption(for: status))
-                    .font(.caption2)
-                    .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                    .fixedSize(horizontal: false, vertical: true)
+                if confirming {
+                    // Says what breaks outside Loom, which is why this is confirmed at
+                    // all: Loom can't edit whatever config still names the port.
+                    Text("Stops listening — anything still pointed at this port gets connection refused.")
+                        .font(.caption2)
+                        .foregroundStyle(Color.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(ReverseProxyList.caption(for: status))
+                        .font(.caption2)
+                        .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: LoomTheme.Space.xs)
-            Button {
-                pendingDeletion = status
-            } label: {
-                Image(systemName: "trash")
+            if confirming {
+                HStack(spacing: LoomTheme.Space.xs) {
+                    Button("Cancel") { pendingDeletion = nil }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    Button("Remove") {
+                        store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
+                        pendingDeletion = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .tint(.red)
+                    .disabled(store.reverseProxyBusy)
+                }
+            } else {
+                Button {
+                    pendingDeletion = status
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .disabled(store.reverseProxyBusy)
+                .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
+                .help("Stop listening on this port and forget the endpoint")
             }
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .disabled(store.reverseProxyBusy)
-            .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
-            .help("Stop listening on this port and forget the endpoint")
         }
+    }
+
+    private func rowIcon(for status: ReverseProxyStatus, confirming: Bool) -> String {
+        if confirming { return "trash" }
+        return status.isListening ? "arrow.left.arrow.right" : "exclamationmark.triangle.fill"
     }
 
     // MARK: Add form
