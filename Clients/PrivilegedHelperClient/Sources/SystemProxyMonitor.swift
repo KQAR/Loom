@@ -66,13 +66,32 @@ enum SystemProxyMonitor {
             SCDynamicStoreSetNotificationKeys(store, [key] as CFArray, nil)
             SCDynamicStoreSetDispatchQueue(store, DispatchQueue(label: "com.loom.system-proxy-monitor"))
 
-            continuation.onTermination = { _ in
-                // Detach the callback before dropping the retain, so the queue can't
-                // fire into a released sink.
-                SCDynamicStoreSetDispatchQueue(store, nil)
-                Unmanaged<Sink>.fromOpaque(info).release()
-            }
+            let teardown = Teardown(store: store, info: info)
+            continuation.onTermination = { _ in teardown.run() }
             continuation.yield(snapshot())
+        }
+    }
+
+    /// Carries the two C handles the termination closure needs, which is a `@Sendable`
+    /// boundary neither of them can cross on its own: `SCDynamicStore` is a CF type
+    /// with no `Sendable` conformance and `info` is a raw pointer.
+    ///
+    /// `@unchecked Sendable` is honest here because of *when* this runs, not what it
+    /// holds: `onTermination` fires once, and its two steps are ordered on purpose —
+    /// detach the dispatch queue first, so the queue can't fire into a released sink,
+    /// then drop the retain the C context was handed.
+    private final class Teardown: @unchecked Sendable {
+        private let store: SCDynamicStore
+        private let info: UnsafeMutableRawPointer
+
+        init(store: SCDynamicStore, info: UnsafeMutableRawPointer) {
+            self.store = store
+            self.info = info
+        }
+
+        func run() {
+            SCDynamicStoreSetDispatchQueue(store, nil)
+            Unmanaged<Sink>.fromOpaque(info).release()
         }
     }
 
