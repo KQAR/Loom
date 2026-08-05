@@ -6,7 +6,8 @@ import NIOPosix
 /// group, same flow store, same forwarder — only the way a client states its
 /// destination differs, and `SOCKSConnectionHandler` normalizes that away before
 /// the capture stack sees anything.
-final class SOCKSServer {
+/// An actor for the same reason `ProxyServer` is — see the note there.
+actor SOCKSServer {
     private let group: EventLoopGroup
     private var channel: Channel?
 

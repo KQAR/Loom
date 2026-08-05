@@ -28,7 +28,9 @@ public enum LANAddress {
             guard getnameinfo(addr, socklen_t(addr.pointee.sa_len),
                               &host, socklen_t(host.count),
                               nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            let ip = String(cString: host)
+            // Pointer overload, not the array one: the latter is deprecated in Swift 6
+            // in favour of an explicit decode, and `getnameinfo` already NUL-terminates.
+            let ip = host.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
             let name = String(cString: ptr.pointee.ifa_name)
             if name == "en0" || name == "en1" {
                 preferred = preferred ?? ip

@@ -5,7 +5,13 @@ import NIOHTTP1
 
 /// Owns the listening socket. Child pipelines are named so the CONNECT path
 /// can strip HTTP framing before splicing a raw tunnel.
-final class ProxyServer {
+///
+/// An actor rather than a class (`ReverseProxyServer` already was one): the bind
+/// state is a `var channel` that only `ProxyEngine` — itself an actor — ever
+/// touches, so under strict concurrency the choice is between proving that and
+/// asserting it with `@unchecked Sendable`. Making the isolation real costs
+/// nothing here, because every call site already awaits.
+actor ProxyServer {
     private let group: EventLoopGroup
     private var channel: Channel?
 

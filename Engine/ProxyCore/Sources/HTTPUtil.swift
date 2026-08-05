@@ -64,14 +64,17 @@ enum HTTPUtil {
         responseHeaders.replaceOrAdd(name: "Content-Length", value: String(body.count))
         responseHeaders.replaceOrAdd(name: "Connection", value: keepAlive ? "keep-alive" : "close")
 
-        var buffer = channel.allocator.buffer(capacity: body.count)
-        buffer.writeBytes(body)
+        var writable = channel.allocator.buffer(capacity: body.count)
+        writable.writeBytes(body)
+        // Frozen for the event-loop closure below. `ByteBuffer` is a value type, so
+        // this is a copy rather than a `var` the closure shares with this frame.
+        let buffer = writable
         let head = HTTPResponseHead(version: .http1_1, status: .init(statusCode: status), headers: responseHeaders)
 
         channel.eventLoop.execute {
-            channel.write(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
-            channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
-            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil))).whenComplete { _ in
+            channel.write(HTTPServerResponsePart.head(head), promise: nil)
+            channel.write(HTTPServerResponsePart.body(.byteBuffer(buffer)), promise: nil)
+            channel.writeAndFlush(HTTPServerResponsePart.end(nil)).whenComplete { _ in
                 if !keepAlive {
                     channel.close(promise: nil)
                 }
@@ -112,24 +115,25 @@ enum HTTPUtil {
         responseHeaders.replaceOrAdd(name: "Connection", value: keepAlive ? "keep-alive" : "close")
         let head = HTTPResponseHead(version: .http1_1, status: .init(statusCode: status), headers: responseHeaders)
         channel.eventLoop.execute {
-            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.head(head)), promise: nil)
+            channel.writeAndFlush(HTTPServerResponsePart.head(head), promise: nil)
         }
     }
 
     /// Write one streamed body chunk (chunk-encoded by the response encoder).
     static func writeResponseChunk(channel: Channel, data: Data) {
         guard !data.isEmpty else { return }
-        var buffer = channel.allocator.buffer(capacity: data.count)
-        buffer.writeBytes(data)
+        var writable = channel.allocator.buffer(capacity: data.count)
+        writable.writeBytes(data)
+        let buffer = writable // frozen for the closure, as in `writeResponse`
         channel.eventLoop.execute {
-            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
+            channel.writeAndFlush(HTTPServerResponsePart.body(.byteBuffer(buffer)), promise: nil)
         }
     }
 
     /// Terminate a streamed response (sends the final chunk) and close if needed.
     static func finishResponse(channel: Channel, keepAlive: Bool) {
         channel.eventLoop.execute {
-            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil))).whenComplete { _ in
+            channel.writeAndFlush(HTTPServerResponsePart.end(nil)).whenComplete { _ in
                 if !keepAlive { channel.close(promise: nil) }
             }
         }

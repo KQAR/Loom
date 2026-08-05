@@ -62,9 +62,16 @@ let package = Package(
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
             path: "Engine/ProxyCore/Sources",
-            // LoomProxyCore builds in Swift 5 language mode (the NIO channel model
-            // predates Swift 6 Sendable enforcement) — matches Project.swift.
-            swiftSettings: [.swiftLanguageMode(.v5)]
+            // Swift 6 language mode (strict concurrency) — matches Project.swift.
+            //
+            // Deliberately WITHOUT `NonisolatedNonsendingByDefault`, even though it makes
+            // the migration look cheaper: it gives every `nonisolated async` function an
+            // implicit isolation parameter, i.e. it changes their ABI. A caller compiled
+            // without the feature then calls them with the old convention and crashes in
+            // `_swift_implicitisolationactor_to_executor_cast` — measured, 24 crashed
+            // tests. This module ships as a public SPM product, so its consumers'
+            // build settings are not ours to dictate.
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         // Pure-model tests runnable via `swift test` (no Tuist/NIO needed), so the
         // reusable library surface is verifiable standalone. App/engine tests stay

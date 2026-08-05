@@ -206,6 +206,19 @@ final class BreakpointStore: @unchecked Sendable {
     /// as `.abort` immediately instead of waiting out the timeout. Otherwise the
     /// entry would linger and `list_pending` would keep advertising an exchange
     /// nobody is waiting on.
+    /// Consume `hold`'s cancellation marker under the lock.
+    ///
+    /// A method rather than the two lines it replaces in `hold`'s `defer`, because
+    /// `NSLock.lock()` is unavailable from an async context and that `defer` body
+    /// sits directly in one. The restriction is about holding a lock *across a
+    /// suspension* — this critical section can't suspend, but the compiler can only
+    /// see that once it lives in a non-async function.
+    private func clearParkCancellation(_ id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelledBeforePark.remove(id)
+    }
+
     func hold(_ info: PendingBreakpoint) async -> BreakpointResolution {
         // The marker below is only ever meaningful to *this* call, so clear it on
         // the way out. `cancel` writes one whenever it finds no held entry, and
@@ -217,11 +230,7 @@ final class BreakpointStore: @unchecked Sendable {
         // resumes, which is an ordinary pairing for a hold that pins a live
         // connection. `withTaskCancellationHandler` has deregistered its handler by
         // the time it returns, so no insert can follow this defer.
-        defer {
-            lock.lock()
-            cancelledBeforePark.remove(info.id)
-            lock.unlock()
-        }
+        defer { clearParkCancellation(info.id) }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<BreakpointResolution, Never>) in
                 lock.lock()

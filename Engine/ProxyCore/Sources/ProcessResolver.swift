@@ -240,7 +240,9 @@ final class ProcessResolver: @unchecked Sendable {
     private static func appInfo(pid: pid_t) -> SourceApp {
         var buffer = [CChar](repeating: 0, count: 4096) // PROC_PIDPATHINFO_MAXSIZE
         let n = proc_pidpath(pid, &buffer, UInt32(buffer.count))
-        let execPath = n > 0 ? String(cString: buffer) : ""
+        // Pointer overload, not the array one (deprecated in Swift 6): `proc_pidpath`
+        // NUL-terminates, so stopping at the first NUL is still the right read.
+        let execPath = n > 0 ? buffer.withUnsafeBufferPointer { String(cString: $0.baseAddress!) } : ""
 
         // Bundled app: derive the enclosing .app and read its Info.plist (Foundation
         // only — no AppKit). e.g. /Applications/Foo.app/Contents/MacOS/Foo -> Foo.app

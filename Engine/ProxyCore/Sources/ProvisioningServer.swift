@@ -23,7 +23,8 @@ struct ProvisioningContent: Sendable {
 /// Deliberately separate from the proxy listener: it speaks origin-form HTTP to a
 /// browser, not proxy-form CONNECT/absolute-URI requests, and binds the LAN
 /// interface only while phone onboarding is active.
-final class ProvisioningServer {
+/// An actor for the same reason `ProxyServer` is — see the note there.
+actor ProvisioningServer {
     private let group: EventLoopGroup
     private var channel: Channel?
 

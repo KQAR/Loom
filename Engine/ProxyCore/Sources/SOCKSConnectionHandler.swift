@@ -253,9 +253,13 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
         let channel = context.channel
         let host = target.host
         let port = target.port
-        var replay = channel.allocator.buffer(capacity: pending.count)
-        replay.writeBytes(pending)
+        var sniffed = channel.allocator.buffer(capacity: pending.count)
+        sniffed.writeBytes(pending)
         pending = []
+        // Frozen before the completion closure below captures it: a `var` would be a
+        // shared mutable reference into this frame, and `ByteBuffer` is a value type,
+        // so a copy is all the replay needs.
+        let replay = sniffed
 
         _ = channel.setOption(ChannelOptions.autoRead, value: false)
 
