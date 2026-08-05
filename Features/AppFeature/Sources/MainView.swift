@@ -67,18 +67,22 @@ public struct MainView: View {
                 .toolbar { toolbarContent }
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
-        // The lighter band across the window's top is macOS 26's scroll edge effect, and
-        // nothing here can turn it off. AppKit draws an `NSScrollPocket` at the top of every
-        // scroll view meeting that edge — measured as `f=(0,0,1160,80)` over the table and
-        // `f=(0,0,300,52)` over the sidebar, whose visible `BackdropView` is what shows.
-        // Ruled out by measurement, in order: the titlebar's own fill
+        // The lighter band that used to sit across the window's top was macOS 26's scroll
+        // edge effect: AppKit draws an `NSScrollPocket` at the top of every scroll view
+        // meeting that edge — measured `f=(0,0,1160,80)` over the table and `f=(0,0,300,52)`
+        // over the sidebar, whose visible `BackdropView` is what showed. Nothing at this
+        // layer removed it. Ruled out by measurement, in order: the titlebar's own fill
         // (`NSTitlebarBackgroundView` is already hidden by `titlebarAppearsTransparent`, and
         // hiding the remaining titlebar backdrop view changed nothing on screen), the
         // toolbar item's shared glass, and SwiftUI's `scrollEdgeEffectHidden(true, for: .top)`
         // — which leaves the pocket's backdrop visible on these AppKit-backed scroll views.
         // AppKit's own `NSScrollEdgeEffectStyle` is macOS 26.1 and settable only on split-view
-        // and titlebar *accessory* controllers, not on `NSScrollView`. It predates this
-        // change: the collapse animation did not introduce it.
+        // and titlebar *accessory* controllers, not on `NSScrollView`.
+        //
+        // What did remove it is `UIDesignRequiresCompatibility` in the app's Info.plist
+        // (`Project.swift`), which puts the whole app back in the pre-26 system design that
+        // DESIGN.md specifies. Keep that key and this band stays gone; drop it and every dead
+        // end above is live again — so re-read them before trying to fix it per view.
         .task { store.send(.viewAppeared) }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
             RuleEditorView(store: editorStore)
@@ -417,7 +421,10 @@ public struct MainView: View {
     /// `.principal` does. Two ways to shift it onto the pane were tried and both cost more
     /// than they fix: padding the item's leading edge by a sidebar width stretches the
     /// shared-glass capsule by the same 300pt, and hiding that shared background to draw
-    /// the capsule here leaves the toolbar rendering a full-width backdrop instead.
+    /// the capsule here leaves the toolbar rendering a full-width backdrop instead. (The
+    /// capsule itself is gone now that the app renders in the pre-26 design — see
+    /// `UIDesignRequiresCompatibility` in `Project.swift` — but window-centring is
+    /// `.principal`'s own behavior in both designs, so this note still applies.)
     private var statusChip: some View {
         HStack(spacing: LoomTheme.Space.xs) {
             // green = proxy up & recording · yellow = up but paused · grey = off.
