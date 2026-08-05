@@ -190,7 +190,7 @@ utility — closer to the system's own controls than to a themed Electron tool.
 ┌─ ● 127.0.0.1:9090            [◉] ──┐   header: capture dot + address + proxy switch
 │    SOCKS5 127.0.0.1:9091            │   second listener, only while it is bound
 │ 📱 Connect Device            2      │   action-row (phone onboarding)
-│ ⇄  Reverse Proxies           2      │   action-row — expands a card (list + Add form)
+│ ⇄  Reverse Proxies           2      │   action-row, icon accent while any exist
 │ 🌍 System Proxy      in use by …    │   config-row (three-valued: loom/off/other)
 │ 🔒 HTTPS (SSL)       decrypting     │   config-row
 │ 🔑 Client Certificates       1      │   config-row, conditional — expands a card
@@ -215,8 +215,11 @@ switch stays the proxy on/off in the header. It sits **above** System Proxy — 
 way in that works when that row can't help, for a client which ignores the system proxy
 setting entirely. The row exists because creating one is the human's job even though an
 agent can also do it: an endpoint is a listening port whose number goes into a dev
-server's config file, and only the human edits that file. The trailing detail is the
-count, or a not-listening count in orange — an endpoint whose port didn't bind is
+server's config file, and only the human edits that file. Its icon is accent while any
+endpoint is configured — an action-row has no checkmark slot, so the icon is the only
+thing that can say "something is set up here" (same highlight as Connect Device). The
+trailing detail is the count, or a not-listening count in orange, which also takes the
+icon: a fault has to read as a fault rather than as an active feature — an endpoint whose port didn't bind is
 experienced by its client as connection refused, i.e. as Loom being down.
 
 Its card is the list (local URL, selectable, over `→ upstream`; faults first, capped at

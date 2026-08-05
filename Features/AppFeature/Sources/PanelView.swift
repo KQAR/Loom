@@ -235,7 +235,7 @@ public struct PanelView: View {
         PanelRow(
             kind: .action,
             icon: "arrow.left.arrow.right",
-            iconTint: brokenReverseProxies == 0 ? nil : .orange,
+            iconTint: reverseProxyIconTint,
             title: "Reverse Proxies",
             detail: reverseProxyDetail,
             help: "Local ports that stand in for an upstream origin — for clients that ignore proxy settings"
@@ -247,6 +247,15 @@ public struct PanelView: View {
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.top, LoomTheme.Space.xxs)
         }
+    }
+
+    /// Accent while any endpoint is configured, matching the Connect Device row's
+    /// highlight: this is an *action* row, so it has no checkmark slot to say "something
+    /// is set up here" and the icon is the only thing that can. Orange outranks it when
+    /// one isn't listening — a fault has to read as a fault, not as an active feature.
+    private var reverseProxyIconTint: Color? {
+        if brokenReverseProxies > 0 { return .orange }
+        return store.status.reverseProxies.isEmpty ? nil : Color.accentColor
     }
 
     /// Endpoints that exist in the config but aren't listening. Their client gets
