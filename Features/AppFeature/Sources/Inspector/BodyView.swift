@@ -33,10 +33,19 @@ struct BodyView: View {
                 return
             }
             // Off the main actor — the parse walks a boxed Character array.
-            let json = await Task.detached { JSONValue.parse(data) }.value
+            let json = await Self.parse(data)
             guard !Task.isCancelled else { return }
             parsed = .some(json?.isContainer == true ? json : nil)
         }
+    }
+
+    /// `@concurrent`, not `Task.detached` (rationale in `RawTab.build`): the parse
+    /// must leave the main actor but must stay cancellable, because `.task(id: data)`
+    /// re-fires on every streaming body growth — the case this key exists for — and
+    /// a detached parse of the previous, shorter body would run to completion for
+    /// nothing while the new one queued behind it on the pool.
+    @concurrent private static func parse(_ data: Data) async -> JSONValue? {
+        JSONValue.parse(data)
     }
 
     @ViewBuilder private var content: some View {

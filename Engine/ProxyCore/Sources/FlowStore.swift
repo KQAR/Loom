@@ -304,17 +304,33 @@ actor FlowStore {
             return matches
         }
         let candidates = flows.reversed().filter(query.matchesMetadata)
-        let persistence = persistence
-        return await Task.detached(priority: .utility) {
-            var matches: [Flow] = []
-            matches.reserveCapacity(min(limit, 64))
-            for flow in candidates {
-                guard matches.count < limit else { break }
-                guard query.matchesBodies(Self.hydrated(flow, from: persistence)) else { continue }
-                matches.append(flow)
-            }
-            return matches
-        }.value
+        return await Self.matchingBodies(
+            candidates: Array(candidates), query: query, limit: limit, persistence: persistence
+        )
+    }
+
+    /// The body-search half of `recent(matching:)`, off the actor.
+    ///
+    /// `@concurrent` rather than the `Task.detached` this used to be. Both leave the
+    /// actor, which is the point — the alternative was holding it across up to
+    /// `capacity` synchronous SQLite blob reads. Only this one stays in the task
+    /// tree: a detached child ignores cancellation, so an MCP client that hung up
+    /// mid-search left the scan running to the end and the awaiting task waiting
+    /// for it. `wait_for_flow` cancels exactly this way (`MCPHTTPHandler` cancels
+    /// `inFlight` on `channelInactive`), so the cancellation path is real, not
+    /// theoretical.
+    @concurrent private static func matchingBodies(
+        candidates: [Flow], query: FlowQuery, limit: Int, persistence: FlowPersistence?
+    ) async -> [Flow] {
+        var matches: [Flow] = []
+        matches.reserveCapacity(min(limit, 64))
+        for flow in candidates {
+            guard matches.count < limit else { break }
+            if Task.isCancelled { break }
+            guard query.matchesBodies(Self.hydrated(flow, from: persistence)) else { continue }
+            matches.append(flow)
+        }
+        return matches
     }
 
     func clear() {
@@ -389,9 +405,7 @@ actor FlowStore {
             guard flow.request.body == nil, flow.response?.body == nil, persistence != nil else { return flow }
             // Slimmed by the body budget: hydrate off the actor so the blob read
             // doesn't stall capture upserts (Flow is a value; the snapshot is safe).
-            return await Task.detached(priority: .utility) {
-                Self.hydrated(flow, from: persistence)
-            }.value
+            return await Self.hydratedOffActor(flow, persistence: persistence)
         }
         // Not in the ring — but the durable store keeps an order of magnitude more
         // rows, so read through to it. Without this the store is effectively
@@ -401,9 +415,22 @@ actor FlowStore {
         // link, an exported HAR) concludes the exchange never happened.
         // Off-actor for the same reason as above.
         guard persistence != nil else { return nil }
-        return await Task.detached(priority: .utility) {
-            persistence?.flow(id: id)
-        }.value
+        return await Self.persistedFlow(id: id, persistence: persistence)
+    }
+
+    /// The two off-actor reads `flow(id:)` needs. `@concurrent` for the reason
+    /// `matchingBodies` gives: leaving the actor was always the point, leaving the
+    /// task tree never was.
+    @concurrent private static func hydratedOffActor(
+        _ flow: Flow, persistence: FlowPersistence?
+    ) async -> Flow {
+        hydrated(flow, from: persistence)
+    }
+
+    @concurrent private static func persistedFlow(
+        id: UUID, persistence: FlowPersistence?
+    ) async -> Flow? {
+        persistence?.flow(id: id)
     }
 
     /// Recent flows with bodies re-attached — for exports (HAR) that need the full
@@ -415,22 +442,28 @@ actor FlowStore {
     ///
     /// Only the ring snapshot happens on the actor. The hydration — one blob read
     /// per slimmed flow, multi-MB `Data` copies included — and the disk top-up run
-    /// detached, because a 1000-flow HAR export used to hold the actor for the
-    /// whole assembly and queue every capture upsert behind it.
+    /// off it, because a 1000-flow HAR export used to hold the actor for the whole
+    /// assembly and queue every capture upsert behind it.
     func recentHydrated(limit: Int) async -> [Flow] {
-        let fromRing = recent(limit: limit)
-        let persistence = persistence
-        return await Task.detached(priority: .utility) {
-            let hydratedRing = fromRing.map { Self.hydrated($0, from: persistence) }
-            guard let persistence, hydratedRing.count < limit else { return hydratedRing }
-            let seen = Set(hydratedRing.map(\.id))
-            let older = persistence.recent(limit: limit)
-                .lazy
-                .filter { !seen.contains($0.id) }
-                .map { Self.hydrated($0, from: persistence) }
-                .prefix(limit - hydratedRing.count)
-            return hydratedRing + older
-        }.value
+        await Self.hydrate(recent(limit: limit), upTo: limit, persistence: persistence)
+    }
+
+    /// `@concurrent`, for the reason `matchingBodies` gives — and here cancellation
+    /// buys the most: this is the HAR-export assembly, up to `limit` multi-MB blob
+    /// reads, and it was the one detached task large enough that abandoning the
+    /// export still paid for all of it.
+    @concurrent private static func hydrate(
+        _ fromRing: [Flow], upTo limit: Int, persistence: FlowPersistence?
+    ) async -> [Flow] {
+        let hydratedRing = fromRing.map { Self.hydrated($0, from: persistence) }
+        guard let persistence, hydratedRing.count < limit, !Task.isCancelled else { return hydratedRing }
+        let seen = Set(hydratedRing.map(\.id))
+        let older = persistence.recent(limit: limit)
+            .lazy
+            .filter { !seen.contains($0.id) }
+            .map { Self.hydrated($0, from: persistence) }
+            .prefix(limit - hydratedRing.count)
+        return hydratedRing + older
     }
 
     /// Re-attach persisted bodies when the in-memory flow carries none. A live

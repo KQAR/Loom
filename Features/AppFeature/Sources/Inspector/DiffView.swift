@@ -58,13 +58,25 @@ struct DiffView: View {
                 }
             }
             .task(id: key) {
-                let base = original
-                let compared = replayed
-                let result = await Task.detached { FlowComparison.compare(base: base, compared: compared) }.value
+                let result = await Self.compare(base: original, compared: replayed)
                 guard !Task.isCancelled else { return }
                 comparison = result
             }
         }
+    }
+
+    /// `@concurrent` rather than `Task.detached` (see the longer note in
+    /// `RawTab.build`): the diff has to leave the main actor, but a detached task
+    /// leaves the *task tree* as well, so switching rows cancelled this `.task`
+    /// while the LCS walk ran on regardless — and `await …value` waited for it.
+    /// The `Task.isCancelled` check at the call site is only honest with this.
+    ///
+    /// A wrapper rather than `@concurrent` on `FlowComparison.compare` itself:
+    /// that is public API in SharedModels, shared with the MCP `diff_flows` path
+    /// and with embedders, and one view's execution context is no reason to make
+    /// every caller `await`.
+    @concurrent private static func compare(base: Flow, compared: Flow) async -> FlowComparison {
+        FlowComparison.compare(base: base, compared: compared)
     }
 
     // MARK: - Rows

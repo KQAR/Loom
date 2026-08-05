@@ -44,11 +44,24 @@ struct RawTab: View {
     var body: some View {
         RawView(text: text, identity: key)
             .task(id: key) {
-                let flow = flow
-                let make = makeText
-                let rebuilt = await Task.detached(priority: .userInitiated) { make(flow) }.value
+                let rebuilt = await Self.build(makeText, from: flow)
                 guard !Task.isCancelled else { return }
                 text = rebuilt
             }
+    }
+
+    /// `@concurrent` rather than `Task.detached`, which is what this used to be.
+    /// Both get the decode off the main actor; only this one stays *inside* the
+    /// task tree. A detached task doesn't inherit cancellation, so when `key`
+    /// changed — every row click — SwiftUI cancelled this `.task` while the
+    /// detached child kept decoding, and `await …value` (non-throwing) waited it
+    /// out anyway. Clicking down a list spawned one full rebuild per row, none of
+    /// them cancellable, and the `Task.isCancelled` check above only discarded a
+    /// result already paid for. It now also inherits priority and task-locals,
+    /// which `Task.detached` drops by definition.
+    @concurrent private static func build(
+        _ make: @Sendable (Flow) -> String, from flow: Flow
+    ) async -> String {
+        make(flow)
     }
 }
