@@ -21,8 +21,8 @@ public struct PanelView: View {
 
             VStack(spacing: 0) {
                 devicesRow
-                systemProxyRow
                 reverseProxyRow
+                systemProxyRow
                 sslRow
                 rulesRow
                 breakpointsRow
@@ -91,26 +91,13 @@ public struct PanelView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
-                // Reverse-proxy endpoints, in the same slot as the SOCKS line and for
-                // the same reason: they are ports on this machine a client gets pointed
-                // at, and the number is not derivable from anything above it. Bound to
-                // loopback only, so the LAN address above never applies to them.
-                let reverse = ReverseProxyHeaderLines.lines(for: store.status.reverseProxies)
-                ForEach(reverse.lines) { line in
-                    Text(verbatim: line.text)
-                        .font(.caption.monospaced())
-                        // Not-listening is a fault, not a quieter detail: its client
-                        // sees connection refused, which reads as Loom being down.
-                        .foregroundStyle(line.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                        .help(line.help)
-                }
-                if reverse.hidden > 0 {
-                    // Never silently truncated — the count says what is missing.
-                    Text(verbatim: "+\(reverse.hidden) more reverse \(reverse.hidden == 1 ? "proxy" : "proxies")")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .help("Open the main window's Audit panel, or ask the agent for list_reverse_proxies, to see them all.")
-                }
+                // Reverse-proxy endpoints are deliberately NOT listed here, even though
+                // they are ports a client gets pointed at like the two above. They have
+                // their own row + card now, and that is the one place they are reported
+                // — including the ones an agent created. Two copies of a list whose
+                // other writer is an agent is two places to keep in step, and the
+                // header's copy was the one with no room for the local URL, the
+                // upstream, or the Remove button.
             }
             // Indented to the address's leading edge, so the block reads as detail
             // under it rather than as a second column starting at the dot.
@@ -233,15 +220,17 @@ public struct PanelView: View {
         }
     }
 
-    /// Third way traffic reaches Loom, after Connect Device and System Proxy — and the
-    /// only one that needs no cooperation from the client, because it looks like the
-    /// origin server. Sits with those two for that reason.
+    /// A way traffic reaches Loom, with Connect Device and System Proxy — and the only
+    /// one that needs no cooperation from the client at all, because it looks like the
+    /// origin server rather than like a proxy. Sits *above* System Proxy because it is
+    /// the one that works when that row can't help: a client which ignores the system
+    /// proxy setting (Node's fetch/undici) is exactly who this exists for.
     ///
     /// An **action** row (chevron), never a state row: there is nothing here to toggle
     /// — endpoints are created and removed individually, and the console's only switch
-    /// stays the proxy on/off in the header (DESIGN.md). The header's caption lines
-    /// still report the endpoints with the other listener addresses; this row is where
-    /// they are *configured*, which they previously couldn't be without an agent.
+    /// stays the proxy on/off in the header (DESIGN.md). This row and its card are the
+    /// **only** place endpoints are reported, agent-created ones included; the caption
+    /// lines that used to list them under the header's address are gone.
     @ViewBuilder private var reverseProxyRow: some View {
         PanelRow(
             kind: .action,

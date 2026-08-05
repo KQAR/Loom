@@ -17,9 +17,15 @@ import SwiftUI
 /// creation agent-only meant the one thing that makes this feature usable was
 /// unreachable without an agent in the loop.
 ///
+/// This is the **sole** place endpoints are reported to the human, agent-created ones
+/// included; the caption lines that used to list them under the console header's
+/// address were removed with this card's arrival. Endpoints are the one listener list
+/// whose other writer is an agent, so two renderings meant two things to keep in step —
+/// and the header was the rendering with no room for the URL to copy, the upstream, or
+/// a Remove button.
+///
 /// The endpoints are read from `status.reverseProxies` (the one mirror, refreshed by
-/// `engineStatusRefreshed`) rather than being copied into a second list here — two
-/// mirrors of the same ports is how the header and this card would come to disagree.
+/// `engineStatusRefreshed`) rather than being copied into a second list here.
 struct ReverseProxyCard: View {
     @Bindable var store: StoreOf<AppFeature>
 
@@ -39,17 +45,31 @@ struct ReverseProxyCard: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                // Not-listening first, for the same reason the header orders them that
-                // way: a port that didn't bind reads to its client as Loom being down.
-                ForEach(ordered) { status in
+                let listed = ReverseProxyList.rows(for: store.status.reverseProxies)
+                ForEach(listed.rows) { status in
                     row(status)
+                }
+                if listed.hidden > 0 {
+                    // Never silently truncated — the count says what is missing, and
+                    // where to see the rest.
+                    Text("+\(listed.hidden) more — ask your agent for list_reverse_proxies")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             if adding {
                 form
             } else {
+                // Bottom-right: the list is what this card is for, so the one thing that
+                // adds to it sits after it, at the trailing edge, out of the reading path
+                // rather than above the first row.
                 HStack(spacing: LoomTheme.Space.sm) {
+                    if store.reverseProxyBusy {
+                        ProgressView().controlSize(.small)
+                    }
+                    Spacer(minLength: LoomTheme.Space.xs)
                     Button {
                         adding = true
                     } label: {
@@ -58,11 +78,8 @@ struct ReverseProxyCard: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .disabled(store.reverseProxyBusy)
-
-                    if store.reverseProxyBusy {
-                        ProgressView().controlSize(.small)
-                    }
                 }
+                .frame(maxWidth: .infinity)
             }
 
             if let message = store.reverseProxyMessage {
@@ -92,16 +109,6 @@ struct ReverseProxyCard: View {
         }
     }
 
-    /// Not-listening endpoints first, then oldest-first — the same order as the
-    /// console header's caption lines, so the two read as one list.
-    private var ordered: [ReverseProxyStatus] {
-        store.status.reverseProxies.sorted { lhs, rhs in
-            lhs.isListening == rhs.isListening
-                ? lhs.endpoint.createdAt < rhs.endpoint.createdAt
-                : !lhs.isListening
-        }
-    }
-
     // MARK: Rows
 
     private func row(_ status: ReverseProxyStatus) -> some View {
@@ -114,12 +121,12 @@ struct ReverseProxyCard: View {
                 // The local URL is what goes into a config file, so it's the primary
                 // line and it's selectable — retyping a port by eye is how the wrong
                 // one ends up in the config.
-                Text(status.localURL ?? "port \(String(status.endpoint.requestedPort)) — not listening")
+                Text(ReverseProxyList.target(for: status))
                     .font(.callout.monospaced())
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(caption(for: status))
+                Text(ReverseProxyList.caption(for: status))
                     .font(.caption2)
                     .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                     .fixedSize(horizontal: false, vertical: true)
@@ -136,17 +143,6 @@ struct ReverseProxyCard: View {
             .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
             .help("Stop listening on this port and forget the endpoint")
         }
-    }
-
-    /// One line that answers "where does this go, and is it working". A bind failure
-    /// is stated in full: it is the case this list exists for, and its client
-    /// experiences it as connection refused rather than as an error from Loom.
-    private func caption(for status: ReverseProxyStatus) -> String {
-        if let error = status.error { return "Not listening — \(error)" }
-        var parts = ["→ \(status.endpoint.upstream)"]
-        if let label = status.endpoint.label, !label.isEmpty { parts.append(label) }
-        if status.endpoint.keepHostHeader { parts.append("keeps Host header") }
-        return parts.joined(separator: " · ")
     }
 
     // MARK: Add form

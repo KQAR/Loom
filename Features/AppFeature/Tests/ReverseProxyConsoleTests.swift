@@ -132,4 +132,83 @@ import Testing
             $0.reverseProxiesExpanded = false
         }
     }
+
+    // MARK: The plumbing that makes the list reachable at all
+
+    /// `state.status` is maintained locally (the toggle owns `isRunning`, the flow list
+    /// owns `capturedCount`), and nothing used to read the engine's own copy — so
+    /// `socksPort` and `reverseProxies` were always empty. Opening the panel re-reads them.
+    @MainActor
+    @Test func openingThePanelReadsTheEnginesListenerFacts() async {
+        let listening = endpoint()
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.proxyClient.status = {
+                ProxyStatus(
+                    isRunning: true, port: 9090, capturedCount: 77, socksPort: 9091,
+                    reverseProxies: [listening]
+                )
+            }
+            // `viewAppeared` also re-syncs the other children and runs the once-a-day
+            // update probe. Stubbed rather than asserted — the listener re-read is what
+            // is under test, and `exhaustivity = .off` ignores their state changes but
+            // not their unimplemented dependencies.
+            $0.updaterClient.checkInBackgroundIfDue = {}
+            $0.privilegedHelperClient.systemProxySnapshot = { SystemProxySnapshot() }
+            $0.proxyClient.rulesState = { RulesState() }
+            $0.proxyClient.armedBreakpoints = { [] }
+            $0.proxyClient.pendingBreakpoints = { [] }
+            $0.proxyClient.certificateStatus = { .notGenerated }
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.clientCertificates = { [] }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.viewAppeared)
+        await store.receive(\.engineStatusRefreshed) {
+            $0.status.socksPort = 9091
+            $0.status.reverseProxies = [listening]
+        }
+        // Merged, not assigned: the engine's flow count must not overwrite the window's
+        // own bounded list count, which is what "N flows" means.
+        #expect(store.state.status.capturedCount == 0)
+    }
+
+    /// An agent opening a port has to appear in the card without the human reopening the
+    /// panel. The audit stream is the one signal every write passes through, so it
+    /// doubles as the re-sync trigger (as `BreakpointsFeature` does).
+    @MainActor
+    @Test func anAgentsEndpointShowsUpWithoutReopeningThePanel() async {
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.proxyClient.status = {
+                ProxyStatus(isRunning: true, port: 9090, capturedCount: 0, reverseProxies: [endpoint()])
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.auditEntryReceived(
+            AuditEntry(tool: "create_reverse_proxy", succeeded: true, arguments: "{}", detail: "")))
+        await store.receive(\.engineStatusRefreshed)
+        #expect(store.state.status.reverseProxies.count == 1)
+    }
+
+    /// …but not on every write. A rule edit changes no port, and re-reading the engine on
+    /// each one would put a status call behind every agent action.
+    @MainActor
+    @Test func anUnrelatedWriteDoesNotRefetchTheStatus() async {
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.proxyClient.status = {
+                Issue.record("a rule write must not re-read the listener state")
+                return ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+            }
+        }
+        store.exhaustivity = .off
+        await store.send(.auditEntryReceived(
+            AuditEntry(tool: "set_rule", succeeded: true, arguments: "{}", detail: "")))
+    }
 }
