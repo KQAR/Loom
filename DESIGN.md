@@ -69,10 +69,11 @@ components:
     backgroundColor: "{colors.status-error} @ ~12%"
     rounded: "{rounded.md}"
     anatomy: "SF Symbol + one-line fault · single fix action"
-  # --- Main window (opaque) ---
+  # --- Main window (opaque content, frosted titlebar band) ---
   main-window:
     structure: "HStack(spacing: 0): sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its divider was already fixed and undraggable here. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH 300↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
     defaultSize: "{metrics.main-window-default}"
+    titlebar: "FROSTED, not opaque and not bare: the request table extends under the toolbar band and blurs beneath it. Content surfaces below stay opaque — the frost is the band only. NSVisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active) at the BACK of the titlebar container, so toolbar items read crisply over it. .withinWindow is load-bearing: it samples the table below it in this window, where .behindWindow would blur the desktop and leave the rows crisp. NO baseline hairline (titlebarSeparatorStyle = .none, showsBaselineSeparator = false), no border, no shadow — the frost is the only separation. Two rejected: SwiftUI .toolbarBackground(.visible, for: .windowToolbar) is a no-op under .windowStyle(.hiddenTitleBar); titlebarAppearsTransparent = false gives AppKit's OPAQUE fill, not a translucent one."
     toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
@@ -240,6 +241,8 @@ control and its detail read as one unit.
 - **Content**: with no selection, the `Table` fills the whole pane. Selecting a row reveals a `VSplitView` —
   table on top, tabbed `inspector-panel` below (draggable divider); the inspector's ✕ (top-right) closes it by
   deselecting.
+- **Toolbar band is frosted** (`{components.main-window}.titlebar`): the request table extends under it and
+  blurs beneath it — no hairline, no border, no shadow. Everything below the band stays opaque.
 - **Toolbar**: a centered chip — status dot + `LAN-IP:port` + three gray/green status toggles (System proxy,
   SSL, Map/rewrite); right-aligned flat buttons `Record` (start/stop) + `Clear` (`xmark.bin`), with the macOS 26
   shared-glass container hidden. No search, no window title. System-proxy/SSL are M2, Map/rewrite and Record
@@ -333,9 +336,10 @@ rejecting what failed:
 
 ### Main window
 
-- **`main-window`** — `HStack` (not `NavigationSplitView`, not `HSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque,
-  no sidebar/window title. Toolbar per `{components.main-window}.toolbar` — centered status chip, Record +
-  Clear right-aligned, no search field.
+- **`main-window`** — `HStack` (not `NavigationSplitView`, not `HSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque
+  content surfaces under a **frosted toolbar band** (`{components.main-window}.titlebar` — the table slides
+  under it and blurs, with no hairline, border or shadow), no sidebar/window title. Toolbar per
+  `{components.main-window}.toolbar` — centered status chip, Record + Clear right-aligned, no search field.
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Replayed` as `Label`s with system
   `.badge` counts, then a `Hosts` section (one `Label` per host, globe + `.badge`). Selection scopes the table.
 - **`request-table`** — a SwiftUI `Table` (resizable columns, single selection): status-pill · Method · Host ·

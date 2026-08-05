@@ -83,6 +83,10 @@ public struct MainView: View {
         // (`Project.swift`), which puts the whole app back in the pre-26 system design that
         // DESIGN.md specifies. Keep that key and this band stays gone; drop it and every dead
         // end above is live again — so re-read them before trying to fix it per view.
+        // Frosts the toolbar band so the request table blurs under the status chip instead
+        // of reading crisply through it — see `WindowChrome` for why neither
+        // `.toolbarBackground` nor AppKit's own titlebar fill does the job here.
+        .background(WindowChrome())
         .task { store.send(.viewAppeared) }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
             RuleEditorView(store: editorStore)
@@ -719,5 +723,76 @@ private struct RequestTableView: View {
                 }
             }
         }
+    }
+}
+
+/// Gives the toolbar band a frosted-glass backing, because `.windowStyle(.hiddenTitleBar)`
+/// (LoomApp) leaves it painting *nothing*: it sets `titlebarAppearsTransparent` **and**
+/// `.fullSizeContentView`, so the request table extends under the band and its rows read
+/// crisply through the status chip.
+///
+/// Two things were tried first and neither is the fix — don't re-add them:
+/// - SwiftUI's `.toolbarBackground(.visible, for: .windowToolbar)` is a no-op under that
+///   window style.
+/// - Flipping `titlebarAppearsTransparent` back to `false` gives an *opaque* band (AppKit's
+///   `NSTitlebarBackgroundView` fill), not a translucent one, whether or not the content
+///   extends beneath it.
+///
+/// So the band is hand-rolled: an `NSVisualEffectView` inserted at the back of the titlebar
+/// container. `.withinWindow` blending is the load-bearing part — it samples the content
+/// *below it in this window* (the table), which is what makes the rows blur rather than
+/// showing through; `.behindWindow` would blur the desktop and ignore the table entirely.
+/// It goes in the titlebar container rather than the content view so it sits under the
+/// toolbar items (the chip stays crisp) and needs no titlebar-height math.
+///
+/// The representable itself is zero-size and behind the content — it only exists for the
+/// window handle.
+private struct WindowChrome: NSViewRepresentable {
+    /// Named so a re-apply (window re-key, style change) reuses the one band instead of
+    /// stacking a new blur behind the toolbar every pass. (`NSView.tag` is get-only, so the
+    /// marker is the identifier.)
+    private static let backdropID = NSUserInterfaceItemIdentifier("com.loom.toolbarBackdrop")
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        // The window isn't attached yet in `makeNSView`; apply once it is.
+        DispatchQueue.main.async { apply(to: view.window) }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        apply(to: view.window)
+    }
+
+    private func apply(to window: NSWindow?) {
+        guard let window else { return }
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        // No hairline under the band and no shadow behind it: the frost is the only
+        // separation the design wants, so the table reads as one surface sliding under it.
+        window.titlebarSeparatorStyle = .none
+        window.toolbar?.showsBaselineSeparator = false
+        // The titlebar container is reached through a standard window button rather than a
+        // private class name: the buttons are documented API and live in exactly that view.
+        guard let titlebar = window.standardWindowButton(.closeButton)?.superview else { return }
+        guard titlebar.subviews.first(where: { $0.identifier == Self.backdropID }) == nil else { return }
+        let backdrop = NSVisualEffectView()
+        backdrop.material = .titlebar
+        backdrop.blendingMode = .withinWindow
+        backdrop.state = .active // keep the frost on when the window loses focus
+        backdrop.identifier = Self.backdropID
+        // Plain blur: no border, no shadow, nothing that reads as a second edge.
+        backdrop.wantsLayer = true
+        backdrop.layer?.borderWidth = 0
+        backdrop.shadow = nil
+        backdrop.translatesAutoresizingMaskIntoConstraints = false
+        titlebar.addSubview(backdrop, positioned: .below, relativeTo: titlebar.subviews.first)
+        NSLayoutConstraint.activate([
+            backdrop.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
+            backdrop.trailingAnchor.constraint(equalTo: titlebar.trailingAnchor),
+            backdrop.topAnchor.constraint(equalTo: titlebar.topAnchor),
+            backdrop.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
+        ])
     }
 }
