@@ -102,7 +102,7 @@ components:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+
     rounded: "{rounded.capsule}"
   reveal-to-delete:
-    use: "destructive removal of one row in a console list (reverse-proxy endpoints, client certificates)"
+    use: "destructive removal of one row in a console list whose loss is NOT recoverable in place — client certificates (the key exists only in Loom's store). A reverse-proxy endpoint is recreatable from the form right below it, so its trash acts immediately and does NOT use this."
     anatomy: "the row's trash button slides the row aside by 76pt and reveals a red .borderedProminent Delete at the trailing edge, which acts IMMEDIATELY. Tapping the trash again puts it away; the row's leading edge is clipped, not drawn over the card padding. .snappy(0.18)."
     why: "The console is a MenuBarExtra popover, so it cannot present a dialog (see § console). The reveal IS the confirmation — the destructive button is unreachable without a deliberate first tap — so no second confirm, and no warning caption: an inline Cancel/Remove prompt was tried and at {metrics.console-width} it is two truncated buttons over four wrapped lines."
   empty-state:
@@ -262,13 +262,20 @@ end up unclickable and the orphaned dialog is still waiting when the panel is ne
 opened. (A file picker is the one unavoidable exception, because choosing a file needs a
 real window.)
 
-So a destructive row action is a **reveal**, per `{components.reveal-to-delete}`: the
-trash button slides the row aside and a red **Delete** appears at the trailing edge,
-acting at once. The reveal is itself the confirmation — the destructive button is
-unreachable without a deliberate first tap, and tapping the trash again puts it away.
-An earlier version confirmed inline with a warning caption plus Cancel/Remove and was
-rejected on sight: at 300pt that is two truncated buttons over four wrapped lines for a
-one-word decision. The reveal costs one row of width and no height.
+A destructive row action is therefore guarded — or not — by how expensive the mistake is,
+never by a dialog:
+
+- **Recreatable in place → the trash acts immediately.** A reverse-proxy endpoint is two
+  fields in the form directly below it, and its own row says what they were, so any
+  guard costs more than the mistake.
+- **Not recoverable → `{components.reveal-to-delete}`.** A client certificate's key
+  exists only in Loom's store; removing it means finding the original `.p12` again. Its
+  trash slides the row aside to reveal a red **Delete** at the trailing edge, and that
+  reveal *is* the confirmation — the destructive button is unreachable without a
+  deliberate first tap.
+
+An inline warning caption plus Cancel/Remove was tried for both and rejected on sight: at
+300pt that is two truncated buttons over four wrapped lines for a one-word decision.
 
 ### Main window — sidebar + vertical split (standard debugger layout)
 

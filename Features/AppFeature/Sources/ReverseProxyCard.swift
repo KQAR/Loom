@@ -33,7 +33,6 @@ struct ReverseProxyCard: View {
     /// validation rules live in `ReverseProxyDraft`, not here, so they can be tested.
     @State private var draft = ReverseProxyDraft()
     @State private var adding = false
-    @State private var pendingDeletion: ReverseProxyStatus?
 
     var body: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
@@ -93,22 +92,17 @@ struct ReverseProxyCard: View {
 
     // MARK: Rows
 
-    /// One endpoint. The trash button slides the row aside to reveal **Delete**, which
-    /// removes immediately — see `RevealToDelete` for why a removal here can involve no
-    /// dialog and no second line of warning text.
+    /// One endpoint. The trash button removes it **immediately** — no confirmation, and
+    /// no reveal gesture in front of it.
+    ///
+    /// Undoing a mistake here is retyping the same two fields in the form directly below,
+    /// and the endpoint's own row says what they were. That is cheap enough that a guard
+    /// costs more than the mistake: a dialog is impossible in this popover anyway (see
+    /// `RevealToDelete`), and the reveal it was replaced with was still two taps for a
+    /// recreatable thing. `ClientCertificatesCard` keeps the reveal, because a removed
+    /// identity needs the original `.p12` back.
     private func row(_ status: ReverseProxyStatus) -> some View {
-        RevealToDelete(
-            isRevealed: pendingDeletion?.id == status.id,
-            onToggle: { pendingDeletion = pendingDeletion?.id == status.id ? nil : status },
-            onDelete: {
-                store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
-                pendingDeletion = nil
-            },
-            disabled: store.reverseProxyBusy
-        ) {
-            // No leading icon. The card is already inset under the row whose icon says
-            // what these are, and the state an icon would carry — not listening — is in
-            // the caption below in words and in orange, where it can name the reason.
+        HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
             VStack(alignment: .leading, spacing: 1) {
                 // The local URL is what goes into a config file, so it's the primary
                 // line and it's selectable — retyping a port by eye is how the wrong
@@ -125,8 +119,17 @@ struct ReverseProxyCard: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: LoomTheme.Space.xs)
+            Button {
+                store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .disabled(store.reverseProxyBusy)
+            .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
+            .help("Stop listening on this port and forget the endpoint")
         }
-        .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
     }
 
     // MARK: Add form
