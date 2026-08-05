@@ -515,14 +515,20 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         headers.add(name: "Content-Type", value: "application/json")
         headers.add(name: "Content-Length", value: String(data.count))
         headers.add(name: "Connection", value: "close")
-        var buffer = channel.allocator.buffer(capacity: data.count)
-        buffer.writeBytes(data)
+        var writable = channel.allocator.buffer(capacity: data.count)
+        writable.writeBytes(data)
+        // Frozen for the closure below: `ByteBuffer` is a value type, so this is a
+        // copy, not a reference the event loop shares with this frame.
+        let buffer = writable
         let responseHead = HTTPResponseHead(version: .http1_1, status: status, headers: headers)
 
         channel.eventLoop.execute {
-            channel.write(NIOAny(HTTPServerResponsePart.head(responseHead)), promise: nil)
-            channel.write(NIOAny(HTTPServerResponsePart.body(.byteBuffer(buffer))), promise: nil)
-            channel.writeAndFlush(NIOAny(HTTPServerResponsePart.end(nil))).whenComplete { _ in
+            // The typed `write` overloads, not the `NIOAny` ones: `NIOAny` isn't
+            // Sendable, and wrapping the parts in it only hides that from the
+            // compiler — `HTTPServerResponsePart` itself is Sendable.
+            channel.write(HTTPServerResponsePart.head(responseHead), promise: nil)
+            channel.write(HTTPServerResponsePart.body(.byteBuffer(buffer)), promise: nil)
+            channel.writeAndFlush(HTTPServerResponsePart.end(nil)).whenComplete { _ in
                 channel.close(promise: nil)
             }
         }

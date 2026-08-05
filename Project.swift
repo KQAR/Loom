@@ -147,8 +147,12 @@ let project = Project(
                 .external(name: "NIOPosix"),
                 .external(name: "NIOHTTP1"),
                 .target(name: "LoomSharedModels"),
-            ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
+            ]
+            // Swift 6 language mode (strict concurrency). Unlike LoomProxyCore this
+            // module owns exactly one channel handler and no forwarding path, so the
+            // NIO-vs-Sendable friction that keeps the engine on Swift 5 amounts to
+            // three JSON-schema statics and one buffer copy — see the type comments
+            // on `MCPTool` and `MCPToolExecutor.iso8601`.
         ),
         .module(
             name: "LoomSharedModels",

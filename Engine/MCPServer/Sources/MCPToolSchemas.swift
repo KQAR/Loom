@@ -18,7 +18,18 @@ import LoomSharedModels
 /// in prose must not be able to switch auditing off. The marker still has to be
 /// *present* (a test pins description and flag together), because it is what tells
 /// the agent, but the flag is what the audit choke point reads.
-struct MCPTool {
+/// `@unchecked Sendable` rather than checked, for one reason: `inputSchema` is a
+/// `[String: Any]` because that is what `JSONSerialization` consumes on the way
+/// out to `tools/list`. The boxed values are only ever JSON literals — strings,
+/// numbers, booleans, arrays and dictionaries of the same — so every one is a
+/// value type with no shared state, and the whole value is immutable after
+/// `init`. What the compiler can't see is the `Any`, not a mutable box.
+///
+/// The checked alternative is a typed JSON enum threaded through all ~50 tool
+/// definitions and both shared sub-schemas. That is a worthwhile refactor and a
+/// separate one; it would not make this value any more thread-safe than it
+/// already is.
+struct MCPTool: @unchecked Sendable {
     let name: String
     let description: String
     let inputSchema: [String: Any]
@@ -58,7 +69,10 @@ extension MCPToolExecutor {
     /// The flow-filter arguments, shared verbatim by `get_recent_flows` and
     /// `wait_for_flow` — one filter vocabulary, parsed by one `flowQuery(from:)`, so
     /// the two can't drift into subtly different notions of "matching".
-    static let flowFilterProperties: [String: Any] = [
+    /// `nonisolated(unsafe)` for the same reason `MCPTool` is `@unchecked
+    /// Sendable`: a `let` holding only JSON literals, never mutated, only read
+    /// while assembling a response. The `Any` is what the compiler can't check.
+    nonisolated(unsafe) static let flowFilterProperties: [String: Any] = [
         "host": ["type": "string", "description": "Host, exact or glob: `api.example.com`, `*.example.com`."],
         "method": [
             "description": "HTTP method(s) to include, case-insensitive. A string or an array of strings.",
