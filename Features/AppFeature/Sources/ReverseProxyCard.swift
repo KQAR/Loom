@@ -93,20 +93,22 @@ struct ReverseProxyCard: View {
 
     // MARK: Rows
 
-    /// One endpoint. Removal confirms **inline, inside this row** — never in a
-    /// `confirmationDialog` or a sheet.
-    ///
-    /// This card lives in a `MenuBarExtra` popover, and that popover closes the moment it
-    /// stops being the key window. A dialog takes key focus to present, so the popover
-    /// went away underneath it: the buttons were unclickable, and the orphaned dialog was
-    /// still waiting the next time the panel opened. Any presentation that needs its own
-    /// window has the same defect here — the fix is to need no second window.
-    @ViewBuilder private func row(_ status: ReverseProxyStatus) -> some View {
-        let confirming = pendingDeletion?.id == status.id
-        HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
-            Image(systemName: rowIcon(for: status, confirming: confirming))
+    /// One endpoint. The trash button slides the row aside to reveal **Delete**, which
+    /// removes immediately — see `RevealToDelete` for why a removal here can involve no
+    /// dialog and no second line of warning text.
+    private func row(_ status: ReverseProxyStatus) -> some View {
+        RevealToDelete(
+            isRevealed: pendingDeletion?.id == status.id,
+            onToggle: { pendingDeletion = pendingDeletion?.id == status.id ? nil : status },
+            onDelete: {
+                store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
+                pendingDeletion = nil
+            },
+            disabled: store.reverseProxyBusy
+        ) {
+            Image(systemName: status.isListening ? "arrow.left.arrow.right" : "exclamationmark.triangle.fill")
                 .font(LoomTheme.Icon.badge)
-                .foregroundStyle(status.isListening && !confirming ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 1) {
                 // The local URL is what goes into a config file, so it's the primary
@@ -117,53 +119,15 @@ struct ReverseProxyCard: View {
                     .textSelection(.enabled)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if confirming {
-                    // Says what breaks outside Loom, which is why this is confirmed at
-                    // all: Loom can't edit whatever config still names the port.
-                    Text("Stops listening — anything still pointed at this port gets connection refused.")
-                        .font(.caption2)
-                        .foregroundStyle(Color.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text(ReverseProxyList.caption(for: status))
-                        .font(.caption2)
-                        .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text(ReverseProxyList.caption(for: status))
+                    .font(.caption2)
+                    .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .lineLimit(2)
+                    .truncationMode(.middle)
             }
             Spacer(minLength: LoomTheme.Space.xs)
-            if confirming {
-                HStack(spacing: LoomTheme.Space.xs) {
-                    Button("Cancel") { pendingDeletion = nil }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    Button("Remove") {
-                        store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
-                        pendingDeletion = nil
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .tint(.red)
-                    .disabled(store.reverseProxyBusy)
-                }
-            } else {
-                Button {
-                    pendingDeletion = status
-                } label: {
-                    Image(systemName: "trash")
-                }
-                .buttonStyle(.borderless)
-                .font(.caption)
-                .disabled(store.reverseProxyBusy)
-                .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
-                .help("Stop listening on this port and forget the endpoint")
-            }
         }
-    }
-
-    private func rowIcon(for status: ReverseProxyStatus, confirming: Bool) -> String {
-        if confirming { return "trash" }
-        return status.isListening ? "arrow.left.arrow.right" : "exclamationmark.triangle.fill"
+        .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
     }
 
     // MARK: Add form

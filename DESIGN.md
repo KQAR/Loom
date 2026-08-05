@@ -101,6 +101,10 @@ components:
   button-primary:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+
     rounded: "{rounded.capsule}"
+  reveal-to-delete:
+    use: "destructive removal of one row in a console list (reverse-proxy endpoints, client certificates)"
+    anatomy: "the row's trash button slides the row aside by 76pt and reveals a red .borderedProminent Delete at the trailing edge, which acts IMMEDIATELY. Tapping the trash again puts it away; the row's leading edge is clipped, not drawn over the card padding. .snappy(0.18)."
+    why: "The console is a MenuBarExtra popover, so it cannot present a dialog (see § console). The reveal IS the confirmation — the destructive button is unreachable without a deliberate first tap — so no second confirm, and no warning caption: an inline Cancel/Remove prompt was tried and at {metrics.console-width} it is two truncated buttons over four wrapped lines."
   empty-state:
     component: "ContentUnavailableView styling — never custom-built"
 ---
@@ -251,9 +255,16 @@ slot, so the control and its detail read as one unit.
 `sheet`, no `alert`. The console is a `MenuBarExtra` popover and it closes the moment it
 stops being the key window, which is exactly what presenting takes: the dialog's buttons
 end up unclickable and the orphaned dialog is still waiting when the panel is next
-opened. Destructive actions confirm **inline in their own row** instead — the row swaps
-its caption for what will break and its trash icon for Cancel / Remove. (A file picker
-is the one unavoidable exception, because choosing a file needs a real window.)
+opened. (A file picker is the one unavoidable exception, because choosing a file needs a
+real window.)
+
+So a destructive row action is a **reveal**, per `{components.reveal-to-delete}`: the
+trash button slides the row aside and a red **Delete** appears at the trailing edge,
+acting at once. The reveal is itself the confirmation — the destructive button is
+unreachable without a deliberate first tap, and tapping the trash again puts it away.
+An earlier version confirmed inline with a warning caption plus Cancel/Remove and was
+rejected on sight: at 300pt that is two truncated buttons over four wrapped lines for a
+one-word decision. The reveal costs one row of width and no height.
 
 ### Main window — sidebar + vertical split (standard debugger layout)
 
