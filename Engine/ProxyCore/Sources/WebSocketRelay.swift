@@ -95,7 +95,7 @@ enum WebSocketRelay {
                     // flow back through the taps to the client.
                     var buffer = upstream.allocator.buffer(capacity: 256)
                     buffer.writeString(serializeUpgrade(head, path: requestPath))
-                    upstream.writeAndFlush(NIOAny(buffer), promise: nil)
+                    upstream.writeAndFlush(buffer, promise: nil)
 
                     let started = Flow(
                         id: flowID, request: request, startedAt: startedAt,

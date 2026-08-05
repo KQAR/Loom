@@ -354,7 +354,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 }
                 var ack = channel.allocator.buffer(capacity: 40)
                 ack.writeString("HTTP/1.1 200 Connection Established\r\n\r\n")
-                channel.writeAndFlush(NIOAny(ack)).whenComplete { _ in
+                channel.writeAndFlush(ack).whenComplete { _ in
                     MITMPipeline.installTLS(
                         channel: channel, host: host, port: port, sslContext: sslContext,
                         store: store, forwarder: forwarder
@@ -411,7 +411,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             case .success:
                 var ack = client.allocator.buffer(capacity: 40)
                 ack.writeString("HTTP/1.1 200 Connection Established\r\n\r\n")
-                client.writeAndFlush(NIOAny(ack), promise: nil)
+                client.writeAndFlush(ack, promise: nil)
             case .failure:
                 client.close(promise: nil)
                 upstream.close(promise: nil)

@@ -158,14 +158,14 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let head = HTTPRequestHead(
             version: .http1_1, method: httpMethod(method), uri: requestURI(url), headers: httpHeaders
         )
-        channel.write(NIOAny(HTTPClientRequestPart.head(head)), promise: nil)
+        channel.write(HTTPClientRequestPart.head(head), promise: nil)
 
         switch body {
         case let .bytes(data):
             if let data, !data.isEmpty {
                 var buffer = channel.allocator.buffer(capacity: data.count)
                 buffer.writeBytes(data)
-                channel.write(NIOAny(HTTPClientRequestPart.body(.byteBuffer(buffer))), promise: nil)
+                channel.write(HTTPClientRequestPart.body(.byteBuffer(buffer)), promise: nil)
             }
         case let .stream(chunks, _):
             // Await each flush so a slow upstream back-pressures the pull from the
@@ -174,10 +174,10 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             for try await chunk in chunks where !chunk.isEmpty {
                 var buffer = channel.allocator.buffer(capacity: chunk.count)
                 buffer.writeBytes(chunk)
-                try await channel.writeAndFlush(NIOAny(HTTPClientRequestPart.body(.byteBuffer(buffer)))).get()
+                try await channel.writeAndFlush(HTTPClientRequestPart.body(.byteBuffer(buffer))).get()
             }
         }
-        channel.writeAndFlush(NIOAny(HTTPClientRequestPart.end(nil)), promise: nil)
+        channel.writeAndFlush(HTTPClientRequestPart.end(nil), promise: nil)
     }
 
     /// Origin-form request target: path + query (path defaults to "/").

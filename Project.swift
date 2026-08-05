@@ -136,7 +136,11 @@ let project = Project(
                 .external(name: "SwiftASN1"),
                 .target(name: "LoomSharedModels"),
             ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // NIO channel model vs Swift 6 Sendable
+            // Swift 6 language mode (strict concurrency). NOT with 6.2's
+            // `SWIFT_APPROACHABLE_CONCURRENCY` — see Package.swift for why that flag is
+            // off limits here: it changes the ABI of every `nonisolated async` function,
+            // and this module is a public SPM product.
+            settings: .settings(base: ["SWIFT_VERSION": "6.0"])
         ),
         .module(
             name: "MCPServer",
