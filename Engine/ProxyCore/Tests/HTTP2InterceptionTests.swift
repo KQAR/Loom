@@ -62,8 +62,9 @@ struct HTTP2InterceptionTests {
         #expect(response.status == 200)
         #expect(response.body == responseBody)
 
-        let flows = try await engine.recentFlows(limit: 10)
-        let flow = try #require(flows.first { $0.request.url.contains("example.test/h2/thing") })
+        let flow = try #require(await awaitFlow(from: engine) {
+            $0.request.url.contains("example.test/h2/thing") && $0.response != nil
+        })
         #expect(flow.request.method == "GET")
         #expect(flow.request.url.hasPrefix("https://"))
         #expect(flow.response?.statusCode == 200)
@@ -147,8 +148,9 @@ struct HTTP2InterceptionTests {
         #expect(response.status == 200)
 
         #expect(forwarder.lastBody == payload, "the full h2 DATA body must reach upstream byte-for-byte")
-        let flows = try await engine.recentFlows(limit: 10)
-        let flow = try #require(flows.first { $0.request.url.contains("example.test/h2/upload") })
+        let flow = try #require(await awaitFlow(from: engine) {
+            $0.request.url.contains("example.test/h2/upload") && $0.request.body != nil
+        })
         #expect(flow.request.method == "POST")
         #expect(flow.request.body == payload, "the captured h2 request body should match (200KB < cap)")
     }

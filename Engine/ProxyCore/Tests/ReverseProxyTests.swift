@@ -104,12 +104,10 @@ import LoomSharedModels
         let local = try #require(status.localURL)
         _ = try await directSession().data(from: try #require(URL(string: "\(local)/orders")))
 
-        var flow: Flow?
-        for _ in 0 ..< 100 where flow == nil {
-            flow = await engine.recentFlows(limit: 20).first { $0.request.url.contains("/orders") }
-            if flow == nil { try await Task.sleep(nanoseconds: 20_000_000) }
-        }
-        let captured = try #require(flow, "nothing was captured for the reverse-proxied request")
+        let captured = try #require(
+            await awaitFlow(from: engine) { $0.request.url.contains("/orders") },
+            "nothing was captured for the reverse-proxied request"
+        )
         #expect(captured.request.url == "https://api.example.com/orders")
         #expect(!captured.request.url.contains("127.0.0.1"))
         await engine.stopForTest()
@@ -127,11 +125,7 @@ import LoomSharedModels
         let local = try #require(status.localURL)
         _ = try await directSession().data(from: try #require(URL(string: "\(local)/ping")))
 
-        var flow: Flow?
-        for _ in 0 ..< 100 where flow == nil {
-            flow = await engine.recentFlows(limit: 20).first { $0.request.url.contains("/ping") }
-            if flow == nil { try await Task.sleep(nanoseconds: 20_000_000) }
-        }
+        let flow = await awaitFlow(from: engine) { $0.request.url.contains("/ping") }
         let headers = try #require(flow?.request.headers)
         let host = headers.first { $0.name.lowercased() == "host" }
         #expect(host == nil, "the loopback Host should not be forwarded: \(String(describing: host))")
@@ -147,11 +141,7 @@ import LoomSharedModels
         let local = try #require(status.localURL)
         _ = try await directSession().data(from: try #require(URL(string: "\(local)/keep")))
 
-        var flow: Flow?
-        for _ in 0 ..< 100 where flow == nil {
-            flow = await engine.recentFlows(limit: 20).first { $0.request.url.contains("/keep") }
-            if flow == nil { try await Task.sleep(nanoseconds: 20_000_000) }
-        }
+        let flow = await awaitFlow(from: engine) { $0.request.url.contains("/keep") }
         let headers = try #require(flow?.request.headers)
         #expect(headers.contains { $0.name.lowercased() == "host" && $0.value.contains("127.0.0.1") })
         await engine.stopForTest()

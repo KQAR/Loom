@@ -66,8 +66,9 @@ struct HTTPSInterceptionTests {
         #expect(raw.contains(responseBody), "client should receive the decrypted body")
 
         // 5. The proxy captured the exchange in cleartext.
-        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        let flow = try #require(flows.first { $0.request.url.contains("example.test/api/thing") })
+        let flow = try #require(awaitFlowBlocking(from: engine) {
+            $0.request.url.contains("example.test/api/thing")
+        })
         #expect(flow.request.method == "GET")
         #expect(flow.request.url.hasPrefix("https://"))
         #expect(
@@ -138,8 +139,9 @@ struct HTTPSInterceptionTests {
 
         #expect(forwarder.lastBody == payload, "upstream must receive the full body byte-for-byte")
 
-        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        let flow = try #require(flows.first { $0.request.url.contains("plain.test/upload") })
+        let flow = try #require(awaitFlowBlocking(from: engine) {
+            $0.request.url.contains("plain.test/upload") && $0.request.body != nil
+        })
         #expect(flow.request.method == "POST")
         #expect(flow.request.body == payload, "the captured request body should match (2MB < cap)")
     }
