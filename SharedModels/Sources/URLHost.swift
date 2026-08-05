@@ -42,6 +42,45 @@ public enum URLHost {
         }
     }
 
+    /// The two readings of an authority a flow table needs, from **one** scan.
+    ///
+    /// They differ only in the port, and only ever for display: `key` is what
+    /// everything else in Loom means by "host" — the sidebar's grouping key, the
+    /// list filter, the favicon cache key, `Flow.host` — so two ports on one origin
+    /// stay one group with one icon. `label` is what the row shows.
+    public struct HostReading: Sendable, Equatable {
+        /// Port-stripped host, identical to `host(ofURLString:)`.
+        public let key: String
+        /// `key`, plus `:port` when the port is present and isn't the scheme's
+        /// default. Two dev servers on one machine (`10.0.34.87:3762` and `:3862`)
+        /// are otherwise the same row of text.
+        public let label: String
+
+        public init(key: String, label: String) {
+            self.key = key
+            self.label = label
+        }
+    }
+
+    /// Both readings of the URL's authority, sharing one byte scan.
+    ///
+    /// The row body needs the port-less key (favicon) and the port-bearing label
+    /// (the text) for the same string; parsing twice would undo exactly what this
+    /// type exists for. When there is no port to show, `label` *is* `key` — no
+    /// second allocation.
+    public static func hostReading(ofURLString string: String) -> HostReading? {
+        let bytes = string.utf8
+        guard let scan = authorityScan(in: string) else { return foundationHostReading(string) }
+        let key = String(decoding: bytes[scan.host], as: UTF8.self)
+        guard let port = scan.port, !isDefaultPort(bytes[port], forScheme: bytes[scan.scheme]) else {
+            return HostReading(key: key, label: key)
+        }
+        // Host and port are contiguous around the ':', so the label is one slice
+        // rather than a concatenation.
+        let label = String(decoding: bytes[scan.host.lowerBound ..< port.upperBound], as: UTF8.self)
+        return HostReading(key: key, label: label)
+    }
+
     /// Path + query as a request line reads it (`/v1/home?x=1`), for the same
     /// reason `host(ofURLString:)` exists: the flow table renders it per visible
     /// row, and `URLComponents` parses the whole URL to hand back one substring.
@@ -111,8 +150,11 @@ public enum URLHost {
         case needsFoundation
     }
 
-    /// Index just past `scheme://`, or nil when the string isn't that shape.
-    private static func authorityStart(in bytes: String.UTF8View) -> String.UTF8View.Index? {
+    /// The scheme's own bytes and the index just past `scheme://`, or nil when the
+    /// string isn't that shape.
+    private static func schemeAndAuthorityStart(
+        in bytes: String.UTF8View
+    ) -> (scheme: Range<String.UTF8View.Index>, authorityStart: String.UTF8View.Index)? {
         var cursor = bytes.startIndex
         var schemeLength = 0
         while cursor < bytes.endIndex, bytes[cursor] != .colon {
@@ -122,17 +164,40 @@ public enum URLHost {
         }
         // No colon, an empty scheme, or something that isn't a scheme: not our shape.
         guard cursor < bytes.endIndex, schemeLength > 0 else { return nil }
+        let scheme = bytes.startIndex ..< cursor
         var start = bytes.index(after: cursor) // past ':'
         for _ in 0 ..< 2 { // require "//"
             guard start < bytes.endIndex, bytes[start] == .slash else { return nil }
             start = bytes.index(after: start)
         }
-        return start
+        return (scheme, start)
+    }
+
+    /// Index just past `scheme://`, or nil when the string isn't that shape.
+    private static func authorityStart(in bytes: String.UTF8View) -> String.UTF8View.Index? {
+        schemeAndAuthorityStart(in: bytes)?.authorityStart
+    }
+
+    /// One authority, split into the parts both public readings need. `hostRange`
+    /// is this minus the port — deliberately the same scan, because two copies of
+    /// userinfo/IPv6/punycode handling is how the two answers drift apart.
+    private struct AuthorityScan {
+        let scheme: Range<String.UTF8View.Index>
+        let host: Range<String.UTF8View.Index>
+        /// The port's digits, excluding the `:`. Nil when absent — or when it isn't
+        /// all digits, which is a malformed authority this scan declines to read as
+        /// a port (the host is still returned, matching the previous behaviour).
+        let port: Range<String.UTF8View.Index>?
     }
 
     private static func hostRange(in string: String) -> ScanResult {
+        guard let scan = authorityScan(in: string) else { return .needsFoundation }
+        return .range(scan.host)
+    }
+
+    private static func authorityScan(in string: String) -> AuthorityScan? {
         let bytes = string.utf8
-        guard let authorityStart = authorityStart(in: bytes) else { return .needsFoundation }
+        guard let (scheme, authorityStart) = schemeAndAuthorityStart(in: bytes) else { return nil }
         var cursor = bytes.startIndex
 
         // MARK: authority runs to the first '/', '?' or '#'
@@ -147,7 +212,7 @@ public enum URLHost {
             }
             // Anything outside the plain set (percent-escape, non-ASCII, backslash…)
             // has semantics worth deferring to Foundation for.
-            guard isPlainAuthorityByte(byte) else { return .needsFoundation }
+            guard isPlainAuthorityByte(byte) else { return nil }
             // `a@b@c.com` resolves to `c.com`: the *last* '@' ends the userinfo.
             if byte == .at { lastAt = cursor }
             cursor = bytes.index(after: cursor)
@@ -163,10 +228,10 @@ public enum URLHost {
             while scan < authorityEnd, bytes[scan] != .closeBracket {
                 scan = bytes.index(after: scan)
             }
-            guard scan < authorityEnd else { return .needsFoundation } // unterminated
+            guard scan < authorityEnd else { return nil } // unterminated
             hostEnd = bytes.index(after: scan) // include ']'
             // Only a port may follow the literal.
-            if hostEnd < authorityEnd, bytes[hostEnd] != .colon { return .needsFoundation }
+            if hostEnd < authorityEnd, bytes[hostEnd] != .colon { return nil }
         } else {
             var scan = hostStart
             while scan < authorityEnd {
@@ -181,13 +246,76 @@ public enum URLHost {
         let bounds = hostStart ..< hostEnd
         // Punycode is Foundation's job — it decodes `xn--` labels to Unicode. Checked
         // over the bytes so the common case still doesn't allocate.
-        guard !containsPunycodeLabel(bytes[bounds]) else { return .needsFoundation }
-        return .range(bounds)
+        guard !containsPunycodeLabel(bytes[bounds]) else { return nil }
+        return AuthorityScan(scheme: scheme, host: bounds, port: portRange(in: bytes, after: hostEnd, authorityEnd: authorityEnd))
+    }
+
+    /// The digits after the host's `:`, or nil when there is no port — or when what
+    /// follows isn't all digits. A non-numeric port is a malformed authority, and
+    /// the host reading stays what it always was rather than growing a junk suffix.
+    private static func portRange(
+        in bytes: String.UTF8View,
+        after hostEnd: String.UTF8View.Index,
+        authorityEnd: String.UTF8View.Index
+    ) -> Range<String.UTF8View.Index>? {
+        guard hostEnd < authorityEnd, bytes[hostEnd] == .colon else { return nil }
+        let start = bytes.index(after: hostEnd)
+        guard start < authorityEnd else { return nil } // trailing ':' with no digits
+        var cursor = start
+        while cursor < authorityEnd {
+            guard isDigit(bytes[cursor]) else { return nil }
+            cursor = bytes.index(after: cursor)
+        }
+        return start ..< authorityEnd
     }
 
     /// The original implementation, for every shape the fast path declines.
     private static func fallback(_ string: String) -> String? {
         URLComponents(string: string)?.host
+    }
+
+    /// Both readings for the shapes the scan declines (percent-escapes, punycode).
+    /// Goes through `URLComponents` for the same reason `fallback` does — and keeps
+    /// the port, so a punycode host on a dev-server port isn't the one case that
+    /// silently loses it.
+    private static func foundationHostReading(_ string: String) -> HostReading? {
+        guard let components = URLComponents(string: string), let host = components.host else { return nil }
+        guard let port = components.port, !isDefaultPort(port, forScheme: components.scheme) else {
+            return HostReading(key: host, label: host)
+        }
+        return HostReading(key: host, label: "\(host):\(port)")
+    }
+
+    /// Whether this is the port the scheme implies, i.e. the one a row gains
+    /// nothing by spelling out. A scheme with no known default (`ftp:`) has no
+    /// implied port, so its port always shows.
+    private static func isDefaultPort(_ port: String.UTF8View.SubSequence, forScheme scheme: String.UTF8View.SubSequence) -> Bool {
+        if matchesASCIILowercase(scheme, "https") || matchesASCIILowercase(scheme, "wss") {
+            return port.elementsEqual("443".utf8)
+        }
+        if matchesASCIILowercase(scheme, "http") || matchesASCIILowercase(scheme, "ws") {
+            return port.elementsEqual("80".utf8)
+        }
+        return false
+    }
+
+    private static func isDefaultPort(_ port: Int, forScheme scheme: String?) -> Bool {
+        switch scheme?.lowercased() {
+        case "https", "wss": return port == 443
+        case "http", "ws": return port == 80
+        default: return false
+        }
+    }
+
+    /// Case-insensitive equality against an all-lowercase ASCII literal — schemes
+    /// are compared without lowercasing a `String` into existence per row.
+    private static func matchesASCIILowercase(_ bytes: String.UTF8View.SubSequence, _ literal: String) -> Bool {
+        var index = bytes.startIndex
+        for expected in literal.utf8 {
+            guard index < bytes.endIndex, bytes[index] | 0x20 == expected else { return false }
+            index = bytes.index(after: index)
+        }
+        return index == bytes.endIndex
     }
 
     private static let punycodePrefix: [UInt8] = [
