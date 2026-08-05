@@ -197,7 +197,20 @@ extension MCPToolExecutor {
             Loom also turns it off on quit. Disabling never hands the setting back to whoever \
             held it before — if `get_proxy_status` reported `"other"`, say so and let the human \
             re-enable that app themselves. Traffic from a phone or another device does NOT need \
-            this (point that device at the proxy instead). This is a write action.
+            this (point that device at the proxy instead).
+
+            It routes the *machine*, not processes already running, and the result carries \
+            `runningClientsMayNeedRelaunch` to say so. Chrome and other Chromium/Electron apps \
+            read the system proxy once at launch and never re-read it, so one that was already \
+            open keeps going direct — reloading the page does not help, only relaunching does. \
+            A capture that comes back empty right after turning this on is usually that, not an \
+            absence of traffic. Safari, curl and most CLI tools need no restart.
+
+            Two destinations are bypassed by the client itself whatever this setting says: \
+            `localhost`/`127.0.0.1`, and (in Safari) any address belonging to this Mac. For a \
+            local dev server reached by IP, relaunching Chrome is enough; for one reached over \
+            loopback, use `create_reverse_proxy` instead — the browser connects straight to \
+            Loom's port, so no proxy setting is consulted. This is a write action.
             """,
             inputSchema: [
                 "type": "object",

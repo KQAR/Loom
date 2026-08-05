@@ -106,7 +106,7 @@ extension MCPToolExecutor {
         // `networksetup` (and an admin prompt on some accounts), and "it returned ok"
         // is not the same as "traffic is now routed here".
         let active = await routing.isSystemProxyActive()
-        return prettyJSON([
+        var payload: [String: Any] = [
             "systemProxy": active ? "on" : "off",
             "requested": enabled ? "on" : "off",
             "port": status.port,
@@ -114,7 +114,28 @@ extension MCPToolExecutor {
             // (see SystemProxyApplier) — say so, or the agent reports a restore
             // that never happened.
             "detail": result.message ?? (enabled ? "This Mac's traffic now routes through Loom." : "The system proxy is now off. Loom does not restore a previous proxy owner — if another app held it, re-enable it there."),
-        ])
+        ]
+        // "Routed" is a fact about the machine, not about the process the operator is
+        // debugging, and the difference is invisible from every read surface: the
+        // status says `on`, the client's requests reach the server, and Loom captures
+        // nothing. Chromium reads the system proxy once per process and never re-reads
+        // it, so a browser that was already open keeps going direct — reloading the
+        // page does not help, only relaunching does (measured on Chrome 150: identical
+        // URL, invisible before the relaunch and captured after). Saying it here is
+        // the difference between an agent concluding "nothing happened" and "nothing
+        // was pointed at the proxy".
+        if enabled {
+            payload["runningClientsMayNeedRelaunch"] = true
+            payload["routingNote"] = """
+            This applies to the machine, not to processes already running. Chrome and \
+            other Chromium/Electron apps read the system proxy once at launch and never \
+            re-read it, so one that was already open keeps bypassing Loom until it is \
+            relaunched — a page reload is not enough. If an expected capture is empty, \
+            relaunch the client before concluding the traffic didn't happen. Safari, \
+            curl and most CLI tools pick the setting up without a restart.
+            """
+        }
+        return prettyJSON(payload)
     }
 
     func handleListDevices(_ arguments: [String: Any]) async throws -> String {

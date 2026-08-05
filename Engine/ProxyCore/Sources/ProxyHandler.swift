@@ -307,10 +307,16 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     // MARK: - CONNECT
 
+    /// A tunnel Loom might read gets sniffed; one it definitely won't is glued
+    /// straight through.
+    ///
+    /// The out-of-scope case skips the sniff deliberately: the decision is already
+    /// made (relay untouched), so paying the classification — and, for a server-first
+    /// protocol, its deadline — would buy nothing.
     private func handleConnect(context: ChannelHandlerContext, head: HTTPRequestHead) {
         let (host, port) = Self.parseAuthority(head.uri)
-        if let ca, config.shouldIntercept(host: host) {
-            interceptTLS(context: context, host: host, port: port, ca: ca)
+        if ca != nil, config.shouldIntercept(host: host) {
+            sniffTunnel(context: context, host: host, port: port)
         } else {
             openTunnel(context: context, host: host, port: port)
         }
@@ -325,38 +331,33 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     // MARK: - MITM interception
 
-    /// Acknowledge the CONNECT, then swap the plaintext HTTP framing for a TLS
-    /// server (presenting the host's leaf) followed by fresh HTTP framing and the
-    /// capturing handler. Auto-read is paused across the swap so the client's
-    /// ClientHello can't reach the old HTTP decoder mid-reconfiguration.
-    private func interceptTLS(context: ChannelHandlerContext, host: String, port: Int, ca: CertificateAuthority) {
-        let sslContext: NIOSSLContext
-        do {
-            sslContext = try ca.serverContext(for: host)
-        } catch {
-            // Fail open: blind-tunnel so the site still works, but record why this
-            // host wasn't intercepted (otherwise "nothing captured" is a mystery).
-            Log.tls.error("Leaf mint failed for \(host, privacy: .public); blind-tunneling: \(String(describing: error))")
-            openTunnel(context: context, host: host, port: port)
-            return
-        }
-
+    /// Acknowledge the CONNECT, strip the proxy's HTTP framing, and hand the bare
+    /// tunnel to `TunnelSniffHandler` to classify.
+    ///
+    /// The capture strategy is decided from the tunnel's first bytes, never from the
+    /// fact that this was a CONNECT: a browser sends `ws://` as `CONNECT host:port`
+    /// followed by a *plaintext* upgrade request, so committing to TLS here killed
+    /// every browser WebSocket whose host was in the SSL scope. `TunnelSniffHandler`
+    /// carries the rest of that rationale.
+    private func sniffTunnel(context: ChannelHandlerContext, host: String, port: Int) {
         let channel = context.channel
-        let store = self.store
-        let forwarder = self.forwarder
         let pipeline = channel.pipeline
+        let sniffer = TunnelSniffHandler(
+            host: host, port: port, store: store, forwarder: forwarder, ca: ca,
+            config: config, observeTunnels: observeTunnels, entryPoint: .connect
+        )
 
-        // Pause reads until the TLS handler is installed so the client's ClientHello
-        // can't reach a plaintext handler.
+        // Pause reads until the sniffer is installed, so the client's first bytes
+        // can't reach the old HTTP decoder mid-reconfiguration — nor be dropped
+        // between the ack going out and there being anything to receive them.
         _ = channel.setOption(ChannelOptions.autoRead, value: false)
 
         // Strip all HTTP framing first, then send the CONNECT ack as RAW bytes:
         // routing it through HTTPResponseEncoder would chunk-frame the bodyless 200
-        // and inject `0\r\n\r\n` into the tunnel, corrupting the client's first TLS
-        // record. Only then install the TLS terminator + fresh HTTP + capture stack.
-        // An already-removed handler is fine to skip (`recover`), but the chain as a
-        // whole must succeed before the ack: acking with the encoder still installed
-        // would frame the tunnel bytes and corrupt the client's first TLS record.
+        // and inject `0\r\n\r\n` into the tunnel, corrupting the client's first
+        // record. An already-removed handler is fine to skip (`recover`), but the
+        // chain as a whole must succeed before the ack: acking with the encoder still
+        // installed would frame the tunnel bytes.
         let removals = ["loom.http.decoder", "loom.http.encoder", "loom.proxy"].map { name in
             pipeline.removeHandler(name: name).recover { _ in () }
         }
@@ -368,21 +369,17 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 }
                 var ack = channel.allocator.buffer(capacity: 40)
                 ack.writeString("HTTP/1.1 200 Connection Established\r\n\r\n")
-                channel.writeAndFlush(ack).whenComplete { _ in
-                    MITMPipeline.installTLS(
-                        channel: channel, host: host, port: port, sslContext: sslContext,
-                        store: store, forwarder: forwarder
-                    )
-                        .whenComplete { result in
-                            switch result {
-                            case .success:
-                                _ = channel.setOption(ChannelOptions.autoRead, value: true)
-                                channel.read()
-                            case .failure:
-                                channel.close(promise: nil)
-                            }
+                channel.writeAndFlush(ack)
+                    .flatMap { pipeline.addHandler(sniffer) }
+                    .whenComplete { result in
+                        switch result {
+                        case .success:
+                            _ = channel.setOption(ChannelOptions.autoRead, value: true)
+                            channel.read()
+                        case .failure:
+                            channel.close(promise: nil)
                         }
-                }
+                    }
             }
     }
 
