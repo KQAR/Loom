@@ -108,16 +108,28 @@ jobs:
         # measured now that CI no longer shows it as a failure. `true` mirrors CI, which
         # is how a *new* report (one no suppression covers) gets hunted.
         #
-        # `TEST_RUNNER_TSAN_OPTIONS` as a build setting, not `env:`, for the reason
-        # measured here first: a plain `env:` never reaches the xctest process (run
-        # 31008307778 — 2 races, no suppression match, no load error). This is also the
-        # only place that finding can be re-checked, so keep the two workflows using the
-        # same channel.
+        # Getting the options *into the test process* took three measured attempts, all
+        # recorded because each failed silently — no error, just an unprotected run:
+        #   1. `env: TSAN_OPTIONS`      → run 31008307778, 2 races, no suppression match.
+        #      xcodebuild launches xctest with a scrubbed environment.
+        #   2. `TEST_RUNNER_TSAN_OPTIONS=` as a *build setting* → run 31010431002, 2 races.
+        #      It only reached the build environment (visible as an `export` in the build
+        #      log). Decisive detail: that run's write-side top frame was the glue itself,
+        #      so `race_top:` should have matched and didn't — which rules out pattern
+        #      semantics and leaves the channel.
+        #   3. `TEST_RUNNER_TSAN_OPTIONS` as an environment variable of xcodebuild — the
+        #      documented form of that prefix, which is what this is.
+        # `verbosity=1` stays so the log carries positive proof the options were parsed,
+        # rather than an absence of complaints.
+        #
+        # Not an option at all: `__tsan_default_suppressions()` compiled into the test
+        # target. TSan reads suppressions during its own init, before the test bundle is
+        # loaded, and the host executable is Apple's `xctest` — the weak symbol is never
+        # in the process when it would be consulted.
         run: |
           set -o pipefail
-          TSAN_SETTING=""
           if [ "${{ inputs.suppressions }}" = "true" ]; then
-            TSAN_SETTING="TEST_RUNNER_TSAN_OPTIONS=suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:verbosity=1"
+            export TEST_RUNNER_TSAN_OPTIONS="suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:verbosity=1"
           fi
           xcodebuild test \
             -workspace Loom.xcworkspace \
@@ -132,7 +144,6 @@ jobs:
             -run-tests-until-failure \
             -resultBundlePath "${{ runner.temp }}/TSanHunt.xcresult" \
             CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
-            ${TSAN_SETTING:+"$TSAN_SETTING"} \
             2>&1 | tee "${{ runner.temp }}/tsan-hunt.log"
 
       # The whole point: how many races, in what, and which test aborted. A run that
