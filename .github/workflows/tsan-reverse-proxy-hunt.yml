@@ -117,7 +117,7 @@ jobs:
           set -o pipefail
           TSAN_SETTING=""
           if [ "${{ inputs.suppressions }}" = "true" ]; then
-            TSAN_SETTING="TEST_RUNNER_TSAN_OPTIONS=suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1"
+            TSAN_SETTING="TEST_RUNNER_TSAN_OPTIONS=suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:verbosity=1"
           fi
           xcodebuild test \
             -workspace Loom.xcworkspace \

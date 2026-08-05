@@ -32,3 +32,11 @@
 # ever made them match too much, the canary goes green and *that* fails the workflow.
 race_top:UnsafeContinuation.resume
 race_top:suspend resume partial function for Swift.withUnsafeThrowingContinuation
+# EXPERIMENT (run 31009149711 → next): `race_top:` above did not suppress the observed
+# report. Hypothesis being tested: TSan evaluates suppressions against the *current*
+# access's stack only, and in this report the current access is the write side, whose top
+# frame is a Loom async function (`startReverseProxies`) rather than the glue. If that is
+# right, only a whole-stack `race:` pattern can reach it — so this line is here to find
+# out, NOT to keep. `race:` is the breadth this file's header argues against; whichever
+# way the run goes, one of these two lines gets deleted before merge.
+race:UnsafeContinuation.resume
