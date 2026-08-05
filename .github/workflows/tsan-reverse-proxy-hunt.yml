@@ -62,22 +62,31 @@ jobs:
           swiftc -parse-as-library -sanitize=thread \
             Tools/tsan-canary/main.swift -o "${{ runner.temp }}/canary"
 
+      # Both modes must be reported. `threads` is the floor (no async at all); `async` is
+      # the one that matters — Loom-shaped code racing on its own state while
+      # continuations resume cross-thread, i.e. the class of #210/#212/#213. The single
+      # `race:UnsafeContinuation.resume` entry must not reach it.
       - name: A real race must survive the suppressions
         env:
           TSAN_OPTIONS: suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:exitcode=0
         run: |
           set -o pipefail
-          "${{ runner.temp }}/canary" 2>&1 | tee "${{ runner.temp }}/canary.log" || true
-          if grep -q "ThreadSanitizer: data race" "${{ runner.temp }}/canary.log"; then
-            echo "::notice::TSan still reports an unsuppressed race — the gate bites."
-            exit 0
+          FAILED=0
+          for MODE in threads async; do
+            LOG="${{ runner.temp }}/canary-$MODE.log"
+            "${{ runner.temp }}/canary" "$MODE" 2>&1 | tee "$LOG" || true
+            if grep -q "ThreadSanitizer: data race" "$LOG"; then
+              echo "::notice::canary($MODE): race still reported — the gate bites."
+            else
+              echo "::error::canary($MODE): TSan reported nothing for code that IS a data race."
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "Tools/tsan/suppressions.txt has grown too broad: the Thread Sanitizer job"
+            echo "is no longer a gate. Narrow the pattern before trusting a green TSan run."
+            exit 1
           fi
-          echo "::error::TSan reported nothing for a program that IS a data race."
-          echo "Tools/tsan/suppressions.txt has grown too broad: the Thread Sanitizer job"
-          echo "is no longer a gate. Narrow the patterns (race_top:, never race:) before"
-          echo "trusting a green TSan run again."
-          cat "${{ runner.temp }}/canary.log"
-          exit 1
 
   hunt:
     name: Repeat under TSan

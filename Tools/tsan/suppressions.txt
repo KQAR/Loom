@@ -1,42 +1,41 @@
 # ThreadSanitizer suppressions for Loom's `Thread Sanitizer (ProxyCore)` job.
 #
-# One entry, and it exists because the report it silences is not Loom's: the Swift
-# runtime's continuation suspend/resume glue racing against `UnsafeContinuation.resume`,
-# which is what every `EventLoopFuture.get()` does internally. Upstream as
-# swiftlang/swift#57803; reproducible in ten lines with no SwiftNIO and no Loom code
-# (`Tools/tsan-continuation-repro/`). It reddened the job three times in a row — the
-# last twice on a diff that changed two version-number strings — which is what moved it
-# from "re-run it" to "suppress it and prove the job still bites".
+# One entry, and it silences a report that is not Loom's: the Swift runtime's continuation
+# suspend/resume glue racing against `UnsafeContinuation.resume`, which is what every
+# `EventLoopFuture.get()` does internally. Upstream as swiftlang/swift#57803; reproducible
+# in ten lines with no SwiftNIO and no Loom code (`Tools/tsan-continuation-repro/`). It
+# reddened the job three times in a row — the last two on a diff that changed two
+# version-number strings — which is what moved it from "re-run it" to "suppress it and
+# prove the job still bites".
 #
-# `race_top:`, NOT `race:`, and that distinction is the whole safety argument.
+# ## Why `race:` and not `race_top:`
 #
-# `race:` matches a pattern against *every* frame of both stacks, so `race:...
-# EventLoopFuture.get` would suppress any report that merely happened underneath a
-# future await — which is most of this engine. Three real defects were found while
-# chasing this flake (a detached-Task teardown running during the next test, `stopAll()`
-# mutating the dict it iterates, a leaked event-loop group: #210/#212/#213) and a
-# whole-stack pattern would have hidden that class of bug outright.
+# `race_top:` was the intent — match only the frame *performing* the access, so nothing
+# broader than the glue itself could ever be hidden. It does not work: with both
+# `race_top:UnsafeContinuation.resume` and `race_top:suspend resume partial function for
+# Swift.withUnsafeThrowingContinuation` loaded and parsed (confirmed in the log), the
+# report went through unsuppressed, including on a run whose write-side top frame was
+# that very glue (runs 31009149711, 31010431002, 31011274393). Only the whole-stack
+# `race:` form matched. So this file carries the breadth its earlier version argued
+# against — recorded rather than quietly reversed.
 #
-# `race_top:` matches only the frame performing the racy access. The two tops below are
-# the bridge itself. Note what is deliberately absent: no Loom symbol. The variant of
-# this report that names `ProxyEngine.startReverseProxies()` at the top of the *write*
-# side is still suppressed — because the read side's top is `UnsafeContinuation.resume`
-# and a suppressed stack suppresses the report — but a race where Loom code performs the
-# access on *both* sides has neither top in this list and still fails the job. That is
-# exactly the discriminator CLAUDE.md § Known Issues states in prose; this file is it in
-# machine-checkable form.
+# ## Why that breadth is acceptable, and how it is checked
 #
-# Guard against this going stale: `Tools/tsan-canary/` holds a genuine race and the
-# TSan-hunt workflow runs it under this same file. If a toolchain change makes these
-# patterns stop matching, the CI job goes red again (correctly, and loudly). If a change
-# ever made them match too much, the canary goes green and *that* fails the workflow.
-race_top:UnsafeContinuation.resume
-race_top:suspend resume partial function for Swift.withUnsafeThrowingContinuation
-# EXPERIMENT (run 31009149711 → next): `race_top:` above did not suppress the observed
-# report. Hypothesis being tested: TSan evaluates suppressions against the *current*
-# access's stack only, and in this report the current access is the write side, whose top
-# frame is a Loom async function (`startReverseProxies`) rather than the glue. If that is
-# right, only a whole-stack `race:` pattern can reach it — so this line is here to find
-# out, NOT to keep. `race:` is the breadth this file's header argues against; whichever
-# way the run goes, one of these two lines gets deleted before merge.
+# `UnsafeContinuation.resume` appears in a stack only when the racy access happens
+# *inside* `resume` — an access to the coroutine frame. Async code racing on its own
+# shared state does not put that frame in either stack, so the class of bug this job
+# exists to catch is still caught. That is a claim about TSan's behaviour, so it is
+# tested, not trusted: `Tools/tsan-canary/` races on purpose in two modes — plain threads
+# and `async` tasks mutating shared state while continuations resume cross-thread — and
+# the TSan-hunt workflow fails if either goes unreported. The `async` mode is the one
+# aimed squarely at this entry: it is the shape of the three real defects found while
+# chasing this flake (#210, #212, #213).
+#
+# Note what is deliberately absent: any Loom symbol. A race whose stacks are all Loom and
+# NIO frames matches nothing here and still fails the job — the discriminator CLAUDE.md
+# § Known Issues states in prose, in machine-checkable form.
+#
+# If a toolchain change makes this pattern stop matching, CI goes red again (correctly,
+# and loudly). If a change ever made it match too much, the canary goes green and *that*
+# fails the workflow.
 race:UnsafeContinuation.resume
