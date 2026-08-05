@@ -226,6 +226,50 @@ import LoomSharedModels
         await engine.stopForTest()
     }
 
+    // MARK: WebSocket through an endpoint
+
+    /// The upgrade's upstream routing comes from the resolved URL's scheme. On a
+    /// reverse endpoint that scheme is the configured upstream's `http`/`https` —
+    /// matching on the literal `wss` alone sent an `https` upstream's upgrade as
+    /// plaintext to port 80.
+    @Test func webSocketRoutingCountsBothSpellingsOfTLS() throws {
+        func routing(_ s: String) throws -> (port: Int, tls: Bool) {
+            ProxyHandler.webSocketRouting(for: try #require(URL(string: s)))
+        }
+        #expect(try routing("https://api.example.com/socket") == (443, true))
+        #expect(try routing("wss://api.example.com/socket") == (443, true))
+        #expect(try routing("http://127.0.0.1:3862/hmr") == (3862, false))
+        #expect(try routing("ws://127.0.0.1:3862/hmr") == (3862, false))
+        #expect(try routing("https://api.example.com:8443/socket") == (8443, true))
+    }
+
+    /// End to end: a client that can't be pointed at a proxy (a dev server's HMR
+    /// socket) upgrades through the endpoint, frames splice both ways, and the
+    /// exchange lands as one flow carrying the upstream URL and the frames.
+    @Test func aWebSocketUpgradeThroughAnEndpointIsSplicedAndCaptured() async throws {
+        let upstreamPort = try Self.startWebSocketEchoUpstream()
+        let engine = makeEngine(StubForwarder(status: 200, body: Data()))
+        _ = try await engine.start(port: 0, socksPort: 0)
+        let status = try await engine.createReverseProxy(
+            ReverseProxyEndpoint(upstream: "http://127.0.0.1:\(upstreamPort)"))
+        let endpointPort = try #require(status.boundPort)
+
+        let echoed = try await Self.driveWebSocketClient(port: endpointPort, path: "/hmr")
+        #expect(echoed == "pong")
+
+        let flow = try #require(
+            await awaitFlow(from: engine) { flow in
+                flow.isWebSocket && (flow.webSocketMessages?.count ?? 0) >= 2
+            },
+            "no WebSocket flow captured through the reverse endpoint"
+        )
+        #expect(flow.request.url == "http://127.0.0.1:\(upstreamPort)/hmr")
+        let messages = try #require(flow.webSocketMessages)
+        #expect(messages.contains { $0.direction == .clientToServer && $0.textPayload == "ping" })
+        #expect(messages.contains { $0.direction == .serverToClient && $0.textPayload == "pong" })
+        await engine.stopForTest()
+    }
+
     // MARK: Persistence
 
     @Test func endpointsSurviveARelaunch() throws {
@@ -276,6 +320,118 @@ import LoomSharedModels
         let status = try #require(config.snapshot().first)
         #expect(status.isListening == false)
         #expect(status.error?.contains("already in use") == true)
+    }
+
+    // MARK: - WebSocket upstream + client
+
+    /// Minimal one-shot WebSocket upstream: accepts a single connection, answers
+    /// the upgrade with a canned 101, replies to the client's first frame with an
+    /// unmasked text frame "pong", then closes. Returns the bound port.
+    private static func startWebSocketEchoUpstream() throws -> Int {
+        let server = socket(AF_INET, SOCK_STREAM, 0)
+        guard server >= 0 else { throw ProxyControlError.invalidReverseProxy("socket() failed") }
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = 0
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(server, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bound == 0, listen(server, 1) == 0 else {
+            close(server)
+            throw ProxyControlError.invalidReverseProxy("bind()/listen() failed")
+        }
+        var boundAddress = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        _ = withUnsafeMutablePointer(to: &boundAddress) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(server, $0, &length)
+            }
+        }
+        let port = Int(UInt16(bigEndian: boundAddress.sin_port))
+
+        DispatchQueue(label: "loom.reverse.ws-upstream").async {
+            defer { close(server) }
+            let conn = accept(server, nil, nil)
+            guard conn >= 0 else { return }
+            defer { close(conn) }
+            // Read the upgrade request through its blank line.
+            var request = [UInt8]()
+            var scratch = [UInt8](repeating: 0, count: 4096)
+            while !request.suffix(4).elementsEqual([0x0D, 0x0A, 0x0D, 0x0A]) {
+                let count = read(conn, &scratch, scratch.count)
+                guard count > 0 else { return }
+                request.append(contentsOf: scratch[0 ..< count])
+            }
+            // Canned 101 — the test's own client doesn't validate the accept key.
+            let handshake = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                + "Connection: Upgrade\r\nSec-WebSocket-Accept: loom-test\r\n\r\n"
+            _ = Array(handshake.utf8).withUnsafeBufferPointer { write(conn, $0.baseAddress, $0.count) }
+            // Wait for the client's frame (relayed through Loom), answer with an
+            // unmasked text frame "pong", then close — which ends the splice.
+            guard read(conn, &scratch, scratch.count) > 0 else { return }
+            let pong: [UInt8] = [0x81, 0x04] + Array("pong".utf8)
+            _ = pong.withUnsafeBufferPointer { write(conn, $0.baseAddress, $0.count) }
+        }
+        return port
+    }
+
+    /// Speak just enough WebSocket at the endpoint: origin-form upgrade, one
+    /// masked text frame "ping", then return the text of the frame that comes back.
+    private static func driveWebSocketClient(port: Int, path: String) async throws -> String {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
+            DispatchQueue(label: "loom.reverse.ws-client").async {
+                do {
+                    let sock = socket(AF_INET, SOCK_STREAM, 0)
+                    guard sock >= 0 else { throw ProxyControlError.invalidReverseProxy("socket() failed") }
+                    defer { close(sock) }
+                    var address = sockaddr_in()
+                    address.sin_family = sa_family_t(AF_INET)
+                    address.sin_port = in_port_t(UInt16(port).bigEndian)
+                    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+                    let connected = withUnsafePointer(to: &address) { pointer in
+                        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                            connect(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        }
+                    }
+                    guard connected == 0 else { throw ProxyControlError.invalidReverseProxy("connect() failed") }
+                    let upgrade = "GET \(path) HTTP/1.1\r\nHost: 127.0.0.1:\(port)\r\n"
+                        + "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                        + "Sec-WebSocket-Key: bG9vbS1zbW9rZS10ZXN0LWtleQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                    _ = Array(upgrade.utf8).withUnsafeBufferPointer { write(sock, $0.baseAddress, $0.count) }
+                    // Read through the 101's blank line.
+                    var response = [UInt8]()
+                    var scratch = [UInt8](repeating: 0, count: 4096)
+                    while !response.suffix(4).elementsEqual([0x0D, 0x0A, 0x0D, 0x0A]) {
+                        let count = read(sock, &scratch, scratch.count)
+                        guard count > 0 else { throw ProxyControlError.invalidReverseProxy("connection closed before 101") }
+                        response.append(contentsOf: scratch[0 ..< count])
+                    }
+                    guard String(decoding: response, as: UTF8.self).hasPrefix("HTTP/1.1 101") else {
+                        throw ProxyControlError.invalidReverseProxy("expected 101, got \(String(decoding: response.prefix(64), as: UTF8.self))")
+                    }
+                    // One masked text frame "ping" (clients must mask, RFC 6455 §5.1).
+                    let mask: [UInt8] = [0x10, 0x20, 0x30, 0x40]
+                    let payload = Array("ping".utf8)
+                    let frame: [UInt8] = [0x81, 0x80 | UInt8(payload.count)] + mask
+                        + payload.enumerated().map { $1 ^ mask[$0 % 4] }
+                    _ = frame.withUnsafeBufferPointer { write(sock, $0.baseAddress, $0.count) }
+                    // The upstream's unmasked reply: 2-byte header + payload.
+                    var reply = [UInt8]()
+                    while reply.count < 6 {
+                        let count = read(sock, &scratch, scratch.count)
+                        guard count > 0 else { break }
+                        reply.append(contentsOf: scratch[0 ..< count])
+                    }
+                    guard reply.count >= 6 else { throw ProxyControlError.invalidReverseProxy("no echo frame relayed back") }
+                    continuation.resume(returning: String(decoding: reply[2 ..< 2 + Int(reply[1] & 0x7F)], as: UTF8.self))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     // MARK: - Raw client
