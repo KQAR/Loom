@@ -237,7 +237,11 @@ jobs:
         id: tsan
         continue-on-error: true
         env:
-          TEST_RUNNER_TSAN_OPTIONS: suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1
+          # `verbosity=1` is not noise for its own sake: it makes TSan print
+          # `reading suppressions file at …`, which is the only positive evidence that the
+          # options reached this process. The step below *requires* that line — see there
+          # for the bug that made it necessary.
+          TEST_RUNNER_TSAN_OPTIONS: suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:verbosity=1
         run: |
           set -o pipefail
           xcodebuild test \
@@ -264,17 +268,24 @@ jobs:
           # fails the job. A count that climbs across releases is worth knowing;
           # a count that drops to zero means either the toolchain fixed it or the
           # patterns stopped matching, and the canary tells those two apart.
+          # The suppressions file must have been *loaded by the test process*, and this
+          # is asserted rather than inferred. Three ways of passing it failed silently
+          # during this job's development — an unprotected run looks exactly like a clean
+          # one — so "no race reported" is only meaningful alongside proof that the
+          # protection was in place. The first version of this check tried to infer it
+          # from the absence of the string "ThreadSanitizer" in the log and could never
+          # fire: xcodebuild echoes `-enableThreadSanitizer YES`, which always matches.
+          if ! grep -q "reading suppressions file at" "$LOG"; then
+            echo "::error::TSan never loaded ${{ github.workspace }}/Tools/tsan/suppressions.txt."
+            echo "TEST_RUNNER_TSAN_OPTIONS is not reaching the test process, so this run was"
+            echo "unprotected — and an unprotected run is indistinguishable from a clean one."
+            echo "Fix the channel (env var of xcodebuild, NOT a build setting, NOT plain"
+            echo "TSAN_OPTIONS) before trusting a green TSan job. See the step above."
+            exit 1
+          fi
           if grep -q "Matched .* suppressions" "$LOG"; then
             echo "::notice::TSan suppressed known-upstream reports (swiftlang/swift#57803):"
             grep -A 5 "Matched .* suppressions" "$LOG" || true
-          elif ! grep -q "ThreadSanitizer" "$LOG"; then
-            # Neither a report nor a suppression match. Most likely the run was simply
-            # clean — the flake is probabilistic. But it is also what a *silently
-            # unloaded* suppressions file looks like, which is how the first attempt at
-            # this failed, so say so instead of reading the silence as protection.
-            echo "::warning::No TSan report and no suppression match — either a clean run \
-          or TEST_RUNNER_TSAN_OPTIONS stopped reaching the test process. Confirm with the \
-          TSan-hunt workflow (suppressions: true) before trusting a streak of green."
           fi
           if grep -q "ThreadSanitizer: data race" "$LOG"; then
             echo "::error::TSan reported data race(s) that no suppression covers:"
