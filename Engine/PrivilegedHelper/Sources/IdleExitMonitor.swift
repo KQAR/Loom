@@ -9,7 +9,10 @@ enum IdleExitMonitor {
     private static let logger = Logger(subsystem: HelperIdentity.logSubsystem, category: "IdleExit")
     private static let timeout: TimeInterval = 5 * 60
     private static let queue = DispatchQueue(label: "com.loom.helper.idle")
-    private static var timer: DispatchSourceTimer?
+    /// `nonisolated(unsafe)`: touched only from `queue` — `start`/`noteActivity`
+    /// dispatch onto it, and the timer's own event handler runs on it — so the serial
+    /// queue is the isolation. Any new access must be dispatched there too.
+    nonisolated(unsafe) private static var timer: DispatchSourceTimer?
 
     static func start() { queue.async { schedule() } }
 

@@ -5,7 +5,11 @@ import os
 /// The object exported over XPC. Implements the privileged operations and owns
 /// the override lifecycle (backup on override, spawn the watchdog, restore on
 /// request/uninstall). Thread-safe: XPC delivers calls concurrently.
-final class HelperService: NSObject, LoomPrivilegedHelperProtocol {
+// `@unchecked Sendable`: XPC delivers each call on an arbitrary connection queue,
+// and the only mutable state — `activePort` — is guarded by `lock` on every access.
+// The compiler can't see a lock; it can only see a mutable `var` on a class reached
+// from a `static let`.
+final class HelperService: NSObject, LoomPrivilegedHelperProtocol, @unchecked Sendable {
     static let shared = HelperService()
 
     private let logger = Logger(subsystem: HelperIdentity.logSubsystem, category: "HelperService")
