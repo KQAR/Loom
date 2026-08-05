@@ -305,6 +305,8 @@ struct WebSocketStreamTap {
 
 /// Byte-transparent relay for one side of a spliced WebSocket, tapping inbound
 /// bytes for capture. Modeled on `GlueHandler`.
+// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
+// § Sendable escape hatches for what that forbids inside a `Task {}`.
 final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer

@@ -14,6 +14,8 @@ import LoomSharedModels
 /// request line (`upstreamTLS: false`, used by the SOCKS listener): the shape is
 /// identical — origin-form requests plus a known host:port — and the only
 /// difference is which scheme the rebuilt absolute URL carries.
+// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
+// § Sendable escape hatches for what that forbids inside a `Task {}`.
 final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart

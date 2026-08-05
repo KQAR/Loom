@@ -25,6 +25,8 @@ import NIOPosix
 /// No authentication is offered. That matches the HTTP proxy port, which is also
 /// unauthenticated: both are bound to loopback unless the human explicitly turns
 /// on LAN device capture, and that switch is the access-control decision.
+// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
+// § Sendable escape hatches for what that forbids inside a `Task {}`.
 final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = ByteBuffer

@@ -59,3 +59,43 @@ drops Host so it follows the mapped origin). `forward` (buffered) is a **fold** 
 
 Already streamed and never buffered — a separate byte-transparent frame splice
 (`WebSocketRelay`/`WebSocketTapHandler`).
+
+## Sendable escape hatches: what each kind actually promises
+
+Strict concurrency is on (Swift 6 language mode) and does **not** check any of these. Three kinds,
+and only one of them has a removal path:
+
+1. **Event-loop confined** — `ProxyHandler`, `TLSInterceptHandler`, `SOCKSConnectionHandler`,
+   `WebSocketTapHandler`, `StreamingResponseHandler`, `MCPHTTPHandler`. Mutable state, **no lock**;
+   correctness rests entirely on every touch happening on the channel's own `EventLoop`. So: a
+   `Task {}` inside one of these may not read or write `self`'s stored properties — capture the
+   values it needs first, or hop back with `eventLoop.execute`. The existing `Task {}`s obey this
+   (they capture an actor, e.g. `Task { await store.upsert(…) }`), and future-callback closures do
+   too, because every upstream bootstrap is pinned to the client channel's loop
+   (`ClientBootstrap(group: clientChannel.eventLoop)` — the `GlueHandler` splice requires it
+   anyway). **Removal path**: `NIOAsyncChannel`, plus constructing handlers *inside* the pipeline
+   closures so nothing non-Sendable is captured. That is the same rework as the ~24 residual
+   "conformance of X to Sendable is unavailable" warnings, and it is not scheduled.
+2. **Lock-guarded** — `RulesConfig`, `InterceptionConfig`, `ClientCertificateConfig`,
+   `ReverseProxyConfig`, `RefusalLog`, `BreakpointStore`, `FlowPersistence`, `AuditPersistence`,
+   `CertificateAuthority`, `RequestBodyCapture`, `ChannelBox`, `RequestBodyBridge.Delegate`,
+   `ProcessResolver`, `ReservedPorts`. The `private let lock = NSLock()` on the next line *is* the
+   invariant. **This is the terminal state, not debt** — `Mutex` would express it better but needs
+   macOS 15 and Loom targets 14, so revisit only when the floor moves. Don't file these as an
+   unfinished migration.
+3. **Immutable, hatch only for a missing upstream conformance** — `NIOStreamingForwarder` (all
+   `let`; `EventLoopGroup` has no `Sendable`), `MCPTool` (a `[String: Any]` JSON schema; its
+   `handler` is `@Sendable` on purpose so the hatch can't swallow a capture). Nothing to protect.
+
+## Leaf minting on the event loop is measured and fine — don't "fix" it
+
+`ProxyHandler.interceptTLS` and `SOCKSConnectionHandler` call `ca.serverContext(for: host)`
+**synchronously on the event loop**, and on a cache miss that mints a leaf (P-256 keygen + X.509
+signing) under `CertificateAuthority`'s single lock. That reads like the mistake `ProcessResolver`
+documents (blocking work in the wrong execution context), so it gets raised in review. It was
+measured instead: **cold 0.26 ms mean / 0.90 ms worst per host, warm 0.0003 ms** (50 distinct hosts,
+in-memory CA store, arm64 debug) — 13 ms total for a page pulling in 50 new origins, spread across
+their connects and an order of magnitude under one TCP round trip. Moving it off the loop would buy
+that back at the cost of making the CONNECT handler swap asynchronous, and that swap's ordering is
+load-bearing (see the CONNECT-surgery note in AGENTS.md § Known Issues). Not worth it. Re-measure
+before reopening.
