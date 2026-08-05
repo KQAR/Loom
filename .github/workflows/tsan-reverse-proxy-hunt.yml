@@ -164,6 +164,13 @@ jobs:
           echo "### TSan hunt: ${{ inputs.suite }} × ${{ inputs.iterations }} (skip: '${{ inputs.skip }}')" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "suppressions loaded: ${{ inputs.suppressions }}" >> "$GITHUB_STEP_SUMMARY"
+          # Count Swift Testing's own passes. xcodebuild's legacy tail line says
+          # "Executed 0 tests" for this bundle — it counts XCTest cases and there are
+          # none — which reads exactly like a run that never happened.
+          echo "swift-testing passes: $(grep -cE 'Test [a-zA-Z].*\(\) passed after' "${{ runner.temp }}/tsan-hunt.log" || true)" \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "suppressions file parsed: $(grep -cE 'reading suppressions file' "${{ runner.temp }}/tsan-hunt.log" || true)" \
+            >> "$GITHUB_STEP_SUMMARY"
           echo "races reported: $(grep -c 'WARNING: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" || true)" \
             >> "$GITHUB_STEP_SUMMARY"
           grep -E 'Matched .* suppressions' "${{ runner.temp }}/tsan-hunt.log" | sort -u | head -3 \
