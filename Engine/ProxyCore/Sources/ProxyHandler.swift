@@ -266,16 +266,28 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     // MARK: - Plain HTTP forwarding
 
+    /// Upstream port + TLS for a WebSocket upgrade, from the resolved destination
+    /// URL's scheme. On the forward port the client states it as `ws`/`wss`; on a
+    /// reverse endpoint the resolved URL carries the configured upstream's
+    /// `http`/`https`, so both spellings of "TLS" must count — matching on the
+    /// literal `wss` alone sent a reverse-proxied upgrade to an `https` upstream
+    /// as plaintext to port 80.
+    static func webSocketRouting(for url: URL) -> (port: Int, tls: Bool) {
+        let scheme = url.scheme?.lowercased() ?? ""
+        let tls = scheme == "wss" || scheme == "https"
+        return (url.port ?? (tls ? 443 : 80), tls)
+    }
+
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, body: RequestBody, capture: RequestBodyCapture?) {
-        let wsPort = url.port ?? (url.scheme?.lowercased() == "wss" ? 443 : 80)
+        let ws = Self.webSocketRouting(for: url)
         CapturedExchange.handle(
             channel: channel, head: head, body: body, bodyCapture: capture,
             routing: CapturedExchange.Routing(
                 url: url,
                 urlString: head.uri,
                 webSocketHost: url.host ?? "",
-                webSocketPort: wsPort,
-                webSocketUpstreamTLS: url.scheme?.lowercased() == "wss",
+                webSocketPort: ws.port,
+                webSocketUpstreamTLS: ws.tls,
                 webSocketRequestPath: Self.originForm(url),
                 webSocketRemoveHandlerNames: ["loom.http.encoder", "loom.http.decoder", "loom.proxy"]
             ),
