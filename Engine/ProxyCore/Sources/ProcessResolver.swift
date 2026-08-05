@@ -235,7 +235,16 @@ final class ProcessResolver: @unchecked Sendable {
     /// pid reuse would make wrong. `proc_pidpath` still runs per pid (one cheap
     /// syscall); only the `Info.plist` read is skipped.
     private static let bundleLock = NSLock()
+    /// `nonisolated(unsafe)`: every read and write is inside `bundleLock`, which is
+    /// the invariant strict concurrency cannot verify for a global.
     nonisolated(unsafe) private static var bundleInfo: [String: (name: String, bundleID: String?)] = [:]
+    /// Far above the number of distinct app bundles that will ever talk through one
+    /// proxy session, but a bound nonetheless — this was the one in-memory
+    /// collection in the engine with no cap, against the rule that every one has
+    /// an explicit one. Reset wholesale rather than tracking recency, exactly as
+    /// `RegexCache` does: re-reading a handful of live `Info.plist`s once after a
+    /// reset is cheaper than LRU bookkeeping on every resolve.
+    static let maxBundleEntries = 512
 
     private static func appInfo(pid: pid_t) -> SourceApp {
         var buffer = [CChar](repeating: 0, count: 4096) // PROC_PIDPATHINFO_MAXSIZE
@@ -277,6 +286,7 @@ final class ProcessResolver: @unchecked Sendable {
         }
 
         bundleLock.lock()
+        if bundleInfo.count >= Self.maxBundleEntries { bundleInfo.removeAll(keepingCapacity: true) }
         bundleInfo[path] = resolved
         bundleLock.unlock()
         return resolved
