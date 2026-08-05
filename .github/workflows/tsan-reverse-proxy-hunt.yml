@@ -35,8 +35,50 @@ on:
         description: 'Test identifier to EXCLUDE (e.g. ProxyCoreTests/ReverseProxyTests). Empty = exclude nothing.'
         required: false
         default: ''
+      suppressions:
+        description: 'Load Tools/tsan/suppressions.txt (as CI does). Off = raw, to measure the flake''s real rate.'
+        type: boolean
+        required: false
+        default: true
 
 jobs:
+  # Proof that the suppression file did not turn the CI job into a rubber stamp.
+  #
+  # It runs a program that *is* a data race (`Tools/tsan-canary/`) under the same
+  # suppressions CI loads, and fails if TSan stays quiet. Deliberately inverted: silence
+  # is the failure. Without this, widening one pattern by a word would leave every TSan
+  # run green forever and nothing would say so.
+  #
+  # Separate job so it answers even when the hunt below times out.
+  canary:
+    name: Canary — a real race must still be reported
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the canary under TSan
+        run: |
+          swiftc -parse-as-library -sanitize=thread \
+            Tools/tsan-canary/main.swift -o "${{ runner.temp }}/canary"
+
+      - name: A real race must survive the suppressions
+        env:
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:exitcode=0
+        run: |
+          set -o pipefail
+          "${{ runner.temp }}/canary" 2>&1 | tee "${{ runner.temp }}/canary.log" || true
+          if grep -q "ThreadSanitizer: data race" "${{ runner.temp }}/canary.log"; then
+            echo "::notice::TSan still reports an unsuppressed race — the gate bites."
+            exit 0
+          fi
+          echo "::error::TSan reported nothing for a program that IS a data race."
+          echo "Tools/tsan/suppressions.txt has grown too broad: the Thread Sanitizer job"
+          echo "is no longer a gate. Narrow the patterns (race_top:, never race:) before"
+          echo "trusting a green TSan run again."
+          cat "${{ runner.temp }}/canary.log"
+          exit 1
+
   hunt:
     name: Repeat under TSan
     runs-on: macos-latest
@@ -62,6 +104,11 @@ jobs:
       - name: Repeat under TSan
         id: hunt
         continue-on-error: true
+        # `suppressions: false` reproduces the raw flake — that is how its rate gets
+        # measured now that CI no longer shows it as a failure. `true` mirrors CI, which
+        # is how a *new* report (one no suppression covers) gets hunted.
+        env:
+          TSAN_OPTIONS: ${{ inputs.suppressions && format('suppressions={0}/Tools/tsan/suppressions.txt:print_suppressions=1', github.workspace) || '' }}
         run: |
           set -o pipefail
           xcodebuild test \
@@ -87,8 +134,11 @@ jobs:
         run: |
           echo "### TSan hunt: ${{ inputs.suite }} × ${{ inputs.iterations }} (skip: '${{ inputs.skip }}')" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "suppressions loaded: ${{ inputs.suppressions }}" >> "$GITHUB_STEP_SUMMARY"
           echo "races reported: $(grep -c 'WARNING: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" || true)" \
             >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'Matched .* suppressions' "${{ runner.temp }}/tsan-hunt.log" | sort -u | head -3 \
+            >> "$GITHUB_STEP_SUMMARY" || true
           grep -E 'SUMMARY: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" | sort -u | head -5 \
             >> "$GITHUB_STEP_SUMMARY" || true
           grep -E '✗|crashed with signal' "${{ runner.temp }}/tsan-hunt.log" | head -10 \

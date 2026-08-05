@@ -1,0 +1,34 @@
+# ThreadSanitizer suppressions for Loom's `Thread Sanitizer (ProxyCore)` job.
+#
+# One entry, and it exists because the report it silences is not Loom's: the Swift
+# runtime's continuation suspend/resume glue racing against `UnsafeContinuation.resume`,
+# which is what every `EventLoopFuture.get()` does internally. Upstream as
+# swiftlang/swift#57803; reproducible in ten lines with no SwiftNIO and no Loom code
+# (`Tools/tsan-continuation-repro/`). It reddened the job three times in a row — the
+# last twice on a diff that changed two version-number strings — which is what moved it
+# from "re-run it" to "suppress it and prove the job still bites".
+#
+# `race_top:`, NOT `race:`, and that distinction is the whole safety argument.
+#
+# `race:` matches a pattern against *every* frame of both stacks, so `race:...
+# EventLoopFuture.get` would suppress any report that merely happened underneath a
+# future await — which is most of this engine. Three real defects were found while
+# chasing this flake (a detached-Task teardown running during the next test, `stopAll()`
+# mutating the dict it iterates, a leaked event-loop group: #210/#212/#213) and a
+# whole-stack pattern would have hidden that class of bug outright.
+#
+# `race_top:` matches only the frame performing the racy access. The two tops below are
+# the bridge itself. Note what is deliberately absent: no Loom symbol. The variant of
+# this report that names `ProxyEngine.startReverseProxies()` at the top of the *write*
+# side is still suppressed — because the read side's top is `UnsafeContinuation.resume`
+# and a suppressed stack suppresses the report — but a race where Loom code performs the
+# access on *both* sides has neither top in this list and still fails the job. That is
+# exactly the discriminator CLAUDE.md § Known Issues states in prose; this file is it in
+# machine-checkable form.
+#
+# Guard against this going stale: `Tools/tsan-canary/` holds a genuine race and the
+# TSan-hunt workflow runs it under this same file. If a toolchain change makes these
+# patterns stop matching, the CI job goes red again (correctly, and loudly). If a change
+# ever made them match too much, the canary goes green and *that* fails the workflow.
+race_top:UnsafeContinuation.resume
+race_top:suspend resume partial function for Swift.withUnsafeThrowingContinuation
