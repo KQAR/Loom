@@ -340,6 +340,9 @@ final class MCPDispatcher: @unchecked Sendable {
 
 // MARK: - HTTP transport
 
+// @unchecked Sendable: event-loop confined, no lock. Same contract as ProxyCore's
+// handlers — Engine/ProxyCore/CLAUDE.md § Sendable escape hatches — including that
+// `inFlight`'s Task must not touch stored properties off the loop (it doesn't).
 final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart

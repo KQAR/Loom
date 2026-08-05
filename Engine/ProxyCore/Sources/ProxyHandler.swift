@@ -11,6 +11,8 @@ import LoomSharedModels
 /// exchange and forwards it. For CONNECT it either MITM-decrypts the TLS (when
 /// the host is in the SSL-proxying scope and a CA is available) or opens a blind
 /// TCP tunnel (pinned / out-of-scope / interception off).
+// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
+// § Sendable escape hatches for what that forbids inside a `Task {}`.
 final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart

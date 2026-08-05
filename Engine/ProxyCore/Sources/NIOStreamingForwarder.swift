@@ -15,6 +15,8 @@ import LoomSharedModels
 /// (whole body collected) and decompresses like the old path so captures stay
 /// readable. True chunk-at-a-time streaming (SSE / large bodies), WebSocket, and
 /// HTTP/2 build on this same NIO client in later increments.
+// @unchecked Sendable with nothing to protect: every stored property is a `let`.
+// The hatch exists because `EventLoopGroup` carries no Sendable conformance.
 final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// Largest decompressed:compressed ratio accepted from an upstream response.
     /// See the decompressor's installation below for why this isn't `.none`.
@@ -258,6 +260,8 @@ private final class ChannelBox: @unchecked Sendable {
 /// Relays one HTTP response upstream→stream as it arrives: `.head` then each body
 /// chunk then `.end`, so SSE / long-poll / large downloads flow through instead of
 /// being buffered. Closes the upstream channel when the response ends.
+// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
+// § Sendable escape hatches for what that forbids inside a `Task {}`.
 private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPClientResponsePart
 
