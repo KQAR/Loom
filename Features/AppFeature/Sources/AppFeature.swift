@@ -916,12 +916,6 @@ private actor FlowBatchBuffer {
         return flows
     }
 
-    /// Hand a drained batch back, ahead of anything that arrived meanwhile so order is
-    /// preserved. Used when the task holding it can no longer be trusted to deliver it
-    /// (see `streamFlows`).
-    func putBack(_ batch: [Flow]) {
-        flows.insert(contentsOf: batch, at: 0)
-    }
 }
 
 extension AppFeature {
@@ -934,47 +928,60 @@ extension AppFeature {
     /// with only a check-on-arrival, the last few flows of a burst would sit
     /// unsent until the *next* request arrived — a request that looked like it never
     /// happened. The drain task fires on the window regardless of traffic.
+    /// **Only the parent task ever moves flows out of the buffer.** The child tasks are
+    /// cancellable and `Send` *silently discards* an action whose task is cancelled, so a
+    /// child that drains and then sends can lose a whole batch to a `cancelAll()` that
+    /// lands mid-send — the flows are already out of the buffer, so the parent's final
+    /// flush finds nothing to recover and the UI is simply missing requests that were
+    /// captured. Guarding around the send is not enough; that was the previous shape, and
+    /// it dropped 52 of 200 flows about once in every fifty CI runs
+    /// (`FlowStreamBatchingTests.manyEmissions_collapseIntoFewerActions`, runs
+    /// 30981021844 and earlier). Cancellation lands *during* an `await`, not only before
+    /// it, so no check can close that window.
+    ///
+    /// So the windowed child now carries **no data at all** — it yields a bare tick and
+    /// the parent does every drain and every send. A tick lost to cancellation costs
+    /// nothing (the parent drains once more after the loop), ordering is trivially
+    /// preserved by there being one consumer, and the buffer holds every flow until the
+    /// one task `cancelAll()` cannot touch takes it.
     static func streamFlows(
         into send: Send<Action>,
         flowStream: @escaping @Sendable () async -> AsyncStream<Flow>,
         clock: any Clock<Duration>
     ) async {
         let buffer = FlowBatchBuffer()
+        // Ticks, not batches: "the window elapsed" / "the stream ended", never payload.
+        let (ticks, tick) = AsyncStream<Void>.makeStream()
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
                 for await flow in await flowStream() {
                     await buffer.append(flow)
                 }
-                // Tell the drain task there is no more input, rather than cancelling it.
+                // The stream ended: one last tick so the parent flushes the tail, then
+                // close the tick stream, which is what ends the parent's loop. Ending it
+                // from here — rather than cancelling anything — is why the tail can't be
+                // stranded.
                 await buffer.finish()
+                tick.yield(())
+                tick.finish()
             }
             group.addTask {
+                // Ticks until the stream ends (the parent then cancels this) or the
+                // buffer reports finished, whichever comes first. `yield` is
+                // non-suspending and unaffected by cancellation, so a tick is never
+                // half-delivered.
                 while await !buffer.isFinished, !Task.isCancelled {
                     try? await clock.sleep(for: Self.flowBatchWindow)
-                    // Woken by cancellation rather than by the window elapsing: don't
-                    // touch the buffer at all. `Send` silently discards an action when
-                    // `Task.isCancelled`, so draining here would empty the buffer into a
-                    // batch that is then dropped on the floor — and the parent's flush
-                    // below would find nothing left to recover.
                     if Task.isCancelled { return }
-                    let batch = await buffer.drain()
-                    guard !batch.isEmpty else { continue }
-                    // The stream ended while this batch was in hand. `cancelAll()` is
-                    // about to land (or already has), so this task can't be trusted to
-                    // deliver it: give it back and let the parent — which is never
-                    // cancelled by `cancelAll` — send it.
-                    if await buffer.isFinished {
-                        await buffer.putBack(batch)
-                        return
-                    }
-                    await send(.flowsReceived(batch))
+                    tick.yield(())
                 }
             }
-            // The stream ending (engine stopped) ends the drain task too, after one last
-            // flush from here so nothing buffered is dropped. This flush runs on the
-            // group's parent task, which `cancelAll()` does not cancel — that is what
-            // makes it a reliable place to deliver the tail from.
-            await group.next()
+            for await _ in ticks {
+                let batch = await buffer.drain()
+                if !batch.isEmpty { await send(.flowsReceived(batch)) }
+            }
+            // Stop the windowed child — it may be parked in `clock.sleep` on a clock that
+            // is never advanced — and take anything that arrived after the final tick.
             group.cancelAll()
             let remainder = await buffer.drain()
             if !remainder.isEmpty { await send(.flowsReceived(remainder)) }
