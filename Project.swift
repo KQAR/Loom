@@ -105,17 +105,14 @@ let project = Project(
             ]
         ),
 
-        // MARK: Auto-update client (TCA wrapper over Sparkle). Swift 5 language
-        // mode for the same reason as the helper client: an Obj-C framework whose
-        // delegate callbacks fight Swift 6 strict-concurrency isolation.
+        // MARK: Auto-update client (TCA wrapper over Sparkle)
         .module(
             name: "UpdaterClient",
             sources: ["Clients/UpdaterClient/Sources/**"],
             dependencies: [
                 .external(name: "ComposableArchitecture"),
                 .external(name: "Sparkle"),
-            ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
+            ]
         ),
 
         // MARK: Engine (plain Swift, zero TCA)
@@ -186,7 +183,8 @@ let project = Project(
                 .target(name: "LoomSharedModels"),
                 .target(name: "LoomHelperProtocol"),
             ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // XPC + continuations vs Swift 6 Sendable
+            // Swift 6 language mode by default (no override) — see the type comments
+            // in PrivilegedHelperClient.swift for how the XPC surface earns it.
         ),
 
         // MARK: stdio <-> HTTP bridge that AI clients (Claude/Cursor) launch

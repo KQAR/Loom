@@ -14,8 +14,12 @@ final class UpdaterCoordinator: NSObject {
     static let shared = UpdaterCoordinator()
 
     /// At most one silent background probe per this interval (≈ once a day).
-    private static let probeInterval: TimeInterval = 24 * 60 * 60
-    private static let lastProbeKey = "com.loom.lastUpdateCheck"
+    ///
+    /// `nonisolated` because the delegate callback that stamps the timestamp is
+    /// nonisolated (Sparkle calls it on the main queue, but its protocol doesn't say
+    /// so) — and a constant needs no isolation to be read safely.
+    nonisolated private static let probeInterval: TimeInterval = 24 * 60 * 60
+    nonisolated private static let lastProbeKey = "com.loom.lastUpdateCheck"
 
     private var controller: SPUStandardUpdaterController!
     private var continuations: [UUID: AsyncStream<UpdateAvailability>.Continuation] = [:]
