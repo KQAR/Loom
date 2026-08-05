@@ -47,8 +47,9 @@ struct SOCKSCaptureTests {
         #expect(raw.contains("200"))
         #expect(raw.contains(responseBody))
 
-        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        let flow = try #require(flows.first { $0.request.url.contains("example.test/api/thing") })
+        let flow = try #require(awaitFlowBlocking(from: engine) {
+            $0.request.url.contains("example.test/api/thing")
+        })
         #expect(flow.request.method == "GET")
         #expect(flow.request.url == "http://example.test/api/thing", "cleartext must not be recorded as https")
         #expect(flow.request.headers.contains { $0.name.lowercased() == "x-loom-test" && $0.value == "socks" })
@@ -97,8 +98,12 @@ struct SOCKSCaptureTests {
         let raw = try responded.futureResult.wait()
         #expect(raw.contains(responseBody), "the client should get the decrypted body back")
 
-        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
-        let flow = try #require(flows.first { $0.request.url.contains("example.test/secure") })
+        // The body is the part that lands last, so wait for it rather than for the
+        // flow: this is the assertion that started failing once CI stopped caching
+        // build products.
+        let flow = try #require(awaitFlowBlocking(from: engine) {
+            $0.request.url.contains("example.test/secure") && $0.response?.body != nil
+        })
         #expect(flow.request.url == "https://example.test/secure")
         #expect(flow.response?.body == Data(responseBody.utf8))
     }
@@ -143,9 +148,10 @@ struct SOCKSCaptureTests {
         let seen = try echoed.futureResult.wait()
         #expect(seen.contains("pong-marker"), "opaque bytes must round-trip untouched")
 
-        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
         #expect(
-            flows.contains { $0.request.method == "CONNECT" && $0.request.url.contains("127.0.0.1:\(echoPort)") },
+            awaitFlowBlocking(from: engine) {
+                $0.request.method == "CONNECT" && $0.request.url.contains("127.0.0.1:\(echoPort)")
+            } != nil,
             "an observed tunnel should be visible as activity even though it wasn't read"
         )
     }

@@ -1,4 +1,5 @@
 import Foundation
+import LoomSharedModels
 @testable import LoomProxyCore
 
 /// Stop an engine a test started, **deterministically**, before the test returns.
@@ -53,4 +54,58 @@ func runBlockingVoid(_ body: @escaping () async -> Void) {
     let semaphore = DispatchSemaphore(value: 0)
     Task { await body(); semaphore.signal() }
     semaphore.wait()
+}
+
+/// Wait — bounded — for a captured flow that satisfies `condition`.
+///
+/// A test client receiving its response does **not** mean the store holds the
+/// finished flow. Capture completes on the event loop after the last byte goes back
+/// to the client, so reading `recentFlows()` on the very next line is a race: the
+/// flow can be missing entirely, or present with `response.body` still nil.
+///
+/// It went unnoticed for as long as CI restored built products and the runner sat
+/// idle between compiles. Removing the DerivedData cache (every run now compiles the
+/// world, on a busier machine) turned it into a real failure —
+/// `interceptsTLSOverSOCKS` first, with the flow found but its body nil.
+///
+/// Waiting rather than sleeping a fixed amount, per this repo's standing preference
+/// for fixing a timing flake over tuning one: a sleep long enough today is a number
+/// that rots, and one too short fails as a mystery. This returns the moment the
+/// condition holds and gives up at `timeout`, so a genuine capture regression still
+/// fails — at the assertion that wanted the flow, by name.
+func awaitFlow(
+    from engine: ProxyEngine,
+    timeout: TimeInterval = 5,
+    where condition: @escaping @Sendable (Flow) -> Bool
+) async -> Flow? {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        if let flow = await engine.recentFlows(limit: 50).first(where: condition) { return flow }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    } while Date() < deadline
+    return nil
+}
+
+/// The same wait for the synchronous suites — they drive raw NIO clients and block on
+/// futures, so `await` isn't available at the call site. Blocking here is safe for the
+/// reason `runBlockingVoid` gives: the body runs on the cooperative pool, not here.
+func awaitFlowBlocking(
+    from engine: ProxyEngine,
+    timeout: TimeInterval = 5,
+    where condition: @escaping @Sendable (Flow) -> Bool
+) -> Flow? {
+    let box = FlowBox()
+    let semaphore = DispatchSemaphore(value: 0)
+    Task {
+        box.value = await awaitFlow(from: engine, timeout: timeout, where: condition)
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return box.value
+}
+
+/// Carries one flow across the semaphore. `@unchecked Sendable` because the write and
+/// the read are ordered by that semaphore, which the compiler can't see.
+private final class FlowBox: @unchecked Sendable {
+    var value: Flow?
 }
