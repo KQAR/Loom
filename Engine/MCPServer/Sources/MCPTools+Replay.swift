@@ -27,15 +27,23 @@ extension MCPToolExecutor {
 
         // One replay keeps the single-flow shape it has always had — the common case
         // shouldn't pay for batch scaffolding, in tokens or in reading effort.
+        // A replacement body that was meant to be JSON and isn't still gets sent —
+        // that's a legitimate thing to replay — but it comes back said out loud.
+        let warnings = Self.bodyWarnings(fromArguments: arguments)
+
         guard count > 1 else {
             do {
                 let flow = try await engine.replay(id: id, overrides: overrides)
-                return prettyJSON(Self.flowDetail(flow))
+                var payload = Self.flowDetail(flow)
+                Self.attach(warnings: warnings, to: &payload)
+                return prettyJSON(payload)
             } catch let error as ProxyControlError {
                 throw MCPToolFailure(error.message)
             }
         }
-        return await batchReplay(id: id, overrides: overrides, count: count, concurrency: concurrency)
+        return await batchReplay(
+            id: id, overrides: overrides, count: count, concurrency: concurrency, warnings: warnings
+        )
     }
 
     /// Send the same request `count` times with at most `concurrency` in flight.
@@ -46,7 +54,7 @@ extension MCPToolExecutor {
     /// engine does that even for a failed replay), so the batch summary is a summary,
     /// not the only record.
     func batchReplay(
-        id: UUID, overrides: ReplayOverrides, count: Int, concurrency: Int
+        id: UUID, overrides: ReplayOverrides, count: Int, concurrency: Int, warnings: [String] = []
     ) async -> String {
         let engine = self.engine
         var flows: [Flow] = []
@@ -100,6 +108,7 @@ extension MCPToolExecutor {
                 ["message": message, "count": occurrences.count] as [String: Any]
             }
         }
+        Self.attach(warnings: warnings, to: &payload)
         return prettyJSON(payload)
     }
 

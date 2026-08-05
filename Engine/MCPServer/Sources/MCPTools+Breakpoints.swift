@@ -82,7 +82,11 @@ extension MCPToolExecutor {
         } catch let error as ProxyControlError {
             throw MCPToolFailure(error.message)
         }
-        return prettyJSON(["resumed": idString, "aborted": abort])
+        var payload: [String: Any] = ["resumed": idString, "aborted": abort]
+        // The edit already went to the client; the warning is how the operator learns
+        // the JSON they meant to send wasn't JSON (`MCPBodyWarnings`).
+        if !abort { Self.attach(warnings: Self.bodyWarnings(fromArguments: arguments), to: &payload) }
+        return prettyJSON(payload)
     }
 
     static func breakpoint(_ bp: Breakpoint) -> [String: Any] {
