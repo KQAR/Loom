@@ -21,6 +21,7 @@ public struct PanelView: View {
 
             VStack(spacing: 0) {
                 devicesRow
+                reverseProxyRow
                 systemProxyRow
                 sslRow
                 rulesRow
@@ -90,26 +91,13 @@ public struct PanelView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                 }
-                // Reverse-proxy endpoints, in the same slot as the SOCKS line and for
-                // the same reason: they are ports on this machine a client gets pointed
-                // at, and the number is not derivable from anything above it. Bound to
-                // loopback only, so the LAN address above never applies to them.
-                let reverse = ReverseProxyHeaderLines.lines(for: store.status.reverseProxies)
-                ForEach(reverse.lines) { line in
-                    Text(verbatim: line.text)
-                        .font(.caption.monospaced())
-                        // Not-listening is a fault, not a quieter detail: its client
-                        // sees connection refused, which reads as Loom being down.
-                        .foregroundStyle(line.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                        .help(line.help)
-                }
-                if reverse.hidden > 0 {
-                    // Never silently truncated — the count says what is missing.
-                    Text(verbatim: "+\(reverse.hidden) more reverse \(reverse.hidden == 1 ? "proxy" : "proxies")")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .help("Open the main window's Audit panel, or ask the agent for list_reverse_proxies, to see them all.")
-                }
+                // Reverse-proxy endpoints are deliberately NOT listed here, even though
+                // they are ports a client gets pointed at like the two above. They have
+                // their own row + card now, and that is the one place they are reported
+                // — including the ones an agent created. Two copies of a list whose
+                // other writer is an agent is two places to keep in step, and the
+                // header's copy was the one with no room for the local URL, the
+                // upstream, or the Remove button.
             }
             // Indented to the address's leading edge, so the block reads as detail
             // under it rather than as a second column starting at the dot.
@@ -230,6 +218,62 @@ public struct PanelView: View {
         case .off:
             return nil
         }
+    }
+
+    /// A way traffic reaches Loom, with Connect Device and System Proxy — and the only
+    /// one that needs no cooperation from the client at all, because it looks like the
+    /// origin server rather than like a proxy. Sits *above* System Proxy because it is
+    /// the one that works when that row can't help: a client which ignores the system
+    /// proxy setting (Node's fetch/undici) is exactly who this exists for.
+    ///
+    /// An **action** row (chevron), never a state row: there is nothing here to toggle
+    /// — endpoints are created and removed individually, and the console's only switch
+    /// stays the proxy on/off in the header (DESIGN.md). This row and its card are the
+    /// **only** place endpoints are reported, agent-created ones included; the caption
+    /// lines that used to list them under the header's address are gone.
+    @ViewBuilder private var reverseProxyRow: some View {
+        PanelRow(
+            kind: .action,
+            icon: "arrow.left.arrow.right",
+            iconTint: reverseProxyIconTint,
+            title: "Reverse Proxies",
+            detail: reverseProxyDetail,
+            help: "Local ports that stand in for an upstream origin — for clients that ignore proxy settings"
+        ) {
+            store.send(.reverseProxiesExpandTapped)
+        }
+        if store.reverseProxiesExpanded {
+            ReverseProxyCard(store: store)
+                // Leading edge lines up with the row's icon rather than with the panel
+                // margin: the card belongs to the row above it, so it must not start
+                // further left than anything in it.
+                .padding(.leading, LoomTheme.Space.md + PanelRow.iconLeadingInset)
+                .padding(.trailing, LoomTheme.Space.md)
+                .padding(.top, LoomTheme.Space.xxs)
+        }
+    }
+
+    /// Accent while any endpoint is configured, matching the Connect Device row's
+    /// highlight: this is an *action* row, so it has no checkmark slot to say "something
+    /// is set up here" and the icon is the only thing that can. Orange outranks it when
+    /// one isn't listening — a fault has to read as a fault, not as an active feature.
+    private var reverseProxyIconTint: Color? {
+        if brokenReverseProxies > 0 { return .orange }
+        return store.status.reverseProxies.isEmpty ? nil : Color.accentColor
+    }
+
+    /// Endpoints that exist in the config but aren't listening. Their client gets
+    /// connection refused, which reads as Loom being down — so the count is surfaced
+    /// on the collapsed row rather than waiting to be opened.
+    private var brokenReverseProxies: Int {
+        store.status.reverseProxies.count { !$0.isListening }
+    }
+
+    private var reverseProxyDetail: String {
+        let broken = brokenReverseProxies
+        if broken > 0 { return "\(broken) not listening" }
+        let total = store.status.reverseProxies.count
+        return total == 0 ? "none" : "\(total)"
     }
 
     @ViewBuilder private var sslRow: some View {
@@ -489,6 +533,11 @@ private struct PanelRow: View {
     /// Leading inset of the title = checkmark slot + icon slot + their spacings.
     /// Sub-rows (inline notes, rule list) align to this so they sit under the title.
     static let titleLeadingInset: CGFloat = 16 + LoomTheme.Space.xs + 20 + LoomTheme.Space.sm
+
+    /// Leading inset of the row's *icon* = the checkmark slot and its spacing. A card
+    /// hanging under a row aligns its own leading edge here, so the card starts where the
+    /// row's icon does instead of reaching further left than anything above it.
+    static let iconLeadingInset: CGFloat = 16 + LoomTheme.Space.xs
 
     @State private var hovering = false
 

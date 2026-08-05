@@ -81,27 +81,23 @@ struct ClientCertificatesCard: View {
                 label = ""
             }
         }
-        .confirmationDialog(
-            "Remove this client certificate?",
-            isPresented: Binding(get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
-            presenting: pendingDeletion
-        ) { summary in
-            Button("Remove", role: .destructive) {
-                store.send(.deleteClientCertificateTapped(id: summary.id))
-                pendingDeletion = nil
-            }
-            Button("Cancel", role: .cancel) { pendingDeletion = nil }
-        } message: { summary in
-            // Confirmed because it isn't undoable from here: the key lives only in
-            // Loom's store, so putting it back means finding the original .p12 again.
-            Text("\(summary.hostPattern) will go back to failing the handshake if that origin requires a certificate. You'll need the original .p12 to add it again.")
-        }
     }
 
     // MARK: Rows
 
+    /// One identity. The trash button slides the row aside to reveal **Delete**, which
+    /// removes immediately — see `RevealToDelete` for why a removal in the console can
+    /// involve no dialog.
     private func row(_ summary: ClientCertificateSummary) -> some View {
-        HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
+        RevealToDelete(
+            isRevealed: pendingDeletion?.id == summary.id,
+            onToggle: { pendingDeletion = pendingDeletion?.id == summary.id ? nil : summary },
+            onDelete: {
+                store.send(.deleteClientCertificateTapped(id: summary.id))
+                pendingDeletion = nil
+            },
+            disabled: store.clientCertBusy
+        ) {
             Image(systemName: summary.problem != nil ? "exclamationmark.triangle.fill" : "person.badge.key")
                 .font(LoomTheme.Icon.badge)
                 .foregroundStyle(tint(for: summary))
@@ -114,20 +110,12 @@ struct ClientCertificatesCard: View {
                 Text(caption(for: summary))
                     .font(.caption2)
                     .foregroundStyle(summary.problem != nil || summary.isExpired() ? Color.orange : .secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
             }
             Spacer(minLength: LoomTheme.Space.xs)
-            Button {
-                pendingDeletion = summary
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .font(.caption)
-            .disabled(store.clientCertBusy)
-            .accessibilityLabel("Remove the certificate for \(summary.hostPattern)")
-            .help("Remove this client certificate")
         }
+        .accessibilityLabel("Remove the certificate for \(summary.hostPattern)")
     }
 
     private func tint(for summary: ClientCertificateSummary) -> Color {

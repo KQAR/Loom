@@ -60,7 +60,7 @@ components:
   menu-panel:
     material: "{colors.panel-material}"
     width: "{metrics.console-width}"
-    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / System Proxy / HTTPS / Client Certificates / Rules / Breakpoints — Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
+    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / Reverse Proxies / System Proxy / HTTPS / Client Certificates / Rules / Breakpoints — Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
     note: "config & control only — NO request list here"
   config-row:
     anatomy: "one tappable full-width row: leading checkmark slot (accent, shown when the state is ON) · SF Symbol (secondary, 20pt) · title ({typography.body}) · trailing detail ({typography.callout} .tertiary). NO switch/toggle controls — the row toggles on tap and the checkmark is the state. Hover fills the row with {colors.panel-selection}."
@@ -101,6 +101,10 @@ components:
   button-primary:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+
     rounded: "{rounded.capsule}"
+  reveal-to-delete:
+    use: "destructive removal of one row in a console list whose loss is NOT recoverable in place — client certificates (the key exists only in Loom's store). A reverse-proxy endpoint is recreatable from the form right below it, so its trash acts immediately and does NOT use this."
+    anatomy: "the row's trash button slides the row aside by 76pt and reveals a red .borderedProminent Delete at the trailing edge, which acts IMMEDIATELY. Tapping the trash again puts it away; the row's leading edge is clipped, not drawn over the card padding. .snappy(0.18)."
+    why: "The console is a MenuBarExtra popover, so it cannot present a dialog (see § console). The reveal IS the confirmation — the destructive button is unreachable without a deliberate first tap — so no second confirm, and no warning caption: an inline Cancel/Remove prompt was tried and at {metrics.console-width} it is two truncated buttons over four wrapped lines."
   empty-state:
     component: "ContentUnavailableView styling — never custom-built"
 ---
@@ -189,9 +193,8 @@ utility — closer to the system's own controls than to a themed Electron tool.
 ```
 ┌─ ● 127.0.0.1:9090            [◉] ──┐   header: capture dot + address + proxy switch
 │    SOCKS5 127.0.0.1:9091            │   second listener, only while it is bound
-│    :9200 → api.github.com           │   reverse-proxy endpoint, one line each
-│    :9333 ✕ api.example.com          │   …orange when it isn't listening (tooltip: why)
 │ 📱 Connect Device            2      │   action-row (phone onboarding)
+│ ⇄  Reverse Proxies           2      │   action-row, icon accent while any exist
 │ 🌍 System Proxy      in use by …    │   config-row (three-valued: loom/off/other)
 │ 🔒 HTTPS (SSL)       decrypting     │   config-row
 │ 🔑 Client Certificates       1      │   config-row, conditional — expands a card
@@ -203,12 +206,47 @@ utility — closer to the system's own controls than to a themed Electron tool.
 └──────────────────────────────────────┘
 ```
 
-The address block is every port a client can be pointed at, in one place: the proxy
-address, the SOCKS listener while it is bound, then a line per reverse-proxy endpoint
-(`:port → host`, at most 3 before the rest collapse into `+N more`). They belong here
-and not in a state row because there is nothing to toggle — endpoints come and go with
-the engine, and a row would imply a switch. Faults sort to the top and draw orange: an
-endpoint that isn't listening is experienced by its client as connection refused.
+The address block is the two *global* listeners: the proxy address, and the SOCKS
+listener while it is bound. Reverse-proxy endpoints are **not** listed here — they are
+per-origin, they carry state (listening or not) and actions (remove), and none of that
+fits a caption line. They live entirely in the Reverse Proxies row below, which is the
+one place they are reported, agent-created ones included: this list's other writer is
+an agent, and two renderings of it meant two things to keep in step.
+
+**Reverse Proxies** is an `action-row`, never a `config-row`, because there is nothing
+here to toggle: endpoints are added and removed one at a time, and the console's only
+switch stays the proxy on/off in the header. It sits **above** System Proxy — it is the
+way in that works when that row can't help, for a client which ignores the system proxy
+setting entirely. The row exists because creating one is the human's job even though an
+agent can also do it: an endpoint is a listening port whose number goes into a dev
+server's config file, and only the human edits that file. Its icon is accent while any
+endpoint is configured — an action-row has no checkmark slot, so the icon is the only
+thing that can say "something is set up here" (same highlight as Connect Device). The
+trailing detail is the count, or a not-listening count in orange, which also takes the
+icon: a fault has to read as a fault rather than as an active feature — an endpoint whose port didn't bind is
+experienced by its client as connection refused, i.e. as Loom being down.
+
+Its card's leading edge lines up with the **row's icon**, not with the panel margin — a
+card belongs to the row above it and must not start further left than anything in it. The
+card is the list (local URL, selectable, over `→ upstream`; no per-row icon, since the
+row's own icon already says what these are and the one state an icon would carry —
+not listening — is in the caption in words and in orange, where it can name the reason;
+faults first, capped at 6 with the rest collapsed into a count) followed by a bottom-right **`plus` glyph**
+(borderless, no label — the card's only content is the list, so the position already
+says what is being added; the tooltip and accessibility label carry the words), which
+swaps in the form. It trails the list rather than heading it: the list is what the card
+is for.
+
+The form is **one line** — `port` → `upstream`, joined by an `arrow.right` — because
+that is what an endpoint is; two stacked fields made the reader assemble the
+relationship. Below it, one live caption: the first problem with what has been typed
+(orange), or the "blank picks a free port" hint while the port is empty. **No Label
+field**: a label only disambiguates two endpoints on one host, which doesn't earn a
+third input on a 300pt panel — an agent can still set one, and the list renders it.
+Validation is live and defers to the engine's own `normalizedUpstream`, so the form and
+`create_reverse_proxy` cannot disagree about what a usable upstream is. Cancel/Add sit
+bottom-right, Add prominent and disabled until the upstream is valid. A removal is confirmed — whatever still names that port starts getting
+connection refused, and Loom cannot undo that from here.
 
 Rows marked **conditional** are absent rather than empty: Breakpoints appears only
 while something is armed or held, Client Certificates only while HTTPS is on or an
@@ -216,8 +254,30 @@ identity exists. A row that is always visible but usually says "none" spends the
 console's scarcest resource — vertical space — on nothing.
 
 Cards appear directly under the row they belong to (root-CA trust under HTTPS, the
-client-certificate list under its own row) rather than in a fixed slot, so the
-control and its detail read as one unit.
+client-certificate and reverse-proxy lists under their own rows) rather than in a fixed
+slot, so the control and its detail read as one unit.
+
+**Nothing in the console may present its own window** — no `confirmationDialog`, no
+`sheet`, no `alert`. The console is a `MenuBarExtra` popover and it closes the moment it
+stops being the key window, which is exactly what presenting takes: the dialog's buttons
+end up unclickable and the orphaned dialog is still waiting when the panel is next
+opened. (A file picker is the one unavoidable exception, because choosing a file needs a
+real window.)
+
+A destructive row action is therefore guarded — or not — by how expensive the mistake is,
+never by a dialog:
+
+- **Recreatable in place → the trash acts immediately.** A reverse-proxy endpoint is two
+  fields in the form directly below it, and its own row says what they were, so any
+  guard costs more than the mistake.
+- **Not recoverable → `{components.reveal-to-delete}`.** A client certificate's key
+  exists only in Loom's store; removing it means finding the original `.p12` again. Its
+  trash slides the row aside to reveal a red **Delete** at the trailing edge, and that
+  reveal *is* the confirmation — the destructive button is unreachable without a
+  deliberate first tap.
+
+An inline warning caption plus Cancel/Remove was tried for both and rejected on sight: at
+300pt that is two truncated buttons over four wrapped lines for a one-word decision.
 
 ### Main window — sidebar + vertical split (standard debugger layout)
 
@@ -361,10 +421,11 @@ opaque surfaces for the window; route interactivity through `{colors.accent}`; p
 numeric code; monospace everything from the wire; use system sidebar `.badge` counts; test light/dark/
 increased-contrast/Reduce-Transparency without code branches.
 
-**Don't** — show the request list in the console or config in the window; put opaque white cards on the console
-material; hardcode hex/RGB; add a second accent or any gradient; `.shadow()` manually; color the method by
-status; fix UI font sizes with `Font.system(size:)`; nest cards; let AI-slop in (emoji in UI copy, an SF Symbol
-on every label).
+**Don't** — show the request list in the console or config in the window; present a dialog / sheet / alert from
+the console (it closes the popover out from under itself — confirm inline in the row); put opaque white cards on
+the console material; hardcode hex/RGB; add a second accent or any gradient; `.shadow()` manually; color the
+method by status; fix UI font sizes with `Font.system(size:)`; nest cards; let AI-slop in (emoji in UI copy, an
+SF Symbol on every label).
 
 ## Iteration Guide
 
