@@ -20,6 +20,15 @@ public struct MainView: View {
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
     @State private var sidebarVisible = true
+    /// Collapse state of the three grouping sections. Persisted (`@AppStorage`) rather
+    /// than plain `@State`: these grow without bound during a capture — hosts especially,
+    /// which is why they're the sections worth collapsing — so a human who folds Hosts
+    /// away to keep Devices and Apps in view would otherwise have it unfold on every
+    /// relaunch. View-local chrome, so it stays out of `AppFeature.State`; unlike pins
+    /// (`PinsStore`) nothing but this view ever reads it.
+    @AppStorage("com.loom.sidebar.devicesExpanded") private var devicesExpanded = true
+    @AppStorage("com.loom.sidebar.appsExpanded") private var appsExpanded = true
+    @AppStorage("com.loom.sidebar.hostsExpanded") private var hostsExpanded = true
 
     /// DESIGN.md: sidebar-width 300, fixed. One constant because two consumers have to
     /// agree on it — the sidebar's own frame and the toolbar chip's centring offset (see
@@ -112,8 +121,8 @@ public struct MainView: View {
             breakpointsSidebarRow
 
             if !store.devices.isEmpty {
-                Section("Devices") {
-                    ForEach(store.devices, id: \.device.groupingKey) { entry in
+                Section {
+                    ForEach(devicesExpanded ? store.devices : [], id: \.device.groupingKey) { entry in
                         let ip = entry.device.groupingKey
                         let alias = store.deviceAliases[ip]
                         Label {
@@ -135,12 +144,16 @@ public struct MainView: View {
                             }
                         }
                     }
+                } header: {
+                    SidebarSectionHeader(
+                        title: "Devices", count: store.devices.count, expanded: $devicesExpanded
+                    )
                 }
             }
 
             if !store.apps.isEmpty {
-                Section("Apps") {
-                    ForEach(store.apps, id: \.app.groupingKey) { entry in
+                Section {
+                    ForEach(appsExpanded ? store.apps : [], id: \.app.groupingKey) { entry in
                         let key = entry.app.groupingKey
                         let pinned = store.pinnedApps.contains(key)
                         Label {
@@ -156,11 +169,15 @@ public struct MainView: View {
                             }
                         }
                     }
+                } header: {
+                    SidebarSectionHeader(
+                        title: "Apps", count: store.apps.count, expanded: $appsExpanded
+                    )
                 }
             }
 
-            Section("Hosts") {
-                ForEach(store.hosts, id: \.host) { entry in
+            Section {
+                ForEach(hostsExpanded ? store.hosts : [], id: \.host) { entry in
                     let pinned = store.pinnedHosts.contains(entry.host)
                     Label {
                         rowTitle(entry.host, pinned: pinned)
@@ -175,6 +192,10 @@ public struct MainView: View {
                         }
                     }
                 }
+            } header: {
+                SidebarSectionHeader(
+                    title: "Hosts", count: store.hosts.count, expanded: $hostsExpanded
+                )
             }
         }
         .listStyle(.sidebar)
@@ -562,6 +583,71 @@ public struct MainView: View {
     /// scan yields both. A string that isn't a URL shows whole, same as `host(_:)`.
     static func hostReading(_ raw: String) -> URLHost.HostReading {
         URLHost.hostReading(ofURLString: raw) ?? URLHost.HostReading(key: raw, label: raw)
+    }
+}
+
+// MARK: - Collapsible sidebar section header
+
+/// Header for one of the sidebar's grouping sections (Devices / Apps / Hosts).
+///
+/// Hand-rolled rather than `Section(isExpanded:)`, and the reason is the chevron:
+/// AppKit's own sidebar disclosure triangle is a *hover* control with no opt-out —
+/// it appears only under the cursor, so which sections are collapsible is invisible
+/// at rest. Owning the header means the chevron is always drawn (rotating in place
+/// rather than swapping glyphs, so the state change reads as one motion), and it also
+/// means the whole header is the hit target: AppKit made only the triangle itself
+/// clickable, a few points wide, and the label beside it inert.
+///
+/// The count is shown only while the section is folded. Collapsed, the rows were the
+/// only thing saying how many devices/apps/hosts the capture has seen, and a section
+/// hiding an unknown number of them is exactly the silent-truncation shape CLAUDE.md
+/// rules out. Expanded, each row carries its own badge and a total on the header is
+/// noise. It sits just inside the chevron rather than flush to the window edge, which
+/// is where `.badge()` on a header put it.
+private struct SidebarSectionHeader: View {
+    let title: String
+    let count: Int
+    @Binding var expanded: Bool
+
+    /// Trailing inset for the chevron, mirroring where `List` insets the rows' own
+    /// badges (it gives no way to read that value back, so this is measured by hand —
+    /// if a future macOS changes the row inset, this is the one number to re-check).
+    /// The count then sits just inside the chevron rather than flush to the window
+    /// edge, which is where `.badge()` on a header put it.
+    private static let trailingInset: CGFloat = 12
+
+    var body: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            Text(title)
+            Spacer(minLength: LoomTheme.Space.xxs)
+            if !expanded {
+                Text(count, format: .number)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            // Trailing, where AppKit's own hover triangle sat — the position the
+            // native sidebar trains you to look at. Always drawn, so which sections
+            // fold is visible without hunting with the cursor.
+            Image(systemName: "chevron.down")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                // One glyph rotated, not two glyphs swapped: the chevron turns
+                // through the state change instead of popping.
+                .rotationEffect(.degrees(expanded ? 0 : -90))
+                .frame(width: 10)
+        }
+        .padding(.trailing, Self.trailingInset)
+        // The hit target is the whole header, not just the glyph. `contentShape`
+        // is what makes the gaps between title, spacer and count tappable too —
+        // without it only the drawn pixels respond.
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+        }
+        .help(expanded
+            ? "Collapse \(title)"
+            : "Show \(count) \(count == 1 ? String(title.dropLast()) : title)")
     }
 }
 
