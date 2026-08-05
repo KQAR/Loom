@@ -231,9 +231,11 @@ card belongs to the row above it and must not start further left than anything i
 card is the list (local URL, selectable, over `→ upstream`; no per-row icon, since the
 row's own icon already says what these are and the one state an icon would carry —
 not listening — is in the caption in words and in orange, where it can name the reason;
-faults first, capped at 6 with the rest collapsed into a count) followed by an **Add** button at the
-bottom-right, which swaps in the form. The button trails the list rather than heading
-it: the list is what the card is for.
+faults first, capped at 6 with the rest collapsed into a count) followed by a bottom-right **`plus` glyph**
+(borderless, no label — the card's only content is the list, so the position already
+says what is being added; the tooltip and accessibility label carry the words), which
+swaps in the form. It trails the list rather than heading it: the list is what the card
+is for.
 
 The form is **one line** — `port` → `upstream`, joined by an `arrow.right` — because
 that is what an endpoint is; two stacked fields made the reader assemble the

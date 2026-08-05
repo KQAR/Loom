@@ -67,14 +67,20 @@ struct ReverseProxyCard: View {
                         ProgressView().controlSize(.small)
                     }
                     Spacer(minLength: LoomTheme.Space.xs)
+                    // Glyph only. The card's whole content is the endpoint list, so the
+                    // one button on it can't be adding anything else; the word was
+                    // spending width on a fact the position already gives. The tooltip
+                    // and the accessibility label still say it in words.
                     Button {
                         adding = true
                     } label: {
-                        Label("Add…", systemImage: "plus")
+                        Image(systemName: "plus")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(.borderless)
+                    .font(LoomTheme.Icon.card)
                     .disabled(store.reverseProxyBusy)
+                    .accessibilityLabel("Add a reverse proxy")
+                    .help("Add a reverse proxy")
                 }
                 .frame(maxWidth: .infinity)
             }
