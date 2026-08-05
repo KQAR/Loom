@@ -30,6 +30,79 @@ import LoomSharedModels
             !URLHost.hostMatches(urlString: string, host: "definitely-not-the-host.invalid"),
             "must not match an unrelated host for \(string.debugDescription)"
         )
+        // The display reading's *key* must never drift from the host: it is the same
+        // string the sidebar groups by, the list filters on and the favicon cache is
+        // keyed by. Only its `label` is allowed to differ, and only by a port.
+        #expect(
+            URLHost.hostReading(ofURLString: string)?.key == reference,
+            "hostReading.key must equal the host for \(string.debugDescription)"
+        )
+    }
+
+    /// What the Host column shows. The key stays port-less everywhere (asserted for
+    /// every shape in `expectParity`); the label spells out a port the scheme does
+    /// not already imply — the case that motivated it is two local dev servers,
+    /// `10.0.34.87:3762` and `10.0.34.87:3862`, which are otherwise one row of text
+    /// repeated.
+    private func expectLabel(_ string: String, _ expected: String) {
+        #expect(
+            URLHost.hostReading(ofURLString: string)?.label == expected,
+            "label for \(string.debugDescription)"
+        )
+    }
+
+    @Test func aNonDefaultPortIsSpelledOut() {
+        expectLabel("http://10.0.34.87:3762/src/main.js", "10.0.34.87:3762")
+        expectLabel("ws://10.0.34.87:3862/hmr", "10.0.34.87:3862")
+        expectLabel("http://localhost:3000/", "localhost:3000")
+        expectLabel("https://api.test:8443/p", "api.test:8443")
+        // No known default for the scheme means nothing is implied, so it shows.
+        expectLabel("ftp://files.test:21/", "files.test:21")
+    }
+
+    @Test func theSchemesOwnPortIsNotRepeated() {
+        expectLabel("https://api.example.com/v1/home", "api.example.com")
+        expectLabel("https://api.example.com:443/v1/home", "api.example.com")
+        expectLabel("http://example.com:80/", "example.com")
+        expectLabel("ws://socket.test:80/live", "socket.test")
+        expectLabel("wss://socket.test:443/live", "socket.test")
+        // Scheme case is not significant to the comparison.
+        expectLabel("HTTPS://api.example.com:443/", "api.example.com")
+    }
+
+    /// The colons in an IPv6 literal are not a port separator, and the ones in
+    /// userinfo belong to a password — neither may be read as the port.
+    @Test func colonsThatAreNotAPortSeparator() {
+        expectLabel("https://[::1]:8443/p", "[::1]:8443")
+        expectLabel("https://[::1]:443/p", "[::1]")
+        expectLabel("https://[::1]/p", "[::1]")
+        expectLabel("https://user:secret@api.test:8443/p", "api.test:8443")
+        expectLabel("https://user:secret@api.test/p", "api.test")
+    }
+
+    /// A port that isn't digits is a malformed authority. The host reading stays
+    /// exactly what it was rather than growing a junk suffix.
+    @Test func aNonNumericPortIsNotReadAsAPort() {
+        expectLabel("http://api.test:notaport/p", "api.test")
+        expectLabel("http://api.test:/p", "api.test")
+    }
+
+    /// The shapes the byte scan hands to Foundation must not be the ones that
+    /// silently lose the port.
+    @Test func theFoundationFallbackKeepsThePortToo() {
+        let punycode = "https://xn--fsq.com:8443/p"
+        let host = try? #require(URLComponents(string: punycode)?.host)
+        #expect(URLHost.hostReading(ofURLString: punycode)?.key == host)
+        #expect(URLHost.hostReading(ofURLString: punycode)?.label == "\(host ?? ""):8443")
+        // Percent-escaped host, decoded by Foundation, default port not repeated.
+        expectLabel("https://exa%6dple.com:443/p", "example.com")
+    }
+
+    /// When there is no port to show, the two readings are the same text — a row
+    /// renders one string and the label costs nothing extra.
+    @Test func withoutAPortBothReadingsAgree() {
+        let reading = try? #require(URLHost.hostReading(ofURLString: "https://api.example.com/v1"))
+        #expect(reading?.key == reading?.label)
     }
 
     @Test func ordinaryURLs() {

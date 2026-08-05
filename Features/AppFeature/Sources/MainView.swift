@@ -557,6 +557,12 @@ public struct MainView: View {
     /// twice for the same string.
     static func host(_ raw: String) -> String { URLHost.host(ofURLString: raw) ?? raw }
     static func path(_ raw: String) -> String { URLHost.pathAndQuery(ofURLString: raw) }
+
+    /// The Host column needs the grouping key *and* the port-bearing label; one
+    /// scan yields both. A string that isn't a URL shows whole, same as `host(_:)`.
+    static func hostReading(_ raw: String) -> URLHost.HostReading {
+        URLHost.hostReading(ofURLString: raw) ?? URLHost.HostReading(key: raw, label: raw)
+    }
 }
 
 // MARK: - Status pill (table Status column)
@@ -643,11 +649,15 @@ private struct RequestTableView: View {
             .width(min: 52, ideal: 62, max: 90)
 
             TableColumn("Host") { flow in
-                // One parse per row, shared by the favicon and the label.
-                let host = MainView.host(flow.request.url)
+                // One parse per row, shared by the favicon and the label — they want
+                // different readings of it. The favicon keys on the port-less host,
+                // so two dev-server ports on one machine share an icon and one cache
+                // entry; the label spells a non-default port out, because
+                // `10.0.34.87:3762` and `:3862` are otherwise the same row of text.
+                let reading = MainView.hostReading(flow.request.url)
                 HStack(spacing: 6) {
-                    FaviconView(host: host)
-                    Text(host)
+                    FaviconView(host: reading.key)
+                    Text(reading.label)
                         .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
                 }
