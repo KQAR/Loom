@@ -35,8 +35,59 @@ on:
         description: 'Test identifier to EXCLUDE (e.g. ProxyCoreTests/ReverseProxyTests). Empty = exclude nothing.'
         required: false
         default: ''
+      suppressions:
+        description: 'Load Tools/tsan/suppressions.txt (as CI does). Off = raw, to measure the flake''s real rate.'
+        type: boolean
+        required: false
+        default: true
 
 jobs:
+  # Proof that the suppression file did not turn the CI job into a rubber stamp.
+  #
+  # It runs a program that *is* a data race (`Tools/tsan-canary/`) under the same
+  # suppressions CI loads, and fails if TSan stays quiet. Deliberately inverted: silence
+  # is the failure. Without this, widening one pattern by a word would leave every TSan
+  # run green forever and nothing would say so.
+  #
+  # Separate job so it answers even when the hunt below times out.
+  canary:
+    name: Canary — a real race must still be reported
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the canary under TSan
+        run: |
+          swiftc -parse-as-library -sanitize=thread \
+            Tools/tsan-canary/main.swift -o "${{ runner.temp }}/canary"
+
+      # Both modes must be reported. `threads` is the floor (no async at all); `async` is
+      # the one that matters — Loom-shaped code racing on its own state while
+      # continuations resume cross-thread, i.e. the class of #210/#212/#213. The single
+      # `race:UnsafeContinuation.resume` entry must not reach it.
+      - name: A real race must survive the suppressions
+        env:
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:exitcode=0
+        run: |
+          set -o pipefail
+          FAILED=0
+          for MODE in threads async; do
+            LOG="${{ runner.temp }}/canary-$MODE.log"
+            "${{ runner.temp }}/canary" "$MODE" 2>&1 | tee "$LOG" || true
+            if grep -q "ThreadSanitizer: data race" "$LOG"; then
+              echo "::notice::canary($MODE): race still reported — the gate bites."
+            else
+              echo "::error::canary($MODE): TSan reported nothing for code that IS a data race."
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "Tools/tsan/suppressions.txt has grown too broad: the Thread Sanitizer job"
+            echo "is no longer a gate. Narrow the pattern before trusting a green TSan run."
+            exit 1
+          fi
+
   hunt:
     name: Repeat under TSan
     runs-on: macos-latest
@@ -62,8 +113,33 @@ jobs:
       - name: Repeat under TSan
         id: hunt
         continue-on-error: true
+        # `suppressions: false` reproduces the raw flake — that is how its rate gets
+        # measured now that CI no longer shows it as a failure. `true` mirrors CI, which
+        # is how a *new* report (one no suppression covers) gets hunted.
+        #
+        # Getting the options *into the test process* took three measured attempts, all
+        # recorded because each failed silently — no error, just an unprotected run:
+        #   1. `env: TSAN_OPTIONS`      → run 31008307778, 2 races, no suppression match.
+        #      xcodebuild launches xctest with a scrubbed environment.
+        #   2. `TEST_RUNNER_TSAN_OPTIONS=` as a *build setting* → run 31010431002, 2 races.
+        #      It only reached the build environment (visible as an `export` in the build
+        #      log). Decisive detail: that run's write-side top frame was the glue itself,
+        #      so `race_top:` should have matched and didn't — which rules out pattern
+        #      semantics and leaves the channel.
+        #   3. `TEST_RUNNER_TSAN_OPTIONS` as an environment variable of xcodebuild — the
+        #      documented form of that prefix, which is what this is.
+        # `verbosity=1` stays so the log carries positive proof the options were parsed,
+        # rather than an absence of complaints.
+        #
+        # Not an option at all: `__tsan_default_suppressions()` compiled into the test
+        # target. TSan reads suppressions during its own init, before the test bundle is
+        # loaded, and the host executable is Apple's `xctest` — the weak symbol is never
+        # in the process when it would be consulted.
         run: |
           set -o pipefail
+          if [ "${{ inputs.suppressions }}" = "true" ]; then
+            export TEST_RUNNER_TSAN_OPTIONS="suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1:verbosity=1"
+          fi
           xcodebuild test \
             -workspace Loom.xcworkspace \
             -scheme ProxyCoreTests \
@@ -87,8 +163,18 @@ jobs:
         run: |
           echo "### TSan hunt: ${{ inputs.suite }} × ${{ inputs.iterations }} (skip: '${{ inputs.skip }}')" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "suppressions loaded: ${{ inputs.suppressions }}" >> "$GITHUB_STEP_SUMMARY"
+          # Count Swift Testing's own passes. xcodebuild's legacy tail line says
+          # "Executed 0 tests" for this bundle — it counts XCTest cases and there are
+          # none — which reads exactly like a run that never happened.
+          echo "swift-testing passes: $(grep -cE 'Test [a-zA-Z].*\(\) passed after' "${{ runner.temp }}/tsan-hunt.log" || true)" \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo "suppressions file parsed: $(grep -cE 'reading suppressions file' "${{ runner.temp }}/tsan-hunt.log" || true)" \
+            >> "$GITHUB_STEP_SUMMARY"
           echo "races reported: $(grep -c 'WARNING: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" || true)" \
             >> "$GITHUB_STEP_SUMMARY"
+          grep -E 'Matched .* suppressions' "${{ runner.temp }}/tsan-hunt.log" | sort -u | head -3 \
+            >> "$GITHUB_STEP_SUMMARY" || true
           grep -E 'SUMMARY: ThreadSanitizer' "${{ runner.temp }}/tsan-hunt.log" | sort -u | head -5 \
             >> "$GITHUB_STEP_SUMMARY" || true
           grep -E '✗|crashed with signal' "${{ runner.temp }}/tsan-hunt.log" | head -10 \

@@ -1,0 +1,41 @@
+# ThreadSanitizer suppressions for Loom's `Thread Sanitizer (ProxyCore)` job.
+#
+# One entry, and it silences a report that is not Loom's: the Swift runtime's continuation
+# suspend/resume glue racing against `UnsafeContinuation.resume`, which is what every
+# `EventLoopFuture.get()` does internally. Upstream as swiftlang/swift#57803; reproducible
+# in ten lines with no SwiftNIO and no Loom code (`Tools/tsan-continuation-repro/`). It
+# reddened the job three times in a row — the last two on a diff that changed two
+# version-number strings — which is what moved it from "re-run it" to "suppress it and
+# prove the job still bites".
+#
+# ## Why `race:` and not `race_top:`
+#
+# `race_top:` was the intent — match only the frame *performing* the access, so nothing
+# broader than the glue itself could ever be hidden. It does not work: with both
+# `race_top:UnsafeContinuation.resume` and `race_top:suspend resume partial function for
+# Swift.withUnsafeThrowingContinuation` loaded and parsed (confirmed in the log), the
+# report went through unsuppressed, including on a run whose write-side top frame was
+# that very glue (runs 31009149711, 31010431002, 31011274393). Only the whole-stack
+# `race:` form matched. So this file carries the breadth its earlier version argued
+# against — recorded rather than quietly reversed.
+#
+# ## Why that breadth is acceptable, and how it is checked
+#
+# `UnsafeContinuation.resume` appears in a stack only when the racy access happens
+# *inside* `resume` — an access to the coroutine frame. Async code racing on its own
+# shared state does not put that frame in either stack, so the class of bug this job
+# exists to catch is still caught. That is a claim about TSan's behaviour, so it is
+# tested, not trusted: `Tools/tsan-canary/` races on purpose in two modes — plain threads
+# and `async` tasks mutating shared state while continuations resume cross-thread — and
+# the TSan-hunt workflow fails if either goes unreported. The `async` mode is the one
+# aimed squarely at this entry: it is the shape of the three real defects found while
+# chasing this flake (#210, #212, #213).
+#
+# Note what is deliberately absent: any Loom symbol. A race whose stacks are all Loom and
+# NIO frames matches nothing here and still fails the job — the discriminator CLAUDE.md
+# § Known Issues states in prose, in machine-checkable form.
+#
+# If a toolchain change makes this pattern stop matching, CI goes red again (correctly,
+# and loudly). If a change ever made it match too much, the canary goes green and *that*
+# fails the workflow.
+race:UnsafeContinuation.resume
