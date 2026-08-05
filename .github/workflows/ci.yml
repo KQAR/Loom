@@ -208,21 +208,27 @@ jobs:
       # first. The log is the signal; the exit code is only used to tell a real
       # failure apart from an inconclusive run.
       #
-      # TSAN_OPTIONS carries one suppression — the upstream continuation-bridge report
-      # that reddened this job three times running, twice on a two-string diff. The file
-      # itself argues why it is safe (`race_top:`, no Loom symbol) and
+      # One suppression is loaded — the upstream continuation-bridge report that reddened
+      # this job three times running, twice on a diff of two version-number strings. The
+      # file itself argues why it is safe (`race_top:`, no Loom symbol) and
       # `Tools/tsan-canary/` proves it, run by the TSan-hunt workflow. `print_suppressions`
-      # keeps the flake *visible*: a suppressed report still gets counted in the log, so
-      # its frequency stays observable instead of becoming silence.
+      # keeps the flake *visible*: a suppressed report is still counted in the log, so its
+      # frequency stays observable instead of becoming silence.
       #
-      # If the path is wrong TSan fails loudly at startup rather than running unprotected,
-      # which is the failure mode we want out of a config file that can only be validated
-      # in CI (TSan cannot run on the maintainer's machine — see CLAUDE.md).
+      # It goes in as `TEST_RUNNER_TSAN_OPTIONS`, not `TSAN_OPTIONS`, and that is measured
+      # rather than assumed: a plain `env:` on this step does **not** reach the test
+      # process — xcodebuild launches xctest with a scrubbed environment, so the first
+      # attempt ran completely unprotected (6 iterations, 2 races reported, no
+      # `Matched … suppressions` line and no load error either, i.e. silently no-op).
+      # xcodebuild strips the `TEST_RUNNER_` prefix and passes the rest to the test
+      # runner, which is the only channel that lands.
+      #
+      # If the path is ever wrong, TSan fails loudly at startup instead of running
+      # unprotected — the failure mode to want from a config file that can only be
+      # validated in CI (TSan cannot run on the maintainer's machine — see CLAUDE.md).
       - name: Test under TSan
         id: tsan
         continue-on-error: true
-        env:
-          TSAN_OPTIONS: suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1
         run: |
           set -o pipefail
           xcodebuild test \
@@ -234,6 +240,7 @@ jobs:
             -enableThreadSanitizer YES \
             -resultBundlePath "${{ runner.temp }}/TSan.xcresult" \
             CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
+            TEST_RUNNER_TSAN_OPTIONS="suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1" \
             2>&1 | tee "${{ runner.temp }}/tsan.log"
 
       # Same reason as the test job: a run of zero tests reports zero races.
@@ -252,6 +259,14 @@ jobs:
           if grep -q "Matched .* suppressions" "$LOG"; then
             echo "::notice::TSan suppressed known-upstream reports (swiftlang/swift#57803):"
             grep -A 5 "Matched .* suppressions" "$LOG" || true
+          elif ! grep -q "ThreadSanitizer" "$LOG"; then
+            # Neither a report nor a suppression match. Most likely the run was simply
+            # clean — the flake is probabilistic. But it is also what a *silently
+            # unloaded* suppressions file looks like, which is how the first attempt at
+            # this failed, so say so instead of reading the silence as protection.
+            echo "::warning::No TSan report and no suppression match — either a clean run \
+          or TEST_RUNNER_TSAN_OPTIONS stopped reaching the test process. Confirm with the \
+          TSan-hunt workflow (suppressions: true) before trusting a streak of green."
           fi
           if grep -q "ThreadSanitizer: data race" "$LOG"; then
             echo "::error::TSan reported data race(s) that no suppression covers:"

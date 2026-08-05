@@ -107,10 +107,18 @@ jobs:
         # `suppressions: false` reproduces the raw flake — that is how its rate gets
         # measured now that CI no longer shows it as a failure. `true` mirrors CI, which
         # is how a *new* report (one no suppression covers) gets hunted.
-        env:
-          TSAN_OPTIONS: ${{ inputs.suppressions && format('suppressions={0}/Tools/tsan/suppressions.txt:print_suppressions=1', github.workspace) || '' }}
+        #
+        # `TEST_RUNNER_TSAN_OPTIONS` as a build setting, not `env:`, for the reason
+        # measured here first: a plain `env:` never reaches the xctest process (run
+        # 31008307778 — 2 races, no suppression match, no load error). This is also the
+        # only place that finding can be re-checked, so keep the two workflows using the
+        # same channel.
         run: |
           set -o pipefail
+          TSAN_SETTING=""
+          if [ "${{ inputs.suppressions }}" = "true" ]; then
+            TSAN_SETTING="TEST_RUNNER_TSAN_OPTIONS=suppressions=${{ github.workspace }}/Tools/tsan/suppressions.txt:print_suppressions=1"
+          fi
           xcodebuild test \
             -workspace Loom.xcworkspace \
             -scheme ProxyCoreTests \
@@ -124,6 +132,7 @@ jobs:
             -run-tests-until-failure \
             -resultBundlePath "${{ runner.temp }}/TSanHunt.xcresult" \
             CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION=YES \
+            ${TSAN_SETTING:+"$TSAN_SETTING"} \
             2>&1 | tee "${{ runner.temp }}/tsan-hunt.log"
 
       # The whole point: how many races, in what, and which test aborted. A run that
