@@ -224,9 +224,18 @@ experienced by its client as connection refused, i.e. as Loom being down.
 
 Its card is the list (local URL, selectable, over `→ upstream`; faults first, capped at
 6 with the rest collapsed into a count) followed by an **Add** button at the
-bottom-right, which swaps in the form (upstream · optional port · optional label ·
-keep-Host-header). The button trails the list rather than heading it: the list is what
-the card is for. A removal is confirmed — whatever still names that port starts getting
+bottom-right, which swaps in the form. The button trails the list rather than heading
+it: the list is what the card is for.
+
+The form is **one line** — `port` → `upstream`, joined by an `arrow.right` — because
+that is what an endpoint is; two stacked fields made the reader assemble the
+relationship. Below it, one live caption: the first problem with what has been typed
+(orange), or the "blank picks a free port" hint while the port is empty. **No Label
+field**: a label only disambiguates two endpoints on one host, which doesn't earn a
+third input on a 300pt panel — an agent can still set one, and the list renders it.
+Validation is live and defers to the engine's own `normalizedUpstream`, so the form and
+`create_reverse_proxy` cannot disagree about what a usable upstream is. Cancel/Add sit
+bottom-right, Add prominent and disabled until the upstream is valid. A removal is confirmed — whatever still names that port starts getting
 connection refused, and Loom cannot undo that from here.
 
 Rows marked **conditional** are absent rather than empty: Breakpoints appears only

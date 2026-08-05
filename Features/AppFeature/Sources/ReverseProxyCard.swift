@@ -29,11 +29,9 @@ import SwiftUI
 struct ReverseProxyCard: View {
     @Bindable var store: StoreOf<AppFeature>
 
-    /// Form state, held in the view because it is transient and dies with the form.
-    @State private var upstream = ""
-    @State private var port = ""
-    @State private var label = ""
-    @State private var keepHostHeader = false
+    /// Form state, held in the view because it is transient and dies with the form. The
+    /// validation rules live in `ReverseProxyDraft`, not here, so they can be tested.
+    @State private var draft = ReverseProxyDraft()
     @State private var adding = false
     @State private var pendingDeletion: ReverseProxyStatus?
 
@@ -147,68 +145,76 @@ struct ReverseProxyCard: View {
 
     // MARK: Add form
 
+    /// Port and upstream share one line, joined by an arrow, because that is what the
+    /// endpoint *is*: this local port forwards to that origin. Two stacked fields made
+    /// the reader assemble the relationship themselves.
+    ///
+    /// There is no Label field. A label only disambiguates two endpoints pointing at the
+    /// same host, which is rare enough not to earn a third input on a 300pt panel — and
+    /// an agent can still set one over MCP, so the list still renders it.
     private var form: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
-            TextField("Upstream, e.g. https://api.example.com", text: $upstream)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-            TextField("Local port (blank = pick one for me)", text: $port)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-            TextField("Label (optional)", text: $label)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
+            HStack(spacing: LoomTheme.Space.xs) {
+                TextField("port", text: $draft.port)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .frame(width: 64)
+                    .monospaced()
+                Image(systemName: "arrow.right")
+                    .font(LoomTheme.Icon.badge)
+                    .foregroundStyle(.secondary)
+                TextField("https://api.example.com", text: $draft.upstream)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+            }
+
+            // Live, and only about what has actually been typed: a blank port is a
+            // legitimate "pick one for me", so an empty field says nothing.
+            if let problem = draft.portProblem ?? draft.upstreamProblem {
+                Text(problem)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if draft.port.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("Leave the port blank and Loom picks a free one.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             // Off by default, and the label says which way round it matters: a real
             // server usually vhost-routes on Host, so sending it 127.0.0.1 returns a
             // 404 that reads as Loom having broken the request.
-            Toggle("Keep the client's Host header", isOn: $keepHostHeader)
+            Toggle("Keep the client's Host header", isOn: $draft.keepHostHeader)
                 .controlSize(.small)
                 .font(.caption)
 
             HStack(spacing: LoomTheme.Space.sm) {
+                Spacer(minLength: LoomTheme.Space.xs)
+                Button("Cancel") { reset() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
                 Button("Add") {
                     store.send(.addReverseProxyTapped(
-                        upstream: upstream.trimmingCharacters(in: .whitespaces),
-                        // Blank means "any free port" (the engine's 0), not 0 typed by
-                        // hand; a non-numeric entry is refused by `canAdd` first.
-                        port: Int(port.trimmingCharacters(in: .whitespaces)) ?? 0,
-                        label: trimmedLabel,
-                        keepHostHeader: keepHostHeader
+                        upstream: draft.submittedUpstream,
+                        port: draft.submittedPort,
+                        // Human-created endpoints carry no label — the field is gone; an
+                        // agent's can, and the list renders it either way.
+                        label: nil,
+                        keepHostHeader: draft.keepHostHeader
                     ))
                     reset()
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(!canAdd || store.reverseProxyBusy)
-
-                Button("Cancel") { reset() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                .disabled(!draft.canSubmit || store.reverseProxyBusy)
             }
+            .frame(maxWidth: .infinity)
         }
-    }
-
-    private var trimmedLabel: String? {
-        let trimmed = label.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    /// The upstream is validated properly by the engine (scheme, host, no query) and
-    /// its message is what the human reads. This only screens what the form itself can
-    /// know: something was typed, and a typed port is a port.
-    private var canAdd: Bool {
-        guard !upstream.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
-        let typedPort = port.trimmingCharacters(in: .whitespaces)
-        guard !typedPort.isEmpty else { return true }
-        guard let value = Int(typedPort) else { return false }
-        return (1...65535).contains(value)
     }
 
     private func reset() {
         adding = false
-        upstream = ""
-        port = ""
-        label = ""
-        keepHostHeader = false
+        draft = ReverseProxyDraft()
     }
 }
