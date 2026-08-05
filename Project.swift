@@ -207,7 +207,9 @@ let project = Project(
                 // The daemon needs only the contract, not the domain models.
                 .target(name: "LoomHelperProtocol"),
             ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"]) // XPC daemon: shared mutable state + locks
+            // Swift 6 language mode. The daemon's shared mutable state is all
+            // lock-guarded or queue-confined; each escape hatch says which, at the
+            // declaration.
         ),
 
         // MARK: Engine unit + integration tests (proves decrypted HTTPS capture)

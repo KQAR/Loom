@@ -10,7 +10,9 @@ import os
 enum BinaryValidator {
     private static let logger = Logger(subsystem: HelperIdentity.logSubsystem, category: "BinaryValidator")
     private static let lock = NSLock()
-    private static var cache: [String: Bool] = [:]
+    /// `nonisolated(unsafe)`: every read and write below is inside `lock`, which is
+    /// the invariant strict concurrency can't verify for a global.
+    nonisolated(unsafe) private static var cache: [String: Bool] = [:]
 
     static func isAppleSigned(at path: String) -> Bool {
         lock.lock()
