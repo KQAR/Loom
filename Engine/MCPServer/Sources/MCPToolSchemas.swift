@@ -18,6 +18,7 @@ import LoomSharedModels
 /// in prose must not be able to switch auditing off. The marker still has to be
 /// *present* (a test pins description and flag together), because it is what tells
 /// the agent, but the flag is what the audit choke point reads.
+///
 /// `@unchecked Sendable` rather than checked, for one reason: `inputSchema` is a
 /// `[String: Any]` because that is what `JSONSerialization` consumes on the way
 /// out to `tools/list`. The boxed values are only ever JSON literals — strings,
@@ -29,20 +30,25 @@ import LoomSharedModels
 /// definitions and both shared sub-schemas. That is a worthwhile refactor and a
 /// separate one; it would not make this value any more thread-safe than it
 /// already is.
+///
+/// `handler` is `@Sendable` even so, and that is the part the escape hatch must not
+/// swallow: `@unchecked` on the type would otherwise let a future handler close over
+/// non-Sendable state with nothing complaining. The `Any` is unchecked; the closure
+/// is not.
 struct MCPTool: @unchecked Sendable {
     let name: String
     let description: String
     let inputSchema: [String: Any]
     /// Touches real traffic, so `MCPToolExecutor.call` records it in the audit trail.
     let isWrite: Bool
-    let handler: (MCPToolExecutor, [String: Any]) async throws -> String
+    let handler: @Sendable (MCPToolExecutor, [String: Any]) async throws -> String
 
     init(
         name: String,
         description: String,
         inputSchema: [String: Any],
         isWrite: Bool = false,
-        handler: @escaping (MCPToolExecutor, [String: Any]) async throws -> String
+        handler: @escaping @Sendable (MCPToolExecutor, [String: Any]) async throws -> String
     ) {
         self.name = name
         self.description = description
