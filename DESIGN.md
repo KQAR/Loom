@@ -3,6 +3,13 @@ version: 3.0
 name: Loom-design-system
 description: A native macOS status-bar debugging proxy with two human surfaces. The primary operator is an AI agent over MCP; the human uses a compact menu-bar CONSOLE for config & control (proxy on/off, system-proxy state, active rules, plus an Open Main Window button) and a MAIN WINDOW for the request list + per-flow detail. The console is a vibrant system material and shows no traffic; the main window is an opaque split layout (sidebar | detail). Color multiplies only for HTTP status; one accent carries interactivity and marks agent-replayed flows. Everything from the wire is SF Mono.
 
+system-design:
+  baseline: "pre-26 (macOS 14/15) — NOT Liquid Glass"
+  how: "`UIDesignRequiresCompatibility: true` in the app's Info.plist (Project.swift)"
+  why: "This spec's controls are macOS 14 controls (§ Known Gaps: .bordered / .borderedProminent, never .glass), and everything in the tree is drawn that way. What macOS 26 adds is SYSTEM chrome with no per-view opt-out — the shared-glass toolbar capsule that stretches when a .principal item is padded, and the NSScrollPocket band across the window top that survives titlebarAppearsTransparent and scrollEdgeEffectHidden. The key removes both, so the window matches this spec rather than the spec being rewritten around the OS."
+  scope: "System control metrics revert with it (measured on 26.5: NSButton 37×24 → 47×32, NSTextField h 24 → 21, titlebar 32 → 28pt). Loom's OWN metrics do not move — sidebar 300, {spacing}, {rounded}, the 7pt capture dot are all unchanged, and no view code is tuned to either design."
+  expiry: "Apple documents the key as temporary and intends to drop it after Xcode 26. When it stops working the glass chrome returns; that is a decision to re-make here — adopt it deliberately, per surface — not a build regression to chase."
+
 colors:
   accent: "#007AFF"                # Color.accentColor — dark #0A84FF. Interactivity + "replayed by AI" marker.
   ink: "#000000D9"                 # Color.primary — dark #FFFFFFD9
@@ -66,7 +73,7 @@ components:
   main-window:
     structure: "HStack(spacing: 0): sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its divider was already fixed and undraggable here. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH 300↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
     defaultSize: "{metrics.main-window-default}"
-    toolbar: "chip centred on the WINDOW via .principal — not on the content pane: padding the item to shift it stretches the macOS 26 shared-glass capsule by the same amount, and hiding that shared background to draw the capsule ourselves makes the toolbar render a full-width backdrop instead. Both were measured and rejected. Chip: status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat — sharedBackgroundVisibility hidden on macOS 26): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
+    toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Replayed (each Label + system .badge count) · Section 'Hosts' — one Label per host (globe icon + .badge count). Selection scopes the table."
@@ -372,5 +379,6 @@ on every label).
   § Guardrail): write tools act directly; supervision is the loopback boundary + audit trail. The former
   `approval-card` spec was removed with them; `fault-card` shipped and stays.
 - Liquid Glass button styles (`.glassProminent`/`.glass`) are macOS 26-only; on the macOS 14 baseline use
-  `.borderedProminent`/`.bordered`. The brand mark is now specified (§ Brand mark) and shipping in the menu bar;
+  `.borderedProminent`/`.bordered`. That baseline is now what the app actually renders in — see
+  `system-design` at the top of this file — so those styles would be inert here anyway. The brand mark is now specified (§ Brand mark) and shipping in the menu bar;
   the **app icon** is still unspecified and is the remaining branding gap.

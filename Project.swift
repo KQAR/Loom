@@ -23,6 +23,29 @@ let project = Project(
             resources: ["App/Resources/**"], // Assets.xcassets → AppIcon
             infoPlist: .extendingDefault(with: [
                 "LSUIElement": true, // agent app: no Dock icon, status bar only
+                // Render in the pre-26 (macOS 14/15) system design rather than Liquid
+                // Glass. Not a compatibility hedge — a deliberate look: DESIGN.md's
+                // baseline is macOS 14 (§ Known Gaps: use `.bordered`/`.borderedProminent`,
+                // not `.glass`), and every control here is drawn that way already. What
+                // macOS 26 adds on top is *system* chrome Loom cannot opt out of per view
+                // — the shared-glass toolbar capsule that stretches when a `.principal`
+                // item is padded, and the `NSScrollPocket` band across the window top that
+                // survives `titlebarAppearsTransparent` and `scrollEdgeEffectHidden` (both
+                // dead ends are recorded in `MainView.body`). This key is the one lever
+                // that removes them, so the window matches the spec instead of the spec
+                // being rewritten around the OS.
+                //
+                // It is honored by AppKit on macOS, not just UIKit — measured on 26.5 with
+                // one probe binary and two Info.plists: NSButton 37×24 → 47×32, NSTextField
+                // height 24 → 21, titlebar 32 → 28pt. Loom's own metrics (sidebar 300,
+                // LoomTheme spacing, the 7pt capture dot) are untouched by it.
+                //
+                // Expiry, and the reason this comment is long: Apple documents the key as
+                // temporary and intends to drop it in the Xcode release after 26. When it
+                // stops working the window gains the glass chrome back — that is a DESIGN.md
+                // decision to re-make (adopt it deliberately, per-surface), not a build
+                // regression to chase.
+                "UIDesignRequiresCompatibility": true,
                 "CFBundleDisplayName": "Loom",
                 "CFBundleIconName": "AppIcon", // resolves to the asset-catalog icon set
                 "CFBundleShortVersionString": "0.0.14", // marketing version
