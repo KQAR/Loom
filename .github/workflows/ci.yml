@@ -74,14 +74,22 @@ jobs:
 
       - uses: jdx/mise-action@v2
 
-      # Same shape as the Release workflow's cache, under its own key so the two
-      # don't fight over one entry (Debug vs Release products, first writer wins).
-      - name: Cache SPM & DerivedData
+      # Own key, separate from the Release workflow's, so the two don't fight over
+      # one entry.
+      # Dependency *sources* only. Build products deliberately NOT cached: the
+      # generated Xcode projects depend on Tuist/Package.swift (product types) as
+      # much as on Package.resolved, the restore-key falls back by prefix across
+      # branches, and a DerivedData built under one graph reused under another
+      # produces failures that look like source bugs. Measured: it cost hours here —
+      # a `Cycle inside CNIOFreeBSD` no local build could reproduce, then a
+      # `module map file … not found` once the graph changed under the stale
+      # products. Re-downloading checkouts is what actually took the time; those
+      # stay cached, safely keyed on Package.resolved.
+      - name: Cache SPM
         uses: actions/cache@v4
         with:
           path: |
             Tuist/.build
-            ${{ runner.temp }}/DerivedData
           key: ${{ runner.os }}-loom-ci-${{ hashFiles('Tuist/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-loom-ci-
@@ -101,14 +109,6 @@ jobs:
 
       - name: Generate project
         run: tuist generate --no-open
-
-      # Tuist's "Copy Module Map" phases cp read-only (444) modulemaps into
-      # Build/Products; on a restored cache the next build re-runs them and the
-      # cp fails overwriting its own output with "Permission denied".
-      - name: Make copied module maps writable
-        run: |
-          find "${{ runner.temp }}/DerivedData/Build/Products" -name module.modulemap ! -perm -u+w \
-            -exec chmod u+w {} + 2>/dev/null || true
 
       - name: Test
         run: |
@@ -188,12 +188,12 @@ jobs:
 
       - uses: jdx/mise-action@v2
 
-      - name: Cache SPM & DerivedData
+      # Sources only, no build products — see the Build & test job's cache above.
+      - name: Cache SPM
         uses: actions/cache@v4
         with:
           path: |
             Tuist/.build
-            ${{ runner.temp }}/DerivedData
           key: ${{ runner.os }}-loom-tsan-${{ hashFiles('Tuist/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-loom-tsan-
@@ -203,11 +203,6 @@ jobs:
 
       - name: Generate project
         run: tuist generate --no-open
-
-      - name: Make copied module maps writable
-        run: |
-          find "${{ runner.temp }}/DerivedData/Build/Products" -name module.modulemap ! -perm -u+w \
-            -exec chmod u+w {} + 2>/dev/null || true
 
       # halt_on_error stays off so one run reports every race, not just the
       # first. The log is the signal; the exit code is only used to tell a real
