@@ -92,11 +92,15 @@ struct ProvisioningTests {
     /// End-to-end: bind the server on loopback and fetch the DER over real HTTP.
     @Test func server_servesOverHTTP() async throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { shutdownBlocking(group) }
+        // No `defer` for either half, and the ordering is the reason. `defer` runs LIFO,
+        // so registering the group shutdown first and a `defer { Task { await
+        // server.stop() } }` second ran the *unstructured* close first — unawaited — and
+        // then blocked in `syncShutdownGracefully()` on the same group, with no guarantee
+        // the close had even started. A `close()` racing a group shutdown is the shape
+        // `EngineTeardown.swift` documents. Both are awaited in order at the end instead.
         let content = try makeContent()
         let server = ProvisioningServer(group: group)
         let port = try await server.start(host: "127.0.0.1", port: 0, content: content)
-        defer { Task { await server.stop() } }
 
         let url = URL(string: "http://127.0.0.1:\(port)/loom-ca.crt")!
         var request = URLRequest(url: url)
@@ -108,5 +112,8 @@ struct ProvisioningTests {
 
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(data == content.caDER)
+
+        await server.stop()
+        shutdownBlocking(group)
     }
 }

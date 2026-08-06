@@ -108,6 +108,8 @@ import LoomSharedModels
         let replayed = try await engine.replay(flow: source, overrides: .none)
         #expect(replayed.firstByteAt != nil)
         #expect(replayed.ttfbMS != nil)
+
+        await engine.stopForTest()
     }
 
     /// A flow persisted before TTFB existed decodes with it absent, not zero.

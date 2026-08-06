@@ -144,6 +144,8 @@ import LoomSharedModels
         let errors = await engine.recentFlows(matching: FlowQuery(onlyErrors: true), limit: 10)
         #expect(errors.map(\.statusCode) == [404])
         #expect(await engine.recentFlows(matching: .all, limit: 10).count == 2)
+
+        await engine.stopForTest()
     }
 }
 

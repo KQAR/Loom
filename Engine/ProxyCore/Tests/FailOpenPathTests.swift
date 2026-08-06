@@ -87,9 +87,9 @@ import LoomSharedModels
 
     // MARK: SSL scope
 
-    @Test func interceptionConfig_corruptStoredScope_fallsBackToDisabled() {
+    @Test func interceptionConfig_corruptStoredScope_fallsBackToDisabled() throws {
         let suite = "com.loom.tests.failopen.\(UUID().uuidString)"
-        let defaults = try! #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(Data("garbage".utf8), forKey: "com.loom.sslScope")
 
@@ -97,9 +97,9 @@ import LoomSharedModels
         #expect(config.snapshot().enabled == false, "a corrupt scope must not enable interception by accident")
     }
 
-    @Test func interceptionConfig_goodStoredScope_isRestored() {
+    @Test func interceptionConfig_goodStoredScope_isRestored() throws {
         let suite = "com.loom.tests.failopen.\(UUID().uuidString)"
-        let defaults = try! #require(UserDefaults(suiteName: suite))
+        let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
         let config = InterceptionConfig(defaults: defaults)

@@ -24,6 +24,8 @@ import LoomSharedModels
 
         #expect(await engine.certificateStatus().exportedPEMPath == nil,
                 "nothing has been written, so there is no path to show a command for")
+
+        await engine.stopForTest()
     }
 
     @Test func afterExporting_reportsThePath() async throws {
@@ -33,6 +35,8 @@ import LoomSharedModels
 
         _ = try await engine.exportCACertificate()
         #expect(await engine.certificateStatus().exportedPEMPath == url.path)
+
+        await engine.stopForTest()
     }
 
     @Test func anExistingExportSurvivesARelaunch() async throws {
@@ -48,6 +52,9 @@ import LoomSharedModels
         let relaunched = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore(), caExportURL: url)
         #expect(await relaunched.certificateStatus().exportedPEMPath == url.path,
                 "an export already on disk must stay visible across a relaunch")
+
+        await first.stopForTest()
+        await relaunched.stopForTest()
     }
 
     @Test func aDeletedExportStopsBeingReported() async throws {
@@ -61,5 +68,8 @@ import LoomSharedModels
 
         let relaunched = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore(), caExportURL: url)
         #expect(await relaunched.certificateStatus().exportedPEMPath == nil)
+
+        await engine.stopForTest()
+        await relaunched.stopForTest()
     }
 }

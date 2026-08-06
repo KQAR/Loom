@@ -497,6 +497,8 @@ private actor StubUpstream: UpstreamForwarding {
 
         let state = await engine.rulesState()
         #expect(state.rules.map(\.id) == [good1.id, good2.id])
+
+        await engine.stopForTest()
     }
 
     @Test func setRules_allValid_reportsAllApplied() async {
@@ -505,5 +507,7 @@ private actor StubUpstream: UpstreamForwarding {
         #expect(report.allApplied)
         #expect(report.rejected.isEmpty)
         #expect(report.applied.count == 2)
+
+        await engine.stopForTest()
     }
 }

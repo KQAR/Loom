@@ -204,11 +204,22 @@ private final class H2Progress: Sendable {
     /// Snapshot the counters into the report, so a stalled run shows whether bytes
     /// were still trickling or had stopped dead.
     ///
-    /// `reads issued` is what makes the snapshot diagnostic rather than merely
-    /// suggestive: a stall at exactly one 65535-byte window looks identical whether
-    /// upstream failed to send a WINDOW_UPDATE (issue #99) or Loom's own read pump
-    /// stopped asking. Reads still climbing while bytes sit still = we asked and got
-    /// nothing (upstream). Reads frozen too = we stopped asking (ours).
+    /// `reads issued` is worth printing, but **it does not separate the two mechanisms**,
+    /// and the rule that used to be written here got that backwards in the direction
+    /// that matters. It said "reads still climbing = upstream's fault, reads frozen =
+    /// ours". Frozen reads are what an *upstream* stall looks like too: the counter is
+    /// demand-driven — the bridge issues `channel.read()` when the async sequence asks
+    /// for more — so when upstream stops granting window, the forwarder blocks on its
+    /// write, stops draining the bridge, the high watermark is reached, demand ceases,
+    /// and reads stop climbing. The old rule would diagnose every instance of the known
+    /// upstream flake as a Loom regression.
+    ///
+    /// What the counters do say: `upstream consumed = 65535` *exactly*, with client bytes
+    /// still outstanding, is the known stall (issue #99) — necessary but not sufficient.
+    /// Anything other than exactly one window, or a stall with the client's body fully
+    /// consumed, is something new. Read the stage timeline alongside it. Telling the two
+    /// apart properly needs a signal this harness doesn't have yet: whether a
+    /// WINDOW_UPDATE ever arrived.
     func sample() {
         state.withLock { state in
             let at = String(format: "%.1f", Date().timeIntervalSince(start))

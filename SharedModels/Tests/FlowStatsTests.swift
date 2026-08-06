@@ -141,9 +141,9 @@ import LoomSharedModels
         #expect(try #require(drip.receive).p50 == 1_027, "the answer is in receive, not ttfb")
     }
 
-    @Test func percentilesAreExactSamples_neverInterpolated() {
+    @Test func percentilesAreExactSamples_neverInterpolated() throws {
         let flows = (1 ... 10).map { flow(ttfbMS: $0 * 10, durationMS: $0 * 100) }
-        let ttfb = try! #require(FlowStats.compute(flows: flows, grouping: .none).total.ttfb)
+        let ttfb = try #require(FlowStats.compute(flows: flows, grouping: .none).total.ttfb)
         #expect(ttfb.samples == 10)
         #expect(ttfb.p50 == 50)
         #expect(ttfb.p95 == 100)

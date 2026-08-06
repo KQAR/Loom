@@ -8,7 +8,13 @@ final class GlueHandler: ChannelDuplexHandler {
     typealias OutboundIn = NIOAny
     typealias OutboundOut = NIOAny
 
-    private var partner: GlueHandler?
+    /// `weak`, because `matchedPair()` points the two halves at each other and a strong
+    /// pair is a retain cycle broken only by `handlerRemoved`. NIO does fire that on
+    /// close, so nothing leaks today — but the lifetime doesn't need the strong edge at
+    /// all: each handler is owned by its own channel's pipeline, so a partner that has
+    /// gone away is exactly the nil `handlerRemoved` was already setting by hand. This
+    /// removes the dependency on teardown running.
+    private weak var partner: GlueHandler?
     private var context: ChannelHandlerContext?
 
     static func matchedPair() -> (GlueHandler, GlueHandler) {

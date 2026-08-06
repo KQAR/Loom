@@ -127,6 +127,8 @@ struct AppliedRulesOnFailureTests {
         let recent = await engine.recentFlows(limit: 1)
         #expect(recent.first?.appliedRules?.map(\.name) == ["to local"])
         if case .failed = recent.first?.outcome {} else { Issue.record("expected a failed replay flow") }
+
+        await engine.stopForTest()
     }
 
     /// A base that emits rule metadata, then fails — i.e. rules matched below the

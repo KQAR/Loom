@@ -179,6 +179,8 @@ import Foundation
         let plainReplay = try await engine.replay(flow: anonymous, overrides: .none)
         #expect(plainReplay.statusCode == 200)
         #expect(plainReplay.appliedRules == nil)
+
+        await engine.stopForTest()
     }
 }
 

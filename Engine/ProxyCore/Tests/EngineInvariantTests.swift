@@ -67,6 +67,8 @@ struct OneWritePathInvariantTests {
         #expect(replayed.response?.statusCode == 418)
         #expect(replayed.appliedRules?.map(\.name) == ["teapot"],
                 "the replayed flow must record which rule answered it")
+
+        await engine.stopForTest()
     }
 
     /// A replay is held by an armed breakpoint, is visible in `pendingBreakpoints()`
@@ -99,6 +101,8 @@ struct OneWritePathInvariantTests {
         #expect(await upstream.lastMethod == "PUT", "the breakpoint edit must reach the upstream")
         #expect(await upstream.lastHeaders.value(named: "X-Held") == "1")
         #expect(replayed.replayedFrom == source.id)
+
+        await engine.stopForTest()
     }
 }
 
@@ -457,6 +461,8 @@ struct ReplayLinkInvariantTests {
         #expect(stored.first?.id == replayed.id)
         #expect(stored.first?.id != source.id, "a replay is a new flow, not an overwrite of its source")
         #expect(stored.first?.replayedFrom == source.id)
+
+        await engine.stopForTest()
     }
 
     @Test func replay_answeredByARule_stillLinks() async throws {
@@ -473,6 +479,8 @@ struct ReplayLinkInvariantTests {
         #expect(replayed.replayedFrom == source.id)
         #expect(await engine.flow(id: replayed.id)?.replayedFrom == source.id,
                 "the link must survive into the store, not just the returned value")
+
+        await engine.stopForTest()
     }
 
     /// The failure direction: a replay that can't reach upstream throws, and still
@@ -490,6 +498,8 @@ struct ReplayLinkInvariantTests {
         #expect(stored.count == 1)
         #expect(stored.first?.replayedFrom == source.id)
         if case .failed = stored.first?.outcome {} else { Issue.record("expected a failed replay flow") }
+
+        await engine.stopForTest()
     }
 }
 
