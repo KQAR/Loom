@@ -44,6 +44,42 @@ enum HTTPUtil {
         }
     }
 
+    /// Join HTTP/2 `cookie` crumbs back into the single field HTTP/1.1 requires.
+    ///
+    /// RFC 9113 §8.2.3 lets an h2 client split `cookie` into one field per cookie
+    /// (better HPACK compression — Chrome does it for every cookie), and says an
+    /// intermediary converting to HTTP/1.1 **must** concatenate them with `"; "`.
+    /// `HTTP2FramePayloadToHTTP1ServerCodec` does not do this, so without this call
+    /// Loom forwarded N separate `Cookie:` lines upstream. RFC 6265 §5.4 allows
+    /// exactly one, so an origin reads the first crumb and ignores the rest: a
+    /// signed-in github.com came back logged out (its `user_session` crumb was not
+    /// first) and signing in again failed 422, while the browser still held every
+    /// cookie. Applied to the intercepted request head, so the captured flow shows
+    /// what Loom actually sent.
+    static func coalesceCookieCrumbs(_ headers: HTTPHeaders) -> HTTPHeaders {
+        guard headers.filter({ $0.name.lowercased() == "cookie" }).count > 1 else { return headers }
+        let joined = headers
+            .filter { $0.name.lowercased() == "cookie" }
+            .map { $0.value.trimmingCharacters(in: CharacterSet(charactersIn: "; ")) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "; ")
+        var out = HTTPHeaders()
+        var emitted = false
+        for header in headers {
+            guard header.name.lowercased() == "cookie" else {
+                out.add(name: header.name, value: header.value)
+                continue
+            }
+            // Keep the crumbs' original position (first one wins) so header order
+            // is otherwise as the client wrote it.
+            if !emitted {
+                emitted = true
+                out.add(name: header.name, value: joined)
+            }
+        }
+        return out
+    }
+
     /// Write a complete HTTP/1.1 response down a channel and optionally close it.
     /// Shared by the plain-HTTP proxy path and the TLS-interception path so both
     /// frame responses identically (drop hop-by-hop + Content-Length, then set our
