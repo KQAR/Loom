@@ -48,7 +48,13 @@ dormant with no error — check the release's assets, not just the workflow's gr
 Signing is **ad-hoc by decision** (`CODE_SIGN_IDENTITY="-"`), not a pending task: no Developer ID
 certificate is being bought. So a release is never Gatekeeper-clean — a fresh install needs
 right-click → Open once — and the EdDSA signature above is what authenticates an update. Don't file
-this as a release-blocker; the same decision ruled out the privileged helper (ROADMAP § M2).
+this as a release-blocker.
+
+What ad-hoc signing rules out is narrower than this file used to claim. It does **not** rule out the
+privileged helper — that shipped in 0.0.17 and works on an ad-hoc build (measured: registers,
+launches as uid 0, serves the system-proxy toggle). What it rules out is *system-domain CA trust*,
+because an ad-hoc caller check is forgeable and a root process installing a trusted root CA on a
+forgeable caller's word is machine-wide MITM. See ROADMAP § M2.
 
 ## Sparkle tools
 
