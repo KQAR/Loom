@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import LoomSharedModels
 import NIOPosix
 @testable import LoomProxyCore
@@ -42,15 +43,42 @@ extension ProxyEngine {
     }
 }
 
-/// Run an async teardown from a **synchronous** `defer`, and wait for it.
+/// Run an async body from a **synchronous** test and wait for its result.
 ///
 /// For the suites whose tests are synchronous (they drive raw NIO clients and block on
-/// futures), where `await` isn't available in the `defer` at all. Blocking here is safe
-/// for the same reason it is in those suites' own bridges: the body runs on the
-/// cooperative pool, not on this thread.
+/// futures), where `await` isn't available at all — including inside a `defer`. Blocking
+/// here is safe because the body runs on the cooperative pool, not on this thread.
 ///
-/// Two suites already carry a private copy of this; they keep theirs rather than being
-/// churned, but a third copy is where a pattern starts to rot, so new callers use this.
+/// This is the one copy. There used to be four: this file's `runBlockingVoid` plus three
+/// private pairs in `ConnectTunnelSniffTests`, `SOCKSCaptureTests` and
+/// `HTTPSInterceptionTests`, each with its own near-identical result box. The note here
+/// used to say "a third copy is where a pattern starts to rot" while tolerating exactly
+/// that — and the rot showed up on schedule: the Swift 6 migration had to add `@Sendable`
+/// to the same closure parameter in three separate places, and one of the boxes had
+/// meanwhile grown a private `Result` extension the others didn't have.
+func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
+    // `Mutex` rather than an `@unchecked Sendable` box: the semaphore does order the
+    // write before the read, but that is an argument a reader has to reconstruct, and
+    // the lock costs nothing on a path that is already parking a thread.
+    let box = Mutex<Result<T, Error>?>(nil)
+    let semaphore = DispatchSemaphore(value: 0)
+    Task {
+        // Resolved outside `withLock` — awaiting while holding it is the one thing
+        // `Mutex` forbids, and rightly.
+        let result: Result<T, Error>
+        do { result = .success(try await body()) } catch { result = .failure(error) }
+        box.withLock { $0 = result }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    // Force-unwrapped deliberately: the semaphore was signalled, so the value is there.
+    // A nil here would be a bug in this function, not in the caller's test.
+    return try box.withLock { $0! }.get()
+}
+
+/// The `Void` case — `runBlocking` with nothing to carry back, which is what a `defer`
+/// wants. Kept separate rather than making callers write `_ = runBlocking { … }`,
+/// because teardown sites read better without the discard.
 func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
     let semaphore = DispatchSemaphore(value: 0)
     Task { await body(); semaphore.signal() }

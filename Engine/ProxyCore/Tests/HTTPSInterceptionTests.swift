@@ -149,34 +149,6 @@ struct HTTPSInterceptionTests {
         #expect(flow.request.method == "POST")
         #expect(flow.request.body == payload, "the captured request body should match (2MB < cap)")
     }
-
-    // MARK: - async → sync bridges (XCTest sync methods driving the actor)
-
-    private func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-        let box = ResultBox<T>()
-        let sem = DispatchSemaphore(value: 0)
-        Task { await box.run(body); sem.signal() }
-        sem.wait()
-        return try box.take()
-    }
-
-    private func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
-        let sem = DispatchSemaphore(value: 0)
-        Task { await body(); sem.signal() }
-        sem.wait()
-    }
-}
-
-private final class ResultBox<T>: @unchecked Sendable {
-    private var value: Result<T, Error>?
-    func run(_ body: () async throws -> T) async { value = await Result { try await body() } }
-    func take() throws -> T { try value!.get() }
-}
-
-private extension Result where Failure == Error {
-    init(_ body: () async throws -> Success) async {
-        do { self = .success(try await body()) } catch { self = .failure(error) }
-    }
 }
 
 // MARK: - Test doubles

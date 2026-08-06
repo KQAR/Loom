@@ -284,30 +284,6 @@ struct SOCKSCaptureTests {
         #expect(snapshot.total == RefusalLog.capacity + 15)
         #expect(snapshot.recent.first?.reason == "refusal \(RefusalLog.capacity + 14)", "newest first")
     }
-
-    // MARK: - async → sync bridges
-
-    private func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-        let box = SOCKSResultBox<T>()
-        let sem = DispatchSemaphore(value: 0)
-        Task { await box.run(body); sem.signal() }
-        sem.wait()
-        return try box.take()
-    }
-
-    private func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
-        let sem = DispatchSemaphore(value: 0)
-        Task { await body(); sem.signal() }
-        sem.wait()
-    }
-}
-
-private final class SOCKSResultBox<T>: @unchecked Sendable {
-    private var value: Result<T, Error>?
-    func run(_ body: () async throws -> T) async {
-        do { value = .success(try await body()) } catch { value = .failure(error) }
-    }
-    func take() throws -> T { try value!.get() }
 }
 
 // MARK: - Test doubles
