@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import LoomHelperShared
 @testable import PrivilegedHelperClient
 
 /// Pure-logic coverage for the QUIC-block firewall scripting. The live `pfctl`

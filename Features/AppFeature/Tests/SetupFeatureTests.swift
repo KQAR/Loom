@@ -29,6 +29,10 @@ import Testing
                     httpsEnabled: true, httpsHost: "127.0.0.1", httpsPort: 9090
                 )
             }
+            // The approval switch lives in System Settings, so this is re-read on
+            // every refresh rather than cached.
+            $0.privilegedHelperClient.helperState = { .enabled }
+            $0.privilegedHelperClient.helperFailureReason = { nil }
             $0.proxyClient.certificateStatus = { cert }
             $0.proxyClient.sslScope = { scope }
             $0.proxyClient.clientCertificates = { [] }
@@ -38,6 +42,7 @@ import Testing
             $0.systemProxyRouting = .loom
             $0.isSystemProxy = true
         }
+        await store.receive(\.helperStateLoaded) { $0.helperState = .enabled }
         await store.receive(\.certificateStatusLoaded) { $0.certificateStatus = cert }
         await store.receive(\.sslScopeLoaded) {
             $0.sslScope = scope
@@ -369,5 +374,87 @@ import Testing
         }
         await store.send(.exportCATapped)
         await store.receive(\.caExported)
+    }
+    // MARK: Privileged helper
+
+    /// A first install lands on `requiresApproval` — success, not failure — and the
+    /// human has to flip a switch in another app, so the row says where and opens it.
+    @Test func helperInstall_landsOnApprovalAndOpensSettings() async {
+        let opened = LockIsolated(false)
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.privilegedHelperClient.installHelper = { (.requiresApproval, nil) }
+            $0.privilegedHelperClient.openHelperApproval = { opened.setValue(true) }
+        }
+        await store.send(.helperRowTapped) {
+            $0.helperBusy = true
+            $0.helperMessage = "Installing helper…"
+        }
+        await store.receive(\.helperActionFinished) {
+            $0.helperBusy = false
+            $0.helperState = .requiresApproval
+            $0.helperMessage = "Allow “Loom” in Login Items to finish."
+        }
+        #expect(opened.value, "there is no API to flip that switch — the least we do is open it")
+    }
+
+    /// Already awaiting approval: tapping again must NOT re-register (that changes
+    /// nothing and would re-run the whole dance) — just take the human to the switch.
+    @Test func helperAwaitingApproval_onlyOpensSettings() async {
+        let opened = LockIsolated(false)
+        var state = SetupFeature.State()
+        state.helperState = .requiresApproval
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.privilegedHelperClient.openHelperApproval = { opened.setValue(true) }
+            // installHelper deliberately left unimplemented: reaching it is the failure.
+        }
+        await store.send(.helperRowTapped)
+        #expect(opened.value)
+    }
+
+    /// `unresponsive` is the state an app update leaves behind — launchd holding a job
+    /// that names the old binary while `SMAppService` still reports it enabled. The
+    /// repair is a re-registration, so the row runs the install path and says so.
+    @Test func helperUnresponsive_repairsByReinstalling() async {
+        var state = SetupFeature.State()
+        state.helperState = .unresponsive
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.privilegedHelperClient.installHelper = { (.enabled, nil) }
+        }
+        await store.send(.helperRowTapped) {
+            $0.helperBusy = true
+            $0.helperMessage = "Repairing helper…"
+        }
+        await store.receive(\.helperActionFinished) {
+            $0.helperBusy = false
+            $0.helperState = .enabled
+            $0.helperMessage = nil
+        }
+    }
+
+    /// Removing it is not a failure state: the toggle keeps working, it just asks for
+    /// a password again — so no error text is left on the row.
+    @Test func helperEnabled_tapRemovesIt() async {
+        var state = SetupFeature.State()
+        state.helperState = .enabled
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.privilegedHelperClient.uninstallHelper = { (.notInstalled, nil) }
+        }
+        await store.send(.helperRowTapped) {
+            $0.helperBusy = true
+            $0.helperMessage = "Removing helper…"
+        }
+        await store.receive(\.helperActionFinished) {
+            $0.helperBusy = false
+            $0.helperState = .notInstalled
+            $0.helperMessage = nil
+        }
     }
 }

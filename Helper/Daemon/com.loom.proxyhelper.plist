@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Loom's privileged helper, registered by the app via SMAppService.daemon(plistName:).
+  Copied into Contents/Library/LaunchDaemons/ by the app target's "Embed privileged
+  helper" script phase (Project.swift); SMAppService looks it up by filename there.
+
+  Deliberately minimal — Label, MachServices, BundleProgram and nothing else. Every
+  additional key is another thing launchd can reject a spawn over, and this shape is
+  the one Apple documents for a privileged helper.
+
+  `BundleProgram` is relative to the app bundle and points at Contents/Library/
+  HelperTools/, which is where a privileged helper belongs (not Contents/MacOS/, which
+  is for the app's own executables). The file is named after the label, same rule.
+
+  No RunAtLoad: the helper is demand-launched by its mach service. A root process that
+  idles from boot for a toggle the human may never press is a worse default, and
+  launchd starting it on the first connection is indistinguishable to the caller.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.loom.proxyhelper</string>
+  <key>MachServices</key>
+  <dict>
+    <key>com.loom.proxyhelper</key>
+    <true/>
+  </dict>
+  <key>BundleProgram</key>
+  <string>Contents/Library/HelperTools/com.loom.proxyhelper</string>
+</dict>
+</plist>

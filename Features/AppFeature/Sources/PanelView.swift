@@ -21,6 +21,7 @@ public struct PanelView: View {
 
             VStack(spacing: 0) {
                 devicesRow
+                helperRow
                 reverseProxyRow
                 systemProxyRow
                 sslRow
@@ -154,7 +155,11 @@ public struct PanelView: View {
             title: "System Proxy",
             detail: systemProxyDetail,
             disabled: store.setup.systemProxyBusy,
-            help: "Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password)"
+            // The password half is conditional now, and saying it unconditionally
+            // would be wrong in the good case and unhelpful in the bad one.
+            help: store.setup.helperState == .enabled
+                ? "Point macOS's HTTP/HTTPS proxy at Loom"
+                : "Point macOS's HTTP/HTTPS proxy at Loom (asks for your admin password — install the Privileged Helper to stop that)"
         ) {
             store.send(.setup(.toggleSystemProxyTapped))
         }
@@ -217,6 +222,80 @@ public struct PanelView: View {
             return "Another proxy app has it (\(host):\(port)). Quit that app first — Loom won't put its settings back."
         case .off:
             return nil
+        }
+    }
+
+    /// The privileged helper — second row, above the ways in that it unblocks.
+    ///
+    /// Placed high rather than next to System Proxy (owner decision) because it is
+    /// setup, not routing: installing it once is what stops *every later* system-proxy
+    /// enable from asking for an admin password. The password isn't for the proxy —
+    /// `networksetup` is silent for an admin — it's for the pf rule that blocks QUIC,
+    /// and `/dev/pf` is root-only whoever you are.
+    ///
+    /// An action row, not a state row: the three states need three different verbs
+    /// (install / go approve / remove), which a switch cannot say.
+    @ViewBuilder private var helperRow: some View {
+        PanelRow(
+            kind: .action,
+            icon: helperIcon,
+            iconTint: helperIconTint,
+            title: "Privileged Helper",
+            detail: helperDetail,
+            disabled: store.setup.helperBusy,
+            help: helperHelp
+        ) {
+            store.send(.setup(.helperRowTapped))
+        }
+        if store.setup.helperBusy || store.setup.helperMessage != nil {
+            inlineNote(
+                store.setup.helperMessage ?? "",
+                busy: store.setup.helperBusy,
+                // Tinted only while the human still has to do something — the approval
+                // switch is in another app and nothing happens until they flip it.
+                tint: store.setup.helperState == .requiresApproval ? .yellow : nil
+            )
+        }
+    }
+
+    private var helperIcon: String {
+        switch store.setup.helperState {
+        case .enabled: return "key.fill"
+        case .unresponsive: return "key.slash"
+        default: return "key"
+        }
+    }
+
+    private var helperIconTint: Color? {
+        switch store.setup.helperState {
+        case .enabled: return .accentColor
+        case .requiresApproval: return .yellow
+        // Orange, like the broken-client-certificate row: approved but not working is
+        // a fault the human can fix, not a state they chose.
+        case .unresponsive: return .orange
+        case .notInstalled, .notFound: return .secondary
+        }
+    }
+
+    /// Names the state, not the action — the row's chevron already says it is tappable,
+    /// and "off" would be a poor word for "registered, waiting on you".
+    private var helperDetail: String {
+        switch store.setup.helperState {
+        case .enabled: return "on"
+        case .requiresApproval: return "approve"
+        case .unresponsive: return "repair"
+        case .notInstalled: return "off"
+        case .notFound: return "unavailable"
+        }
+    }
+
+    private var helperHelp: String {
+        switch store.setup.helperState {
+        case .enabled: return "Remove the background helper (the system-proxy toggle will ask for your password again)"
+        case .requiresApproval: return "Open Login Items to allow Loom's background helper"
+        case .unresponsive: return "The helper is approved but not answering (usually after an app update) — reinstall it"
+        case .notInstalled: return "Install a background helper so toggling the system proxy stops asking for your password"
+        case .notFound: return "This build has no helper embedded"
         }
     }
 

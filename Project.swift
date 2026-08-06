@@ -85,6 +85,20 @@ let project = Project(
                 // `networksetup` / `pfctl` for the system-proxy toggle.
                 "com.apple.security.app-sandbox": false,
             ]),
+            scripts: [
+                // Runs before the final CodeSign step, so the app's seal covers both
+                // copied files — see the script's own header for why that ordering is
+                // load-bearing.
+                .post(
+                    path: "Scripts/embed-helper.sh",
+                    name: "Embed privileged helper",
+                    inputPaths: ["$(BUILT_PRODUCTS_DIR)/com.loom.proxyhelper", "$(SRCROOT)/Helper/Daemon/com.loom.proxyhelper.plist"],
+                    outputPaths: [
+                        "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/HelperTools/com.loom.proxyhelper",
+                        "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/LaunchDaemons/com.loom.proxyhelper.plist",
+                    ]
+                ),
+            ],
             dependencies: [
                 .target(name: "AppFeature"),
                 .target(name: "ProxyClient"),
@@ -93,6 +107,9 @@ let project = Project(
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "UpdaterClient"),
                 .target(name: "LoomSharedModels"),
+                // Build-order only — the script phase above does the embedding. The
+                // app must not *link* an executable.
+                .target(name: "loom-helper"),
             ],
             settings: .settings(base: ["ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon"])
         ),
@@ -176,15 +193,76 @@ let project = Project(
             sources: ["SharedModels/Sources/**"]
         ),
 
-        // MARK: System-proxy client (name is historical — see the type's own note;
-        // the root-daemon half it was named after is gone).
+        // MARK: System-proxy client (drives the helper when installed, `networksetup`
+        // + one osascript prompt when it isn't).
         .module(
             name: "PrivilegedHelperClient",
             sources: ["Clients/PrivilegedHelperClient/Sources/**"],
             dependencies: [
                 .external(name: "ComposableArchitecture"),
                 .target(name: "LoomSharedModels"),
+                .target(name: "LoomHelperShared"),
             ]
+        ),
+
+        // MARK: The app↔helper contract — XPC protocol, service names, and the
+        // system-proxy shell both ends run. Depended on by BOTH sides on purpose:
+        // a second copy of that script is a second definition of what the toggle does.
+        // **Static** on purpose. As a dynamic framework the daemon linked it by
+        // `@rpath` and a command-line tool carries no rpath into the app bundle, so
+        // dyld could not find it: the daemon died at launch every time, launchd
+        // recorded `EX_CONFIG` and respawned it (179 times before this was caught),
+        // and from the app's side the XPC call simply never answered — no reply, no
+        // error, no process. Adding `@executable_path/../Frameworks` would also work,
+        // but a root daemon that loads code out of the app bundle at runtime is a
+        // worse shape than one that carries its own: static linking means the
+        // privileged process has no third-party load paths at all.
+        .module(
+            name: "LoomHelperShared",
+            product: .staticFramework,
+            sources: ["Helper/Shared/Sources/**"]
+        ),
+
+        // MARK: The privileged helper itself — a root LaunchDaemon, embedded in the
+        // app bundle and registered through `SMAppService`. Not a framework: launchd
+        // executes it, and `BundleProgram` in the plist points at `Contents/MacOS/`.
+        .module(
+            name: "loom-helper",
+            product: .commandLineTool,
+            bundleIdSuffix: "proxyhelper",
+            sources: ["Helper/Daemon/Sources/**"],
+            // A command-line tool has no Info.plist *file*, so this one is embedded
+            // into the binary (`CREATE_INFOPLIST_SECTION_IN_BINARY` below). It is not
+            // decoration: without a `CFBundleIdentifier` to sign against, codesign
+            // names the binary `loom-helper-<hash>` and the app's check on the daemon
+            // (`identifier "com.loom.proxyhelper"`) can never pass — measured, and the
+            // failure surfaces as "the helper is not reachable", which reads like a
+            // missing daemon rather than a naming mismatch.
+            infoPlist: .extendingDefault(with: [
+                "CFBundleIdentifier": "com.loom.proxyhelper",
+                "CFBundleName": "com.loom.proxyhelper",
+                "CFBundlePackageType": "APPL",
+            ]),
+            dependencies: [
+                .target(name: "LoomHelperShared"),
+            ],
+            // Xcode would otherwise name the binary `loom_helper` (it sanitizes the
+            // target name, as it does for `loom-mcp`). The plist's `BundleProgram`
+            // names the file on disk, and launchd's failure to find it is silent from
+            // the app's side — `SMAppService` reports `notFound` with nothing about
+            // which half is missing. Pin the name instead.
+            // The product is named after the daemon's label, which is also what the
+            // plist's `BundleProgram` points at — Xcode would otherwise sanitize the
+            // target name to `loom_helper`. `PRODUCT_BUNDLE_IDENTIFIER` +
+            // `CREATE_INFOPLIST_SECTION_IN_BINARY` give the binary a code-signing
+            // identifier: without an Info.plist section a command-line tool signs as
+            // `<name>-<hash>`, and the app's check on the daemon
+            // (`identifier "com.loom.proxyhelper"`) could never pass.
+            settings: .settings(base: [
+                "PRODUCT_NAME": "com.loom.proxyhelper",
+                "PRODUCT_BUNDLE_IDENTIFIER": "com.loom.proxyhelper",
+                "CREATE_INFOPLIST_SECTION_IN_BINARY": "YES",
+            ])
         ),
 
         // MARK: stdio <-> HTTP bridge that AI clients (Claude/Cursor) launch
@@ -289,6 +367,7 @@ let project = Project(
             dependencies: [
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "LoomSharedModels"),
+                .target(name: "LoomHelperShared"),
             ]
         ),
     ]
