@@ -48,7 +48,10 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         switch unwrapInboundIn(data) {
-        case let .head(head):
+        case var .head(head):
+            // An h2 client splits `cookie` into crumbs; upstream is HTTP/1.1, which
+            // takes exactly one. See `HTTPUtil.coalesceCookieCrumbs`.
+            head.headers = HTTPUtil.coalesceCookieCrumbs(head.headers)
             let absolute = absoluteURLString(for: head)
             guard let url = URL(string: absolute) else {
                 HTTPUtil.writeResponse(channel: context.channel, status: 400, headers: [],
