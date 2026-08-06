@@ -177,24 +177,6 @@ struct ConnectTunnelSniffTests {
     }
 }
 
-// MARK: - async → sync bridge
-
-private func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-    let box = ConnectSniffResultBox<T>()
-    let semaphore = DispatchSemaphore(value: 0)
-    Task { await box.run(body); semaphore.signal() }
-    semaphore.wait()
-    return try box.take()
-}
-
-private final class ConnectSniffResultBox<T>: @unchecked Sendable {
-    private var value: Result<T, Error>?
-    func run(_ body: () async throws -> T) async {
-        do { value = .success(try await body()) } catch { value = .failure(error) }
-    }
-    func take() throws -> T { try value!.get() }
-}
-
 // MARK: - Test doubles
 
 /// Sends one CONNECT on connect and fulfils `acked` when the proxy's
