@@ -62,8 +62,9 @@ Already streamed and never buffered — a separate byte-transparent frame splice
 
 ## Sendable escape hatches: what each kind actually promises
 
-Strict concurrency is on (Swift 6 language mode) and does **not** check any of these. Three kinds,
-and only one of them has a removal path:
+Strict concurrency is on (Swift 6 language mode) and does **not** check any of these. What is left is
+one kind with a removal path and one with nothing to protect — the middle kind, "lock-guarded", is
+**gone**, and how it went is the useful part (§ 2).
 
 1. **Event-loop confined** — `ProxyHandler`, `TLSInterceptHandler`, `SOCKSConnectionHandler`,
    `WebSocketTapHandler`, `StreamingResponseHandler`, `MCPHTTPHandler`. Mutable state, **no lock**;
@@ -76,13 +77,35 @@ and only one of them has a removal path:
    anyway). **Removal path**: `NIOAsyncChannel`, plus constructing handlers *inside* the pipeline
    closures so nothing non-Sendable is captured. That is the same rework as the ~24 residual
    "conformance of X to Sendable is unavailable" warnings, and it is not scheduled.
-2. **Lock-guarded** — `RulesConfig`, `InterceptionConfig`, `ClientCertificateConfig`,
-   `ReverseProxyConfig`, `RefusalLog`, `BreakpointStore`, `FlowPersistence`, `AuditPersistence`,
+2. **Lock-guarded — no longer a hatch at all.** `RulesConfig`, `InterceptionConfig`,
+   `ClientCertificateConfig`, `ReverseProxyConfig`, `RefusalLog`, `BreakpointStore`,
    `CertificateAuthority`, `RequestBodyCapture`, `ChannelBox`, `RequestBodyBridge.Delegate`,
-   `ProcessResolver`, `ReservedPorts`. The `private let lock = NSLock()` on the next line *is* the
-   invariant. **This is the terminal state, not debt** — `Mutex` would express it better but needs
-   macOS 15 and Loom targets 14, so revisit only when the floor moves. Don't file these as an
-   unfinished migration.
+   `ProcessResolver`, `ReservedPorts` all hold their state inside a `Synchronization.Mutex` now
+   (0.0.16, when the deployment floor rose to macOS 15). Each conforms to **plain `Sendable`** —
+   there is no mutable stored property left for `@unchecked` to vouch for, so the "every touch goes
+   through the lock" rule is the compiler's to enforce rather than this file's to assert. **Write
+   new shared state this way**, and note what it bought beyond tidiness:
+   - `nonisolated(unsafe)` on a global cache is gone in four places (`RegexCache.cache`,
+     `HARExport.iso8601`, `ProcessResolver.bundleInfo`, `BinaryValidator.cache`) — the value simply
+     lives in the `Mutex`, which is `Sendable` whatever it holds.
+   - `ProcessResolver`'s `…Locked` helper names (which encoded "the caller already holds the lock"
+     in a *naming convention*) became `mutating` methods on the state struct, reachable only with
+     the lock held.
+   - `ReverseProxyConfig.delete` was two separate critical sections — drop the endpoint, then forget
+     its bind state — so a `snapshot()` landing between them saw a deleted endpoint still carrying a
+     port. One `Mutex` made it one section.
+
+   Three rules when you touch these. **Never `await` inside `withLock`** — that is the one thing
+   `NSLock` let you write and this does not, and it is the reason the API is scoped. **Resume
+   continuations outside the lock**: `BreakpointStore.resolve` and `ResumeOnce.resume` take the
+   continuation *under* the lock and resume it *after*, which is what makes "exactly once" true
+   without ever running a waiter's continuation while the lock is held. And where the work is
+   genuinely expensive — minting a leaf, parsing a trust store, a `SecStaticCode` check — keep the
+   two-section shape (`check cache` / do work / `store`) rather than collapsing it for neatness.
+
+   Two holders deliberately did **not** move: `FlowPersistence` and `AuditPersistence` are confined
+   to a private serial `DispatchQueue`, because the SQLite handle isn't concurrency-safe *and*
+   writes must not block the caller. A `Mutex` there would be a downgrade, not an upgrade.
 3. **Immutable, hatch only for a missing upstream conformance** — `NIOStreamingForwarder` (all
    `let`; `EventLoopGroup` has no `Sendable`), `MCPTool` (a `[String: Any]` JSON schema; its
    `handler` is `@Sendable` on purpose so the hatch can't swallow a capture). Nothing to protect.

@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import Synchronization
 import LoomSharedModels
 import Testing
 
@@ -131,17 +132,14 @@ import Testing
 }
 
 /// Minimal thread-safe sink — the `Send` closure is called from a task group.
-private final class Collected: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: [[Flow]] = []
+private final class Collected: Sendable {
+    private let storage = Mutex<[[Flow]]>([])
 
     func append(_ batch: [Flow]) {
-        lock.lock(); defer { lock.unlock() }
-        storage.append(batch)
+        storage.withLock { $0.append(batch) }
     }
 
     var batches: [[Flow]] {
-        lock.lock(); defer { lock.unlock() }
-        return storage
+        storage.withLock { $0 }
     }
 }

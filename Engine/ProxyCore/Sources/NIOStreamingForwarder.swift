@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import NIOHTTP1
@@ -239,21 +240,28 @@ enum ForwarderError: Error {
 
 /// Thread-safe holder so the stream's onTermination can close the upstream channel
 /// once it's connected (connect happens asynchronously inside a Task).
-private final class ChannelBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var channel: Channel?
-    private var closed = false
+private final class ChannelBox: Sendable {
+    /// `Channel` is not `Sendable`; holding it inside the `Mutex` is what makes this
+    /// box safe without an `@unchecked` on the class.
+    private struct State {
+        var channel: Channel?
+        var closed = false
+    }
+
+    private let state = Mutex(State())
 
     func set(_ channel: Channel) {
-        lock.lock(); defer { lock.unlock() }
-        if closed { channel.close(promise: nil) } else { self.channel = channel }
+        state.withLock { state in
+            if state.closed { channel.close(promise: nil) } else { state.channel = channel }
+        }
     }
 
     func close() {
-        lock.lock(); defer { lock.unlock() }
-        closed = true
-        channel?.close(promise: nil)
-        channel = nil
+        state.withLock { state in
+            state.closed = true
+            state.channel?.close(promise: nil)
+            state.channel = nil
+        }
     }
 }
 

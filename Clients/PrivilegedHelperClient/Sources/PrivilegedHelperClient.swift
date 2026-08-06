@@ -1,5 +1,6 @@
 import ComposableArchitecture
 import Foundation
+import Synchronization
 import ServiceManagement
 import LoomHelperProtocol
 import LoomSharedModels
@@ -202,13 +203,13 @@ private enum HelperConnection {
 
 /// One-shot guard so a continuation resumes exactly once across the XPC reply
 /// and error-handler races.
-private final class OnceFlag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var fired = false
+private final class OnceFlag: Sendable {
+    private let fired = Mutex(false)
     func take() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if fired { return false }
-        fired = true
-        return true
+        fired.withLock { fired in
+            if fired { return false }
+            fired = true
+            return true
+        }
     }
 }

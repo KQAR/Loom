@@ -10,7 +10,13 @@ let project = Project(
     settings: .settings(
         base: [
             "SWIFT_VERSION": "6.0",
-            "MACOSX_DEPLOYMENT_TARGET": "14.0",
+            "MACOSX_DEPLOYMENT_TARGET": "15.0",
+            // Every target in the graph — modules AND test bundles — is checked at
+            // `complete`. The Swift 6 language mode implies it, so this is belt-and-
+            // braces for the module targets; what it actually buys is that a target
+            // which ever drops back to `SWIFT_VERSION = 5.0` still gets the diagnostics
+            // as warnings rather than silently losing the checking.
+            "SWIFT_STRICT_CONCURRENCY": "complete",
         ]
     ),
     targets: [
@@ -238,8 +244,12 @@ let project = Project(
                 .external(name: "NIOSSL"),
                 .external(name: "X509"),
                 .external(name: "Crypto"),
-            ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
+            ]
+            // Swift 6 language mode (inherited from the project base) — the test
+            // bundles used to sit on 5.0 so a red test meant a real regression rather
+            // than a migration artifact. That reason expired once the modules landed
+            // on 6: the tests drive NIO channels and actors directly, which is exactly
+            // the code strict concurrency has something to say about.
         ),
 
         // MARK: AppFeature reducer + pure-logic unit tests (TCA TestStore).
@@ -266,7 +276,7 @@ let project = Project(
         ),
 
         // MARK: MCP tool-executor tests (registry consistency + parse/dispatch,
-        // via a stub engine). Swift 5 to match the MCPServer module.
+        // via a stub engine).
         .target(
             name: "MCPServerTests",
             destinations: .macOS,
@@ -278,8 +288,7 @@ let project = Project(
             dependencies: [
                 .target(name: "MCPServer"),
                 .target(name: "LoomSharedModels"),
-            ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
+            ]
         ),
 
         // MARK: SharedModels unit tests (FlowQuery predicates, URLHost parity,
@@ -312,8 +321,7 @@ let project = Project(
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "LoomSharedModels"),
                 .target(name: "LoomHelperProtocol"),
-            ],
-            settings: .settings(base: ["SWIFT_VERSION": "5.0"])
+            ]
         ),
     ]
 )

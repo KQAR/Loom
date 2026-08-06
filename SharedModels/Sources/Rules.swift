@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 // MARK: - Matching
 
@@ -589,8 +590,9 @@ public protocol RulesControlling: Sendable {
 /// event loops and async tasks alike.
 public enum RegexCache {
     private struct Key: Hashable { let pattern: String; let caseInsensitive: Bool }
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var cache: [Key: NSRegularExpression] = [:]
+    /// The cache lives inside the `Mutex`, retiring the `nonisolated(unsafe)` that a
+    /// bare `static var` + `NSLock` needed. Same reasoning as `HARExport.iso8601`.
+    private static let cache = Mutex<[Key: NSRegularExpression]>([:])
     /// Far above any real rule set, but a bound nonetheless: patterns come from
     /// rules, and an agent cycling one-off regex rules programmatically would
     /// otherwise grow this for the process lifetime. Reset wholesale rather than
@@ -602,14 +604,14 @@ public enum RegexCache {
     /// patterns are rejected at rule-creation time, so this is rare).
     public static func regex(_ pattern: String, caseInsensitive: Bool = true) -> NSRegularExpression? {
         let key = Key(pattern: pattern, caseInsensitive: caseInsensitive)
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached = cache[key] { return cached }
-        let options: NSRegularExpression.Options = caseInsensitive ? [.caseInsensitive] : []
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
-        if cache.count >= maxEntries { cache.removeAll(keepingCapacity: true) }
-        cache[key] = regex
-        return regex
+        return cache.withLock { cache in
+            if let cached = cache[key] { return cached }
+            let options: NSRegularExpression.Options = caseInsensitive ? [.caseInsensitive] : []
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+            if cache.count >= maxEntries { cache.removeAll(keepingCapacity: true) }
+            cache[key] = regex
+            return regex
+        }
     }
 }
 

@@ -38,7 +38,7 @@ claude plugin install loom@loom
 
 ## 从源码构建
 
-需要 [Tuist](https://tuist.io)(版本锁定在 `mise.toml`)和 Xcode(macOS 14+)。
+需要 [Tuist](https://tuist.io)(版本锁定在 `mise.toml`)和 Xcode(macOS 15+)。
 
 ```bash
 tuist install                 # 解析 SPM 依赖

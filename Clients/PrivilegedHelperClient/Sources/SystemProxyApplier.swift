@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import SystemConfiguration
 import LoomHelperProtocol
 import LoomSharedModels
@@ -31,61 +32,62 @@ enum SystemProxyApplier {
     /// fragment ordering exists to prevent, because that ordering only holds within
     /// one call. Blocking is correct here: applies are human-speed and already off
     /// the main thread.
-    private static let applyLock = NSLock()
+    /// Holds no state — it exists purely to serialize the critical section — so the
+    /// `Mutex` wraps `Void` and the whole body runs inside `withLock`.
+    private static let applyLock = Mutex(())
 
     static func apply(enabled: Bool, host: String, port: Int, defaults: UserDefaults = .standard) -> (Bool, String?) {
-        applyLock.lock()
-        defer { applyLock.unlock() }
+        applyLock.withLock { _ in
+            let restoreQUIC = !enabled && defaults.bool(forKey: quicBlockedKey)
+            let script = enabled ? enableScript(host: host, port: port) : disableScript(restoreQUIC: restoreQUIC)
 
-        let restoreQUIC = !enabled && defaults.bool(forKey: quicBlockedKey)
-        let script = enabled ? enableScript(host: host, port: port) : disableScript(restoreQUIC: restoreQUIC)
-
-        // 1) Direct, silent path (works for admin users): feed the script to sh on
-        //    stdin-equivalent `-c`, never touching disk.
-        //
-        //    The exit status matters as much as the proxy check: the pf (QUIC)
-        //    section needs root even for an admin user, and its failures are how
-        //    the script says "the proxy landed but QUIC did not". Ignoring it —
-        //    the old behavior — meant admin users never blocked QUIC at all while
-        //    the panel claimed otherwise, so browser HTTP/3 silently bypassed
-        //    Loom. A script with no pf work (disable with nothing to restore)
-        //    still exits 0 and keeps this path silent.
-        let (directStatus, _) = run("/bin/sh", ["-c", script])
-        if directStatus == 0, verified(enabled: enabled, port: port) {
-            defaults.set(enabled, forKey: quicBlockedKey)
-            return (true, nil)
-        }
-
-        // The direct run may still have applied the proxy half (admin user, pf
-        // half failed) — remembered so a cancelled prompt below can report an
-        // honest partial success instead of a failure that isn't one.
-        let proxyLandedSilently = verified(enabled: enabled, port: port, attempts: 1)
-
-        // 2) Fallback: the SAME script inlined into one admin prompt. Inlining the
-        //    text (rather than writing a script file and running it as root) closes
-        //    a privilege-escalation TOCTOU — a same-uid process could otherwise
-        //    swap the staged file between our write and the privileged execution,
-        //    turning Loom's authorization dialog into arbitrary root code.
-        let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
-        let (status, stderr) = run("/usr/bin/osascript", ["-e", osascript])
-        if status == 0, verified(enabled: enabled, port: port) {
-            defaults.set(enabled, forKey: quicBlockedKey)
-            return (true, nil)
-        }
-        if stderr.contains("User canceled") || stderr.contains("-128") {
-            if proxyLandedSilently {
-                // The proxy is in the requested state; only the root-only pf work
-                // is missing. Say exactly what that means rather than failing.
-                if enabled {
-                    defaults.set(false, forKey: quicBlockedKey)
-                    return (true, "Proxy is on, but QUIC (HTTP/3) stays unblocked without authorization — browser traffic may bypass capture.")
-                }
-                // quicBlockedKey stays true so the next disable retries the restore.
-                return (true, "Proxy is off, but the QUIC firewall rule needs authorization to remove — HTTP/3 stays blocked until then.")
+            // 1) Direct, silent path (works for admin users): feed the script to sh on
+            //    stdin-equivalent `-c`, never touching disk.
+            //
+            //    The exit status matters as much as the proxy check: the pf (QUIC)
+            //    section needs root even for an admin user, and its failures are how
+            //    the script says "the proxy landed but QUIC did not". Ignoring it —
+            //    the old behavior — meant admin users never blocked QUIC at all while
+            //    the panel claimed otherwise, so browser HTTP/3 silently bypassed
+            //    Loom. A script with no pf work (disable with nothing to restore)
+            //    still exits 0 and keeps this path silent.
+            let (directStatus, _) = run("/bin/sh", ["-c", script])
+            if directStatus == 0, verified(enabled: enabled, port: port) {
+                defaults.set(enabled, forKey: quicBlockedKey)
+                return (true, nil)
             }
-            return (false, "Authorization cancelled.")
+
+            // The direct run may still have applied the proxy half (admin user, pf
+            // half failed) — remembered so a cancelled prompt below can report an
+            // honest partial success instead of a failure that isn't one.
+            let proxyLandedSilently = verified(enabled: enabled, port: port, attempts: 1)
+
+            // 2) Fallback: the SAME script inlined into one admin prompt. Inlining the
+            //    text (rather than writing a script file and running it as root) closes
+            //    a privilege-escalation TOCTOU — a same-uid process could otherwise
+            //    swap the staged file between our write and the privileged execution,
+            //    turning Loom's authorization dialog into arbitrary root code.
+            let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
+            let (status, stderr) = run("/usr/bin/osascript", ["-e", osascript])
+            if status == 0, verified(enabled: enabled, port: port) {
+                defaults.set(enabled, forKey: quicBlockedKey)
+                return (true, nil)
+            }
+            if stderr.contains("User canceled") || stderr.contains("-128") {
+                if proxyLandedSilently {
+                    // The proxy is in the requested state; only the root-only pf work
+                    // is missing. Say exactly what that means rather than failing.
+                    if enabled {
+                        defaults.set(false, forKey: quicBlockedKey)
+                        return (true, "Proxy is on, but QUIC (HTTP/3) stays unblocked without authorization — browser traffic may bypass capture.")
+                    }
+                    // quicBlockedKey stays true so the next disable retries the restore.
+                    return (true, "Proxy is off, but the QUIC firewall rule needs authorization to remove — HTTP/3 stays blocked until then.")
+                }
+                return (false, "Authorization cancelled.")
+            }
+            return (false, stderr.isEmpty ? "networksetup failed" : stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return (false, stderr.isEmpty ? "networksetup failed" : stderr.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     /// Where this Mac's traffic currently goes. Reading needs no privileges. Used for
@@ -124,24 +126,23 @@ enum SystemProxyApplier {
     /// - Returns: whether an orphaned block was found and cleared.
     @discardableResult
     static func restoreOrphanedQUICBlock(port: Int, defaults: UserDefaults = .standard) -> Bool {
-        applyLock.lock()
-        defer { applyLock.unlock() }
+        applyLock.withLock { _ in
+            guard hasOrphanedQUICBlock(routing: routing(loomPort: port), defaults: defaults) else { return false }
 
-        guard hasOrphanedQUICBlock(routing: routing(loomPort: port), defaults: defaults) else { return false }
-
-        let script = "#!/bin/sh\n\(QUICBlocker.disableFragment)"
-        if run("/bin/sh", ["-c", script]).status == 0 {
-            defaults.set(false, forKey: quicBlockedKey)
-            return true
+            let script = "#!/bin/sh\n\(QUICBlocker.disableFragment)"
+            if run("/bin/sh", ["-c", script]).status == 0 {
+                defaults.set(false, forKey: quicBlockedKey)
+                return true
+            }
+            // Needs root. One prompt, explained by the caller's UI; if declined, the flag
+            // stays set so the next launch (or toggle) tries again.
+            let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
+            if run("/usr/bin/osascript", ["-e", osascript]).status == 0 {
+                defaults.set(false, forKey: quicBlockedKey)
+                return true
+            }
+            return false
         }
-        // Needs root. One prompt, explained by the caller's UI; if declined, the flag
-        // stays set so the next launch (or toggle) tries again.
-        let osascript = "do shell script \(appleScriptString(script)) with administrator privileges"
-        if run("/usr/bin/osascript", ["-e", osascript]).status == 0 {
-            defaults.set(false, forKey: quicBlockedKey)
-            return true
-        }
-        return false
     }
 
     /// Quote a shell script as an AppleScript string literal for `do shell script`.

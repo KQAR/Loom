@@ -1,5 +1,6 @@
 import Crypto
 import Foundation
+import Synchronization
 import NIOSSL
 import LoomSharedModels
 import SwiftASN1
@@ -8,10 +9,10 @@ import X509
 /// Loom's man-in-the-middle certificate authority. A P-256 root CA is generated
 /// once and persisted (Keychain in production); per-host leaf certificates are
 /// minted on demand, signed by the root, and cached as ready-to-use TLS server
-/// contexts — LRU-bounded to `contextCacheCapacity` hosts. Thread-safe (`NSLock`)
+/// contexts — LRU-bounded to `contextCacheCapacity` hosts. Thread-safe (`Mutex`)
 /// so NIO handlers can pull a context for a host synchronously during the CONNECT
 /// handshake.
-final class CertificateAuthority: @unchecked Sendable {
+final class CertificateAuthority: Sendable {
     let certificate: Certificate
     /// Colon-separated uppercase SHA-256 of the CA certificate (DER).
     let sha256Fingerprint: String
@@ -25,11 +26,37 @@ final class CertificateAuthority: @unchecked Sendable {
     /// RFC 5280 public-key hash for a legacy CA persisted without an SKI.
     private let issuerKeyIdentifier: ArraySlice<UInt8>
 
-    private let lock = NSLock()
-    private var contextCache: [String: NIOSSLContext] = [:]
-    /// Hosts in least-recently-used order (oldest first), so the cache can be
-    /// bounded like every other in-memory collection in the engine.
-    private var contextOrder: [String] = []
+    /// The bounded per-host context cache. `cache` and `order` must move together —
+    /// an entry present in one and not the other is either a leak or an eviction that
+    /// frees nothing — so they share one lock, and now one `Mutex` value.
+    private struct ContextCache {
+        var contexts: [String: NIOSSLContext] = [:]
+        /// Hosts in least-recently-used order (oldest first), so the cache can be
+        /// bounded like every other in-memory collection in the engine.
+        var order: [String] = []
+
+        /// Move `host` to the most-recently-used end. Called on a cache hit, i.e. once
+        /// per TLS handshake — not per request — so the O(n) shuffle over at most
+        /// `contextCacheCapacity` entries is nothing next to the handshake itself.
+        mutating func touch(_ host: String) {
+            guard let idx = order.firstIndex(of: host) else {
+                order.append(host)
+                return
+            }
+            guard idx != order.index(before: order.endIndex) else { return }
+            order.remove(at: idx)
+            order.append(host)
+        }
+
+        mutating func evict(capacity: Int) {
+            while order.count > capacity {
+                let oldest = order.removeFirst()
+                contexts.removeValue(forKey: oldest)
+            }
+        }
+    }
+
+    private let cache = Mutex(ContextCache())
     /// Above this many hosts the least-recently-used context is dropped. A
     /// `NIOSSLContext` wraps BoringSSL state, so this is heavier per entry than a
     /// typical cache row, and a long session across thousands of distinct MITM'd
@@ -113,55 +140,33 @@ final class CertificateAuthority: @unchecked Sendable {
     /// A server-side `NIOSSLContext` presenting a freshly-minted (cached) leaf
     /// for `host`, chained to the root CA.
     func serverContext(for host: String) throws -> NIOSSLContext {
-        lock.lock()
-        defer { lock.unlock() }
-        if let cached = contextCache[host] {
-            touchLocked(host)
-            return cached
-        }
+        try cache.withLock { cache in
+            if let cached = cache.contexts[host] {
+                cache.touch(host)
+                return cached
+            }
 
-        let leaf = try mintLeaf(for: host)
-        let nioLeaf = try NIOSSLCertificate(bytes: Array(leaf.serializeAsPEM().pemString.utf8), format: .pem)
-        var config = TLSConfiguration.makeServerConfiguration(
-            certificateChain: [.certificate(nioLeaf), .certificate(nioCACert)],
-            privateKey: .privateKey(nioLeafKey)
-        )
-        // Advertise HTTP/2 so h2 clients negotiate it (we demux + capture per
-        // stream); http/1.1 stays the fallback. A client that offers neither just
-        // gets http/1.1.
-        config.applicationProtocols = ["h2", "http/1.1"]
-        let context = try NIOSSLContext(configuration: config)
-        contextCache[host] = context
-        contextOrder.append(host)
-        evictLocked()
-        return context
-    }
-
-    /// Move `host` to the most-recently-used end. Called on a cache hit, i.e. once
-    /// per TLS handshake — not per request — so the O(n) shuffle over at most
-    /// `contextCacheCapacity` entries is nothing next to the handshake itself.
-    private func touchLocked(_ host: String) {
-        guard let idx = contextOrder.firstIndex(of: host) else {
-            contextOrder.append(host)
-            return
-        }
-        guard idx != contextOrder.index(before: contextOrder.endIndex) else { return }
-        contextOrder.remove(at: idx)
-        contextOrder.append(host)
-    }
-
-    private func evictLocked() {
-        while contextOrder.count > Self.contextCacheCapacity {
-            let oldest = contextOrder.removeFirst()
-            contextCache.removeValue(forKey: oldest)
+            let leaf = try mintLeaf(for: host)
+            let nioLeaf = try NIOSSLCertificate(bytes: Array(leaf.serializeAsPEM().pemString.utf8), format: .pem)
+            var config = TLSConfiguration.makeServerConfiguration(
+                certificateChain: [.certificate(nioLeaf), .certificate(nioCACert)],
+                privateKey: .privateKey(nioLeafKey)
+            )
+            // Advertise HTTP/2 so h2 clients negotiate it (we demux + capture per
+            // stream); http/1.1 stays the fallback. A client that offers neither just
+            // gets http/1.1.
+            config.applicationProtocols = ["h2", "http/1.1"]
+            let context = try NIOSSLContext(configuration: config)
+            cache.contexts[host] = context
+            cache.order.append(host)
+            cache.evict(capacity: Self.contextCacheCapacity)
+            return context
         }
     }
 
     /// Test seam: how many host contexts are currently held.
     var cachedContextCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return contextCache.count
+        cache.withLock { $0.contexts.count }
     }
 
     /// Internal (not private) so tests can inspect the minted certificate directly.

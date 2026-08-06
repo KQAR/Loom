@@ -1,24 +1,22 @@
 import Foundation
+import Synchronization
 import LoomHelperProtocol
 import os
 
 /// The object exported over XPC. Implements the privileged operations and owns
 /// the override lifecycle (backup on override, spawn the watchdog, restore on
 /// request/uninstall). Thread-safe: XPC delivers calls concurrently.
-// `@unchecked Sendable`: XPC delivers each call on an arbitrary connection queue,
-// and the only mutable state — `activePort` — is guarded by `lock` on every access.
-// The compiler can't see a lock; it can only see a mutable `var` on a class reached
-// from a `static let`.
-final class HelperService: NSObject, LoomPrivilegedHelperProtocol, @unchecked Sendable {
+// XPC delivers each call on an arbitrary connection queue. The only mutable state —
+// `activePort` — lives inside a `Mutex`, so this needs no `@unchecked`: there is no
+// mutable stored property for the compiler to be told to overlook.
+final class HelperService: NSObject, LoomPrivilegedHelperProtocol, Sendable {
     static let shared = HelperService()
 
     private let logger = Logger(subsystem: HelperIdentity.logSubsystem, category: "HelperService")
-    private let lock = NSLock()
-    private var activePort: Int?
+    private let activePort = Mutex<Int?>(nil)
 
     var hasActiveOverride: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return activePort != nil
+        activePort.withLock { $0 != nil }
     }
 
     // MARK: Proxy
@@ -30,7 +28,7 @@ final class HelperService: NSObject, LoomPrivilegedHelperProtocol, @unchecked Se
             let backup = ProxyBackup(services: snapshots, ownerPID: ownerPID, loomPort: port, createdAt: Date())
             try ProxyBackupStore.write(backup)
             ProxyWatchdog.spawn(ownerPID: ownerPID)
-            lock.lock(); activePort = port; lock.unlock()
+            activePort.withLock { $0 = port }
             logger.info("system proxy overridden to 127.0.0.1:\(port) for owner \(ownerPID)")
             reply(true, nil)
         } catch {
@@ -41,14 +39,14 @@ final class HelperService: NSObject, LoomPrivilegedHelperProtocol, @unchecked Se
     func restoreSystemProxy(withReply reply: @escaping (Bool, String?) -> Void) {
         IdleExitMonitor.noteActivity()
         guard let backup = ProxyBackupStore.read() else {
-            lock.lock(); activePort = nil; lock.unlock()
+            activePort.withLock { $0 = nil }
             reply(true, nil) // nothing to restore
             return
         }
         do {
             try ProxyConfigurator.restore(backup.services)
             ProxyBackupStore.clear()
-            lock.lock(); activePort = nil; lock.unlock()
+            activePort.withLock { $0 = nil }
             reply(true, nil)
         } catch {
             reply(false, error.localizedDescription)
@@ -57,7 +55,7 @@ final class HelperService: NSObject, LoomPrivilegedHelperProtocol, @unchecked Se
 
     func getProxyStatus(withReply reply: @escaping (Bool, Int) -> Void) {
         IdleExitMonitor.noteActivity()
-        let port = lock.withLock { activePort } ?? (ProxyBackupStore.read()?.loomPort ?? 0)
+        let port = activePort.withLock { $0 } ?? (ProxyBackupStore.read()?.loomPort ?? 0)
         let status = ProxyConfigurator.status(loomPort: port)
         reply(status.0, status.1)
     }
@@ -94,14 +92,7 @@ final class HelperService: NSObject, LoomPrivilegedHelperProtocol, @unchecked Se
             try? ProxyConfigurator.restore(backup.services)
             ProxyBackupStore.clear()
         }
-        lock.lock(); activePort = nil; lock.unlock()
+        activePort.withLock { $0 = nil }
         reply(true)
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock(); defer { unlock() }
-        return body()
     }
 }

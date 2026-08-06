@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 import LoomSharedModels
 @testable import LoomProxyCore
 
@@ -403,17 +404,15 @@ struct BreakpointReleaseInvariantTests {
 /// and the hung forward never completes. The test would then hang until the
 /// suite's time-limit trait kills and restarts the whole test process, discarding
 /// every other result in the run. Polling a flag never touches the stuck task.
-private final class Signal: @unchecked Sendable {
-    private let lock = NSLock()
-    private var raised = false
+private final class Signal: Sendable {
+    private let raised = Mutex(false)
 
     func signal() {
-        lock.lock(); raised = true; lock.unlock()
+        raised.withLock { $0 = true }
     }
 
     private var isRaised: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return raised
+        raised.withLock { $0 }
     }
 
     func wait(seconds: Double) async -> Bool {

@@ -37,14 +37,20 @@ import LoomSharedModels
         #expect(Set(names).count == names.count, "tool names must be unique")
         // The blocking tools would each sit here for their default wait; give them a
         // deadline instead of skipping them, so they stay covered by this guard.
-        let arguments: [String: [String: Any]] = [
-            "wait_for_flow": ["max_seconds": 0.05],
-            "wait_for_pending": ["max_seconds": 0.05],
-        ]
+        // Built per call rather than looked up in a dictionary declared out here: this
+        // suite is `@MainActor` and `call` is nonisolated, so a stored `[String: Any]`
+        // would belong to the main-actor region and handing it over is what strict
+        // concurrency rejects. A fresh literal is disconnected, which is the truth.
+        func arguments(for name: String) -> sending [String: Any] {
+            switch name {
+            case "wait_for_flow", "wait_for_pending": ["max_seconds": 0.05]
+            default: [:]
+            }
+        }
         for name in names {
             if name == "export_har" { continue } // writes a real file to the app-support dir
             do {
-                _ = try await executor.call(name: name, arguments: arguments[name] ?? [:])
+                _ = try await executor.call(name: name, arguments: arguments(for: name))
             } catch let error as MCPError {
                 // Missing required args are fine; "unknown tool" means the schema
                 // advertises a tool with no handler — the drift bug we guard against.

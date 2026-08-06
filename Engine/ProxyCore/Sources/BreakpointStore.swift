@@ -1,5 +1,6 @@
 import Foundation
 import LoomSharedModels
+import Synchronization
 
 /// How a held exchange should continue, delivered by `resumeBreakpoint`.
 enum BreakpointResolution: Sendable {
@@ -15,10 +16,33 @@ enum BreakpointResolution: Sendable {
 /// the actor — like `RulesConfig` — so forwarding never has to hop to the actor
 /// just to check for a breakpoint. Not persisted: a held exchange holds a live
 /// connection open, so it can't survive the process.
-final class BreakpointStore: @unchecked Sendable {
-    private let lock = NSLock()
-    private var breakpoints: [Breakpoint] = []
-    private var held: [UUID: Held] = [:]
+/// Every mutable field lives inside one `Mutex`, which is also the type's whole
+/// safety story: the guarantee that a continuation is resumed exactly once rests on
+/// "remove from `held` under the lock, resume outside it", and having the state
+/// reachable only through `withLock` is what makes that structural rather than a
+/// convention every future edit has to remember.
+final class BreakpointStore: Sendable {
+    private struct State {
+        var breakpoints: [Breakpoint] = []
+        var held: [UUID: Held] = [:]
+        /// Holds whose task was cancelled *before* `hold` managed to park them. The
+        /// cancellation handler can run concurrently with the body, so it records the
+        /// id here and the body aborts instead of parking — otherwise a cancel that
+        /// lands in that window would be lost and the exchange would wait out the
+        /// whole timeout with nobody listening.
+        var cancelledBeforePark: Set<UUID> = []
+        /// Live subscribers to "an exchange was just parked" (`pendingBreakpointStream`).
+        var pendingContinuations: [UUID: AsyncStream<PendingBreakpoint>.Continuation] = [:]
+        /// The most recently armed watchdog, and how many watchdogs actually
+        /// auto-proceeded a hold. Both exist so a test can assert cancellation
+        /// *positively* — await the task, then check it resolved nothing — instead of
+        /// sleeping past the deadline and inferring cancellation from silence.
+        var lastWatchdog: Task<Void, Never>?
+        var timeoutResolutionCount = 0
+        var willAnnounceParked: (@Sendable () -> Void)?
+    }
+
+    private let state = Mutex(State())
 
     /// A parked exchange plus the continuation that releases its `await`, and the
     /// timeout task watching it — cancelled the moment anything else resolves the
@@ -30,26 +54,9 @@ final class BreakpointStore: @unchecked Sendable {
         var timeout: Task<Void, Never>?
     }
 
-    /// Holds whose task was cancelled *before* `hold` managed to park them. The
-    /// cancellation handler can run concurrently with the body, so it records the
-    /// id here and the body aborts instead of parking — otherwise a cancel that
-    /// lands in that window would be lost and the exchange would wait out the
-    /// whole timeout with nobody listening.
-    private var cancelledBeforePark: Set<UUID> = []
-
     /// How long a held exchange waits before auto-proceeding unchanged, so a client
     /// connection can't hang forever if no operator ever resumes it.
     private let timeout: TimeInterval
-
-    /// Live subscribers to "an exchange was just parked" (`pendingBreakpointStream`).
-    private var pendingContinuations: [UUID: AsyncStream<PendingBreakpoint>.Continuation] = [:]
-
-    /// The most recently armed watchdog, and how many watchdogs actually
-    /// auto-proceeded a hold. Both exist so a test can assert cancellation
-    /// *positively* — await the task, then check it resolved nothing — instead of
-    /// sleeping past the deadline and inferring cancellation from silence.
-    private var lastWatchdog: Task<Void, Never>?
-    private var timeoutResolutionCount = 0
 
     /// Test seam: called immediately before a parked exchange is announced on
     /// `pendingStream()`, with the lock released.
@@ -62,26 +69,23 @@ final class BreakpointStore: @unchecked Sendable {
     /// this guards survived until Thread Sanitizer slowed the tail of `hold` down
     /// enough to lose the race on CI. A hook at the exact moment is deterministic;
     /// a timing-dependent assertion is not a guard, it is a coin toss.
-    var willAnnounceParked: (@Sendable () -> Void)?
+    var willAnnounceParked: (@Sendable () -> Void)? {
+        get { state.withLock { $0.willAnnounceParked } }
+        set { state.withLock { $0.willAnnounceParked = newValue } }
+    }
 
     /// Awaitable handle on the watchdog armed by the last `hold`.
     var mostRecentWatchdog: Task<Void, Never>? {
-        lock.lock()
-        defer { lock.unlock() }
-        return lastWatchdog
+        state.withLock { $0.lastWatchdog }
     }
 
     /// Holds released by the timeout rather than by a resume/disarm/cancel.
     var timeoutResolutions: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return timeoutResolutionCount
+        state.withLock { $0.timeoutResolutionCount }
     }
 
     private func countTimeoutResolution() {
-        lock.lock()
-        timeoutResolutionCount += 1
-        lock.unlock()
+        state.withLock { $0.timeoutResolutionCount += 1 }
     }
 
     init(timeout: TimeInterval = 300) {
@@ -91,8 +95,7 @@ final class BreakpointStore: @unchecked Sendable {
     // MARK: - Armed breakpoints (actor-facing)
 
     func arm(_ breakpoint: Breakpoint) {
-        lock.lock(); defer { lock.unlock() }
-        breakpoints.append(breakpoint)
+        state.withLock { $0.breakpoints.append(breakpoint) }
     }
 
     /// Remove an armed breakpoint; returns false when no such id exists.
@@ -103,12 +106,14 @@ final class BreakpointStore: @unchecked Sendable {
     /// minutes of a live client connection held open by a breakpoint that no
     /// longer exists.
     func disarm(id: UUID) -> Bool {
-        lock.lock()
-        let before = breakpoints.count
-        breakpoints.removeAll { $0.id == id }
-        let removed = breakpoints.count != before
-        let orphaned = held.values.filter { $0.info.breakpointID == id }.map(\.info.id)
-        lock.unlock()
+        let (removed, orphaned) = state.withLock { state -> (Bool, [UUID]) in
+            let before = state.breakpoints.count
+            state.breakpoints.removeAll { $0.id == id }
+            return (
+                state.breakpoints.count != before,
+                state.held.values.filter { $0.info.breakpointID == id }.map(\.info.id)
+            )
+        }
 
         for pendingID in orphaned {
             resolve(pendingID: pendingID, resolution: .proceed(.none))
@@ -117,13 +122,11 @@ final class BreakpointStore: @unchecked Sendable {
     }
 
     func armed() -> [Breakpoint] {
-        lock.lock(); defer { lock.unlock() }
-        return breakpoints
+        state.withLock { $0.breakpoints }
     }
 
     func pending() -> [PendingBreakpoint] {
-        lock.lock(); defer { lock.unlock() }
-        return held.values.map(\.info).sorted { $0.heldAt < $1.heldAt }
+        state.withLock { $0.held.values.map(\.info).sorted { $0.heldAt < $1.heldAt } }
     }
 
     /// Test seam: `cancelledBeforePark` must never retain an id past the `hold`
@@ -131,8 +134,7 @@ final class BreakpointStore: @unchecked Sendable {
     /// process, and this is the only collection in the engine without a cap —
     /// it's meant to be transient, so the assertion is "empty", not "bounded".
     var cancelledBeforeParkCount: Int {
-        lock.lock(); defer { lock.unlock() }
-        return cancelledBeforePark.count
+        state.withLock { $0.cancelledBeforePark.count }
     }
 
     /// A live "just parked" stream, so an operator waiting for a breakpoint to fire
@@ -142,14 +144,9 @@ final class BreakpointStore: @unchecked Sendable {
     func pendingStream() -> AsyncStream<PendingBreakpoint> {
         let id = UUID()
         return AsyncStream(bufferingPolicy: .bufferingOldest(64)) { continuation in
-            lock.lock()
-            pendingContinuations[id] = continuation
-            lock.unlock()
+            state.withLock { $0.pendingContinuations[id] = continuation }
             continuation.onTermination = { [weak self] _ in
-                guard let self else { return }
-                self.lock.lock()
-                self.pendingContinuations[id] = nil
-                self.lock.unlock()
+                self?.state.withLock { $0.pendingContinuations[id] = nil }
             }
         }
     }
@@ -158,9 +155,7 @@ final class BreakpointStore: @unchecked Sendable {
     /// held: `yield` can resume a suspended consumer, and doing that under the lock
     /// would let a waiter's continuation run while forwarding still owns it.
     private func broadcast(parked info: PendingBreakpoint) {
-        lock.lock()
-        let continuations = pendingContinuations
-        lock.unlock()
+        let continuations = state.withLock { $0.pendingContinuations }
         for (id, continuation) in continuations {
             if case .dropped = continuation.yield(info) {
                 Log.proxy.error("""
@@ -179,10 +174,11 @@ final class BreakpointStore: @unchecked Sendable {
     func firstMatch(
         method: String, url: String, phase: BreakpointPhase, origin: RequestOrigin? = nil
     ) -> Breakpoint? {
-        lock.lock(); defer { lock.unlock() }
-        return breakpoints.first { bp in
-            (phase == .request ? bp.onRequest : bp.onResponse)
-                && bp.match.matches(method: method, url: url, origin: origin)
+        state.withLock { state in
+            state.breakpoints.first { bp in
+                (phase == .request ? bp.onRequest : bp.onResponse)
+                    && bp.match.matches(method: method, url: url, origin: origin)
+            }
         }
     }
 
@@ -206,19 +202,6 @@ final class BreakpointStore: @unchecked Sendable {
     /// as `.abort` immediately instead of waiting out the timeout. Otherwise the
     /// entry would linger and `list_pending` would keep advertising an exchange
     /// nobody is waiting on.
-    /// Consume `hold`'s cancellation marker under the lock.
-    ///
-    /// A method rather than the two lines it replaces in `hold`'s `defer`, because
-    /// `NSLock.lock()` is unavailable from an async context and that `defer` body
-    /// sits directly in one. The restriction is about holding a lock *across a
-    /// suspension* — this critical section can't suspend, but the compiler can only
-    /// see that once it lives in a non-async function.
-    private func clearParkCancellation(_ id: UUID) {
-        lock.lock()
-        defer { lock.unlock() }
-        cancelledBeforePark.remove(id)
-    }
-
     func hold(_ info: PendingBreakpoint) async -> BreakpointResolution {
         // The marker below is only ever meaningful to *this* call, so clear it on
         // the way out. `cancel` writes one whenever it finds no held entry, and
@@ -230,18 +213,22 @@ final class BreakpointStore: @unchecked Sendable {
         // resumes, which is an ordinary pairing for a hold that pins a live
         // connection. `withTaskCancellationHandler` has deregistered its handler by
         // the time it returns, so no insert can follow this defer.
-        defer { clearParkCancellation(info.id) }
+        // `Mutex.withLock` is the scoped API the `noasync` diagnostic on `NSLock.lock()`
+        // points at, so this can sit directly in an async function's `defer` — the
+        // helper that used to exist only to get it out of one is gone.
+        defer { state.withLock { _ = $0.cancelledBeforePark.remove(info.id) } }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<BreakpointResolution, Never>) in
-                lock.lock()
-                // Cancelled in the window before we got here — don't park at all.
-                if cancelledBeforePark.remove(info.id) != nil {
-                    lock.unlock()
+                let cancelledEarly = state.withLock { state -> Bool in
+                    // Cancelled in the window before we got here — don't park at all.
+                    if state.cancelledBeforePark.remove(info.id) != nil { return true }
+                    state.held[info.id] = Held(info: info, continuation: continuation, timeout: nil)
+                    return false
+                }
+                if cancelledEarly {
                     continuation.resume(returning: .abort)
                     return
                 }
-                held[info.id] = Held(info: info, continuation: continuation, timeout: nil)
-                lock.unlock()
 
                 let id = info.id
                 let seconds = self.timeout
@@ -268,16 +255,17 @@ final class BreakpointStore: @unchecked Sendable {
                 // costs the waiter a task creation and two lock acquisitions — not a
                 // delay of any consequence — and buys an ordering guarantee: an
                 // announced hold has its watchdog armed.
-                lock.lock()
-                lastWatchdog = task
-                // A short timeout can already have resolved the hold by now (tests use
-                // 50 ms), in which case there is nothing left to attach it to.
-                let stillHeld = held[id] != nil
-                if stillHeld { held[id]?.timeout = task }
-                lock.unlock()
+                let (stillHeld, announce) = state.withLock { state -> (Bool, (@Sendable () -> Void)?) in
+                    state.lastWatchdog = task
+                    // A short timeout can already have resolved the hold by now (tests use
+                    // 50 ms), in which case there is nothing left to attach it to.
+                    let stillHeld = state.held[id] != nil
+                    if stillHeld { state.held[id]?.timeout = task }
+                    return (stillHeld, state.willAnnounceParked)
+                }
 
                 if stillHeld {
-                    willAnnounceParked?()
+                    announce?()
                     broadcast(parked: info)
                 } else {
                     // Resolved already — announcing it now would hand a waiter an
@@ -294,13 +282,14 @@ final class BreakpointStore: @unchecked Sendable {
     /// Resolve a hold as aborted because its task was cancelled. If the body hasn't
     /// parked yet, leave a marker so it aborts instead of parking.
     private func cancel(pendingID: UUID) {
-        lock.lock()
-        guard let entry = held.removeValue(forKey: pendingID) else {
-            cancelledBeforePark.insert(pendingID)
-            lock.unlock()
-            return
+        let entry = state.withLock { state -> Held? in
+            guard let entry = state.held.removeValue(forKey: pendingID) else {
+                state.cancelledBeforePark.insert(pendingID)
+                return nil
+            }
+            return entry
         }
-        lock.unlock()
+        guard let entry else { return }
         entry.timeout?.cancel()
         entry.continuation.resume(returning: .abort)
     }
@@ -310,12 +299,9 @@ final class BreakpointStore: @unchecked Sendable {
     /// wins, so the continuation is never resumed twice.
     @discardableResult
     private func resolve(pendingID: UUID, resolution: BreakpointResolution) -> Bool {
-        lock.lock()
-        guard let entry = held.removeValue(forKey: pendingID) else {
-            lock.unlock()
+        guard let entry = state.withLock({ $0.held.removeValue(forKey: pendingID) }) else {
             return false
         }
-        lock.unlock()
         entry.timeout?.cancel()
         entry.continuation.resume(returning: resolution)
         return true

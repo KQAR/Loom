@@ -2,7 +2,7 @@
   "meta": {
     "project": "Loom",
     "tagline": "AI-operable HTTP/HTTPS debugging proxy for macOS — the MCP surface exposes write actions, not just read queries.",
-    "platform": "macOS 14+",
+    "platform": "macOS 15+",
     "stack": [
       "SwiftUI",
       "The Composable Architecture",

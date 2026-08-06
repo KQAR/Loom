@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import NIOHTTP1
@@ -25,7 +26,7 @@ struct HTTP2InterceptionTests {
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
-            try? group.syncShutdownGracefully()
+            shutdownBlocking(group)
             // Blocking, not `Task { … }`: a detached teardown runs during the *next*
             // test (see `EngineTeardown.swift`), and `shutdown()` rather than `stop()`
             // so this engine's event-loop threads actually go away.
@@ -99,7 +100,7 @@ struct HTTP2InterceptionTests {
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
-            try? group.syncShutdownGracefully()
+            shutdownBlocking(group)
             // Blocking, not `Task { … }`: a detached teardown runs during the *next*
             // test (see `EngineTeardown.swift`), and `shutdown()` rather than `stop()`
             // so this engine's event-loop threads actually go away.
@@ -125,8 +126,13 @@ struct HTTP2InterceptionTests {
         try await client.pipeline.removeHandler(sender).get()
 
         let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
+        // Added marker-then-TLS, both at `.first`, which lands them in the same order
+        // as the old `position: .after(tls)` — TLS at the head, marker right behind it.
+        // Written this way because `.after(tls)` is a *second* use of `tls` after it has
+        // already been handed to the pipeline, so under strict concurrency the handler
+        // is no longer a disconnected value and `NIOSSLHandler` is not `Sendable`.
+        try await client.pipeline.addHandler(HandshakeMarker(progress: progress), position: .first).get()
         try await client.pipeline.addHandler(tls, position: .first).get()
-        try await client.pipeline.addHandler(HandshakeMarker(progress: progress), position: .after(tls)).get()
         let multiplexer = try await client.configureHTTP2Pipeline(mode: .client).get()
         progress.mark("h2 pipeline configured")
 
@@ -167,27 +173,31 @@ struct HTTP2InterceptionTests {
 /// monotonically growing byte counters, and periodic samples of those counters taken
 /// while waiting. The point is to turn "it hung" into "it stalled after N bytes at
 /// stage X, and stopped moving at t=+2 s".
-private final class H2Progress: @unchecked Sendable {
-    private let lock = NSLock()
+private final class H2Progress: Sendable {
+    private struct State {
+        var stages: [(String, TimeInterval)] = []
+        var counters: [(name: String, value: Int)] = []
+        var samples: [String] = []
+    }
+
+    private let state = Mutex(State())
     private let start = Date()
-    private var stages: [(String, TimeInterval)] = []
-    private var counters: [(name: String, value: Int)] = []
-    private var samples: [String] = []
     /// The process-wide read counter is cumulative across the suite; baseline it so
     /// the report shows reads issued *for this exchange*.
     private let readsAtStart = RequestBodyBridge.readsIssued
 
     func mark(_ stage: String) {
         let at = Date().timeIntervalSince(start)
-        lock.lock(); stages.append((stage, at)); lock.unlock()
+        state.withLock { $0.stages.append((stage, at)) }
     }
 
     func add(_ counter: String, _ amount: Int) {
-        lock.lock(); defer { lock.unlock() }
-        if let index = counters.firstIndex(where: { $0.name == counter }) {
-            counters[index].value += amount
-        } else {
-            counters.append((counter, amount))
+        state.withLock { state in
+            if let index = state.counters.firstIndex(where: { $0.name == counter }) {
+                state.counters[index].value += amount
+            } else {
+                state.counters.append((counter, amount))
+            }
         }
     }
 
@@ -200,27 +210,31 @@ private final class H2Progress: @unchecked Sendable {
     /// stopped asking. Reads still climbing while bytes sit still = we asked and got
     /// nothing (upstream). Reads frozen too = we stopped asking (ours).
     func sample() {
-        lock.lock(); defer { lock.unlock() }
-        let at = String(format: "%.1f", Date().timeIntervalSince(start))
-        var values = counters.map { "\($0.name)=\($0.value)" }
-        values.append("reads issued=\(RequestBodyBridge.readsIssued - readsAtStart)")
-        samples.append("  t=+\(at)s \(values.joined(separator: " "))")
+        state.withLock { state in
+            let at = String(format: "%.1f", Date().timeIntervalSince(start))
+            var values = state.counters.map { "\($0.name)=\($0.value)" }
+            values.append("reads issued=\(RequestBodyBridge.readsIssued - readsAtStart)")
+            state.samples.append("  t=+\(at)s \(values.joined(separator: " "))")
+        }
     }
 
     func report() -> String {
-        lock.lock(); defer { lock.unlock() }
-        var lines = ["stages reached:"]
-        lines += stages.map { "  +\(String(format: "%.3f", $0.1))s  \($0.0)" }
-        lines.append("counters:")
-        lines += counters.isEmpty ? ["  (none)"] : counters.map { "  \($0.name) = \($0.value)" }
-        // See `sample()`: this is what separates upstream's missing WINDOW_UPDATE
-        // (issue #99) from a Loom-side read-pump regression. Both park at 65535.
-        lines.append("  reads issued (this exchange) = \(RequestBodyBridge.readsIssued - readsAtStart)")
-        if !samples.isEmpty {
-            lines.append("samples while waiting:")
-            lines += samples
+        state.withLock { state in
+            var lines = ["stages reached:"]
+            lines += state.stages.map { "  +\(String(format: "%.3f", $0.1))s  \($0.0)" }
+            lines.append("counters:")
+            lines += state.counters.isEmpty
+                ? ["  (none)"]
+                : state.counters.map { "  \($0.name) = \($0.value)" }
+            // See `sample()`: this is what separates upstream's missing WINDOW_UPDATE
+            // (issue #99) from a Loom-side read-pump regression. Both park at 65535.
+            lines.append("  reads issued (this exchange) = \(RequestBodyBridge.readsIssued - readsAtStart)")
+            if !state.samples.isEmpty {
+                lines.append("samples while waiting:")
+                lines += state.samples
+            }
+            return lines.joined(separator: "\n")
         }
-        return lines.joined(separator: "\n")
     }
 }
 
@@ -233,7 +247,7 @@ private struct H2Stall: Error, CustomStringConvertible {
 /// recording the progress report plus a stack sample. Deliberately not a task group:
 /// `EventLoopFuture.get()` isn't cancellable, so a group would wait on the hung await
 /// at scope exit and the watchdog could never report.
-private func awaitOrReport<T>(
+private func awaitOrReport<T: Sendable>(
     _ future: EventLoopFuture<T>, stage: String, timeout: TimeInterval, progress: H2Progress
 ) async throws -> T {
     let box = ResumeOnce<T>()
@@ -262,24 +276,30 @@ private func awaitOrReport<T>(
 
 /// Resolves a continuation exactly once, from whichever of the future or the watchdog
 /// gets there first.
-private final class ResumeOnce<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<T, Error>?
-    private var resolved = false
+private final class ResumeOnce<T: Sendable>: Sendable {
+    private struct State {
+        var continuation: CheckedContinuation<T, Error>?
+        var resolved = false
+    }
 
-    var isResolved: Bool { lock.lock(); defer { lock.unlock() }; return resolved }
+    private let state = Mutex(State())
+
+    var isResolved: Bool { state.withLock { $0.resolved } }
 
     func arm(_ continuation: CheckedContinuation<T, Error>) {
-        lock.lock(); self.continuation = continuation; lock.unlock()
+        state.withLock { $0.continuation = continuation }
     }
 
     func resume(_ result: Result<T, Error>) {
-        lock.lock()
-        guard !resolved, let continuation else { lock.unlock(); return }
-        resolved = true
-        self.continuation = nil
-        lock.unlock()
-        continuation.resume(with: result)
+        // Taken under the lock, resumed outside it — that split is what makes
+        // "exactly once" true no matter which of the future or the watchdog wins.
+        let continuation = state.withLock { state -> CheckedContinuation<T, Error>? in
+            guard !state.resolved, let continuation = state.continuation else { return nil }
+            state.resolved = true
+            state.continuation = nil
+            return continuation
+        }
+        continuation?.resume(with: result)
     }
 }
 
@@ -323,15 +343,18 @@ private final class HandshakeMarker: ChannelInboundHandler {
 /// forwarder, and unlike `StubForwarder`'s buffered default — reporting how much of
 /// the body actually reached it. Paired with the client's per-chunk flush counter,
 /// this is what attributes a stall to the client, our read pump, or the consumer.
-private final class StreamingProgressForwarder: UpstreamForwarding, @unchecked Sendable {
+private final class StreamingProgressForwarder: UpstreamForwarding, Sendable {
     let status: Int
     let body: Data
     private let progress: H2Progress
-    private let lock = NSLock()
-    private var _lastURL: URL?
-    private var _lastBody: Data?
-    var lastURL: URL? { lock.lock(); defer { lock.unlock() }; return _lastURL }
-    var lastBody: Data? { lock.lock(); defer { lock.unlock() }; return _lastBody }
+    private struct Seen {
+        var url: URL?
+        var body: Data?
+    }
+
+    private let seen = Mutex(Seen())
+    var lastURL: URL? { seen.withLock { $0.url } }
+    var lastBody: Data? { seen.withLock { $0.body } }
 
     init(status: Int, body: Data, progress: H2Progress) {
         self.status = status
@@ -340,7 +363,7 @@ private final class StreamingProgressForwarder: UpstreamForwarding, @unchecked S
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        lock.lock(); _lastURL = url; _lastBody = body; lock.unlock()
+        seen.withLock { $0.url = url; $0.body = body }
         return ForwardResult(
             statusCode: status,
             headers: [HeaderPair(name: "Content-Type", value: "application/json")],
@@ -368,7 +391,7 @@ private final class StreamingProgressForwarder: UpstreamForwarding, @unchecked S
                         }
                     }
                     self.progress.mark("upstream request body finished (\(collected.count) bytes)")
-                    self.lock.lock(); self._lastURL = url; self._lastBody = collected; self.lock.unlock()
+                    self.seen.withLock { $0.url = url; $0.body = collected }
                     continuation.yield(.head(
                         statusCode: self.status, httpVersion: nil,
                         headers: [HeaderPair(name: "Content-Type", value: "application/json")]
