@@ -320,7 +320,12 @@ final class FlowPersistence: @unchecked Sendable {
         sqlite3_bind_text(stmt, 4, row.method, -1, transient)
         if let status = row.status { sqlite3_bind_int(stmt, 5, Int32(status)) } else { sqlite3_bind_null(stmt, 5) }
         row.json.withUnsafeBytes { raw in
-            sqlite3_bind_blob(stmt, 6, raw.baseAddress, Int32(row.json.count), transient)
+            // `_ =` on the bind, not on `withUnsafeBytes`: the closure's last
+            // expression is otherwise its return value, so the *block* result goes
+            // unused and the compiler flags that instead of the thing being ignored.
+            // Every other bind here discards its status the same way — imported C
+            // functions are implicitly discardable, this one just isn't in tail position.
+            _ = sqlite3_bind_blob(stmt, 6, raw.baseAddress, Int32(row.json.count), transient)
         }
         bindBlob(stmt, 7, row.requestBody)
         bindBlob(stmt, 8, row.responseBody)
@@ -346,7 +351,7 @@ final class FlowPersistence: @unchecked Sendable {
     private func bindBlob(_ stmt: OpaquePointer?, _ index: Int32, _ body: Data?) {
         guard let body, !body.isEmpty else { sqlite3_bind_null(stmt, index); return }
         body.withUnsafeBytes { raw in
-            sqlite3_bind_blob(stmt, index, raw.baseAddress, Int32(body.count), transient)
+            _ = sqlite3_bind_blob(stmt, index, raw.baseAddress, Int32(body.count), transient)
         }
     }
 

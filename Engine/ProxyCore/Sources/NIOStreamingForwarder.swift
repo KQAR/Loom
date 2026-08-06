@@ -58,9 +58,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             // absence) is the whole diagnosis. See `UpstreamTLSError`.
             let identity = isTLS ? self.clientIdentities?.identityLabel(forHost: host) : nil
 
-            let sslHandler: NIOSSLClientHandler?
+            // The *context* is resolved here, before the attempt, and the handler is
+            // built from it inside the channel initializer below. That split is not
+            // cosmetic: resolving the context is the step that fails for a configured
+            // identity that won't load, and that failure has to reach the caller
+            // verbatim (naming the identity, not the origin — see the type note on
+            // `resolveClientTLS`). `NIOSSLContext` is `Sendable`; `NIOSSLClientHandler`
+            // is not, which is why only the latter moves inside.
+            let clientTLS: (context: NIOSSLContext, serverName: String?)?
             do {
-                sslHandler = try isTLS ? self.makeSSLHandler(host: host) : nil
+                clientTLS = try isTLS ? self.resolveClientTLS(host: host) : nil
             } catch {
                 // A configured identity that won't load: the error already names it
                 // (the store validates on the way in), so it is passed through as-is
@@ -77,11 +84,14 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     .connectTimeout(connectTimeout)
                     .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                     .channelInitializer { channel in
-                        let tlsFuture: EventLoopFuture<Void> = sslHandler.map {
-                            channel.pipeline.addHandler($0)
-                        } ?? channel.eventLoop.makeSucceededVoidFuture()
-                        return tlsFuture
-                            .flatMap { channel.pipeline.addHTTPClientHandlers() }
+                        channel.eventLoop.makeCompletedFuture {
+                            let sync = channel.pipeline.syncOperations
+                            if let clientTLS {
+                                try sync.addHandler(NIOSSLClientHandler(
+                                    context: clientTLS.context, serverHostname: clientTLS.serverName
+                                ))
+                            }
+                            try sync.addHTTPClientHandlers()
                             // Decompress gzip/deflate so relayed/captured bytes are plaintext;
                             // the now-wrong Content-Encoding/Length are stripped on `.head`.
                             // The ratio cap is a decompression-bomb guard: bodies come from
@@ -90,13 +100,14 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                             // is far above real content (text gzips ~3-10x) and far below a
                             // zip bomb (1000x+), so it costs nothing legitimate. The capture
                             // is separately capped; this bounds the *inflation*.
-                            .flatMap { channel.pipeline.addHandler(NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))) }
-                            .flatMap {
-                                channel.pipeline.addHandler(StreamingResponseHandler(
-                                    continuation: continuation,
-                                    contextualize: { UpstreamTLSError.wrapping($0, host: host, isTLS: isTLS, identity: identity) }
-                                ))
-                            }
+                            try sync.addHandler(
+                                NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))
+                            )
+                            try sync.addHandler(StreamingResponseHandler(
+                                continuation: continuation,
+                                contextualize: { UpstreamTLSError.wrapping($0, host: host, isTLS: isTLS, identity: identity) }
+                            ))
+                        }
                     }
                 do {
                     let channel = try await bootstrap.connect(host: host, port: port).get()
@@ -214,7 +225,15 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// rather than falling back to the shared context: silently connecting without
     /// the credential would fail the handshake anyway, and the error would name the
     /// origin instead of the identity the operator can fix.
-    private func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
+    /// The two `Sendable` ingredients an upstream TLS handler is built from, resolved
+    /// **before** the connection attempt.
+    ///
+    /// Everything that can fail for a *configuration* reason fails here: a configured
+    /// identity whose bundle won't load throws out of `context(forHost:)`, and the
+    /// caller passes that error through untouched, because it already names the
+    /// identity — which is the thing an operator can fix. Building the handler is left
+    /// to the channel initializer, where the connection actually happens.
+    private func resolveClientTLS(host: String) throws -> (context: NIOSSLContext, serverName: String?) {
         // IP-literal peers can't take an SNI/validation hostname.
         let serverName = Self.isIPLiteral(host) ? nil : host
         // Identity for this host → its context; otherwise the provider's own
@@ -224,7 +243,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let context = try clientIdentities?.context(forHost: host)
             ?? clientIdentities?.baseContext()
             ?? SharedTLS.clientContext
-        return try NIOSSLClientHandler(context: context, serverHostname: serverName)
+        return (context, serverName)
     }
 
     private static func isIPLiteral(_ host: String) -> Bool {

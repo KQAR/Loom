@@ -92,7 +92,12 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     func handlerAdded(context: ChannelHandlerContext) {
         armDeadline(context: context)
         guard !pending.isEmpty else { return }
-        context.eventLoop.execute { [weak self] in
+        // `assumeIsolated()` rather than a bare `execute`: the closure captures
+        // `context`, which is not `Sendable`, and the plain overload takes a
+        // `@Sendable` one. This turns the assumption the whole handler already rests on
+        // — "everything here runs on this channel's loop" — into a checked precondition
+        // instead of a comment. `handlerAdded` is called on the loop, so it holds.
+        context.eventLoop.assumeIsolated().execute { [weak self] in
             guard let self, !self.routed else { return }
             self.advance(context: context)
         }
@@ -131,8 +136,9 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     }
 
     private func armDeadline(context: ChannelHandlerContext) {
-        // Same event loop as every read, so no synchronisation is needed here.
-        deadlineTask = context.eventLoop.scheduleTask(in: Self.sniffDeadline) { [weak self] in
+        // Same event loop as every read, so no synchronisation is needed here —
+        // `assumeIsolated()` is what states that to the compiler (and checks it).
+        deadlineTask = context.eventLoop.assumeIsolated().scheduleTask(in: Self.sniffDeadline) { [weak self] in
             guard let self, !self.routed else { return }
             // Nothing buffered means nothing to classify; anything buffered that still
             // reads as `.needMore` is a partial prefix that isn't going to complete.
