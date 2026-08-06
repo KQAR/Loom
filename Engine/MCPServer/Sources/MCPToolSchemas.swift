@@ -156,11 +156,14 @@ extension MCPToolExecutor {
             Get the Loom app version and MCP protocol version. Cheap readiness ping — if this \
             errors, the app isn't running and no other tool will work either.
 
-            `appVersion` is also the skew check: the tools you can call come from the app, while \
-            their prose comes from whatever plugin version is installed, so compare it against the \
-            version the loom skill states it ships for. A mismatch is a stale *description*, never \
-            a broken connection — `tools/list` is always the truth about what exists — so mention \
-            it once, name which side is behind, and carry on.
+            `appVersion` is also the skew check: the tools you can call come from the app, their \
+            prose from whatever plugin version is installed, so compare it against the version in \
+            the loom plugin's own manifest. Older app → tell the user to update Loom (panel footer \
+            → Update), because tools the skill describes may not exist yet. Newer app → tell them \
+            to run `/plugin update loom`, because tools you can call aren't documented there. \
+            Either way it is a stale *description*, never a broken connection — `tools/list` is \
+            the truth about what exists — so say it once, name which side is behind, carry on, \
+            and don't block work on it.
             """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetVersion(args) }
@@ -171,23 +174,21 @@ extension MCPToolExecutor {
             Get the current proxy status: running state, listen address, captured flow count, \
             whether recording is paused, and whether this Mac's own traffic is actually routed \
             through Loom (`systemProxy`). Check this first when a capture comes back empty — \
-            "nothing happened" and "nothing was pointed at the proxy" look identical otherwise. \
+            "nothing happened" and "nothing was pointed at the proxy" look identical otherwise.
+
             `systemProxy` is one of: `"on"` (routed through Loom), `"off"` (no system proxy set), \
             `"other"` (another proxy app — Charles, Proxyman, whistle — owns the setting; \
             `systemProxyPointsAt` gives its host:port), or `"unavailable"` (this build can't \
             inspect it, which is not the same as off). On `"other"`, say so rather than calling \
-            `set_system_proxy`: taking the setting works, but Loom does not put the other app's \
-            configuration back, so that is the human's call to make.
+            `set_system_proxy`: taking the setting works, but Loom never puts the other app's \
+            configuration back, so that is the human's call.
 
-            When a capture is empty and routing looks fine, check `refusedConnections` / \
-            `recentRefusals` (present only when there are any): a client that reached Loom and \
-            was turned away — a SOCKS4 client, an HTTP request sent to the SOCKS port, an \
-            unsupported command — looks exactly like a client that never ran, and this is the \
-            difference.
-
-            `reverseProxies` (present only when some exist) lists the local stand-in ports and \
-            whether each is listening; one that is not carries `error`, and a client pointed at it \
-            gets connection refused, which reads like Loom is down.
+            Two fields appear only when non-empty. `refusedConnections` / `recentRefusals`: a \
+            client that reached Loom and was turned away (a SOCKS4 client, an HTTP request sent to \
+            the SOCKS port, an unsupported command) looks exactly like a client that never ran, \
+            and this is the difference. `reverseProxies`: the local stand-in ports and whether \
+            each is listening — one that is not carries `error`, and a client pointed at it gets \
+            connection refused, which reads like Loom is down.
             """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetProxyStatus(args) }
@@ -197,29 +198,27 @@ extension MCPToolExecutor {
             description: """
             Route this Mac's HTTP/HTTPS traffic through Loom, or stop routing it. This is what \
             makes local apps and browsers appear in the capture without configuring each one, \
-            and it is the fix when `get_proxy_status` shows nothing is routed here.
+            and the fix when `get_proxy_status` shows nothing is routed here. A phone or other \
+            device does NOT need this — point that device at the proxy instead.
 
             Machine-wide and visible to the human: it edits the active network service's proxy \
-            settings, may ask for an admin password, and also installs a pf rule blocking QUIC \
-            (UDP 443) so browsers fall back to TCP where a proxy can see them — browsers \
-            default to HTTP/3, which no TCP proxy can intercept. Turn it off when you're done; \
-            Loom also turns it off on quit. Disabling never hands the setting back to whoever \
-            held it before — if `get_proxy_status` reported `"other"`, say so and let the human \
-            re-enable that app themselves. Traffic from a phone or another device does NOT need \
-            this (point that device at the proxy instead).
+            settings, may ask for an admin password, and installs a pf rule blocking QUIC (UDP \
+            443) so browsers fall back to TCP where a proxy can see them (they default to HTTP/3, \
+            which no TCP proxy can intercept). Turn it off when done; Loom also does so on quit. \
+            Disabling never hands the setting back to whoever held it before — if \
+            `get_proxy_status` reported `"other"`, say so and let the human re-enable that app.
 
-            It routes the *machine*, not processes already running, and the result carries \
-            `runningClientsMayNeedRelaunch` to say so. Chrome and other Chromium/Electron apps \
-            read the system proxy once at launch and never re-read it, so one that was already \
-            open keeps going direct — reloading the page does not help, only relaunching does. \
-            A capture that comes back empty right after turning this on is usually that, not an \
-            absence of traffic. Safari, curl and most CLI tools need no restart.
+            It routes the *machine*, not processes already running (`runningClientsMayNeedRelaunch` \
+            says so). Chrome and other Chromium/Electron apps read the system proxy once at launch, \
+            so one already open keeps going direct — reloading does not help, only relaunching. An \
+            empty capture right after turning this on is usually that, not an absence of traffic. \
+            Safari, curl and most CLI tools need no restart.
 
-            Two destinations are bypassed by the client itself whatever this setting says: \
+            Two destinations the client bypasses whatever this setting says: \
             `localhost`/`127.0.0.1`, and (in Safari) any address belonging to this Mac. For a \
-            local dev server reached by IP, relaunching Chrome is enough; for one reached over \
-            loopback, use `create_reverse_proxy` instead — the browser connects straight to \
-            Loom's port, so no proxy setting is consulted. This is a write action.
+            local dev server reached by IP, relaunching Chrome is enough; over loopback, use \
+            `create_reverse_proxy` instead — the client connects straight to Loom's port, so no \
+            proxy setting is consulted. This is a write action.
             """,
             inputSchema: [
                 "type": "object",
@@ -246,24 +245,23 @@ extension MCPToolExecutor {
             name: "create_reverse_proxy",
             description: """
             Open a local port that stands in for `upstream`, capturing everything sent to it. \
-            Use this for a client that CANNOT be pointed at a proxy — the case that matters in \
-            practice is a Node dev server forwarding `/api` to a backend, because Node's global \
-            `fetch`/undici ignores `HTTP_PROXY` entirely, so the hop is invisible however the \
-            environment is set (axios and Python/Go clients do read it, and need no endpoint). \
-            Instead of patching the client's source, change its target to this endpoint's \
-            `localURL`.
+            Use it for a client that CANNOT be pointed at a proxy — in practice a Node dev server \
+            forwarding `/api` to a backend, because Node's global `fetch`/undici ignores \
+            `HTTP_PROXY` entirely, so that hop is invisible however the environment is set (axios \
+            and Python/Go clients do read it and need no endpoint). Rather than patching the \
+            client's source, change its target to this endpoint's `localURL`.
 
-            Two things this buys over the proxy ports. The inbound hop is plain HTTP even when \
+            Two things this buys over the proxy ports: the inbound hop is plain HTTP even when \
             `upstream` is https, so the client needs NO CA trust (no NODE_EXTRA_CA_CERTS, no \
-            keychain step) — Loom does the TLS to the upstream itself. And the captured flow \
-            carries the UPSTREAM url, not 127.0.0.1, so rules, breakpoints and diff_flows match \
-            it like any other traffic.
+            keychain step) — Loom does the upstream TLS itself; and the captured flow carries the \
+            UPSTREAM url, not 127.0.0.1, so rules, breakpoints and diff_flows match it like any \
+            other traffic.
 
-            The endpoint persists across relaunches, because its port lives in a dev server's \
-            config file that Loom restarting does not edit. It is NOT a proxy port: send it \
-            paths directly (GET /api/users), not CONNECT or absolute URLs. Creation fails if the \
-            upstream is not a valid http(s) origin or the port cannot be bound — it never \
-            reports an endpoint that isn't listening. This is a write action.
+            The endpoint survives relaunch, since its port lives in a dev server's config Loom \
+            does not edit. It is NOT a proxy port: send it paths directly (GET /api/users), not \
+            CONNECT or absolute URLs. Creation fails if the upstream is not a valid http(s) origin \
+            or the port cannot be bound — it never reports an endpoint that isn't listening. This \
+            is a write action.
             """,
             inputSchema: [
                 "type": "object",
@@ -334,11 +332,10 @@ extension MCPToolExecutor {
             "trigger the action, then see the request it made" tool. Takes the same filters as \
             `get_recent_flows`, so you never poll it in a loop.
 
-            It is a query over the retained capture *and* a wait, in that order: flows already \
-            stored are checked first, so a request you triggered a moment before calling is \
-            returned immediately rather than waited for. Nothing is lost if the call times out \
-            at any layer — the flow stays in the store, and calling again with `since` set to \
-            the previous reply's `windowFrom` finds it with no gap.
+            It is a query over the retained capture *and* a wait, in that order: stored flows are \
+            checked first, so a request triggered a moment before calling returns immediately. \
+            Nothing is lost on a timeout at any layer — the flow stays in the store, and calling \
+            again with `since` set to the previous reply's `windowFrom` finds it with no gap.
 
             Returns `{matched: [...summaries], timedOut, waitedMS, windowFrom}`. The default \
             window is the last \(Int(Self.defaultWaitLookback)) seconds (not "from now on", so \
@@ -376,19 +373,19 @@ extension MCPToolExecutor {
         MCPTool(
             name: "get_stats",
             description: """
-            Aggregate the capture instead of reading it: per-bucket flow counts, error rates, \
-            and TTFB / receive / duration percentiles, plus the slowest exchanges by id. \
-            Answers "which endpoint is slow", "what share of calls to this host fail", "which \
-            app is chatty" in one call — and `ttfbMS` vs `receiveMS` answers *why* it is slow: \
-            high TTFB is server think-time, high receive is payload transfer — don't pull flow summaries and do the arithmetic yourself, and note \
-            that a percentile over one page of summaries isn't a percentile.
+            Aggregate the capture instead of reading it: per-bucket flow counts, error rates, and \
+            TTFB / receive / duration percentiles, plus the slowest exchanges by id. Answers \
+            "which endpoint is slow", "what share of calls to this host fail", "which app is \
+            chatty" in one call — and `ttfbMS` vs `receiveMS` answers *why* it is slow: TTFB is \
+            server think-time, receive is payload transfer, `duration` is the whole exchange. \
+            Don't pull summaries and do the arithmetic yourself; a percentile over one page of \
+            summaries isn't a percentile.
 
-            Takes the same filters as `get_recent_flows` (so `since_seconds` + `host` scopes it \
-            to what you care about). Aggregates every retained flow that matches, and reports \
-            `flowsConsidered` so you can see the sample size behind the numbers. TTFB is server \
-            think-time; `duration` is the whole exchange. `sizeUnknownFlows` on a bucket means \
-            its byte totals are a floor: those flows' bodies have been evicted from memory, so \
-            their size is no longer known.
+            Takes the same filters as `get_recent_flows` (`since_seconds` + `host` scopes it), \
+            aggregates every retained flow that matches, and reports `flowsConsidered` as the \
+            sample size behind the numbers. `sizeUnknownFlows` on a bucket means its byte totals \
+            are a floor: those flows' bodies were evicted from memory, so their size is no longer \
+            known.
             """,
             inputSchema: [
                 "type": "object",
@@ -664,11 +661,10 @@ extension MCPToolExecutor {
             name: "intercept_host",
             description: """
             Start decrypting one host: add it to the SSL scope's include list, turning \
-            interception on if it was off and dropping an exact exclude for it. The one-step \
-            version of reading `get_ssl_scope` and writing `set_ssl_scope` back — and it is \
-            atomic, so it can't lose a concurrent edit from the human at the console. The usual \
-            reason to call it is a host someone carved out into `exclude` that you now need to \
-            read.
+            interception on if it was off and dropping an exact exclude for it. The one-step, \
+            atomic version of reading `get_ssl_scope` and writing `set_ssl_scope` back, so it \
+            can't lose a concurrent edit from the human at the console. Usually called on a host \
+            someone carved into `exclude` that you now need to read.
 
             Only affects connections made AFTER the call; an exchange already relayed is gone, so \
             re-run the client. The reply says what it took: `effective` (false when a wildcard \
@@ -781,14 +777,13 @@ extension MCPToolExecutor {
             Proxyman, and by Loom's own import_har) and return the path. Optionally filter by \
             host and cap the count.
 
-            Set `redact: true` when the file is going anywhere — a ticket, a chat, a CI \
-            artifact. It replaces credential-bearing header values and query parameters with \
-            `<redacted>` (the header stays, so a reader can tell a scrubbed token from an absent \
-            one). It does NOT touch bodies or WebSocket frames: add `redact_bodies: true` for \
-            those, which blanks them while keeping their sizes. A password in a login POST body \
-            survives `redact: true` alone. Redaction is off by default because a debugging \
-            export usually needs the token — that is often the bug. This is a write action \
-            (writes a file).
+            Set `redact: true` when the file is going anywhere — a ticket, a chat, a CI artifact. \
+            It replaces credential-bearing header values and query parameters with `<redacted>` \
+            (the header stays, so a reader can tell a scrubbed token from an absent one), but does \
+            NOT touch bodies or WebSocket frames — a password in a login POST body survives it. \
+            Add `redact_bodies: true` for those, which blanks them while keeping their sizes. \
+            Redaction is off by default because a debugging export usually needs the token; that \
+            is often the bug. This is a write action (writes a file).
             """,
             inputSchema: [
                 "type": "object",
@@ -849,7 +844,19 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "set_rule",
-            description: "Create or update a traffic rule (upsert). Omit `id` to create; pass `id` to update an existing rule. A rule matches requests by URL pattern (+ optional methods) and acts on them — mock the response, map to another origin or a local file, rewrite request/response headers or bodies, block, or delay. On update, provided fields replace the existing ones (match/actions are replaced whole, not merged); toggle a single rule with just {id, enabled}. Rules apply to live traffic and replays, in list order. The reply carries `effective` — whether this rule will actually affect traffic — plus `ineffectiveReason` when it will not (most often the rules master switch is off, which silently neutralises every rule). Check it before reporting that a mock is in place. This is a write action.",
+            description: """
+            Create or update a traffic rule (upsert): omit `id` to create, pass `id` to update. A \
+            rule matches requests by URL pattern (+ optional methods) and acts on them — mock the \
+            response, map to another origin or a local file, rewrite request/response headers or \
+            bodies, block, or delay. Rules apply to live traffic and replays, in list order.
+
+            On update, provided fields replace the existing ones (match/actions are replaced \
+            whole, not merged); toggle a single rule with just {id, enabled}. The reply carries \
+            `effective` — whether the rule will actually affect traffic — plus `ineffectiveReason` \
+            when it will not, most often the rules master switch being off, which silently \
+            neutralises every rule. Check it before reporting that a mock is in place. This is a \
+            write action.
+            """,
             inputSchema: [
                 "type": "object",
                 "properties": [
