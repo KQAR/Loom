@@ -163,6 +163,7 @@ import Testing
             $0.proxyClient.pendingBreakpoints = { [] }
             $0.proxyClient.certificateStatus = { .notGenerated }
             $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
             $0.proxyClient.clientCertificates = { [] }
         }
         store.exhaustivity = .off

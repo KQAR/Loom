@@ -315,11 +315,27 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     /// protocol, its deadline — would buy nothing.
     private func handleConnect(context: ChannelHandlerContext, head: HTTPRequestHead) {
         let (host, port) = Self.parseAuthority(head.uri)
-        if ca != nil, config.shouldIntercept(host: host) {
+        guard let reason = Self.passthroughReason(host: host, config: config, ca: ca) else {
             sniffTunnel(context: context, host: host, port: port)
-        } else {
-            openTunnel(context: context, host: host, port: port)
+            return
         }
+        // Recorded at the decision, not at the splice: this is the only trace an
+        // un-decrypted origin leaves, and a connect that then fails is still HTTPS
+        // activity the operator asked about.
+        TunneledHostLog.shared.record(host: host, port: port, reason: reason)
+        openTunnel(context: context, host: host, port: port)
+    }
+
+    /// Why this connection won't be decrypted — `nil` when it will.
+    ///
+    /// Shared with `TunnelSniffHandler` so both entry points attribute a
+    /// pass-through the same way; the scope's own verdict wins over "no CA",
+    /// because it is the more actionable of the two.
+    static func passthroughReason(
+        host: String, config: InterceptionConfig, ca: CertificateAuthority?
+    ) -> TunnelReason? {
+        if let reason = config.snapshot().passthroughReason(host: host) { return reason }
+        return ca == nil ? .noCertificateAuthority : nil
     }
 
     private static func parseAuthority(_ uri: String) -> (host: String, port: Int) {

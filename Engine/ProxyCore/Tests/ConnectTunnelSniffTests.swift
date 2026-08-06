@@ -182,7 +182,8 @@ struct ConnectTunnelSniffTests {
 /// Sends one CONNECT on connect and fulfils `acked` when the proxy's
 /// `200 Connection Established` lands. Accumulates across reads: the ack and the
 /// first tunnel bytes can arrive in one packet or several.
-private final class CONNECTAckHandler: ChannelInboundHandler, RemovableChannelHandler {
+/// Shared with `TunneledHostLogTests`, which drives the same CONNECT ack.
+final class CONNECTAckHandler: ChannelInboundHandler, RemovableChannelHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 

@@ -64,6 +64,8 @@ import Testing
         case .exportCACertificate: return .wired(client.exportCACertificate)
         case .sslScope: return .wired(client.sslScope)
         case .setSSLScope: return .wired(client.setSSLScope)
+        case .tunneledHosts: return .wired(client.tunneledHosts)
+        case .interceptHost: return .wired(client.interceptHost)
 
         // MARK: CaptureControlling
         case .importFlows:

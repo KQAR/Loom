@@ -51,6 +51,23 @@ final class InterceptionConfig: Sendable {
         }
     }
 
+    /// Read-modify-write the scope under one acquisition of the lock.
+    ///
+    /// The alternative — `snapshot()`, edit, `update()` — is a lost-update race
+    /// between the two independent writers this engine has: the human on the console
+    /// and an agent on `intercept_host`. Losing one there means a host silently
+    /// stops being intercepted, which is exactly the invisible failure the
+    /// tunnelled-host surface exists to remove.
+    func mutate<T>(_ body: (inout SSLScope) -> T) -> T {
+        scope.withLock {
+            let result = body(&$0)
+            let updated = $0
+            // Enqueued under the lock — see `persistQueue`.
+            persistQueue.async { [weak self] in self?.persist(updated) }
+            return result
+        }
+    }
+
     /// Block until every queued write has run — quit handler, and any test that
     /// reads the defaults straight after updating.
     func flush() {

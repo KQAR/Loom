@@ -80,6 +80,109 @@ public enum CertificateTrustState: Equatable, Sendable {
     }
 }
 
+/// Why a connection was relayed byte-for-byte instead of decrypted.
+///
+/// Every case means the same thing to a read surface — no request, no response,
+/// no rules, no breakpoints, nothing to replay — so the *reason* is the only
+/// thing that distinguishes "one click from being captured" from "asked for" from
+/// "Loom couldn't". Ordered roughly by how actionable it is.
+public enum TunnelReason: String, Codable, Sendable, CaseIterable {
+    /// HTTPS interception is switched off entirely.
+    case interceptionDisabled
+    /// Interception is on, but no `include` glob covers this host.
+    case notInScope
+    /// An `exclude` glob covers this host — a deliberate pass-through.
+    case excluded
+    /// In scope, but there is no root CA to mint a leaf from.
+    case noCertificateAuthority
+    /// In scope with a CA, and minting the leaf failed. Fail-open: a host that
+    /// stops loading would be worse than one Loom can't read.
+    case leafMintFailed
+    /// The tunnel's first bytes were neither a TLS record nor an HTTP request
+    /// line — h2c prior knowledge, SSH, SMTP, a hand-rolled binary protocol — or
+    /// the connection is server-first and said nothing before the sniff deadline.
+    /// Being in the SSL scope does not make these readable.
+    case notTLSOrHTTP
+}
+
+/// One host Loom saw HTTPS (or opaque TCP) activity to and relayed without
+/// reading, collapsed across every connection to it.
+///
+/// Aggregated per `host:port` rather than recorded per connection: the question
+/// this answers is "what is Loom not showing me, and should it be", which one row
+/// per origin answers and fifty rows per page load obscures.
+public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
+    public var host: String
+    public var port: Int
+    /// Every connection relayed to this host, not just the ones still listed.
+    public var connections: Int
+    public var firstSeen: Date
+    public var lastSeen: Date
+    /// The most recent reason. It can change — a host moves from `.notInScope` to
+    /// `.notTLSOrHTTP` the moment someone intercepts it and the bytes turn out not
+    /// to be TLS at all — and the latest one is the one worth acting on.
+    public var reason: TunnelReason
+
+    public init(
+        host: String, port: Int, connections: Int = 1,
+        firstSeen: Date, lastSeen: Date, reason: TunnelReason
+    ) {
+        self.host = host
+        self.port = port
+        self.connections = connections
+        self.firstSeen = firstSeen
+        self.lastSeen = lastSeen
+        self.reason = reason
+    }
+
+    public var id: String { "\(host):\(port)" }
+
+    /// Whether bringing this host into the SSL scope would actually make it
+    /// readable. `false` for the two cases an include entry cannot fix, so a
+    /// surface can offer the one-click action only where it does something.
+    public var interceptable: Bool {
+        switch reason {
+        case .interceptionDisabled, .notInScope, .excluded: true
+        case .noCertificateAuthority, .leafMintFailed, .notTLSOrHTTP: false
+        }
+    }
+}
+
+/// The tunnelled-host list plus what the cap dropped.
+///
+/// `evicted` exists because a bounded collection that truncates silently reads as
+/// "this is everything" — the same rule every other capped collection in Loom
+/// follows. Entries go least-recently-active first, so a non-zero count means old
+/// origins, not missing recent ones.
+public struct TunneledHostReport: Equatable, Codable, Sendable {
+    public var hosts: [TunneledHost]
+    public var evicted: Int
+
+    public init(hosts: [TunneledHost] = [], evicted: Int = 0) {
+        self.hosts = hosts
+        self.evicted = evicted
+    }
+}
+
+/// What `SSLScope.intercept(host:)` had to change, and what it could not.
+public struct InterceptOutcome: Equatable, Codable, Sendable {
+    /// An `include` glob already covered the host, so the list is unchanged.
+    public var alreadyIncluded = false
+    /// Interception was off and this turned it on — a machine-wide change the
+    /// caller did not literally ask for, so it is reported rather than assumed.
+    public var enabledInterception = false
+    /// Exact `exclude` entries for this host that were dropped.
+    public var removedExcludes: [String] = []
+    /// A wildcard `exclude` that still shadows the host: it is *not* intercepted
+    /// despite the include. Whoever wrote that glob has to be the one to narrow it.
+    public var shadowedByExclude: String?
+
+    public init() {}
+
+    /// Is the host decrypted as a result of this call?
+    public var effective: Bool { shadowedByExclude == nil }
+}
+
 /// Which hosts Loom decrypts (MITM) vs. blind-tunnels. A host is intercepted
 /// only when interception is `enabled`, it matches an `include` glob, and it
 /// matches no `exclude` glob. `exclude` doubles as the pinned / pass-through
@@ -99,10 +202,60 @@ public struct SSLScope: Equatable, Codable, Sendable {
 
     /// Should the given host be MITM-decrypted under this scope?
     public func shouldIntercept(host: String) -> Bool {
-        guard enabled else { return false }
-        guard include.contains(where: { Self.matches(pattern: $0, host: host) }) else { return false }
-        if exclude.contains(where: { Self.matches(pattern: $0, host: host) }) { return false }
-        return true
+        passthroughReason(host: host) == nil
+    }
+
+    /// Why this scope would *not* decrypt `host` — `nil` when it would.
+    ///
+    /// The same decision as `shouldIntercept`, stated so it can be reported. A
+    /// blind-tunnelled host is invisible to every read surface, and "not in the
+    /// scope" and "explicitly excluded" need different words: the first is one
+    /// click away from being captured, the second was asked for.
+    public func passthroughReason(host: String) -> TunnelReason? {
+        guard enabled else { return .interceptionDisabled }
+        guard include.contains(where: { Self.matches(pattern: $0, host: host) }) else { return .notInScope }
+        return excludeGlob(matching: host) == nil ? nil : .excluded
+    }
+
+    /// The first `exclude` glob that covers `host`, if any. Named separately from
+    /// `passthroughReason` because a caller trying to *undo* an exclusion needs the
+    /// pattern, not just the verdict.
+    public func excludeGlob(matching host: String) -> String? {
+        exclude.first { Self.matches(pattern: $0, host: host) }
+    }
+
+    /// Bring `host` into the intercepted set, and say honestly what that took.
+    ///
+    /// Three things can stand between "the caller named a host" and "the host is
+    /// decrypted", and adding an include entry only fixes one of them — so this
+    /// turns interception on when it was off, drops an *exact* exclude for the
+    /// host, and reports a wildcard exclude it cannot beat. An include that
+    /// silently loses to `exclude` is precisely the invisible-failure shape the
+    /// tunnelled-host surface exists to remove.
+    public mutating func intercept(host: String) -> InterceptOutcome {
+        var outcome = InterceptOutcome()
+
+        if !enabled {
+            enabled = true
+            outcome.enabledInterception = true
+        }
+        // An exact exclude for this host is a previous "leave it alone" that the
+        // caller is now reversing; a glob is someone else's rule, so it stands.
+        let exact = exclude.filter { $0.lowercased() == host.lowercased() }
+        if !exact.isEmpty {
+            exclude.removeAll { $0.lowercased() == host.lowercased() }
+            outcome.removedExcludes = exact
+        }
+        if include.contains(where: { Self.matches(pattern: $0, host: host) }) {
+            outcome.alreadyIncluded = true
+        } else {
+            include.append(host)
+        }
+        // Re-read the *resulting* scope rather than reasoning about it: this is the
+        // one answer the caller acts on, and deriving it twice is how the two
+        // disagree.
+        outcome.shadowedByExclude = excludeGlob(matching: host)
+        return outcome
     }
 
     /// Case-insensitive glob match where `*` stands for any run of characters.
@@ -148,4 +301,16 @@ public protocol TLSInterceptControlling: Sendable {
     func exportCACertificate() async throws -> URL
     func sslScope() async -> SSLScope
     func setSSLScope(_ scope: SSLScope) async
+    /// Hosts Loom relayed without reading, newest activity first, with the ones
+    /// the current scope would now decrypt already filtered out.
+    ///
+    /// This is the discoverability half of a whitelist scope: with an empty
+    /// `include`, an unrecorded pass-through is indistinguishable from a client
+    /// that never ran, so "there was HTTPS here and Loom didn't read it" has to be
+    /// a fact a surface can ask for rather than one only `os_log` holds.
+    func tunneledHosts() async -> TunneledHostReport
+    /// Bring one host into the SSL scope — the one-click action behind a tunnelled
+    /// host — and report what it took. Atomic in the engine, because the read /
+    /// modify / write a caller would otherwise do can lose a concurrent edit.
+    func interceptHost(_ host: String) async -> InterceptOutcome
 }

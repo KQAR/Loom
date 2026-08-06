@@ -95,6 +95,20 @@ extension ProxyEngine {
         config.update(scope)
     }
 
+    public func tunneledHosts() async -> TunneledHostReport {
+        let (hosts, evicted) = TunneledHostLog.shared.snapshot()
+        // Filtered against the *current* scope, so a host someone just intercepted
+        // stops being offered — see `TunneledHostLog.pending`.
+        return TunneledHostReport(
+            hosts: TunneledHostLog.pending(hosts, under: config.snapshot()), evicted: evicted
+        )
+    }
+
+    public func interceptHost(_ host: String) async -> InterceptOutcome {
+        _ = ensureCA() // the include entry is worthless without a CA to mint from
+        return config.mutate { $0.intercept(host: host) }
+    }
+
     // MARK: - Mutual TLS (client certificates)
 
     public func clientCertificates() async -> [ClientCertificateSummary] {

@@ -60,7 +60,7 @@ components:
   menu-panel:
     material: "{colors.panel-material}"
     width: "{metrics.console-width}"
-    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / Reverse Proxies / System Proxy / HTTPS / Client Certificates / Rules / Breakpoints — Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
+    structure: "header (capture dot + address + proxy switch) · state rows (Connect Device / Reverse Proxies / System Proxy / HTTPS / SSL Scope / Client Certificates / Rules / Breakpoints — SSL Scope, Client Certificates and Breakpoints conditional, absent rather than empty) · Open Main Window · footer (version · wordmark · Quit)"
     note: "config & control only — NO request list here"
   config-row:
     anatomy: "one tappable full-width row: leading checkmark slot (accent, shown when the state is ON) · SF Symbol (secondary, 20pt) · title ({typography.body}) · trailing detail ({typography.callout} .tertiary). NO switch/toggle controls — the row toggles on tap and the checkmark is the state. Hover fills the row with {colors.panel-selection}."
@@ -197,6 +197,8 @@ utility — closer to the system's own controls than to a themed Electron tool.
 │ ⇄  Reverse Proxies           2      │   action-row, icon accent while any exist
 │ 🌍 System Proxy      in use by …    │   config-row (three-valued: loom/off/other)
 │ 🔒 HTTPS (SSL)       decrypting     │   config-row
+│ ☰  SSL Scope         all but 2      │   action-row, conditional — expands a card
+│    ▸ 2 hosts passed through …       │   inside the card: the glob lists, collapsed
 │ 🔑 Client Certificates       1      │   config-row, conditional — expands a card
 │ ⚙︎ Rules             2 active       │   config-row
 │ 🛑 Breakpoints       1 held         │   config-row, conditional (orange)
@@ -248,9 +250,35 @@ Validation is live and defers to the engine's own `normalizedUpstream`, so the f
 bottom-right, Add prominent and disabled until the upstream is valid. A removal is confirmed — whatever still names that port starts getting
 connection refused, and Loom cannot undo that from here.
 
+**SSL Scope** is an `action-row` under HTTPS, for the same reason Reverse Proxies is
+one: there is nothing to toggle — the switch above already carries on/off — and what
+this row holds is two lists. The scope decrypts everything by default, so the
+informative half is what is *not* being read: the trailing detail is `all but 2`, and
+then `· N unread` for origins going unread that nobody asked for. That second number is
+the load-bearing one — the only hint on a collapsed console that a capture is thinner
+than it looks — and it deliberately excludes deliberate pass-throughs, which also means
+the icon only goes orange for something unexpected. A row that flagged the configuration
+working would train the reader to ignore it.
+
+Its card leads with the seen-not-decrypted list (host, then reason · connections · port
+in a caption, with **Decrypt**, and a `xmark` for "never" only on rows that weren't
+already excluded), capped at 6 like Reverse Proxies with the same accounting for what the
+engine's 256-host bound dropped. The two glob lists sit **behind one disclosure line**
+(`2 hosts passed through · everything else decrypted`), because they grow while the list
+above them shrinks: an intercepted host drops out of the tunnelled list, whereas the
+pass-through list gains an entry every time something breaks. Collapsed, never absent —
+removing an entry is the only way to start decrypting a carved-out host, and this card is
+the only surface on which an agent's scope write becomes visible to the human. Opened, the lists are capped at 10 and drop from the *front*:
+newest is written last, so the end is what someone who just changed something is looking
+for. The single text field adds to the **pass-through** list, since under the default
+scope an include entry does nothing; the include list itself is shown only when it says
+something a reader can't already infer (i.e. not while it is the bare `*`).
+
 Rows marked **conditional** are absent rather than empty: Breakpoints appears only
 while something is armed or held, Client Certificates only while HTTPS is on or an
-identity exists. A row that is always visible but usually says "none" spends the
+identity exists, Decrypted Hosts while HTTPS is on or anything was passed through (the
+second half matters — interception being *off* is one of the reasons an origin goes
+unread, so the row has to be able to appear while the switch is off). A row that is always visible but usually says "none" spends the
 console's scarcest resource — vertical space — on nothing.
 
 Cards appear directly under the row they belong to (root-CA trust under HTTPS, the

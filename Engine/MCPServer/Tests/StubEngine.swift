@@ -150,6 +150,17 @@ final class StubEngine: ProxyControlling {
     func exportCACertificate() async throws -> URL { URL(fileURLWithPath: "/tmp/loom-ca.pem") }
     func sslScope() async -> SSLScope { scope }
     func setSSLScope(_ scope: SSLScope) async { self.scope = scope; lastSSLScope = scope }
+    var tunneled = TunneledHostReport()
+    func tunneledHosts() async -> TunneledHostReport { tunneled }
+    private(set) var interceptedHosts: [String] = []
+    func interceptHost(_ host: String) async -> InterceptOutcome {
+        interceptedHosts.append(host)
+        var next = scope
+        let outcome = next.intercept(host: host)
+        scope = next
+        lastSSLScope = next
+        return outcome
+    }
 
     // CaptureControlling
     func setRecording(_ recording: Bool) async { self.recording = recording }

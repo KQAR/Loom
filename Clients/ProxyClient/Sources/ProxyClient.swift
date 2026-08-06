@@ -35,6 +35,9 @@ public struct ProxyClient: Sendable {
     public var exportCACertificate: @Sendable () async throws -> URL
     public var sslScope: @Sendable () async -> SSLScope = { .disabled }
     public var setSSLScope: @Sendable (_ scope: SSLScope) async -> Void
+    /// Hosts seen but not decrypted — what the console offers to intercept.
+    public var tunneledHosts: @Sendable () async -> TunneledHostReport = { TunneledHostReport() }
+    public var interceptHost: @Sendable (_ host: String) async -> InterceptOutcome = { _ in InterceptOutcome() }
     /// Pause/resume capture; forwarding is unaffected.
     public var setRecording: @Sendable (_ recording: Bool) async -> Void
     public var rulesState: @Sendable () async -> RulesState = { RulesState() }
@@ -133,6 +136,8 @@ extension ProxyClient: DependencyKey {
             exportCACertificate: { try await engine.exportCACertificate() },
             sslScope: { await engine.sslScope() },
             setSSLScope: { await engine.setSSLScope($0) },
+            tunneledHosts: { await engine.tunneledHosts() },
+            interceptHost: { await engine.interceptHost($0) },
             setRecording: { await engine.setRecording($0) },
             rulesState: { await engine.rulesState() },
             setRulesEnabled: { await engine.setRulesEnabled($0) },

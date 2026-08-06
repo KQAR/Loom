@@ -27,7 +27,7 @@ Plus the headless **MCP endpoint** — the operator's surface.
 
 ### Status-bar console (config & control)
 
-Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control: a header (proxy address + on/off switch + capture dot), state rows (Connect Device · System Proxy · HTTPS · Client Certificates · Rules · Breakpoints — the conditional ones absent rather than empty), Open Main Window, and a footer. The row inventory and layout live in [`DESIGN.md`](DESIGN.md) § Layout (`menu-panel` / `config-row`) — one diagram, there, not here.
+Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control: a header (proxy address + on/off switch + capture dot), state rows (Connect Device · System Proxy · HTTPS · SSL Scope · Client Certificates · Rules · Breakpoints — the conditional ones absent rather than empty), Open Main Window, and a footer. The row inventory and layout live in [`DESIGN.md`](DESIGN.md) § Layout (`menu-panel` / `config-row`) — one diagram, there, not here.
 
 When faults (proxy bind failure, cert not trusted) exist, they appear as cards above the config rows — the console is the single front door for "something needs you". Otherwise it is config + control only.
 

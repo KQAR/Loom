@@ -370,7 +370,55 @@ public struct PanelView: View {
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.top, LoomTheme.Space.xxs)
         }
+        sslScopeRow
         clientCertsRow
+    }
+
+    /// What Loom is *not* decrypting, and what it saw and passed through.
+    ///
+    /// A row of its own rather than part of the HTTPS switch above, because the switch
+    /// is binary and this is two lists. Shown while SSL is on **or** whenever something
+    /// was tunnelled, for the same reason the client-certificates row is: an unread
+    /// origin the human never sees is the failure this exists to remove, and
+    /// interception being off is one of the reasons an origin goes unread.
+    @ViewBuilder private var sslScopeRow: some View {
+        if store.setup.sslEnabled || !store.setup.tunneledHosts.isEmpty {
+            PanelRow(
+                kind: .action,
+                icon: "list.bullet.rectangle",
+                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty ? nil : .orange,
+                title: "SSL Scope",
+                detail: sslScopeDetail,
+                help: "Hosts Loom passes through instead of decrypting, and what it saw but couldn't read"
+            ) {
+                store.send(.setup(.sslScopeExpandTapped))
+            }
+            if store.setup.sslScopeExpanded {
+                SSLScopeCard(store: store.scope(state: \.setup, action: \.setup))
+                    .padding(.horizontal, LoomTheme.Space.md)
+                    .padding(.top, LoomTheme.Space.xxs)
+            }
+        }
+    }
+
+    /// The scope in one phrase, plus anything unread that nobody asked for.
+    ///
+    /// That second number is the load-bearing half — it is the only hint on a collapsed
+    /// console that a capture is thinner than it looks — and it deliberately counts
+    /// only the *unexpected* ones: with the default scope covering everything, an
+    /// excluded pass-through is the configuration working, and counting it here would
+    /// teach the human to ignore the number.
+    private var sslScopeDetail: String {
+        let unread = store.setup.unexpectedlyUnreadHosts.count
+        let head: String
+        if store.setup.interceptsEverything {
+            let excluded = store.setup.sslScope.exclude.count
+            head = excluded == 0 ? "all hosts" : "all but \(excluded)"
+        } else {
+            let covered = store.setup.sslScope.include.count
+            head = covered == 0 ? "none" : "\(covered) host\(covered == 1 ? "" : "s")"
+        }
+        return unread > 0 ? "\(head) · \(unread) unread" : head
     }
 
     /// Mutual TLS — the identity Loom presents *to* an origin, the mirror of the root
