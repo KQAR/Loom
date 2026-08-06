@@ -29,4 +29,23 @@ import Foundation
         #expect(frames.count == 1)
         #expect(frames[0].payload == Data("hi".utf8))
     }
+
+    /// A parser failure surfaces on the tap so the handler can report it once —
+    /// silence here is what made the crash's sibling case (a short frame log) read
+    /// like a quiet socket.
+    @Test func parserFailure_surfacesAndStopsCapture() {
+        var tap = WebSocketStreamTap(expectsHandshake: false)
+        #expect(tap.failure == nil)
+        _ = tap.consume([0x82, 127, 0xFF, 0, 0, 0, 0, 0, 0, 0])
+        #expect(tap.failure != nil)
+        #expect(tap.consume(frame).isEmpty, "capture does not resume after a desync")
+    }
+
+    /// A stream that never terminates its handshake headers must not buffer forever.
+    @Test func unterminatedHandshake_failsInsteadOfBufferingForever() {
+        var tap = WebSocketStreamTap(expectsHandshake: true)
+        let chunk = [UInt8](repeating: 0x41, count: 8 * 1024)
+        for _ in 0 ..< 9 { _ = tap.consume(chunk) } // 72 KiB > the 64 KiB ceiling
+        #expect(tap.failure != nil)
+    }
 }

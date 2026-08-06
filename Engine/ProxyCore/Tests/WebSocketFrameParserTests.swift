@@ -104,4 +104,81 @@ import LoomSharedModels
         #expect(frames[1].opcode == 0x0) // continuation
         #expect(frames[0].payload + frames[1].payload == Data("foobar".utf8))
     }
+
+    // MARK: Malformed input — never trap, stop parsing instead
+    //
+    // This family exists because a real crash shipped in 0.0.16: a 64-bit length
+    // whose high bit was set shifted into `Int`'s sign bit (Swift's `<<` masks
+    // rather than traps), the negative length passed the bounds guard, and
+    // `data[index ..< index + length]` killed the process from an event-loop
+    // thread. The parser reads untrusted network bytes; a trap is never a valid
+    // answer here.
+
+    /// The crash: 64-bit length with the MSB set. Must be refused, not slice with a
+    /// negative length.
+    @Test func sixtyFourBitLengthWithHighBitSet_isRefusedNotFatal() {
+        var parser = WebSocketFrameParser()
+        let bytes: [UInt8] = [0x82, 127, 0xFF, 0, 0, 0, 0, 0, 0, 0] + [UInt8](repeating: 0, count: 16)
+        #expect(parser.feed(bytes).isEmpty)
+        #expect(parser.failure != nil)
+    }
+
+    /// A plausible-but-absurd 64-bit length (4 GB, high bit clear) is desync too:
+    /// waiting for it would buffer the direction forever.
+    @Test func sixtyFourBitLengthOverCeiling_isRefused() {
+        var parser = WebSocketFrameParser()
+        let bytes: [UInt8] = [0x82, 127, 0, 0, 0, 1, 0, 0, 0, 0]
+        #expect(parser.feed(bytes).isEmpty)
+        #expect(parser.failure?.contains("ceiling") == true)
+    }
+
+    /// A 64-bit length within the ceiling is still honoured — the fix must not turn
+    /// large legitimate frames into failures.
+    @Test func sixtyFourBitLengthWithinCeiling_parsesNormally() {
+        let payload = [UInt8](repeating: 0x41, count: 70_000) // > 16-bit, needs the 64-bit form
+        var header: [UInt8] = [0x82, 127]
+        for shift in stride(from: 56, through: 0, by: -8) { header.append(UInt8((70_000 >> shift) & 0xFF)) }
+        var parser = WebSocketFrameParser()
+        let frames = parser.feed(header + payload)
+        #expect(frames.count == 1)
+        #expect(frames[0].payload.count == 70_000)
+        #expect(parser.failure == nil)
+    }
+
+    /// RFC 6455 §5.5: control frames are ≤125 bytes and never fragmented. A
+    /// violation means these bytes aren't a frame header.
+    @Test func oversizedControlFrame_isRefused() {
+        var parser = WebSocketFrameParser()
+        #expect(parser.feed([0x89, 126, 0x01, 0x00]).isEmpty) // ping, 256 bytes
+        #expect(parser.failure != nil)
+    }
+
+    /// Frames already parsed before the garbage are still returned, and everything
+    /// after it is ignored for good — realignment from bytes alone is guesswork.
+    @Test func failureKeepsEarlierFramesAndIsPermanent() {
+        var parser = WebSocketFrameParser()
+        let good: [UInt8] = [0x81, 0x02, 0x68, 0x69]
+        let bad: [UInt8] = [0x82, 127, 0xFF, 0, 0, 0, 0, 0, 0, 0]
+        let frames = parser.feed(good + bad)
+        #expect(frames.count == 1)
+        #expect(frames[0].payload == Data("hi".utf8))
+        #expect(parser.failure != nil)
+        #expect(parser.feed(good).isEmpty, "a failed parser never resumes")
+    }
+
+    /// Fuzz the shape that crashed: arbitrary bytes must only ever produce frames or
+    /// a failure — never a trap.
+    @Test func arbitraryBytesNeverTrap() {
+        var seed: UInt64 = 0x5DEE_CE66_D
+        func next() -> UInt8 {
+            seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return UInt8((seed >> 33) & 0xFF)
+        }
+        for _ in 0 ..< 200 {
+            var parser = WebSocketFrameParser()
+            for _ in 0 ..< 8 {
+                _ = parser.feed((0 ..< 32).map { _ in next() })
+            }
+        }
+    }
 }
