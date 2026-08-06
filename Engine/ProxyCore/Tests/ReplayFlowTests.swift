@@ -32,6 +32,8 @@ import LoomSharedModels
         #expect(await upstream.lastURL?.absoluteString == source.request.url)
         #expect(replayed.replayedFrom == source.id)
         #expect(replayed.response?.statusCode == 200)
+
+        await engine.stopForTest()
     }
 
     @Test func replayFlow_appliesOverrides() async throws {
@@ -45,6 +47,8 @@ import LoomSharedModels
 
         #expect(await upstream.lastMethod == "POST")
         #expect(await upstream.lastBody == Data("hi".utf8))
+
+        await engine.stopForTest()
     }
 
     @Test func replayByID_stillThrowsWhenAgedOut() async throws {
@@ -54,6 +58,8 @@ import LoomSharedModels
         await #expect(throws: ProxyControlError.self) {
             _ = try await engine.replay(id: UUID(), overrides: .none)
         }
+
+        await engine.stopForTest()
     }
 }
 

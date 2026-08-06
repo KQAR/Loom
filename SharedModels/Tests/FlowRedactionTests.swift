@@ -121,7 +121,7 @@ import LoomSharedModels
     /// carrying a token is the same leak as a login POST. `dropBodies` used to walk
     /// straight past `webSocketMessages`, so a socket's frames were copied into a
     /// "redacted" export verbatim.
-    @Test func dropBodies_blanksWebSocketFrames_keepingTheirShape() {
+    @Test func dropBodies_blanksWebSocketFrames_keepingTheirShape() throws {
         let startedAt = Date(timeIntervalSince1970: 1_000)
         let socket = Flow(
             id: UUID(),
@@ -138,7 +138,7 @@ import LoomSharedModels
         )
 
         let redacted = FlowRedaction(dropBodies: true).apply(to: socket)
-        let frames = try! #require(redacted.webSocketMessages)
+        let frames = try #require(redacted.webSocketMessages)
 
         #expect(frames.count == 2, "frames are blanked, never dropped")
         let text = String(decoding: frames[0].payload, as: UTF8.self)

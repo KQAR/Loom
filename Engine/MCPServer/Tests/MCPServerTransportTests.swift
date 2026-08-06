@@ -38,7 +38,6 @@ import LoomSharedModels
     @Test func aParkedWaitDoesNotBlockOtherCalls() async throws {
         let engine = StubEngine()
         let (server, url) = try await startServer(engine)
-        defer { Task { await server.stop() } }
 
         // Park a 30 s wait. Nothing will ever match it.
         let waiting = Task {
@@ -56,6 +55,8 @@ import LoomSharedModels
         #expect(envelope["result"] != nil)
 
         waiting.cancel()
+
+        await server.stopForTest()
     }
 
     /// Driven over a raw socket rather than `URLSession`: cancelling a URLSession task
@@ -66,7 +67,6 @@ import LoomSharedModels
         let engine = StubEngine()
         let server = MCPServer(engine: engine, appVersion: "9.9", token: "test-token")
         let port = try await server.start(port: 0, announce: false)
-        defer { Task { await server.stop() } }
 
         let connection = NWConnection(
             host: "127.0.0.1", port: try #require(NWEndpoint.Port(rawValue: UInt16(port))), using: .tcp
@@ -84,6 +84,8 @@ import LoomSharedModels
         await eventually("the waiter to be torn down with the connection") {
             engine.endedFlowSubscriptions > 0
         }
+
+        await server.stopForTest()
     }
 
     // MARK: Browser defence
@@ -102,7 +104,6 @@ import LoomSharedModels
     @Test func aRequestCarryingAnOriginHeaderIsRefused() async throws {
         let engine = StubEngine()
         let (server, url) = try await startServer(engine)
-        defer { Task { await server.stop() } }
 
         var request = try callRequest(url, tool: "clear_flows", arguments: [:])
         request.setValue("https://evil.example", forHTTPHeaderField: "Origin")
@@ -110,13 +111,14 @@ import LoomSharedModels
 
         #expect((response as? HTTPURLResponse)?.statusCode == 403)
         #expect(engine.clearFlowsCallCount == 0, "the write tool ran despite the request being refused")
+
+        await server.stopForTest()
     }
 
     @Test(arguments: [nil, "text/plain", "application/x-www-form-urlencoded", "multipart/form-data"] as [String?])
     func aRequestWithoutAJSONContentTypeIsRefused(contentType: String?) async throws {
         let engine = StubEngine()
         let (server, url) = try await startServer(engine)
-        defer { Task { await server.stop() } }
 
         var request = try callRequest(url, tool: "clear_flows", arguments: [:])
         // `nil` clears the header `callRequest` set — the no-Content-Type case.
@@ -125,6 +127,8 @@ import LoomSharedModels
 
         #expect((response as? HTTPURLResponse)?.statusCode == 415)
         #expect(engine.clearFlowsCallCount == 0, "the write tool ran despite the request being refused")
+
+        await server.stopForTest()
     }
 
     /// The check reads the media type only, so the parameter every sane HTTP client
@@ -132,7 +136,6 @@ import LoomSharedModels
     @Test func aJSONContentTypeWithACharsetParameterIsAccepted() async throws {
         let engine = StubEngine()
         let (server, url) = try await startServer(engine)
-        defer { Task { await server.stop() } }
 
         var request = try callRequest(url, tool: "clear_flows", arguments: [:])
         request.setValue("Application/JSON; charset=utf-8", forHTTPHeaderField: "Content-Type")
@@ -140,6 +143,8 @@ import LoomSharedModels
 
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(engine.clearFlowsCallCount == 1)
+
+        await server.stopForTest()
     }
 
     /// A complete HTTP/1.1 `tools/call` request as bytes.

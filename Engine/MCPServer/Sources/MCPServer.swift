@@ -1,4 +1,5 @@
 import Foundation
+import os
 import NIOCore
 import NIOPosix
 import NIOHTTP1
@@ -114,6 +115,13 @@ public final class MCPServer: @unchecked Sendable {
     private let group: EventLoopGroup
     private var channel: Channel?
     private let token: String
+    /// Set by `shutdown()`, which is terminal — see its doc comment.
+    private var didShutDown = false
+
+    /// This module's only log line (`shutdown()`'s failure path). ProxyCore's `Log`
+    /// is internal to that module, so the category is declared here rather than
+    /// widening `Log`'s visibility for one call.
+    private static let log = Logger(subsystem: "com.loom", category: "mcp")
 
     public init(
         engine: ProxyControlling,
@@ -173,6 +181,33 @@ public final class MCPServer: @unchecked Sendable {
     public func stop() async {
         try? await channel?.close().get()
         channel = nil
+    }
+
+    /// Stop the listener **and release the event-loop thread**. Terminal: this server
+    /// cannot be started again afterwards.
+    ///
+    /// `stop()` deliberately keeps the group alive, and for the app that is the whole
+    /// story — it owns one server for its entire life. But the group was never shut
+    /// down by anything, so every *other* instance cost one permanently running thread
+    /// for the rest of the process. That is the same defect `ProxyEngine.shutdown()`
+    /// documents, and the test suite is where it bites: this bundle builds a real
+    /// server per test, and a channel close racing the next test's bind is exactly the
+    /// unattributed ThreadSanitizer report ProxyCore already spent two rounds chasing.
+    /// The Thread Sanitizer CI job is scoped to `ProxyCoreTests`, so nothing here would
+    /// have caught it.
+    ///
+    /// Idempotent, and safe to call on a server that was never started.
+    public func shutdown() async {
+        guard !didShutDown else { return }
+        didShutDown = true
+        await stop()
+        // Never throws in practice for a group nothing else shares; log rather than
+        // propagate, since a caller tearing a server down has nothing to do about it.
+        do {
+            try await group.shutdownGracefully()
+        } catch {
+            Self.log.error("Event-loop group shutdown failed: \(String(describing: error))")
+        }
     }
 }
 

@@ -83,7 +83,6 @@ import LoomSharedModels
     /// what it saw before, including the absence of modern-only fields it would reject.
     @Test func legacyInitializeEchoesTheRequestedVersion() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (status, json) = try await post(url, body: legacy(
             method: "initialize", params: ["protocolVersion": "2025-06-18"]
@@ -94,6 +93,8 @@ import LoomSharedModels
         #expect(result["protocolVersion"] as? String == "2025-06-18")
         #expect(result["resultType"] == nil, "a legacy result must not carry the modern resultType")
         #expect((result["serverInfo"] as? [String: Any])?["name"] as? String == "loom")
+
+        await server.stopForTest()
     }
 
     /// A legacy client asking for a revision Loom doesn't serve is answered with the
@@ -101,13 +102,14 @@ import LoomSharedModels
     /// strands it.
     @Test func legacyInitializeFallsBackToTheNewestLegacyVersion() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (_, json) = try await post(url, body: legacy(
             method: "initialize", params: ["protocolVersion": "2024-11-05"]
         ))
 
         #expect(try result(json)["protocolVersion"] as? String == MCPProtocol.latestLegacy)
+
+        await server.stopForTest()
     }
 
     /// A bare `tools/list` — no `_meta`, no headers — is a legacy client mid-session,
@@ -115,7 +117,6 @@ import LoomSharedModels
     /// modern additions.
     @Test func legacyToolsListIsServedWithoutModernFields() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (status, json) = try await post(url, body: legacy(method: "tools/list"))
 
@@ -125,11 +126,12 @@ import LoomSharedModels
         #expect(result["resultType"] == nil)
         #expect(result["ttlMs"] == nil, "caching hints are a modern-only result field")
         #expect(result["cacheScope"] == nil)
+
+        await server.stopForTest()
     }
 
     @Test func legacyToolsCallStillWorks() async throws {
         let (server, url, engine) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (status, json) = try await post(url, body: legacy(
             method: "tools/call", params: ["name": "clear_flows", "arguments": [:]]
@@ -140,25 +142,27 @@ import LoomSharedModels
         #expect(result["isError"] as? Bool == false)
         #expect(result["resultType"] == nil)
         #expect(engine.clearFlowsCallCount == 1)
+
+        await server.stopForTest()
     }
 
     /// Legacy errors stay on HTTP 200. That is how every client served here to date has
     /// read them, and the modern status codes below must not leak into this path.
     @Test func legacyErrorsStayOnHTTP200() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (status, json) = try await post(url, body: legacy(method: "no/such/method"))
 
         #expect(status == 200)
         #expect(try error(json)["code"] as? Int == -32_601)
+
+        await server.stopForTest()
     }
 
     // MARK: Modern era
 
     @Test func modernToolsListCarriesResultTypeAndCachingHints() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "tools/list")
         let (status, json) = try await post(url, body: request.body, headers: request.headers)
@@ -175,11 +179,12 @@ import LoomSharedModels
         let serverInfo = try #require(meta["io.modelcontextprotocol/serverInfo"] as? [String: Any])
         #expect(serverInfo["name"] as? String == "loom")
         #expect(serverInfo["version"] as? String == "9.9")
+
+        await server.stopForTest()
     }
 
     @Test func modernToolsCallRuns() async throws {
         let (server, url, engine) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "tools/call", params: ["name": "clear_flows", "arguments": [:]])
         let (status, json) = try await post(url, body: request.body, headers: request.headers)
@@ -189,6 +194,8 @@ import LoomSharedModels
         #expect(result["resultType"] as? String == "complete")
         #expect(result["isError"] as? Bool == false)
         #expect(engine.clearFlowsCallCount == 1)
+
+        await server.stopForTest()
     }
 
     /// `server/discover` is how a client learns both eras exist in one round trip. It's
@@ -197,7 +204,6 @@ import LoomSharedModels
     @Test(arguments: [true, false])
     func discoverReportsBothEras(asModern: Bool) async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "server/discover")
         let (status, json) = asModern
@@ -212,6 +218,8 @@ import LoomSharedModels
         #expect(result["ttlMs"] as? Int == MCPProtocol.listTTLMs)
         #expect(result["cacheScope"] as? String == "public")
         #expect(result["instructions"] as? String != nil)
+
+        await server.stopForTest()
     }
 
     // MARK: Modern validation
@@ -220,7 +228,6 @@ import LoomSharedModels
     /// "not that revision, try one of these" — it is the entire downgrade mechanism.
     @Test func anUnsupportedModernVersionIsToldWhatIsSupported() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "tools/list", version: "1900-01-01")
         let (status, json) = try await post(url, body: request.body, headers: request.headers)
@@ -231,24 +238,26 @@ import LoomSharedModels
         let data = try #require(error["data"] as? [String: Any])
         #expect(data["supported"] as? [String] == [MCPProtocol.latest, MCPProtocol.latestLegacy])
         #expect(data["requested"] as? String == "1900-01-01")
+
+        await server.stopForTest()
     }
 
     @Test func aModernRequestMissingClientCapabilitiesIsRejected() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "tools/list", includeCapabilities: false)
         let (status, json) = try await post(url, body: request.body, headers: request.headers)
 
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_602)
+
+        await server.stopForTest()
     }
 
     /// Header ↔ body disagreement is `-32020` because a gateway routing on the header
     /// while the server executes the body is a split brain, not a nit.
     @Test func aVersionHeaderThatDisagreesWithTheBodyIsRejected() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         var request = modern(method: "tools/list")
         request.headers["MCP-Protocol-Version"] = "2025-11-25"
@@ -256,11 +265,12 @@ import LoomSharedModels
 
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_020)
+
+        await server.stopForTest()
     }
 
     @Test func aModernRequestWithoutTheVersionHeaderIsRejected() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         var request = modern(method: "tools/list")
         request.headers.removeValue(forKey: "MCP-Protocol-Version")
@@ -268,11 +278,12 @@ import LoomSharedModels
 
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_020)
+
+        await server.stopForTest()
     }
 
     @Test func anMcpMethodHeaderThatDisagreesWithTheBodyIsRejected() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         var request = modern(method: "tools/list")
         request.headers["Mcp-Method"] = "tools/call"
@@ -280,13 +291,14 @@ import LoomSharedModels
 
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_020)
+
+        await server.stopForTest()
     }
 
     /// The security-relevant one: a gateway that authorized `Mcp-Name: get_recent_flows`
     /// must not be able to have `clear_flows` executed underneath it.
     @Test func anMcpNameHeaderThatDisagreesWithTheBodyIsRejectedWithoutRunningTheTool() async throws {
         let (server, url, engine) = try await startServer()
-        defer { Task { await server.stop() } }
 
         var request = modern(method: "tools/call", params: ["name": "clear_flows", "arguments": [:]])
         request.headers["Mcp-Name"] = "get_recent_flows"
@@ -295,11 +307,12 @@ import LoomSharedModels
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_020)
         #expect(engine.clearFlowsCallCount == 0, "the body's tool ran despite the header naming another")
+
+        await server.stopForTest()
     }
 
     @Test func aToolsCallWithoutAnMcpNameHeaderIsRejected() async throws {
         let (server, url, engine) = try await startServer()
-        defer { Task { await server.stop() } }
 
         var request = modern(method: "tools/call", params: ["name": "clear_flows", "arguments": [:]])
         request.headers.removeValue(forKey: "Mcp-Name")
@@ -308,6 +321,8 @@ import LoomSharedModels
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_020)
         #expect(engine.clearFlowsCallCount == 0)
+
+        await server.stopForTest()
     }
 
     /// A name that can't ride in a plain header travels Base64-sentinel-encoded, and the
@@ -316,7 +331,6 @@ import LoomSharedModels
     /// pins the decoder rather than a real tool.
     @Test func aBase64SentinelNameHeaderIsDecodedBeforeComparison() async throws {
         let (server, url, engine) = try await startServer()
-        defer { Task { await server.stop() } }
 
         var request = modern(method: "tools/call", params: ["name": "clear_flows", "arguments": [:]])
         request.headers["Mcp-Name"] = "=?base64?\(Data("clear_flows".utf8).base64EncodedString())?="
@@ -324,6 +338,8 @@ import LoomSharedModels
 
         #expect(status == 200)
         #expect(engine.clearFlowsCallCount == 1)
+
+        await server.stopForTest()
     }
 
     /// The era-ambiguity trap, and the reason the pre-fix server was dangerous: a header
@@ -332,7 +348,6 @@ import LoomSharedModels
     /// gateway and "legacy" by us is how the two end up disagreeing about what ran.
     @Test func aModernVersionHeaderOverALegacyBodyIsAMismatch() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (status, json) = try await post(
             url, body: legacy(method: "tools/list"),
@@ -341,6 +356,8 @@ import LoomSharedModels
 
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_020)
+
+        await server.stopForTest()
     }
 
     // MARK: Modern status codes
@@ -350,25 +367,27 @@ import LoomSharedModels
     /// dual-era client uses to decide whether to fall back.
     @Test func anUnknownModernMethodIs404() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "no/such/method")
         let (status, json) = try await post(url, body: request.body, headers: request.headers)
 
         #expect(status == 404)
         #expect(try error(json)["code"] as? Int == -32_601)
+
+        await server.stopForTest()
     }
 
     /// An unknown *tool* is a bad parameter, not a missing method — `tools/call` exists.
     @Test func anUnknownToolIsInvalidParamsNotMethodNotFound() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let request = modern(method: "tools/call", params: ["name": "no_such_tool", "arguments": [:]])
         let (status, json) = try await post(url, body: request.body, headers: request.headers)
 
         #expect(status == 400)
         #expect(try error(json)["code"] as? Int == -32_602)
+
+        await server.stopForTest()
     }
 
     // MARK: Transport
@@ -379,20 +398,22 @@ import LoomSharedModels
     @Test(arguments: ["GET", "DELETE"])
     func theRemovedSessionVerbsAre405(httpMethod: String) async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let (status, _) = try await post(url, body: [:], httpMethod: httpMethod)
 
         #expect(status == 405)
+
+        await server.stopForTest()
     }
 
     @Test func anUnknownPathIsStill404() async throws {
         let (server, url, _) = try await startServer()
-        defer { Task { await server.stop() } }
 
         let other = try #require(URL(string: url.absoluteString.replacingOccurrences(of: "/mcp", with: "/nope")))
         let (status, _) = try await post(other, body: legacy(method: "tools/list"))
 
         #expect(status == 404)
+
+        await server.stopForTest()
     }
 }

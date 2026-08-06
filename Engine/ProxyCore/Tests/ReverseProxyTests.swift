@@ -51,6 +51,8 @@ import LoomSharedModels
         await #expect(throws: ProxyControlError.self) {
             _ = try await engine.createReverseProxy(ReverseProxyEndpoint(upstream: "api.example.com"))
         }
+
+        await engine.stopForTest()
     }
 
     @Test func anUpstreamWithAQueryIsRejected() async {
@@ -171,6 +173,8 @@ import LoomSharedModels
         await #expect(throws: ProxyControlError.self) {
             try await engine.deleteReverseProxy(id: UUID())
         }
+
+        await engine.stopForTest()
     }
 
     @Test func stoppingTheEngineClearsBindStateButKeepsTheEndpoint() async throws {

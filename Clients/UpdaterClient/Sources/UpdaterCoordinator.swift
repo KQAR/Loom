@@ -97,6 +97,12 @@ extension UpdaterCoordinator: SPUUpdaterDelegate {
         // Only stamp the timestamp on a clean cycle so a failed probe (offline)
         // retries on the next trigger instead of waiting out a whole day.
         guard error == nil else { return }
-        UserDefaults.standard.set(Date(), forKey: Self.lastProbeKey)
+        // The same `@MainActor` hop as the two callbacks above, though this one touches
+        // only `UserDefaults` and would be safe without it. The point is that all three
+        // read alike: a later edit that adds actor-isolated state here inherits the
+        // correct shape instead of a nonisolated body the compiler won't question.
+        Task { @MainActor in
+            UserDefaults.standard.set(Date(), forKey: Self.lastProbeKey)
+        }
     }
 }

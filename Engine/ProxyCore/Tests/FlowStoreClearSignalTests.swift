@@ -42,6 +42,8 @@ struct FlowStoreClearSignalTests {
         }
         await engine.clearFlows()
         #expect(await observed.value)
+
+        await engine.stopForTest()
     }
 
     /// Several surfaces can listen (window + a future panel); all of them get it.

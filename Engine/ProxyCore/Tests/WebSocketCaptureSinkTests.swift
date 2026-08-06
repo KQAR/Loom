@@ -46,9 +46,7 @@ struct WebSocketCaptureSinkTests {
 
         sink.abandon()
 
-        // Give the consumer task room to have upserted, if it were going to.
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await store.flow(id: id) == nil, "an abandoned relay must leave no flow behind")
+        try await stayEmpty(store, id: id)
     }
 
     /// Both are idempotent, because a socket can go inactive on either side and the
@@ -75,5 +73,25 @@ struct WebSocketCaptureSinkTests {
             try await Task.sleep(for: .milliseconds(5))
         }
         Issue.record("the sink never published a flow")
+    }
+
+    /// The negative of `untilStored`, and it can only be a wait — there is no event to
+    /// arrive, so the assertion is "nothing showed up for this long".
+    ///
+    /// It polls rather than sleeping once and checking, for the reason that helper gives:
+    /// the consumer is a detached task. A single check after a fixed 50 ms (what this
+    /// was) could only ever fail *open* — a consumer scheduled late upserts after the
+    /// assertion has already passed, and a real regression goes unnoticed. Polling over
+    /// a longer window fails the moment a flow appears anywhere in it, so the window
+    /// bounds the runtime rather than the strength of the check.
+    private func stayEmpty(_ store: FlowStore, id: UUID, for seconds: Double = 0.5) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if await store.flow(id: id) != nil {
+                Issue.record("an abandoned relay must leave no flow behind")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
     }
 }
