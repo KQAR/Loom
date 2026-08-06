@@ -7,7 +7,7 @@ description: Consume Loom's capture engine as a plain SPM library from another S
 
 The capture engine is reusable by **any** Swift host (a CLI, another macOS app, a test harness) —
 not just this app. A root `Package.swift` exposes the two lowest layers as SPM library products;
-everything above them (App / Features / Clients / Bridge / MCPServer / PrivilegedHelper) stays out
+everything above them (App / Features / Clients / Bridge / MCPServer) stays out
 of the package on purpose.
 
 | Product | Target | For a consumer that wants… |

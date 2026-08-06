@@ -366,17 +366,13 @@ tailwind.config = {
       "module": "UpdaterClient", "file": "Clients/UpdaterClient/Sources/UpdaterCoordinator.swift",
       "desc": "SUEnableAutomaticChecks is deliberately off so the probe stays UI-less; it self-gates on com.loom.lastUpdateCheck. Armed end-to-end (real EdDSA key, SPARKLE_EDDSA_KEY set, appcast published) — only Developer ID signing/notarization is missing." },
 
-    { "id": "helper-client", "label": "PrivilegedHelperClient", "sub": "SMAppService + XPC", "layer": "client", "x": 1176, "y": 762,
+    { "id": "helper-client", "label": "PrivilegedHelperClient", "sub": "networksetup + osascript", "layer": "client", "x": 1176, "y": 762,
       "module": "PrivilegedHelperClient", "file": "Clients/PrivilegedHelperClient/Sources/PrivilegedHelperClient.swift",
-      "desc": "App-side surface over the root daemon. Its register/installCA path is wired and its pure logic unit-tested, but nothing in the app invokes it yet — an unverified scaffold." },
+      "desc": "系统代理的 TCA 客户端：setSystemProxy / systemProxySnapshot(s) / restoreOrphanedQUICBlock。名字是历史遗留 —— 它曾经包着一个 root daemon 的 SMAppService + XPC 半边，那半边连同 daemon 已在 0.0.16 删除（ad-hoc 签名下永远加载不了，见 ROADMAP § M2）。现在它不需要任何调用点之外的特权。" },
 
     { "id": "system-proxy", "label": "SystemProxyApplier + QUICBlocker", "sub": "networksetup + pf anchor", "layer": "system", "x": 1176, "y": 844,
       "module": "PrivilegedHelperClient", "file": "Clients/PrivilegedHelperClient/Sources/SystemProxyApplier.swift",
-      "desc": "Runs networksetup directly — admin users need no password, non-admin falls back to one osascript prompt. QUICBlocker appends a com.loom.quic pf anchor dropping outbound UDP 443, because browsers default to HTTP/3 and would otherwise bypass a TCP proxy entirely. It copies /etc/pf.conf and never overwrites; restore reloads the pristine ruleset." },
-
-    { "id": "helper", "label": "LoomHelper (root daemon)", "sub": "unverified scaffold", "layer": "system", "x": 1364, "y": 844,
-      "module": "LoomHelper", "file": "Engine/PrivilegedHelper/Sources/",
-      "desc": "Per-service proxy backup/override/restore, CA trust install/verify, caller + Apple-binary validation, crash watchdog, idle-exit. Blocked on a Developer ID–signed/notarized app: SMAppService rejects ad-hoc CI signing, so it cannot run in CI." }
+      "desc": "Runs networksetup directly — admin users need no password, non-admin falls back to one osascript prompt. QUICBlocker appends a com.loom.quic pf anchor dropping outbound UDP 443, because browsers default to HTTP/3 and would otherwise bypass a TCP proxy entirely. It copies /etc/pf.conf and never overwrites; restore reloads the pristine ruleset." }
   ],
 
   "edges": [
@@ -434,7 +430,6 @@ tailwind.config = {
     { "id": "e52", "from": "main-view",        "to": "audit-panel",       "label": "sidebar",                     "kind": "ui" },
     { "id": "e53", "from": "setup-feature",    "to": "helper-client",     "label": "trust / system proxy",        "kind": "control" },
     { "id": "e54", "from": "helper-client",    "to": "system-proxy",      "label": "networksetup + pf",           "kind": "control" },
-    { "id": "e55", "from": "helper-client",    "to": "helper",            "label": "XPC (unverified)",            "kind": "control" },
     { "id": "e56", "from": "app-feature",      "to": "updater",           "label": "probe / check",               "kind": "control" },
     { "id": "e57", "from": "engine",           "to": "provisioning",      "label": "QR + LAN server",             "kind": "control" },
     { "id": "e58", "from": "flow-store",       "to": "proxy-client",      "label": "flowStream (batched ~100ms)", "kind": "stream" },
@@ -557,8 +552,7 @@ tailwind.config = {
       "desc": "三条路径，按现实可用性排序。没有信任就没有 HTTPS 捕获。",
       "steps": [
         { "title": "一键（user domain）—— 今天就能用，不需要 helper、不需要 Developer ID", "detail": "面板 Install & Trust → SetupFeature.installAndTrustCATapped → CertificateTrust.installUserTrust：加进登录钥匙串并通过 Authorization Services 设置 user-domain 信任，一次登录密码提示。这是默认应该走的路。", "nodes": ["panel","setup-feature","ca","castore"], "edges": ["e47","e49","e7"] },
-        { "title": "手动（system domain）", "detail": "面板给出可复制的 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <path>；路径由 export_ca_certificate 提供。", "nodes": ["castore","mcp-tools"], "edges": ["e43"] },
-        { "title": "特权 helper（system domain，未验证）", "detail": "PrivilegedHelperClient + LoomHelper 能免去 sudo，但需要 Developer ID 签名+公证的 app 把 daemon 嵌在 Contents/Library/LaunchDaemons 下并经管理员批准。SMAppService 拒绝 CI 的 ad-hoc 签名，因此无法在 CI 验证。user-domain 信任已经解锁了拦截，所以这是可选增强而非阻塞项。", "nodes": ["helper-client","helper"], "edges": ["e53","e55"] }
+        { "title": "手动（system domain）", "detail": "面板给出可复制的 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <path>；路径由 export_ca_certificate 提供。", "nodes": ["castore","mcp-tools"], "edges": ["e43"] }
       ]
     },
     {
