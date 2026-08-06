@@ -53,7 +53,7 @@ extension MCPToolExecutor {
         // Flag a partially-captured exchange in the *summary* too, so an agent
         // knows a body is a prefix before it fetches (or diffs) the detail.
         if flow.request.isBodyTruncated || flow.response?.isBodyTruncated == true
-            || flow.webSocketDroppedMessages != nil {
+            || flow.webSocketDroppedMessages != nil || flow.webSocketCaptureError != nil {
             out["captureTruncated"] = true
         }
         if let app = flow.sourceApp {
@@ -143,6 +143,12 @@ extension MCPToolExecutor {
             // recover them. Distinct from the render cap above.
             if let dropped = flow.webSocketDroppedMessages {
                 ws["framesNotRecorded"] = dropped
+            }
+            // Parsing gave up mid-connection: the frame log ends here even though
+            // the socket didn't. Distinct from both caps above — nothing after this
+            // point was ever seen as a frame, so there is no count to give.
+            if let failure = flow.webSocketCaptureError {
+                ws["captureStopped"] = failure
             }
             out["webSocket"] = ws
         }

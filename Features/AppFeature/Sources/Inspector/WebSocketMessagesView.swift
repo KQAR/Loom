@@ -8,10 +8,17 @@ struct WebSocketMessagesView: View {
     /// Frames the capture cap dropped (nil = the log is complete). Shown so a
     /// partial transcript can't read as the whole conversation.
     var droppedMessages: Int?
+    /// Set when frame parsing gave up on this connection — the log stops here even
+    /// though the socket may still be live. Shown even with no frames at all, which
+    /// is the case a bare "No frames yet" would misread as a quiet socket.
+    var captureError: String?
 
     var body: some View {
         if messages.isEmpty {
-            Text("No frames yet").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
+                if let captureError { captureStoppedLabel(captureError) }
+                Text("No frames yet").foregroundStyle(.secondary)
+            }
         } else {
             // Lazy: a chatty socket records up to 10k frames, and an eager `VStack`
             // would lay out every one of them on open (AGENTS.md: never render an
@@ -25,6 +32,7 @@ struct WebSocketMessagesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+                if let captureError { captureStoppedLabel(captureError) }
                 ForEach(messages) { message in
                     HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
                         Image(systemName: message.direction == .clientToServer ? "arrow.up" : "arrow.down")
@@ -47,5 +55,14 @@ struct WebSocketMessagesView: View {
                 }
             }
         }
+    }
+
+    private func captureStoppedLabel(_ reason: String) -> some View {
+        Label(
+            "Frame capture stopped — \(reason). Bytes are still being relayed.",
+            systemImage: "exclamationmark.triangle"
+        )
+        .font(.caption)
+        .foregroundStyle(.orange)
     }
 }

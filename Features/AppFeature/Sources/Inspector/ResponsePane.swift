@@ -100,7 +100,11 @@ struct ResponsePane: View {
     /// payloads to the viewport-lazy `NSTextView`.
     @ViewBuilder private func content(_ derived: Derived) -> some View {
         if tab == .messages {
-            Scrolled { WebSocketMessagesView(messages: messages, droppedMessages: flow.webSocketDroppedMessages) }
+            Scrolled { WebSocketMessagesView(
+                messages: messages,
+                droppedMessages: flow.webSocketDroppedMessages,
+                captureError: flow.webSocketCaptureError
+            ) }
         } else if let response = flow.response {
             switch tab {
             case .messages: EmptyView()

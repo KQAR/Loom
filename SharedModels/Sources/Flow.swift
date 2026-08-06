@@ -194,6 +194,12 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// relayed to the peer). Nil when nothing was dropped — so a reader can tell a
     /// complete frame log from a partial one.
     public var webSocketDroppedMessages: Int?
+    /// Set when frame capture for this WebSocket gave up mid-connection — the byte
+    /// stream stopped framing as WebSocket, so parsing it further is guesswork.
+    /// The connection itself is unaffected (the relay is byte-transparent); what
+    /// this says is that `webSocketMessages` stopped growing before the socket did,
+    /// which is otherwise indistinguishable from a socket that went quiet.
+    public var webSocketCaptureError: String?
     /// Set when this flow was loaded from a file (a HAR import) rather than observed
     /// on the wire, naming where it came from. Imported traffic sits in the same
     /// store as captured traffic — that's the point, it can be inspected, diffed and
@@ -213,6 +219,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         appliedRules: [AppliedRule]? = nil,
         webSocketMessages: [WebSocketMessage]? = nil,
         webSocketDroppedMessages: Int? = nil,
+        webSocketCaptureError: String? = nil,
         importedFrom: String? = nil
     ) {
         self.id = id
@@ -226,6 +233,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.appliedRules = appliedRules
         self.webSocketMessages = webSocketMessages
         self.webSocketDroppedMessages = webSocketDroppedMessages
+        self.webSocketCaptureError = webSocketCaptureError
         self.importedFrom = importedFrom
     }
 

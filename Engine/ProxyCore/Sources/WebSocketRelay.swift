@@ -228,6 +228,9 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     /// Frames seen after the cap tripped — recorded as a count on the flow so the
     /// transcript is honestly labelled partial.
     private var dropped = 0
+    /// Set when a direction's frame parsing gave up (see `captureFailed`). Rides the
+    /// flow so the fact reaches a reader, not just the log.
+    private var captureError: String?
     private var finished = false
     private let continuation: AsyncStream<Flow>.Continuation
     /// Client and upstream share one loop, so scheduled flushes land on the same
@@ -283,6 +286,24 @@ final class WebSocketCaptureSink: @unchecked Sendable {
         scheduleFlush()
     }
 
+    /// One direction stopped framing as WebSocket. The splice is untouched — every
+    /// byte still crosses — but its frame log is now partial and permanently so.
+    ///
+    /// Both audiences, per AGENTS.md § "log it for the human, return it for the
+    /// agent": `Log.ws` for a human with Console open, `Flow.webSocketCaptureError`
+    /// for everyone reading through a tool or the Inspector. A silently short frame
+    /// log reads exactly like a quiet socket.
+    func captureFailed(direction: WebSocketMessage.Direction, reason: String) {
+        guard captureError == nil, !finished else { return }
+        let label = direction == .clientToServer ? "client→server" : "server→client"
+        captureError = "\(label): \(reason)"
+        Log.ws.error("""
+        WebSocket capture stopped for flow \(self.flowID, privacy: .public) \
+        (\(label, privacy: .public)): \(reason, privacy: .public). Bytes are still relayed.
+        """)
+        enqueue(completed: false) // publish now; the socket may stay open for hours
+    }
+
     func finish() {
         guard !finished else { return }
         finished = true
@@ -321,7 +342,8 @@ final class WebSocketCaptureSink: @unchecked Sendable {
             id: flowID, request: request, startedAt: startedAt,
             outcome: completed ? .completed(response, at: Date()) : .streaming(response),
             sourceApp: sourceApp, sourceDevice: sourceDevice, webSocketMessages: messages,
-            webSocketDroppedMessages: dropped > 0 ? dropped : nil
+            webSocketDroppedMessages: dropped > 0 ? dropped : nil,
+            webSocketCaptureError: captureError
         ))
     }
 }
@@ -329,20 +351,37 @@ final class WebSocketCaptureSink: @unchecked Sendable {
 /// Skips the HTTP handshake preamble on a direction, then parses everything after
 /// as WebSocket frames. Pure/testable — the channel handler is thin plumbing.
 struct WebSocketStreamTap {
+    /// Largest handshake preamble held while looking for its terminator. A response
+    /// that never ends its headers isn't one, and the buffer is otherwise unbounded.
+    static let maxHandshakeBytes = 64 * 1024
+
     private var parser = WebSocketFrameParser()
     private var handshakeDone: Bool
     private var pending: [UInt8] = []
+
+    /// Why this direction stopped being captured, once it has — the parser's own
+    /// failure, or a handshake that never terminated. The relay is unaffected:
+    /// bytes are forwarded before they're ever parsed.
+    var failure: String? { handshakeFailure ?? parser.failure }
+    private var handshakeFailure: String?
 
     init(expectsHandshake: Bool) {
         handshakeDone = !expectsHandshake
     }
 
     mutating func consume(_ bytes: [UInt8]) -> [WebSocketFrameParser.Frame] {
+        guard failure == nil else { return [] }
         if handshakeDone {
             return parser.feed(bytes)
         }
         pending.append(contentsOf: bytes)
-        guard let bodyStart = Self.endOfHeaders(pending) else { return [] }
+        guard let bodyStart = Self.endOfHeaders(pending) else {
+            if pending.count > Self.maxHandshakeBytes {
+                handshakeFailure = "no end of HTTP handshake headers in the first \(Self.maxHandshakeBytes) bytes"
+                pending = []
+            }
+            return []
+        }
         handshakeDone = true
         let rest = Array(pending[bodyStart...])
         pending = []
@@ -372,6 +411,8 @@ final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
     private let direction: WebSocketMessage.Direction
     private let sink: WebSocketCaptureSink
     private var tap: WebSocketStreamTap
+    /// The tap's failure is sticky, so report it once rather than on every read.
+    private var reportedFailure = false
 
     init(direction: WebSocketMessage.Direction, expectsHandshake: Bool, sink: WebSocketCaptureSink) {
         self.direction = direction
@@ -390,10 +431,16 @@ final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let buffer = unwrapInboundIn(data)
+        // Relay first, parse second — capture never gates the splice, so a stream
+        // the tap can't read still reaches its peer byte for byte.
         partner?.relayWrite(buffer)
         if let bytes = buffer.getBytes(at: buffer.readerIndex, length: buffer.readableBytes) {
             for frame in tap.consume(bytes) {
                 sink.record(direction: direction, frame: frame)
+            }
+            if let failure = tap.failure, !reportedFailure {
+                reportedFailure = true
+                sink.captureFailed(direction: direction, reason: failure)
             }
         }
     }
