@@ -1,16 +1,22 @@
 import Foundation
+import LoomHelperShared
 import Synchronization
 import SystemConfiguration
 import LoomSharedModels
 
-/// Sets the macOS system HTTP+HTTPS proxy without a privileged helper.
+/// Sets the macOS system HTTP+HTTPS proxy — through the privileged helper when one
+/// is installed and approved, and without any helper when there isn't.
 ///
-/// Strategy: run `networksetup` directly first — for admin users that needs **no
-/// authentication at all**, so toggling is silent. The result is verified against
-/// the effective proxy state (`SCDynamicStoreCopyProxies`); only if it didn't
-/// stick (non-admin user) do we retry the same script through
+/// Strategy, in order: the **root helper** when it is installed, approved and
+/// actually answering (`HelperInstall.ensureReady`) — then nothing is asked. Failing
+/// that, run `networksetup` directly, which for admin users needs **no
+/// authentication at all**; the result is verified against the effective proxy state
+/// (`SCDynamicStoreCopyProxies`), and if it didn't stick — a non-admin account, or
+/// the root-only pf work — the same script is retried through
 /// `osascript … with administrator privileges`, which prompts once.
-/// (The XPC helper remains the future option for non-admin, crash-safe installs.)
+///
+/// Every step falls through rather than failing: a helper that is missing, revoked
+/// or broken costs a password prompt, never the feature.
 ///
 /// Must run OFF the main thread — the fallback auth prompt is modal.
 enum SystemProxyApplier {
@@ -38,6 +44,27 @@ enum SystemProxyApplier {
     static func apply(enabled: Bool, host: String, port: Int, defaults: UserDefaults = .standard) -> (Bool, String?) {
         applyLock.withLock { _ in
             let restoreQUIC = !enabled && defaults.bool(forKey: quicBlockedKey)
+
+            // 0) The privileged helper, when the human has installed and approved
+            //    one. This is the whole point of it: pf needs root, so without it
+            //    every *enable* costs an admin prompt even on an admin account.
+            //    Falls through to the paths below when it isn't installed, and also
+            //    when it is installed but doesn't answer — a broken helper must not
+            //    take the feature down with it, and the fallback still works, it
+            //    just prompts.
+            // `ensureReady`, not `state()`: "macOS has it registered" and "it answers"
+            // are different facts, and the gap between them is a stale registration
+            // left by an app update — which hangs an XPC call rather than failing it.
+            if HelperInstall.ensureReady() {
+                let outcome = HelperInstall.call { helper, reply in
+                    helper.applySystemProxy(enabled: enabled, port: port, restoreQUIC: restoreQUIC, withReply: reply)
+                }
+                if outcome.ok, verified(enabled: enabled, port: port) {
+                    defaults.set(enabled, forKey: quicBlockedKey)
+                    return (true, nil)
+                }
+            }
+
             let script = enabled ? enableScript(host: host, port: port) : disableScript(restoreQUIC: restoreQUIC)
 
             // 1) Direct, silent path (works for admin users): feed the script to sh on
@@ -128,7 +155,16 @@ enum SystemProxyApplier {
         applyLock.withLock { _ in
             guard hasOrphanedQUICBlock(routing: routing(loomPort: port), defaults: defaults) else { return false }
 
-            let script = "#!/bin/sh\n\(QUICBlocker.disableFragment)"
+            // Same order as `apply`: helper first when it's usable, so clearing a
+            // crash leftover at launch doesn't greet the human with a password box.
+            if HelperInstall.ensureReady() {
+                if HelperInstall.call({ helper, reply in helper.restoreQUICBlock(withReply: reply) }).ok {
+                    defaults.set(false, forKey: quicBlockedKey)
+                    return true
+                }
+            }
+
+            let script = SystemProxyScripts.restoreQUICOnly
             if run("/bin/sh", ["-c", script]).status == 0 {
                 defaults.set(false, forKey: quicBlockedKey)
                 return true
@@ -199,57 +235,15 @@ enum SystemProxyApplier {
         return (process.terminationStatus, stderr)
     }
 
-    /// Iterate enabled services (drop the header line and `*`-disabled ones) and
-    /// point HTTP + HTTPS at the proxy.
-    /// Point every service's proxy at Loom, then block QUIC so browser HTTP/3
-    /// falls back to capturable TCP — both in one privileged call.
-    ///
-    /// The QUIC fragment runs LAST so the script's exit status is its exit
-    /// status: pfctl needs root even for an admin user, and that status is the
-    /// only way `apply` can tell "proxy set, QUIC blocked" from "proxy set, QUIC
-    /// silently not blocked" and escalate.
+    /// The scripts themselves live in `SystemProxyScripts` (LoomHelperShared), because
+    /// the root helper runs the very same text. Kept as thin forwarders so existing
+    /// call sites and their tests keep naming this type — what must not exist is a
+    /// *second definition* of what the toggle does.
     static func enableScript(host: String, port: Int) -> String {
-        """
-        #!/bin/sh
-        /usr/sbin/networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
-          [ -z "$svc" ] && continue
-          /usr/sbin/networksetup -setwebproxy "$svc" \(host) \(port)
-          /usr/sbin/networksetup -setwebproxystate "$svc" on
-          /usr/sbin/networksetup -setsecurewebproxy "$svc" \(host) \(port)
-          /usr/sbin/networksetup -setsecurewebproxystate "$svc" on
-        done
-        \(QUICBlocker.enableFragment)
-        """
+        SystemProxyScripts.enable(host: host, port: port)
     }
 
-    /// Restore QUIC/firewall first, then turn the proxy off — the reverse order
-    /// of enable, so we never leave QUIC blocked without the proxy running. The
-    /// pf status is captured before the networksetup loop and re-emitted as the
-    /// script's exit status, keeping the same contract as enable.
-    ///
-    /// With `restoreQUIC: false` (nothing was ever blocked) the script carries no
-    /// pfctl at all, so an admin user's disable needs no root and stays silent.
     static func disableScript(restoreQUIC: Bool) -> String {
-        guard restoreQUIC else {
-            return """
-            #!/bin/sh
-            /usr/sbin/networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
-              [ -z "$svc" ] && continue
-              /usr/sbin/networksetup -setwebproxystate "$svc" off
-              /usr/sbin/networksetup -setsecurewebproxystate "$svc" off
-            done
-            """
-        }
-        return """
-        #!/bin/sh
-        \(QUICBlocker.disableFragment)
-        loom_quic_status=$?
-        /usr/sbin/networksetup -listallnetworkservices | tail -n +2 | grep -v '^\\*' | while IFS= read -r svc; do
-          [ -z "$svc" ] && continue
-          /usr/sbin/networksetup -setwebproxystate "$svc" off
-          /usr/sbin/networksetup -setsecurewebproxystate "$svc" off
-        done
-        exit $loom_quic_status
-        """
+        SystemProxyScripts.disable(restoreQUIC: restoreQUIC)
     }
 }

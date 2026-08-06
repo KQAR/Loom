@@ -24,17 +24,17 @@ import Foundation
 /// that redirects our root-run `>`/`cp` at `/etc/pf.conf` or plant a fake ruleset
 /// for `pfctl -f` to load. Predictable `/tmp` paths (world-writable) previously
 /// made both attacks trivial. `rm -f` + `set -C` (noclobber) add defense in depth.
-enum QUICBlocker {
+public enum QUICBlocker {
     /// pf anchor name namespaced to Loom so restore can target only our rules.
-    static let anchorName = "com.loom.quic"
-    static let workDir = "/var/root/com.loom"
-    static let rulesPath = "\(workDir)/quic.rules"
-    static let mainConfPath = "\(workDir)/pf.conf"
-    static let disabledMarkerPath = "\(workDir)/pf-was-disabled"
+    public static let anchorName = "com.loom.quic"
+    public static let workDir = "/var/root/com.loom"
+    public static let rulesPath = "\(workDir)/quic.rules"
+    public static let mainConfPath = "\(workDir)/pf.conf"
+    public static let disabledMarkerPath = "\(workDir)/pf-was-disabled"
 
     /// The single pf rule: drop outbound UDP/443 (QUIC). `quick` makes it decisive
     /// the moment it's reached; the anchor is appended last so nothing overrides it.
-    static let rule = "block drop out quick proto udp from any to any port = 443"
+    public static let rule = "block drop out quick proto udp from any to any port = 443"
 
     /// Shell appended to the system-proxy **enable** script. pf stderr is
     /// swallowed (the noise is useless), but the fragment's **exit status is the
@@ -43,7 +43,7 @@ enum QUICBlocker {
     /// learns the un-escalated "silent admin" run set the proxy *without* blocking
     /// QUIC, and that it must retry through the admin prompt. Swallowing that too
     /// is how admin users ran for months with HTTP/3 never actually blocked.
-    static var enableFragment: String {
+    public static var enableFragment: String {
         """
         # --- Block QUIC (UDP/443) so browser HTTP/3 falls back to capturable TCP ---
         loom_quic_enable() {
@@ -76,7 +76,7 @@ enum QUICBlocker {
     /// reports whether the pf restore itself succeeded (the marker/cleanup steps
     /// are best-effort), so an un-escalated run can't silently leave UDP/443
     /// blocked on a machine whose proxy is already off.
-    static var disableFragment: String {
+    public static var disableFragment: String {
         """
         # --- Restore firewall / unblock QUIC ---
         loom_quic_disable() {

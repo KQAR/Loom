@@ -14,6 +14,7 @@ public extension Target {
         resources: ProjectDescription.ResourceFileElements? = nil,
         infoPlist: InfoPlist = .default,
         entitlements: Entitlements? = nil,
+        scripts: [TargetScript] = [],
         dependencies: [TargetDependency] = [],
         settings: Settings? = nil
     ) -> Target {
@@ -27,6 +28,7 @@ public extension Target {
             sources: sources,
             resources: resources,
             entitlements: entitlements,
+            scripts: scripts,
             dependencies: dependencies,
             settings: settings
         )

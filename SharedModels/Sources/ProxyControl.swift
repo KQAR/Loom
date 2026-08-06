@@ -162,10 +162,37 @@ public protocol SystemRoutingControlling: Sendable {
     /// `isSystemProxyActive()`: it separates "no proxy set" from "another proxy owns
     /// it", which are the same `false` to the boolean and *different* advice to give.
     func systemProxyRouting() async -> SystemProxyRouting
-    /// Point this Mac's traffic at Loom (or stop). May prompt for an admin password
-    /// on a non-admin account, and also toggles the QUIC block that forces browsers
-    /// off HTTP/3 (which a TCP proxy cannot see).
+    /// Point this Mac's traffic at Loom (or stop). Also toggles the QUIC block that
+    /// forces browsers off HTTP/3 (which a TCP proxy cannot see) — that half needs
+    /// root, so **without the privileged helper below this shows a modal admin
+    /// prompt** and does not return until a human answers it.
     func setSystemProxy(enabled: Bool) async -> SystemRoutingResult
+    /// Why the helper is not answering, when it isn't. Nil otherwise.
+    func privilegedHelperDetail() async -> String?
+    /// Whether the root helper that makes the above silent is in place.
+    ///
+    /// Exposed to an agent for one concrete reason: `set_system_proxy` can block on a
+    /// password dialog that only a human standing at the machine can dismiss. An
+    /// agent that knows this in advance can say so instead of appearing to hang.
+    func privilegedHelper() async -> PrivilegedHelperState
+}
+
+/// State of the root helper backing `setSystemProxy`, from the outside.
+public enum PrivilegedHelperState: String, Sendable, Equatable {
+    /// Installed and approved — the toggle is silent.
+    case enabled
+    /// Registered, but the human hasn't allowed it in System Settings yet, so the
+    /// toggle still prompts.
+    case requiresApproval
+    /// Registered and approved, but not answering — the usual cause is an app
+    /// update that left launchd holding a job pointing at the old binary. The
+    /// toggle still works and prompts; the human can repair it from the console.
+    case unresponsive
+    /// Never installed. The toggle prompts.
+    case notInstalled
+    /// No implementation is wired (the engine is embedded without the app), so this
+    /// says nothing about the machine — distinct from `notInstalled`, which does.
+    case unavailable
 }
 
 public struct SystemRoutingResult: Equatable, Sendable {

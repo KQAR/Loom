@@ -142,22 +142,29 @@ private actor StubRouting: SystemRoutingControlling {
     private let result: SystemRoutingResult
     /// Set to simulate another proxy app (Charles, whistle) owning the setting.
     private let occupant: (host: String, port: Int)?
+    private let helper: PrivilegedHelperState
     private(set) var lastRequest: Bool?
 
     init(
         active: Bool, applyChangesState: Bool? = nil,
         result: SystemRoutingResult = SystemRoutingResult(ok: true),
-        occupant: (host: String, port: Int)? = nil
+        occupant: (host: String, port: Int)? = nil,
+        helper: PrivilegedHelperState = .notInstalled
     ) {
         self.active = active
         self.applyChangesState = applyChangesState
         self.result = result
         self.occupant = occupant
+        self.helper = helper
     }
 
     func set(active: Bool) { self.active = active }
 
     func isSystemProxyActive() async -> Bool { active }
+
+    func privilegedHelper() async -> PrivilegedHelperState { helper }
+
+    func privilegedHelperDetail() async -> String? { nil }
 
     func systemProxyRouting() async -> SystemProxyRouting {
         if active { return .loom }

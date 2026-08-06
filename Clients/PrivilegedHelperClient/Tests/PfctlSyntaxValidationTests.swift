@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import LoomHelperShared
 @testable import PrivilegedHelperClient
 
 /// Parses the pf config the enable script would build through the real

@@ -33,6 +33,24 @@ struct SystemRoutingAdapter: SystemRoutingControlling {
         return await helper.systemProxySnapshot().routing(loomPort: port)
     }
 
+    /// Mapped rather than passed through: `HelperState` is a client-layer type and
+    /// SharedModels must not depend on the client (the dependency direction is
+    /// one-way). `.notFound` — a build with no helper embedded — reports as
+    /// `notInstalled`, because from an agent's side the consequence is identical: the
+    /// toggle will prompt.
+    func privilegedHelper() async -> PrivilegedHelperState {
+        switch await helper.helperState() {
+        case .enabled: return .enabled
+        case .requiresApproval: return .requiresApproval
+        case .unresponsive: return .unresponsive
+        case .notInstalled, .notFound: return .notInstalled
+        }
+    }
+
+    func privilegedHelperDetail() async -> String? {
+        await helper.helperFailureReason()
+    }
+
     func setSystemProxy(enabled: Bool) async -> SystemRoutingResult {
         let port = await ProxyEngine.shared.status().port
         let outcome = await helper.setSystemProxy(enabled, port)

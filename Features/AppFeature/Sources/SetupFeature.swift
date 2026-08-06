@@ -30,6 +30,14 @@ public struct SetupFeature: Sendable {
         /// what macOS reported.
         public var systemProxyRouting = SystemProxyRouting.off
 
+        /// The privileged helper, which is what makes the system-proxy toggle
+        /// password-free. Mirrored rather than read on demand because the human can
+        /// revoke it in System Settings without Loom being told — every refresh
+        /// re-reads it.
+        public var helperState = HelperState.notInstalled
+        public var helperBusy = false
+        public var helperMessage: String?
+
         public var sslEnabled = false             // M2: HTTPS interception (SSL parsing)
         public var sslScope = SSLScope.disabled   // interception scope (include/exclude globs)
         public var certificateStatus = CertificateStatus.notGenerated
@@ -70,6 +78,12 @@ public struct SetupFeature: Sendable {
         /// macOS reported new proxy settings — either someone else changed them, or
         /// our own write landed.
         case systemProxySnapshotChanged(SystemProxySnapshot)
+        /// The helper row was tapped: install it, or (once registered) take the human
+        /// to the approval switch. Which one it means is decided from `helperState`,
+        /// in the reducer, so the view stays a projection.
+        case helperRowTapped
+        case helperStateLoaded(HelperState, reason: String?)
+        case helperActionFinished(state: HelperState, error: String?)
         case toggleSSLTapped
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
@@ -110,6 +124,12 @@ public struct SetupFeature: Sendable {
                 let port = state.port
                 return .run { send in
                     await send(.systemProxySnapshotChanged(privilegedHelperClient.systemProxySnapshot()))
+                    // The approval switch lives in System Settings, so the other
+                    // writer here is the human in another app — re-read, never cache.
+                    await send(.helperStateLoaded(
+                        privilegedHelperClient.helperState(),
+                        reason: privilegedHelperClient.helperFailureReason()
+                    ))
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
                     // Re-read on every appearance, because the other writer is an
@@ -148,8 +168,8 @@ public struct SetupFeature: Sendable {
                 state.systemProxyBusy = true
                 state.systemProxyMessage = enabling ? "Setting system proxy…" : "Removing system proxy…"
                 let port = state.port
-                // No privileged helper needed: applied via networksetup under one
-                // admin prompt (see PrivilegedHelperClient.setSystemProxy).
+                // Silent when the helper is installed and approved; one admin prompt
+                // otherwise (see PrivilegedHelperClient.setSystemProxy).
                 return .run { send in
                     let outcome = await privilegedHelperClient.setSystemProxy(enabling, port)
                     await send(.systemProxyResult(enabling: enabling, ok: outcome.ok, message: outcome.message))
@@ -183,6 +203,69 @@ public struct SetupFeature: Sendable {
                     state.systemProxyMessage = message ?? "System proxy change failed."
                 }
                 return settle
+
+            // MARK: Privileged helper
+
+            case let .helperStateLoaded(helperState, reason):
+                state.helperState = helperState
+                switch helperState {
+                case .enabled:
+                    // Clear a stale "approve it in Settings" line once the human has.
+                    state.helperMessage = nil
+                case .unresponsive:
+                    // Say what XPC said. "Not answering, reinstall it" on its own is a
+                    // guess dressed as advice, and the reason is usually the fix.
+                    state.helperMessage = reason.map { "Not answering — \($0)." }
+                        ?? "Not answering. Tap to reinstall."
+                default:
+                    break
+                }
+                return .none
+
+            case .helperRowTapped:
+                guard !state.helperBusy else { return .none }
+                switch state.helperState {
+                case .enabled:
+                    // Installed and working — the row's action is to undo it. Turning
+                    // it off is not a failure state: the toggle keeps working, it just
+                    // asks for a password again.
+                    state.helperBusy = true
+                    state.helperMessage = "Removing helper…"
+                    return .run { send in
+                        let result = await privilegedHelperClient.uninstallHelper()
+                        await send(.helperActionFinished(state: result.state, error: result.error))
+                    }
+                case .requiresApproval:
+                    // Nothing to retry — only the human can flip that switch. Take
+                    // them to it rather than re-registering, which changes nothing.
+                    return .run { _ in await privilegedHelperClient.openHelperApproval() }
+                case .unresponsive, .notInstalled, .notFound:
+                    // `.unresponsive` re-registers rather than doing anything special:
+                    // that IS the repair for the state's usual cause (an app update
+                    // left launchd pointing at the old binary), and `install()` is
+                    // idempotent and prompt-free once approved.
+                    state.helperBusy = true
+                    state.helperMessage = state.helperState == .unresponsive ? "Repairing helper…" : "Installing helper…"
+                    return .run { send in
+                        let result = await privilegedHelperClient.installHelper()
+                        await send(.helperActionFinished(state: result.state, error: result.error))
+                    }
+                }
+
+            case let .helperActionFinished(helperState, error):
+                state.helperBusy = false
+                state.helperState = helperState
+                if let error {
+                    state.helperMessage = error
+                } else if helperState == .requiresApproval {
+                    // The expected result of a first install, and the one place the
+                    // human has to act. Say where, and open it for them.
+                    state.helperMessage = "Allow “Loom” in Login Items to finish."
+                    return .run { _ in await privilegedHelperClient.openHelperApproval() }
+                } else {
+                    state.helperMessage = nil
+                }
+                return .none
 
             // MARK: SSL interception
 

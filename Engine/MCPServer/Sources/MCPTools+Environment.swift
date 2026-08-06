@@ -54,6 +54,19 @@ extension MCPToolExecutor {
                 payload["systemProxy"] = "other"
                 payload["systemProxyPointsAt"] = "\(host):\(port)"
             }
+            // Whether `set_system_proxy` will stop and wait for a human. The prompt is
+            // modal and only dismissable at the machine, so an agent that fires the
+            // write blind looks hung for as long as nobody is looking at the screen.
+            let helper = await routing.privilegedHelper()
+            payload["privilegedHelper"] = helper.rawValue
+            if helper != .enabled {
+                payload["systemProxyChangePrompts"] = true
+            }
+            // Why it is not working, when Loom knows. "unresponsive" with no reason
+            // sends an agent (and a human) guessing at reinstalls.
+            if let detail = await routing.privilegedHelperDetail() {
+                payload["privilegedHelperDetail"] = detail
+            }
         } else {
             payload["systemProxy"] = "unavailable"
         }

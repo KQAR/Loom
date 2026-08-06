@@ -17,15 +17,22 @@ public struct HelperOutcome: Equatable, Sendable {
     public static let notWired = HelperOutcome(ok: false, message: "helper not installed")
 }
 
-/// TCA surface over the system-proxy operations.
+/// TCA surface over the system-proxy operations, and over the privileged helper
+/// that makes them silent.
 ///
-/// The name is historical: this used to have a second half — `register` /
-/// `installCA` / `removeCA` / `verifyTrusted`, an `SMAppService` + XPC path to a root
-/// daemon — that was dormant by decision and has now been removed outright along with
-/// the daemon itself (Loom signs ad-hoc, so launchd would never load it and the
-/// daemon's own caller requirement would reject an ad-hoc caller anyway). Nothing here
-/// needs privileges it doesn't take at the call: `setSystemProxy` runs `networksetup`
-/// directly and escalates to one osascript admin prompt for the pf work.
+/// Two paths, one entry point. `setSystemProxy` goes through the root helper when
+/// the human has installed and approved one, and otherwise runs `networksetup`
+/// directly with an osascript admin prompt for the pf (QUIC) half — which is why
+/// *enabling* the system proxy costs a password on every toggle without a helper:
+/// `/dev/pf` is root-only, admin account or not.
+///
+/// The helper was deleted in 0.0.16 on the reasoning that Loom signs ad-hoc, so
+/// `SMAppService` would refuse to register it and its own caller check would refuse
+/// the app. Half of that was measured wrong: an ad-hoc daemon registers and loads as
+/// root after one approval in System Settings. The caller check was real but
+/// self-inflicted — a hardcoded `anchor apple generic` requirement. See
+/// `HelperRequirement` for what replaced it and what an ad-hoc signature does and
+/// does not buy.
 @DependencyClient
 public struct PrivilegedHelperClient: Sendable {
     /// Point the system proxy at `127.0.0.1:port`, or turn it **off** — disabling
@@ -50,6 +57,25 @@ public struct PrivilegedHelperClient: Sendable {
     /// live watch the panel's switch went stale the moment another proxy took over,
     /// and stayed stale until the panel was reopened.
     public var systemProxySnapshots: @Sendable () -> AsyncStream<SystemProxySnapshot> = { .never }
+
+    // MARK: Privileged helper
+
+    /// Whether the root helper is installed, awaiting approval, or absent. Read at
+    /// boot and after every helper action — never cached, because the human can turn
+    /// it off in System Settings without telling Loom.
+    public var helperState: @Sendable () async -> HelperState = { .notInstalled }
+    /// Why the helper last failed to answer, when it did. Nil when it is healthy or
+    /// was never tried — "not answering" with no reason is advice-shaped guessing.
+    public var helperFailureReason: @Sendable () async -> String? = { nil }
+    /// Register the helper. Returns the state afterwards: a first install lands on
+    /// `.requiresApproval`, which is success, not failure — macOS is waiting for the
+    /// human to allow it.
+    public var installHelper: @Sendable () async -> (state: HelperState, error: String?) = { (.notInstalled, "helper not wired") }
+    /// Unregister it. The system-proxy toggle keeps working, with a password prompt.
+    public var uninstallHelper: @Sendable () async -> (state: HelperState, error: String?) = { (.notInstalled, nil) }
+    /// Open the Login Items pane holding the approval switch. There is no API to
+    /// flip it — that is the point of the approval.
+    public var openHelperApproval: @Sendable () async -> Void = {}
 }
 
 extension PrivilegedHelperClient: DependencyKey {
@@ -82,6 +108,30 @@ extension PrivilegedHelperClient: DependencyKey {
         },
         systemProxySnapshots: {
             SystemProxyMonitor.snapshots()
+        },
+        helperState: {
+            HelperInstall.state()
+        },
+        helperFailureReason: {
+            HelperInstall.lastFailureReason
+        },
+        installHelper: {
+            // Off the main thread: registration talks to `smd` over XPC and can block.
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: HelperInstall.install())
+                }
+            }
+        },
+        uninstallHelper: {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: HelperInstall.uninstall())
+                }
+            }
+        },
+        openHelperApproval: {
+            await MainActor.run { HelperInstall.openApprovalSettings() }
         }
     )
 

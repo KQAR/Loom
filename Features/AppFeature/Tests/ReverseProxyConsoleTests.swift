@@ -156,6 +156,8 @@ import Testing
             // not their unimplemented dependencies.
             $0.updaterClient.checkInBackgroundIfDue = {}
             $0.privilegedHelperClient.systemProxySnapshot = { SystemProxySnapshot() }
+            $0.privilegedHelperClient.helperState = { .notInstalled }
+            $0.privilegedHelperClient.helperFailureReason = { nil }
             $0.proxyClient.rulesState = { RulesState() }
             $0.proxyClient.armedBreakpoints = { [] }
             $0.proxyClient.pendingBreakpoints = { [] }
