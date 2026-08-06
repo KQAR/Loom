@@ -152,7 +152,16 @@ extension MCPToolExecutor {
     static let tools: [MCPTool] = [
         MCPTool(
             name: "get_version",
-            description: "Get the Loom app version and MCP protocol version.",
+            description: """
+            Get the Loom app version and MCP protocol version. Cheap readiness ping — if this \
+            errors, the app isn't running and no other tool will work either.
+
+            `appVersion` is also the skew check: the tools you can call come from the app, while \
+            their prose comes from whatever plugin version is installed, so compare it against the \
+            version the loom skill states it ships for. A mismatch is a stale *description*, never \
+            a broken connection — `tools/list` is always the truth about what exists — so mention \
+            it once, name which side is behind, and carry on.
+            """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetVersion(args) }
         ),
@@ -631,9 +640,55 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "get_ssl_scope",
-            description: "Get the SSL-proxying scope: whether interception is enabled and the include/exclude host globs. Hosts matching an include glob (and no exclude glob) are MITM-decrypted; everything else is blind-tunneled.",
+            description: """
+            Get the SSL-proxying scope: whether interception is enabled and the include/exclude \
+            host globs. Hosts matching an include glob (and no exclude glob) are MITM-decrypted; \
+            everything else is blind-tunneled. The default is `include: ["*"]`, so a host is \
+            usually missing because someone put it in `exclude` — a client that carries its own \
+            certificate store (a JVM, Python, Go) or a pinned host has to be carved out or it \
+            fails its handshake.
+
+            `tunneledHosts` is how you tell a carve-out from an idle client: one entry per origin \
+            Loom relayed without reading, newest first, with `connections`, `lastSeen` and a \
+            `reason`. A relayed connection records NO flow at all — not an empty one — so this is \
+            the only surface holding the fact. `excluded`/`notInScope`/`interceptionDisabled` mean \
+            `intercept_host` would fix it (`interceptable: true`); `notTLSOrHTTP` (h2c, SSH, \
+            SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
+            scope change will. Read this before concluding a client made no requests. \
+            `tunneledHostsEvicted` counts entries dropped past the 256-host cap.
+            """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetSSLScope(args) }
+        ),
+        MCPTool(
+            name: "intercept_host",
+            description: """
+            Start decrypting one host: add it to the SSL scope's include list, turning \
+            interception on if it was off and dropping an exact exclude for it. The one-step \
+            version of reading `get_ssl_scope` and writing `set_ssl_scope` back — and it is \
+            atomic, so it can't lose a concurrent edit from the human at the console. The usual \
+            reason to call it is a host someone carved out into `exclude` that you now need to \
+            read.
+
+            Only affects connections made AFTER the call; an exchange already relayed is gone, so \
+            re-run the client. The reply says what it took: `effective` (false when a wildcard \
+            `exclude` still shadows the host — `shadowedByExclude` names it, and only whoever \
+            wrote that glob should narrow it), `alreadyIncluded`, `enabledInterception`, \
+            `removedExcludes`, plus the resulting scope. Decrypting also needs Loom's root CA \
+            trusted by the client — see get_certificate_status. This is a write action.
+            """,
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "host": [
+                        "type": "string",
+                        "description": "Exact hostname, as it appears in get_ssl_scope's tunneledHosts (e.g. \"api.example.com\"). Not a glob — use set_ssl_scope for those.",
+                    ],
+                ],
+                "required": ["host"],
+            ],
+            isWrite: true,
+            handler: { ex, args in try await ex.handleInterceptHost(args) }
         ),
         MCPTool(
             name: "set_ssl_scope",

@@ -36,6 +36,7 @@ import Testing
             $0.proxyClient.certificateStatus = { cert }
             $0.proxyClient.sslScope = { scope }
             $0.proxyClient.clientCertificates = { [] }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
         await store.send(.refresh)
         await store.receive(\.systemProxySnapshotChanged) {
@@ -48,6 +49,9 @@ import Testing
             $0.sslScope = scope
             $0.sslEnabled = true
         }
+        // The collapsed console row carries the unread count, so this is loaded even
+        // when the scope editor is closed.
+        await store.receive(\.tunneledHostsLoaded)
         // Re-read on every appearance: the other writer is an agent, so an identity
         // can appear without the human having done anything.
         await store.receive(\.clientCertificatesLoaded)
@@ -294,21 +298,180 @@ import Testing
 
     // MARK: SSL interception
 
-    @Test func test_toggleSSL_enabling_defaultsToInterceptAll_thenReloadsCert() async {
+    /// Turning HTTPS on decrypts **everything**.
+    ///
+    /// A whitelist default was built and rejected: it makes the common case "traffic
+    /// happened and Loom read none of it", and fixing that costs a second run of the
+    /// client because the first run's bytes are gone. The cost of this direction — a
+    /// client with its own certificate store failing at the client — is handled case by
+    /// case in the pass-through list, not by a guessed default.
+    @Test func test_toggleSSL_enabling_decryptsEverything_thenReloadsCert() async {
         let cert = CertificateStatus(isGenerated: true, isTrusted: false)
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
         } withDependencies: {
             $0.proxyClient.setSSLScope = { _ in }
             $0.proxyClient.certificateStatus = { cert }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
         await store.send(.toggleSSLTapped) {
             $0.sslEnabled = true
-            $0.sslScope = SSLScope(enabled: true, include: ["*"]) // first-on default
+            $0.sslScope = SSLScope(enabled: true, include: ["*"])
         }
         await store.receive(\.certificateStatusLoaded) {
             $0.certificateStatus = cert
         }
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    // MARK: SSL scope editing + tunnelled hosts
+
+    /// The one-click path from "Loom showed me nothing" to "Loom is decrypting it".
+    @Test func test_interceptHostTapped_reReadsScopeAndList_ratherThanPredictingThem() async {
+        let intercepted = SSLScope(enabled: true, include: ["api.example.com"])
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.interceptHost = { _ in
+                var outcome = InterceptOutcome()
+                outcome.enabledInterception = true
+                return outcome
+            }
+            // Re-read, not predicted: an agent may have edited the scope in between.
+            $0.proxyClient.sslScope = { intercepted }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        await store.send(.interceptHostTapped("api.example.com"))
+        await store.receive(\.interceptFinished) {
+            $0.sslScopeMessage = "Decrypting api.example.com. HTTPS interception is now on. Re-run your client — connections already made are gone."
+        }
+        await store.receive(\.sslScopeLoaded) {
+            $0.sslScope = intercepted
+            $0.sslEnabled = true
+        }
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    /// A write that lands and still doesn't decrypt anything is the failure this
+    /// surface exists to remove, so the message says so instead of reporting success.
+    @Test func test_interceptFinished_shadowedByExclude_saysTheHostIsStillPassedThrough() async {
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.sslScope = { SSLScope(enabled: true, include: ["api.example.com"], exclude: ["*.example.com"]) }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        var outcome = InterceptOutcome()
+        outcome.shadowedByExclude = "*.example.com"
+        await store.send(.interceptFinished(host: "api.example.com", outcome: outcome)) {
+            $0.sslScopeMessage = "api.example.com is included but still passed through — “*.example.com” excludes it."
+        }
+        await store.receive(\.sslScopeLoaded) {
+            $0.sslScope = SSLScope(enabled: true, include: ["api.example.com"], exclude: ["*.example.com"])
+            $0.sslEnabled = true
+        }
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    /// "Never decrypt this" — how an origin leaves the to-do list without being read.
+    @Test func test_excludeHostTapped_movesTheHostToTheExcludeList() async {
+        let start = SSLScope(enabled: true, include: ["dl.google.com"])
+        let expected = SSLScope(enabled: true, include: [], exclude: ["dl.google.com"])
+        var state = SetupFeature.State()
+        state.sslScope = start
+        state.sslEnabled = true
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in }
+            $0.proxyClient.sslScope = { expected }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        await store.send(.excludeHostTapped("dl.google.com")) {
+            $0.sslScope = expected
+            $0.sslScopeMessage = "dl.google.com will be passed through untouched."
+        }
+        await store.receive(\.sslScopeLoaded)
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    /// The glob lists collapse by default and the tunnelled list does not, because
+    /// they grow in opposite directions — but collapsed must never mean unreachable:
+    /// removing an include entry is the only way to stop decrypting a host, and the
+    /// only place an agent's `intercept_host` becomes visible to the human.
+    @Test func test_globListsAreCollapsedByDefault_andToggleWithoutHittingTheEngine() async {
+        let store = TestStore(initialState: SetupFeature.State()) { SetupFeature() }
+        #expect(store.state.sslGlobsExpanded == false)
+        await store.send(.sslGlobsExpandTapped) { $0.sslGlobsExpanded = true }
+        await store.send(.sslGlobsExpandTapped) { $0.sslGlobsExpanded = false }
+    }
+
+    /// The card's one text field carves a host *out*, because with the default scope
+    /// covering everything an include entry is a no-op. It also drops a stale include
+    /// for the same host, or the two lists would disagree about it.
+    @Test func test_addExcludeGlob_carvesTheHostOut_andDropsItsIncludeEntry() async {
+        let expected = SSLScope(enabled: true, include: ["*"], exclude: ["artifactory.corp.example"])
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["*", "artifactory.corp.example"])
+        state.sslScopeDraft = "  artifactory.corp.example  "
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in }
+            $0.proxyClient.sslScope = { expected }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        await store.send(.addExcludeGlobTapped) {
+            $0.sslScopeDraft = ""
+            $0.sslScope = expected
+        }
+        await store.receive(\.sslScopeLoaded)
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    /// Removing a pass-through is how a host someone carved out becomes readable again.
+    @Test func test_removeExcludeGlob_startsDecryptingTheHostAgain() async {
+        let expected = SSLScope(enabled: true, include: ["*"], exclude: [])
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["*"], exclude: ["pypi.org"])
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in }
+            $0.proxyClient.sslScope = { expected }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        await store.send(.removeExcludeGlobTapped("pypi.org")) { $0.sslScope = expected }
+        await store.receive(\.sslScopeLoaded)
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    /// The collapsed row's count, and the orange tint, deliberately ignore an
+    /// `excluded` pass-through: under a scope covering everything that is the
+    /// configuration working, and counting it would teach the human to ignore the number.
+    @Test func test_unexpectedlyUnreadHosts_ignoresDeliberatePassThroughs() {
+        var state = SetupFeature.State()
+        state.tunneledHosts = [
+            TunneledHost(host: "pypi.org", port: 443, firstSeen: .distantPast, lastSeen: .distantPast, reason: .excluded),
+            TunneledHost(host: "ssh.example.com", port: 22, firstSeen: .distantPast, lastSeen: .distantPast, reason: .notTLSOrHTTP),
+            TunneledHost(host: "api.example.com", port: 443, firstSeen: .distantPast, lastSeen: .distantPast, reason: .interceptionDisabled),
+        ]
+        #expect(state.unexpectedlyUnreadHosts.map(\.host) == ["api.example.com"])
+        // Still offered a Decrypt button, though — an exclusion is reversible.
+        #expect(state.interceptableTunneledHosts.map(\.host) == ["pypi.org", "api.example.com"])
+    }
+
+    /// Only the interceptable entries drive the console's "unread" count and its
+    /// Decrypt buttons — an SSH tunnel does not become readable by being listed.
+    @Test func test_interceptableTunneledHosts_excludesWhatNoScopeChangeFixes() {
+        var state = SetupFeature.State()
+        state.tunneledHosts = [
+            TunneledHost(host: "api.example.com", port: 443, firstSeen: .distantPast, lastSeen: .distantPast, reason: .notInScope),
+            TunneledHost(host: "ssh.example.com", port: 22, firstSeen: .distantPast, lastSeen: .distantPast, reason: .notTLSOrHTTP),
+        ]
+        #expect(state.interceptableTunneledHosts.map(\.host) == ["api.example.com"])
     }
 
     @Test func test_sslScopeLoaded_syncsEnabledFlag() async {

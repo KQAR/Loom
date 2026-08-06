@@ -39,6 +39,21 @@ reach for, in what order, and what to do when the answer is "nothing captured".
   not invent data — tell the user: *"Loom's MCP server isn't reachable. Install
   Loom (https://github.com/KQAR/Loom) if you don't have it, then launch the Loom
   app (menu-bar icon) and retry."*
+- **Check the plugin and the app are the same version, once per session.** They
+  version independently: the tools you can call come from the *app*, their prose
+  comes from whatever plugin version is installed — so a plugin newer than the app
+  describes tools that aren't there, and an app newer than the plugin has tools
+  this skill never mentions. No version is written down here on purpose (a copied
+  number goes stale and then lies). Read it from the plugin's own manifest —
+  `../../.claude-plugin/plugin.json` relative to this file, or
+  `../../.cursor-plugin/plugin.json` under Cursor — take its `version`, and compare
+  with `get_version`'s `appVersion`. If they differ, say so once: older app →
+  *"update Loom (panel footer → Update); the plugin is <plugin>, the app is
+  <app>, so some tools described here may be missing."*; newer app → *"run
+  `/plugin update loom`; the app is <app> and the plugin is <plugin>, so newer
+  tools aren't documented here."* Then carry on — a skew is a stale description,
+  not a broken connection, and `tools/list` is always the truth about what exists.
+  Don't repeat the notice, and don't block work on it.
 - **Traffic only appears if a client routes through the proxy.** Loom listens on
   `127.0.0.1:9090` (HTTP) and `127.0.0.1:9091` (SOCKS5, for clients that only
   understand `ALL_PROXY` / a SOCKS field). Either the client is pointed there
@@ -47,9 +62,15 @@ reach for, in what order, and what to do when the answer is "nothing captured".
   authoritative ports and routing state; `list_devices` shows who is sending.
 - **HTTPS needs interception scope + a trusted CA.** Plain HTTP is captured out
   of the box. For HTTPS, interception must be **on** with the host **in scope**
-  (`get_ssl_scope`), AND Loom's root CA trusted by the client. Empty HTTPS
-  bodies or a blind tunnel means one of those is missing — say so. Apple domains
-  legitimately fail (cert pinning); expected, not a bug.
+  (`get_ssl_scope`), AND Loom's root CA trusted by the client. The scope decrypts
+  everything by default, so a *missing* https:// host is usually one someone put in
+  `exclude` — that is how a client carrying its own certificate store (a JVM,
+  Python, Go) or a pinned host is kept working. A relayed connection records **no
+  flow at all**, which looks exactly like a client that never ran;
+  `get_ssl_scope`'s `tunneledHosts` is the only surface holding that fact. Read it
+  before concluding nothing happened, then `intercept_host` and have the client
+  re-run (an exchange already relayed is gone). Apple domains legitimately fail
+  (cert pinning); expected, not a bug.
 
 ## The debugging loop
 
@@ -85,7 +106,7 @@ each one is *for*.
 | `diff_flows` | structured diff of two flows, or a replay vs its original |
 | `get_audit_log` | write actions taken through Loom, yours or a prior session's |
 | `get_certificate_status` | root-CA state: generated, trusted, fingerprint, expiry, path |
-| `get_ssl_scope` | HTTPS interception on/off + host globs |
+| `get_ssl_scope` | HTTPS interception on/off, host globs, **and the hosts Loom saw but did not decrypt** |
 | `list_rules` | master switch + rules (pass `id` for full bodies) |
 | `list_client_certificates` | mutual-TLS identities Loom presents; never the key or passphrase |
 | `list_pending` | armed breakpoints + exchanges held right now |
@@ -110,7 +131,8 @@ will affect before doing it. Every call is recorded in the audit trail.
 | `arm_breakpoint` | hold matching traffic mid-flight (request and/or response) |
 | `disarm_breakpoint` | remove an armed breakpoint |
 | `resume` | release a held exchange with edits, or `abort` with a 502 |
-| `set_ssl_scope` | HTTPS interception on/off + include/exclude host globs |
+| `intercept_host` | start decrypting one host from `get_ssl_scope`'s `tunneledHosts` — usually one Loom is passing through |
+| `set_ssl_scope` | HTTPS interception on/off + include/exclude host globs (wholesale; prefer `intercept_host` for one host) |
 | `set_client_certificate` | add/replace a mutual-TLS identity (validated on set; scope it, `*` is almost never right) |
 | `delete_client_certificate` | remove an identity — its hosts go back to failing the handshake |
 | `export_ca_certificate` | write the root CA (PEM) to disk; returns the path |

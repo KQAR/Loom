@@ -1,4 +1,5 @@
 import Foundation
+import LoomSharedModels
 import NIOCore
 import NIOPosix
 
@@ -184,7 +185,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                 channel: channel, host: host, port: port, store: store, forwarder: forwarder
             )
         case .opaque, .needMore:
-            install = relay(channel: channel)
+            install = relay(channel: channel, reason: .notTLSOrHTTP)
         }
 
         channel.pipeline.removeHandler(self).flatMap { install }.whenComplete { result in
@@ -215,8 +216,14 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     /// relay the ciphertext untouched — with the same fail-open on a leaf that won't
     /// mint, because a site that stops loading is worse than a site Loom can't read.
     private func installTLS(channel: Channel) -> EventLoopFuture<Void> {
-        guard let ca, config.shouldIntercept(host: host) else {
-            return relay(channel: channel)
+        if let reason = ProxyHandler.passthroughReason(host: host, config: config, ca: ca) {
+            return relay(channel: channel, reason: reason)
+        }
+        guard let ca else {
+            // Unreachable: `passthroughReason` returns `.noCertificateAuthority`
+            // for a nil CA. Kept as a relay rather than a force-unwrap because
+            // fail-open is this path's whole contract.
+            return relay(channel: channel, reason: .noCertificateAuthority)
         }
         do {
             let sslContext = try ca.serverContext(for: host)
@@ -229,7 +236,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             Leaf mint failed for \(self.host, privacy: .public) over \
             \(self.entryPoint.rawValue, privacy: .public); relaying: \(String(describing: error))
             """)
-            return relay(channel: channel)
+            return relay(channel: channel, reason: .leafMintFailed)
         }
     }
 
@@ -237,8 +244,13 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     /// h2c prior knowledge, and anything that isn't HTTP at all (SSH, SMTP, a
     /// hand-rolled binary protocol). Recorded as a tunnel flow when the embedder
     /// asked to observe tunnels, so the activity is visible even unread.
-    private func relay(channel: Channel) -> EventLoopFuture<Void> {
+    ///
+    /// `reason` is always recorded in `TunneledHostLog`, tunnel flows or not: it is
+    /// the difference between a host one click away from capture and one no scope
+    /// change can help.
+    private func relay(channel: Channel, reason: TunnelReason) -> EventLoopFuture<Void> {
         let startedAt = Date()
+        TunneledHostLog.shared.record(host: host, port: port, reason: reason)
         let store = self.store
         let observeTunnels = self.observeTunnels
         let host = self.host

@@ -45,10 +45,27 @@ arguments; this file is about sequence and interpretation.
 - **"Point this API at staging."** → `set_rule` map-remote (set `keepHostHeader`
   only if the upstream needs the original Host). Group related redirects so
   `set_group_enabled` flips the whole scenario at once.
-- **"Capture HTTPS for api.example.com."** → `set_ssl_scope` enabled with an
-  include glob; if bodies stay empty, `get_certificate_status` — the CA likely
-  isn't trusted. `export_ca_certificate` returns a PEM; trusting it is a manual
-  admin step on the client.
+- **"Capture HTTPS for api.example.com."** → `intercept_host` (one call: it adds
+  the host, turns interception on if it was off, and reports `effective: false`
+  when a wildcard `exclude` still shadows it). Use `set_ssl_scope` when you want a
+  glob or are replacing the lists wholesale. Only new connections are affected, so
+  have the client re-run. If bodies stay empty after that,
+  `get_certificate_status` — the CA likely isn't trusted.
+  `export_ca_certificate` returns a PEM; trusting it is a manual admin step on the
+  client.
+- **"The app made requests but Loom shows nothing for host X."** → `get_ssl_scope`
+  first, not `get_recent_flows` again. An unread relay records no flow at all, so
+  `tunneledHosts` is the only place the fact exists. `excluded` is the common answer
+  — someone carved the host out to keep a client working — and it is one
+  `intercept_host` away, as are `notInScope` and `interceptionDisabled`. `notTLSOrHTTP` (h2c, SSH, SMTP, a server-first
+  protocol), `noCertificateAuthority` and `leafMintFailed` are not: say which it is
+  rather than adding globs and hoping.
+- **"Stop decrypting this host / it broke with Loom on."** → `set_ssl_scope` with
+  the host added to `exclude`. This is the answer for a client carrying its own
+  trust store (a JVM, Python, Go — a Gradle build or a `pip install` is the usual
+  one) and for a pinned host: Loom's leaf can't satisfy it, and
+  the failure surfaces at the client as a certificate error, not in Loom. Pass the
+  existing `exclude` plus the new entry — `set_ssl_scope` replaces the lists.
 - **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
   filter; return the path. If it's going into a ticket or a chat, pass **both**
   `redact: true` and `redact_bodies: true` — headers alone leave every payload
@@ -102,6 +119,10 @@ arguments; this file is about sequence and interpretation.
     `create_reverse_proxy` endpoint and re-point the client at it;
   - otherwise nothing has been routed through the proxy yet (client not pointed at
     it, or recording paused). Say so.
+- No HTTPS flow at all for a host → it was passed through, which records **no flow
+  whatsoever**, not an empty one (an excluded host, or something Loom can't read). `get_ssl_scope`'s `tunneledHosts` is the
+  only surface that holds this fact; check it before reporting that the client made
+  no requests.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with
   `get_ssl_scope` + `get_certificate_status`; don't claim you saw the plaintext.

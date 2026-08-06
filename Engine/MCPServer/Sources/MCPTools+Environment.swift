@@ -189,7 +189,43 @@ extension MCPToolExecutor {
     }
 
     func handleGetSSLScope(_ arguments: [String: Any]) async throws -> String {
-        prettyJSON(Self.scope(await engine.sslScope()))
+        // The scope and what it is *not* covering answer one question together, so
+        // they ride one call: an agent that has to ask twice will read an empty
+        // capture as "the client never ran" before it gets to the second ask.
+        var payload = Self.scope(await engine.sslScope())
+        let report = await engine.tunneledHosts()
+        if !report.hosts.isEmpty {
+            payload["tunneledHosts"] = report.hosts.map(Self.tunneledHost)
+        }
+        if report.evicted > 0 { payload["tunneledHostsEvicted"] = report.evicted }
+        return prettyJSON(payload)
+    }
+
+    func handleInterceptHost(_ arguments: [String: Any]) async throws -> String {
+        guard let host = (arguments["host"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty
+        else {
+            throw MCPToolFailure("host is required")
+        }
+        let outcome = await engine.interceptHost(host)
+        var payload: [String: Any] = [
+            "host": host,
+            "effective": outcome.effective,
+            "alreadyIncluded": outcome.alreadyIncluded,
+            "enabledInterception": outcome.enabledInterception,
+            "scope": Self.scope(await engine.sslScope()),
+        ]
+        if !outcome.removedExcludes.isEmpty { payload["removedExcludes"] = outcome.removedExcludes }
+        // The one case where the write landed and the host still isn't decrypted.
+        // Said out loud, because "include contains it" reads as done.
+        if let shadow = outcome.shadowedByExclude {
+            payload["shadowedByExclude"] = shadow
+            payload["detail"] = """
+            \(host) is in `include` but still passed through: the exclude glob \
+            "\(shadow)" covers it. Narrow that glob with set_ssl_scope if it is safe to.
+            """
+        }
+        return prettyJSON(payload)
     }
 
     func handleSetSSLScope(_ arguments: [String: Any]) async throws -> String {
@@ -308,6 +344,21 @@ extension MCPToolExecutor {
             "enabled": scope.enabled,
             "include": scope.include,
             "exclude": scope.exclude,
+        ]
+    }
+
+    /// One origin Loom relayed without reading. `interceptable` is carried rather
+    /// than left for the model to infer from `reason`, so the follow-up action is
+    /// decidable from the row.
+    static func tunneledHost(_ entry: TunneledHost) -> [String: Any] {
+        [
+            "host": entry.host,
+            "port": entry.port,
+            "connections": entry.connections,
+            "firstSeen": iso8601.string(from: entry.firstSeen),
+            "lastSeen": iso8601.string(from: entry.lastSeen),
+            "reason": entry.reason.rawValue,
+            "interceptable": entry.interceptable,
         ]
     }
 

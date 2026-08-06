@@ -44,6 +44,55 @@ public struct SetupFeature: Sendable {
         public var certBusy = false               // a trust action is running
         public var certActionMessage: String?     // transient feedback under the cert card
 
+        /// Origins Loom saw and relayed without reading — excluded, or something it
+        /// can't read at any setting. The *only* thing standing between "nothing was
+        /// captured for this host" and "nothing happened", because a relayed connection
+        /// records no flow at all.
+        public var tunneledHosts: [TunneledHost] = []
+        /// Dropped past the engine's 256-host cap — surfaced so a truncated list
+        /// never reads as a complete one.
+        public var tunneledHostsEvicted = 0
+        /// Whether the scope editor is open. Collapsed by default, like the
+        /// client-certificate section: it earns a row, not permanent space.
+        public var sslScopeExpanded = false
+        /// A glob the human is typing into the scope editor.
+        public var sslScopeDraft = ""
+        public var sslScopeMessage: String?
+        /// Whether the include/exclude lists are open inside the card.
+        ///
+        /// Collapsed by default because these lists have the opposite shape to the one
+        /// above them: the tunnelled list *shrinks* as hosts get decrypted (a decrypted
+        /// host drops out of it), while `exclude` only grows, gaining an entry every
+        /// time something breaks. They still have to be reachable — removing an entry is
+        /// the only way to start decrypting a host again, and this is the only place an
+        /// agent's scope write becomes visible to the human.
+        public var sslGlobsExpanded = false
+
+        /// Hosts worth offering a one-click "decrypt" for — the rest are unread for
+        /// reasons a scope change can't fix (`notTLSOrHTTP`, a failed leaf mint).
+        public var interceptableTunneledHosts: [TunneledHost] {
+            tunneledHosts.filter(\.interceptable)
+        }
+
+        /// Unread origins the operator did **not** ask for.
+        ///
+        /// With the default scope decrypting everything, an `excluded` pass-through is
+        /// working as configured, and flagging it would train the human to ignore the
+        /// flag. What still deserves attention is an origin going unread for a reason
+        /// nobody chose — interception switched off, or a host somehow outside a scope
+        /// that is meant to cover everything.
+        public var unexpectedlyUnreadHosts: [TunneledHost] {
+            tunneledHosts.filter { $0.interceptable && $0.reason != .excluded }
+        }
+
+        /// Is the scope decrypting everything? The default, and not a problem in
+        /// itself — it is the reason a capture is complete out of the box. It only
+        /// decides wording: with `*` there is no include list worth reading, so the
+        /// summary talks about what is being *passed through* instead.
+        public var interceptsEverything: Bool {
+            sslScope.enabled && sslScope.include.contains("*")
+        }
+
         /// Mutual-TLS identities Loom presents when an origin demands one, secrets
         /// stripped. Mirrored here rather than read on demand because the human's
         /// half of the contract is *seeing* what an agent installed — an identity
@@ -87,6 +136,29 @@ public struct SetupFeature: Sendable {
         case toggleSSLTapped
         case certificateStatusLoaded(CertificateStatus)
         case sslScopeLoaded(SSLScope)
+
+        // MARK: SSL scope editing + tunnelled-host discovery
+        case sslScopeExpandTapped
+        case tunneledHostsLoaded(TunneledHostReport)
+        /// Poll tick while the editor is open — the other writer is live traffic, and
+        /// a host that showed up a second ago is the one being looked for.
+        case tunneledHostsTick
+        case interceptHostTapped(String)
+        case interceptFinished(host: String, outcome: InterceptOutcome)
+        /// "Never decrypt this" from a tunnelled row: moves the host to `exclude` so
+        /// it stops being offered. The list is a to-do list; this is how an item
+        /// leaves it without being intercepted.
+        case excludeHostTapped(String)
+        case sslGlobsExpandTapped
+        case sslScopeDraftChanged(String)
+        /// Add a typed glob to `exclude`. The card's one text field feeds this rather
+        /// than `include`, because with the default scope covering everything, adding
+        /// an include entry is a no-op — the useful manual edit is carving something
+        /// *out* (a corporate mirror, a pinned host, an API called by a Python CLI).
+        /// Adding to `include` is still reachable, from a tunnelled row's Decrypt.
+        case addExcludeGlobTapped
+        case removeIncludeGlobTapped(String)
+        case removeExcludeGlobTapped(String)
         case exportCATapped
         case caExported(URL?)
         case installAndTrustCATapped
@@ -132,6 +204,10 @@ public struct SetupFeature: Sendable {
                     ))
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    // Loaded whether or not the editor is open: the collapsed row
+                    // carries the count, which is what makes an unread origin
+                    // discoverable without going looking for it.
+                    await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
                     // Re-read on every appearance, because the other writer is an
                     // agent: an identity can appear without the human doing anything.
                     await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
@@ -274,15 +350,110 @@ public struct SetupFeature: Sendable {
                 state.sslEnabled = enabling
                 var next = state.sslScope
                 next.enabled = enabling
-                // First time on with no scope: default to intercept-all; the human
-                // or agent narrows it.
+                // First time on with no scope: decrypt everything. A whitelist was
+                // tried and rejected as the default — it makes the common case
+                // "traffic happened and Loom read none of it" and costs a second run
+                // of the client to fix, because the bytes of the first one are gone.
+                // The cost of this direction is a client with its own certificate
+                // store (a JVM, Python, Go) failing at the client rather than here.
+                // Nothing is pre-excluded for it — the failure shows up as a flow with
+                // a TLS error, and the pass-through list is how it gets carved out.
                 if enabling, next.include.isEmpty { next.include = ["*"] }
                 state.sslScope = next
                 let scope = next
                 return .run { send in
                     await proxyClient.setSSLScope(scope)
                     await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
+                    await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
                 }
+
+            // MARK: SSL scope editing + tunnelled-host discovery
+
+            case .sslScopeExpandTapped:
+                state.sslScopeExpanded.toggle()
+                state.sslScopeMessage = nil
+                guard state.sslScopeExpanded else { return .cancel(id: CancelID.tunneledHostPoll) }
+                // Polled only while open, like the breakpoint hold poll: the writer is
+                // live traffic, which no stream announces per host.
+                return .merge(
+                    .run { send in await send(.tunneledHostsLoaded(proxyClient.tunneledHosts())) },
+                    .run { send in
+                        while !Task.isCancelled {
+                            try await Task.sleep(for: .seconds(2))
+                            await send(.tunneledHostsTick)
+                        }
+                    }
+                    .cancellable(id: CancelID.tunneledHostPoll, cancelInFlight: true)
+                )
+
+            case .tunneledHostsTick:
+                return .run { send in await send(.tunneledHostsLoaded(proxyClient.tunneledHosts())) }
+
+            case let .tunneledHostsLoaded(report):
+                state.tunneledHosts = report.hosts
+                state.tunneledHostsEvicted = report.evicted
+                return .none
+
+            case let .interceptHostTapped(host):
+                return .run { send in
+                    await send(.interceptFinished(host: host, outcome: proxyClient.interceptHost(host)))
+                }
+
+            case let .interceptFinished(host, outcome):
+                // The write landed in the engine; re-read rather than predicting the
+                // resulting scope, because an agent may have edited it in between.
+                state.sslScopeMessage = Self.interceptMessage(host: host, outcome: outcome)
+                return .run { send in
+                    await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
+                }
+
+            case let .excludeHostTapped(host):
+                var next = state.sslScope
+                next.include.removeAll { $0.lowercased() == host.lowercased() }
+                if !next.exclude.contains(where: { $0.lowercased() == host.lowercased() }) {
+                    next.exclude.append(host)
+                }
+                return persist(next, into: &state, message: "\(host) will be passed through untouched.")
+
+            case .sslGlobsExpandTapped:
+                state.sslGlobsExpanded.toggle()
+                return .none
+
+            case let .sslScopeDraftChanged(text):
+                state.sslScopeDraft = text
+                return .none
+
+            case .addExcludeGlobTapped:
+                let glob = state.sslScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.sslScopeDraft = ""
+                guard !glob.isEmpty else { return .none }
+                var next = state.sslScope
+                guard !next.exclude.contains(glob) else {
+                    state.sslScopeMessage = "\(glob) is already passed through."
+                    return .none
+                }
+                next.exclude.append(glob)
+                // An exclude outranks any include, so a host sitting in both stops
+                // being decrypted — and leaving the stale include entry there would
+                // have the two lists disagree about the same host.
+                next.include.removeAll { $0.lowercased() == glob.lowercased() }
+                return persist(next, into: &state, message: nil)
+
+            case let .removeIncludeGlobTapped(glob):
+                var next = state.sslScope
+                next.include.removeAll { $0 == glob }
+                return persist(
+                    next, into: &state,
+                    message: next.include.isEmpty
+                        ? "Nothing is decrypted now. Add a host, or decrypt one from the list above."
+                        : nil
+                )
+
+            case let .removeExcludeGlobTapped(glob):
+                var next = state.sslScope
+                next.exclude.removeAll { $0 == glob }
+                return persist(next, into: &state, message: nil)
 
             case let .certificateStatusLoaded(status):
                 state.certificateStatus = status
@@ -394,5 +565,39 @@ public struct SetupFeature: Sendable {
                 return .none
             }
         }
+    }
+
+    private enum CancelID: Hashable { case tunneledHostPoll }
+
+    /// Write an edited scope through and re-read the tunnelled list against it, so a
+    /// host that just became intercepted stops being offered.
+    ///
+    /// State is updated optimistically *and* re-read: the optimistic half keeps the
+    /// editor from lagging a keystroke behind, the re-read is what keeps it honest
+    /// when an agent wrote the scope at the same moment.
+    private func persist(
+        _ scope: SSLScope, into state: inout State, message: String?
+    ) -> Effect<Action> {
+        state.sslScope = scope
+        state.sslEnabled = scope.enabled
+        state.sslScopeMessage = message
+        return .run { send in
+            await proxyClient.setSSLScope(scope)
+            await send(.sslScopeLoaded(proxyClient.sslScope()))
+            await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
+        }
+    }
+
+    /// What an intercept actually achieved. The `shadowedByExclude` case is the whole
+    /// reason this returns prose rather than nothing: the include list will show the
+    /// host, which reads as done, while the traffic stays unread.
+    static func interceptMessage(host: String, outcome: InterceptOutcome) -> String {
+        if let shadow = outcome.shadowedByExclude {
+            return "\(host) is included but still passed through — “\(shadow)” excludes it."
+        }
+        var note = "Decrypting \(host)."
+        if outcome.enabledInterception { note += " HTTPS interception is now on." }
+        note += " Re-run your client — connections already made are gone."
+        return note
     }
 }
