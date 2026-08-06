@@ -1,8 +1,5 @@
 import ComposableArchitecture
 import Foundation
-import Synchronization
-import ServiceManagement
-import LoomHelperProtocol
 import LoomSharedModels
 
 /// Result of a privileged-helper operation, surfaced to the human. `message` is
@@ -20,30 +17,17 @@ public struct HelperOutcome: Equatable, Sendable {
     public static let notWired = HelperOutcome(ok: false, message: "helper not installed")
 }
 
-/// Outcome of trying to register the helper daemon.
-public enum HelperRegistration: Equatable, Sendable {
-    case enabled
-    case requiresApproval   // user must approve in System Settings > Login Items
-    case failed(String)
-}
-
-/// TCA surface over the privileged operations — **two halves, only one live.**
+/// TCA surface over the system-proxy operations.
 ///
-/// Live and shipping: `setSystemProxy` / `systemProxySnapshots`, which never touch
-/// the helper (direct `networksetup`, escalating to one osascript admin prompt for
-/// the pf work).
-///
-/// Dormant by decision: `register` / `installCA` / `removeCA` / `verifyTrusted`,
-/// the SMAppService + XPC path. Loom signs ad-hoc only, so launchd will not load
-/// the root daemon and the helper's caller requirement would reject an ad-hoc
-/// caller anyway. Kept as a design record; see ROADMAP § M2 before scheduling any
-/// work here. Live values report failure honestly instead of pretending to succeed.
+/// The name is historical: this used to have a second half — `register` /
+/// `installCA` / `removeCA` / `verifyTrusted`, an `SMAppService` + XPC path to a root
+/// daemon — that was dormant by decision and has now been removed outright along with
+/// the daemon itself (Loom signs ad-hoc, so launchd would never load it and the
+/// daemon's own caller requirement would reject an ad-hoc caller anyway). Nothing here
+/// needs privileges it doesn't take at the call: `setSystemProxy` runs `networksetup`
+/// directly and escalates to one osascript admin prompt for the pf work.
 @DependencyClient
 public struct PrivilegedHelperClient: Sendable {
-    /// Register (or confirm) the helper daemon. May require user approval.
-    public var register: @Sendable () async -> HelperRegistration = { .failed("not wired") }
-    /// Open System Settings > Login Items so the user can approve the daemon.
-    public var openApprovalSettings: @Sendable () async -> Void
     /// Point the system proxy at `127.0.0.1:port`, or turn it **off** — disabling
     /// never hands the setting back to a previous owner (owner decision: an app
     /// that may have exited would break every request on the machine).
@@ -66,41 +50,13 @@ public struct PrivilegedHelperClient: Sendable {
     /// live watch the panel's switch went stale the moment another proxy took over,
     /// and stayed stale until the panel was reopened.
     public var systemProxySnapshots: @Sendable () -> AsyncStream<SystemProxySnapshot> = { .never }
-    /// Trust a DER root CA in the system keychain via the helper.
-    public var installCA: @Sendable (_ der: Data) async -> HelperOutcome = { _ in .notWired }
-    /// Remove a DER root CA and its trust settings.
-    public var removeCA: @Sendable (_ der: Data) async -> HelperOutcome = { _ in .notWired }
-    /// Whether a CA with this colon-separated SHA-256 is trusted system-wide.
-    public var verifyTrusted: @Sendable (_ sha256Fingerprint: String) async -> Bool = { _ in false }
 }
 
 extension PrivilegedHelperClient: DependencyKey {
-    private static let plistName = "\(HelperIdentity.label).plist"
-
     public static let liveValue = PrivilegedHelperClient(
-        register: {
-            let service = SMAppService.daemon(plistName: plistName)
-            switch service.status {
-            case .enabled:
-                return .enabled
-            case .requiresApproval:
-                return .requiresApproval
-            default:
-                do {
-                    try service.register()
-                    return service.status == .requiresApproval ? .requiresApproval : .enabled
-                } catch {
-                    return .failed(error.localizedDescription)
-                }
-            }
-        },
-        openApprovalSettings: {
-            SMAppService.openSystemSettingsLoginItems()
-        },
         setSystemProxy: { enabled, port in
-            // No-helper path: `networksetup` directly (silent for admin users),
-            // osascript admin-prompt fallback otherwise. This is the permanent
-            // path, not a stopgap: the XPC helper is parked (ROADMAP § M2), so
+            // `networksetup` directly (silent for admin users), osascript
+            // admin-prompt fallback otherwise. This is the only path there is:
             // non-admin installs stay unsupported and admins pay one prompt.
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -126,32 +82,6 @@ extension PrivilegedHelperClient: DependencyKey {
         },
         systemProxySnapshots: {
             SystemProxyMonitor.snapshots()
-        },
-        installCA: { der in
-            await HelperConnection.call { proxy, reply in
-                proxy.installTrustedCertificate(der, withReply: reply)
-            }
-        },
-        removeCA: { der in
-            await HelperConnection.call { proxy, reply in
-                proxy.removeTrustedCertificate(der, withReply: reply)
-            }
-        },
-        verifyTrusted: { fingerprint in
-            await withCheckedContinuation { continuation in
-                let connection = HelperConnection.open()
-                let done = OnceFlag()
-                let proxy = connection.remoteObjectProxyWithErrorHandler { _ in
-                    if done.take() { connection.invalidate(); continuation.resume(returning: false) }
-                } as? LoomPrivilegedHelperProtocol
-                guard let proxy else {
-                    if done.take() { continuation.resume(returning: false) }
-                    return
-                }
-                proxy.verifyCertificateTrusted(sha256Fingerprint: fingerprint) { trusted in
-                    if done.take() { connection.invalidate(); continuation.resume(returning: trusted) }
-                }
-            }
         }
     )
 
@@ -162,54 +92,5 @@ public extension DependencyValues {
     var privilegedHelperClient: PrivilegedHelperClient {
         get { self[PrivilegedHelperClient.self] }
         set { self[PrivilegedHelperClient.self] = newValue }
-    }
-}
-
-/// XPC plumbing for `(Bool, String?)`-replying helper methods. The connection
-/// fails cleanly (rather than hanging) until the helper is installed.
-private enum HelperConnection {
-    static func open() -> NSXPCConnection {
-        let connection = NSXPCConnection(machServiceName: HelperIdentity.machServiceName, options: .privileged)
-        connection.remoteObjectInterface = NSXPCInterface(with: LoomPrivilegedHelperProtocol.self)
-        connection.resume()
-        return connection
-    }
-
-    static func call(
-        _ body: @escaping (LoomPrivilegedHelperProtocol, @escaping (Bool, String?) -> Void) -> Void
-    ) async -> HelperOutcome {
-        await withCheckedContinuation { continuation in
-            let connection = open()
-            let done = OnceFlag()
-            func finish(_ outcome: HelperOutcome) {
-                if done.take() {
-                    connection.invalidate()
-                    continuation.resume(returning: outcome)
-                }
-            }
-            let proxy = connection.remoteObjectProxyWithErrorHandler { error in
-                finish(.init(ok: false, message: "helper unavailable: \(error.localizedDescription)"))
-            } as? LoomPrivilegedHelperProtocol
-            guard let proxy else {
-                finish(.init(ok: false, message: "helper proxy unavailable"))
-                return
-            }
-            body(proxy) { ok, message in
-                finish(.init(ok: ok, message: message ?? (ok ? "ok" : "failed")))
-            }
-        }
-    }
-}
-
-/// One-shot guard so a continuation resumes exactly once across the XPC reply
-/// and error-handler races.
-private final class OnceFlag: Sendable {
-    private let fired = Mutex(false)
-    func take() -> Bool {
-        fired.withLock { fired in
-            if fired { return false }
-            fired = true
-            return true
-        }
     }
 }

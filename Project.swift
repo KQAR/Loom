@@ -80,7 +80,9 @@ let project = Project(
                 ]),
             ]),
             entitlements: .dictionary([
-                // Allow the app to register/manage the privileged helper (M2, scaffold).
+                // Unsandboxed: the proxy binds listening sockets, writes the CA and the
+                // flow/audit databases outside a container, and shells out to
+                // `networksetup` / `pfctl` for the system-proxy toggle.
                 "com.apple.security.app-sandbox": false,
             ]),
             dependencies: [
@@ -174,31 +176,15 @@ let project = Project(
             sources: ["SharedModels/Sources/**"]
         ),
 
-        // MARK: Privileged-helper contract (app ⇄ root daemon)
-        //
-        // Deliberately NOT part of LoomSharedModels. That module ships as a public
-        // SPM product ("pure value types … a consumer that just wants to map Loom's
-        // models"), and an embedder has no use for our XPC protocol, launchd label,
-        // code-signing requirement or `networksetup` state — it is Loom-app
-        // deployment detail, not domain model. Both sides of the contract (the
-        // app-side client and the daemon) depend on this instead.
-        .module(
-            name: "LoomHelperProtocol",
-            sources: ["HelperProtocol/Sources/**"]
-        ),
-
-        // MARK: Privileged-helper client (M2, scaffold — app-side surface over the
-        // root helper: SMAppService lifecycle + XPC for system proxy & CA trust).
+        // MARK: System-proxy client (name is historical — see the type's own note;
+        // the root-daemon half it was named after is gone).
         .module(
             name: "PrivilegedHelperClient",
             sources: ["Clients/PrivilegedHelperClient/Sources/**"],
             dependencies: [
                 .external(name: "ComposableArchitecture"),
                 .target(name: "LoomSharedModels"),
-                .target(name: "LoomHelperProtocol"),
-            ],
-            // Swift 6 language mode by default (no override) — see the type comments
-            // in PrivilegedHelperClient.swift for how the XPC surface earns it.
+            ]
         ),
 
         // MARK: stdio <-> HTTP bridge that AI clients (Claude/Cursor) launch
@@ -207,23 +193,6 @@ let project = Project(
             product: .commandLineTool,
             bundleIdSuffix: "mcp",
             sources: ["Bridge/Sources/**"]
-        ),
-
-        // MARK: Privileged helper (M2, scaffold). Installs the CA into the
-        // system trust store and toggles the system proxy. Not embedded in the
-        // app bundle yet and unsigned here, so runtime registration is unverified.
-        .module(
-            name: "LoomHelper",
-            product: .commandLineTool,
-            bundleIdSuffix: "helper",
-            sources: ["Engine/PrivilegedHelper/Sources/**"],
-            dependencies: [
-                // The daemon needs only the contract, not the domain models.
-                .target(name: "LoomHelperProtocol"),
-            ],
-            // Swift 6 language mode. The daemon's shared mutable state is all
-            // lock-guarded or queue-confined; each escape hatch says which, at the
-            // declaration.
         ),
 
         // MARK: Engine unit + integration tests (proves decrypted HTTPS capture)
@@ -320,7 +289,6 @@ let project = Project(
             dependencies: [
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "LoomSharedModels"),
-                .target(name: "LoomHelperProtocol"),
             ]
         ),
     ]
