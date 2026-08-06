@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOConcurrencyHelpers
 import NIOCore
 import NIOHTTP1
@@ -65,30 +66,33 @@ struct RequestChunks: AsyncSequence, Sendable {
 /// streams to upstream in full while the recorded copy can't grow the store without
 /// limit. Filled as chunks are ingested, independent of whether the forwarder
 /// streams the body through or buffers it.
-final class RequestBodyCapture: @unchecked Sendable {
-    private let lock = NSLock()
-    private var data = Data()
-    /// Every byte seen, including those past the cap — so a truncated capture can
-    /// report the real upload size instead of pretending the body ended at 5 MB.
-    private var wireBytes = 0
+final class RequestBodyCapture: Sendable {
+    private struct State {
+        var data = Data()
+        /// Every byte seen, including those past the cap — so a truncated capture can
+        /// report the real upload size instead of pretending the body ended at 5 MB.
+        var wireBytes = 0
+    }
+
+    private let state = Mutex(State())
     private let cap: Int
 
     init(cap: Int = StreamRelay.captureCap) { self.cap = cap }
 
     func append(_ chunk: Data) {
-        lock.lock(); defer { lock.unlock() }
-        wireBytes += chunk.count
-        guard data.count < cap else { return }
-        let remaining = cap - data.count
-        data.append(chunk.count <= remaining ? chunk : chunk.prefix(remaining))
+        state.withLock { state in
+            state.wireBytes += chunk.count
+            guard state.data.count < cap else { return }
+            let remaining = cap - state.data.count
+            state.data.append(chunk.count <= remaining ? chunk : chunk.prefix(remaining))
+        }
     }
 
     /// The bytes captured so far (a value copy) plus, when the cap truncated them,
     /// the total that actually flowed. Complete once the request stream has
     /// finished — which, by HTTP ordering, is before the response head arrives.
     func snapshot() -> (body: Data, fullBodyBytes: Int?) {
-        lock.lock(); defer { lock.unlock() }
-        return (data, wireBytes > data.count ? wireBytes : nil)
+        state.withLock { ($0.data, $0.wireBytes > $0.data.count ? $0.wireBytes : nil) }
     }
 }
 
@@ -175,26 +179,29 @@ final class RequestBodyBridge: @unchecked Sendable {
 
     /// Drives `channel.read()` from producer demand. `Channel.read()` is safe to
     /// call from any thread (it hops to the event loop internally).
-    final class Delegate: NIOAsyncSequenceProducerDelegate, @unchecked Sendable {
-        private let lock = NSLock()
-        private var channel: Channel?
-        private var terminated = false
+    final class Delegate: NIOAsyncSequenceProducerDelegate, Sendable {
+        /// `Channel` has no `Sendable` conformance, which is exactly the case a
+        /// `Mutex` is for: the reference is only ever reachable under the lock, so the
+        /// class needs no `@unchecked`.
+        private struct State {
+            var channel: Channel?
+            var terminated = false
+        }
+
+        private let state = Mutex(State())
 
         func setChannel(_ channel: Channel) {
-            lock.lock(); defer { lock.unlock() }
-            self.channel = channel
+            state.withLock { $0.channel = channel }
         }
 
         func produceMore() { readMore() }
 
         func didTerminate() {
-            lock.lock(); terminated = true; channel = nil; lock.unlock()
+            state.withLock { $0.terminated = true; $0.channel = nil }
         }
 
         func readMore() {
-            lock.lock()
-            let channel = terminated ? nil : self.channel
-            lock.unlock()
+            let channel = state.withLock { $0.terminated ? nil : $0.channel }
             guard let channel else { return }
             RequestBodyBridge.readCounter.withLockedValue { $0 += 1 }
             channel.read()

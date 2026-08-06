@@ -1,5 +1,6 @@
 import CFNetwork
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import NIOSSL
@@ -30,7 +31,7 @@ struct HTTPSInterceptionTests {
         let clientCtx = try NIOSSLContext(configuration: clientConfig)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let loop = group.next()
 
         let connected = loop.makePromise(of: Void.self)
@@ -133,7 +134,10 @@ struct HTTPSInterceptionTests {
         var request = URLRequest(url: URL(string: "http://plain.test/upload")!)
         request.httpMethod = "POST"
         request.httpBody = payload
-        let (data, response) = try runBlocking { try await session.data(for: request) }
+        // Bound to a `let` before the bridge: the closure is `@Sendable`, and a captured
+        // `var` is a shared mutable box regardless of whether anything writes to it.
+        let outgoing = request
+        let (data, response) = try runBlocking { try await session.data(for: outgoing) }
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(data == Data("ok".utf8))
 
@@ -148,7 +152,7 @@ struct HTTPSInterceptionTests {
 
     // MARK: - async → sync bridges (XCTest sync methods driving the actor)
 
-    private func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
+    private func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
         let box = ResultBox<T>()
         let sem = DispatchSemaphore(value: 0)
         Task { await box.run(body); sem.signal() }
@@ -156,7 +160,7 @@ struct HTTPSInterceptionTests {
         return try box.take()
     }
 
-    private func runBlockingVoid(_ body: @escaping () async -> Void) {
+    private func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
         let sem = DispatchSemaphore(value: 0)
         Task { await body(); sem.signal() }
         sem.wait()
@@ -178,14 +182,18 @@ private extension Result where Failure == Error {
 // MARK: - Test doubles
 
 /// Deterministic upstream: records the URL it was asked to fetch, returns canned data.
-final class StubForwarder: UpstreamForwarding, @unchecked Sendable {
+final class StubForwarder: UpstreamForwarding, Sendable {
     let status: Int
     let body: Data
-    private let lock = NSLock()
-    private var _lastURL: URL?
-    private var _lastBody: Data?
-    var lastURL: URL? { lock.lock(); defer { lock.unlock() }; return _lastURL }
-    var lastBody: Data? { lock.lock(); defer { lock.unlock() }; return _lastBody }
+
+    private struct Seen {
+        var url: URL?
+        var body: Data?
+    }
+
+    private let seen = Mutex(Seen())
+    var lastURL: URL? { seen.withLock { $0.url } }
+    var lastBody: Data? { seen.withLock { $0.body } }
 
     init(status: Int, body: Data) {
         self.status = status
@@ -193,7 +201,7 @@ final class StubForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
-        lock.lock(); _lastURL = url; _lastBody = body; lock.unlock()
+        seen.withLock { $0.url = url; $0.body = body }
         return ForwardResult(
             statusCode: status,
             headers: [HeaderPair(name: "Content-Type", value: "application/json")],

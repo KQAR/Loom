@@ -1,5 +1,6 @@
 import Foundation
 import LoomSharedModels
+import NIOPosix
 @testable import LoomProxyCore
 
 /// Stop an engine a test started, **deterministically**, before the test returns.
@@ -50,7 +51,7 @@ extension ProxyEngine {
 ///
 /// Two suites already carry a private copy of this; they keep theirs rather than being
 /// churned, but a third copy is where a pattern starts to rot, so new callers use this.
-func runBlockingVoid(_ body: @escaping () async -> Void) {
+func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
     let semaphore = DispatchSemaphore(value: 0)
     Task { await body(); semaphore.signal() }
     semaphore.wait()
@@ -108,4 +109,22 @@ func awaitFlowBlocking(
 /// the read are ordered by that semaphore, which the compiler can't see.
 private final class FlowBox: @unchecked Sendable {
     var value: Flow?
+}
+
+/// Shut a test-local event-loop group down, blocking until its threads are gone.
+///
+/// `MultiThreadedEventLoopGroup.syncShutdownGracefully()` is `@available(*, noasync)`
+/// because it blocks the calling thread, and a `defer` inside an `async` test body
+/// inherits that async context — so under the Swift 6 language mode every
+/// `defer { try? group.syncShutdownGracefully() }` in this suite became an error.
+///
+/// Wrapping the call in a synchronous function is the escape Swift documents for
+/// `noasync`, and here it is the *correct* escape rather than a silencer: blocking is
+/// exactly what teardown wants. The two alternatives are both worse. `Task { try await
+/// group.shutdownGracefully() }` is unstructured — the test returns immediately and the
+/// group dies during the *next* test, which is the precise defect `stopForTest()` above
+/// exists to document. `group.shutdownGracefully { _ in }` returns before the threads
+/// are reclaimed, so several hundred tests leave several hundred loops running.
+func shutdownBlocking(_ group: MultiThreadedEventLoopGroup) {
+    try? group.syncShutdownGracefully()
 }

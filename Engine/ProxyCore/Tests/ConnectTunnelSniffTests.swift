@@ -32,7 +32,7 @@ struct ConnectTunnelSniffTests {
         defer { runBlockingVoid { await engine.shutdown() } }
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let loop = group.next()
         let acked = loop.makePromise(of: Void.self)
         let responded = loop.makePromise(of: String.self)
@@ -82,7 +82,7 @@ struct ConnectTunnelSniffTests {
         // connects upstream itself (no stub can stand in for it), so this needs a
         // listener that speaks the handshake and echoes frames.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let server = try ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(WebSocketEchoServer()) }
             .bind(host: "127.0.0.1", port: 0).wait()
@@ -141,7 +141,7 @@ struct ConnectTunnelSniffTests {
         // hung these forever — the client waited for a banner that Loom's TLS handler
         // was never going to let through. The sniff deadline is what releases them.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let banner = "SSH-2.0-loom-connect-test\r\n"
         let server = try ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(BannerOnConnect(banner: banner)) }
@@ -179,7 +179,7 @@ struct ConnectTunnelSniffTests {
 
 // MARK: - async → sync bridge
 
-private func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
+private func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
     let box = ConnectSniffResultBox<T>()
     let semaphore = DispatchSemaphore(value: 0)
     Task { await box.run(body); semaphore.signal() }

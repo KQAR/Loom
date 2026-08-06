@@ -139,7 +139,7 @@ struct ClientCertificateTests {
     @Test func presentsTheIdentityToAServerThatDemandsOne() async throws {
         let material = try TLSMaterial.make()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let server = try MutualTLSServer(material: material, group: group)
         defer { server.stop() }
 
@@ -163,7 +163,7 @@ struct ClientCertificateTests {
         // certificate was presented, not because the server was lenient.
         let material = try TLSMaterial.make()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let server = try MutualTLSServer(material: material, group: group)
         defer { server.stop() }
 
@@ -189,7 +189,7 @@ struct ClientCertificateTests {
         // operator as `NIOSSL.NIOSSLError error 3.` — no host, no hint.
         let material = try TLSMaterial.make()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let server = try MutualTLSServer(material: material, group: group)
         defer { server.stop() }
 
@@ -249,7 +249,7 @@ struct ClientCertificateTests {
     @Test func aRejectedServerCertificateIsNotReportedAsAClientCertificateProblem() async throws {
         let material = try TLSMaterial.make()
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let server = try MutualTLSServer(material: material, group: group)
         defer { server.stop() }
 
@@ -312,7 +312,7 @@ struct ClientCertificateTests {
         // Connecting anyway would fail the handshake too, but the error would name
         // the origin. The identity is the thing the operator can fix, so it is named.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let config = ClientCertificateConfig(
             certificates: [ClientCertificate(hostPattern: "api.test", pkcs12: Data("garbage".utf8))],
             fileURL: nil

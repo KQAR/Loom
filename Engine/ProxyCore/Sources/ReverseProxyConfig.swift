@@ -1,5 +1,6 @@
 import Foundation
 import LoomSharedModels
+import Synchronization
 
 /// Thread-safe holder for the configured reverse-proxy endpoints, persisted as JSON
 /// under Application Support.
@@ -14,23 +15,30 @@ import LoomSharedModels
 /// **enqueued while the lock is held** so the file can only move forward through the
 /// states the in-memory value did, while the encode + write themselves stay off the
 /// lock.
-final class ReverseProxyConfig: @unchecked Sendable {
-    private let lock = NSLock()
-    private var endpoints: [ReverseProxyEndpoint]
-    /// Bind results, keyed by endpoint id. Not persisted — where an endpoint is
-    /// listening is a fact about *this* run, and writing it down would let a stale
-    /// file claim a port that nothing is bound to.
-    private var bound: [UUID: Int] = [:]
-    private var errors: [UUID: String] = [:]
+final class ReverseProxyConfig: Sendable {
+    /// All three fields move together under one lock, which is also what makes
+    /// `delete` atomic — it used to take the lock twice (once to drop the endpoint,
+    /// once to forget its bind state), so a `snapshot()` landing between them saw an
+    /// endpoint that no longer existed still carrying a port.
+    private struct State {
+        var endpoints: [ReverseProxyEndpoint]
+        /// Bind results, keyed by endpoint id. Not persisted — where an endpoint is
+        /// listening is a fact about *this* run, and writing it down would let a stale
+        /// file claim a port that nothing is bound to.
+        var bound: [UUID: Int] = [:]
+        var errors: [UUID: String] = [:]
+    }
+
+    private let state: Mutex<State>
     private let fileURL: URL?
     private let persistQueue = DispatchQueue(label: "com.loom.reverseproxyconfig.persist")
 
     init(endpoints: [ReverseProxyEndpoint] = [], fileURL: URL? = ReverseProxyConfig.defaultFileURL) {
         self.fileURL = fileURL
         if let fileURL, let saved = Self.load(from: fileURL) {
-            self.endpoints = saved
+            self.state = Mutex(State(endpoints: saved))
         } else {
-            self.endpoints = endpoints
+            self.state = Mutex(State(endpoints: endpoints))
         }
     }
 
@@ -40,32 +48,28 @@ final class ReverseProxyConfig: @unchecked Sendable {
 
     /// Configured endpoints, in creation order, with this run's bind state.
     func snapshot() -> [ReverseProxyStatus] {
-        lock.lock()
-        defer { lock.unlock() }
-        return endpoints.map {
-            ReverseProxyStatus(endpoint: $0, boundPort: bound[$0.id], error: errors[$0.id])
+        state.withLock { state in
+            state.endpoints.map {
+                ReverseProxyStatus(endpoint: $0, boundPort: state.bound[$0.id], error: state.errors[$0.id])
+            }
         }
     }
 
     func endpoint(id: UUID) -> ReverseProxyEndpoint? {
-        lock.lock()
-        defer { lock.unlock() }
-        return endpoints.first { $0.id == id }
+        state.withLock { $0.endpoints.first { $0.id == id } }
     }
 
     func all() -> [ReverseProxyEndpoint] {
-        lock.lock()
-        defer { lock.unlock() }
-        return endpoints
+        state.withLock { $0.endpoints }
     }
 
     /// Add (or replace by id) an endpoint. Persisted.
     func upsert(_ endpoint: ReverseProxyEndpoint) {
-        mutate { endpoints in
-            if let index = endpoints.firstIndex(where: { $0.id == endpoint.id }) {
-                endpoints[index] = endpoint
+        mutate { state in
+            if let index = state.endpoints.firstIndex(where: { $0.id == endpoint.id }) {
+                state.endpoints[index] = endpoint
             } else {
-                endpoints.append(endpoint)
+                state.endpoints.append(endpoint)
             }
         }
     }
@@ -73,50 +77,42 @@ final class ReverseProxyConfig: @unchecked Sendable {
     /// Remove an endpoint and forget its bind state. Returns false when there was no
     /// such endpoint.
     func delete(id: UUID) -> Bool {
-        var found = false
-        mutate { endpoints in
-            let before = endpoints.count
-            endpoints.removeAll { $0.id == id }
-            found = endpoints.count != before
+        mutate { state in
+            let before = state.endpoints.count
+            state.endpoints.removeAll { $0.id == id }
+            state.bound[id] = nil
+            state.errors[id] = nil
+            return state.endpoints.count != before
         }
-        lock.lock()
-        bound[id] = nil
-        errors[id] = nil
-        lock.unlock()
-        return found
     }
 
     /// Record that an endpoint is listening on `port`, clearing any earlier failure.
     func noteBound(id: UUID, port: Int) {
-        lock.lock()
-        bound[id] = port
-        errors[id] = nil
-        lock.unlock()
+        state.withLock { $0.bound[id] = port; $0.errors[id] = nil }
     }
 
     /// Record that an endpoint is *not* listening, and why. Kept rather than dropped:
     /// "configured but not listening" is the state a client experiences as connection
     /// refused, and it needs to be readable (`get_proxy_status.reverseProxies`).
     func noteFailure(id: UUID, error: String) {
-        lock.lock()
-        bound[id] = nil
-        errors[id] = error
-        lock.unlock()
+        state.withLock { $0.bound[id] = nil; $0.errors[id] = error }
     }
 
     func clearBindState() {
-        lock.lock()
-        bound.removeAll()
-        errors.removeAll()
-        lock.unlock()
+        state.withLock { $0.bound.removeAll(); $0.errors.removeAll() }
     }
 
-    private func mutate(_ body: (inout [ReverseProxyEndpoint]) -> Void) {
-        lock.lock()
-        body(&endpoints)
-        let updated = endpoints
-        if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
-        lock.unlock()
+    /// Mutate under the lock and enqueue the resulting snapshot for persistence from
+    /// *inside* the critical section — that ordering is the invariant this type shares
+    /// with `RulesConfig`, not an accident of where the call sits.
+    @discardableResult
+    private func mutate<T>(_ body: (inout State) -> T) -> T {
+        state.withLock { state in
+            let result = body(&state)
+            let updated = state.endpoints
+            if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
+            return result
+        }
     }
 
     /// Block until queued writes have run — the quit handler, and any test reading

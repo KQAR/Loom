@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import NIOHTTP1
@@ -25,7 +26,7 @@ struct AbortedRequestBodyTests {
         let port = try await engine.start(port: 0)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
 
         let client = try await ClientBootstrap(group: group)
             .connect(host: "127.0.0.1", port: port).get()
@@ -50,7 +51,7 @@ struct AbortedRequestBodyTests {
         let store = FlowStore()
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
 
         let server = try await ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -88,10 +89,13 @@ struct AbortedRequestBodyTests {
 
 /// Consumes the request-body stream the way the real forwarder does and records how
 /// it ended, so the test can tell "failed" from "finished as if complete".
-private final class BodyStreamRecorder: UpstreamForwarding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var failure: Error?
-    private var finishedCleanly = false
+private final class BodyStreamRecorder: UpstreamForwarding, Sendable {
+    private struct State {
+        var failure: Error?
+        var finishedCleanly = false
+    }
+
+    private let state = Mutex(State())
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         ForwardResult(statusCode: 200, headers: [], body: Data())
@@ -104,12 +108,12 @@ private final class BodyStreamRecorder: UpstreamForwarding, @unchecked Sendable 
             let task = Task {
                 do {
                     _ = try await body.collect()
-                    self.lock.lock(); self.finishedCleanly = true; self.lock.unlock()
+                    self.state.withLock { $0.finishedCleanly = true }
                     continuation.yield(.head(statusCode: 200, httpVersion: nil, headers: []))
                     continuation.yield(.end)
                     continuation.finish()
                 } catch {
-                    self.lock.lock(); self.failure = error; self.lock.unlock()
+                    self.state.withLock { $0.failure = error }
                     continuation.finish(throwing: error)
                 }
             }
@@ -122,9 +126,7 @@ private final class BodyStreamRecorder: UpstreamForwarding, @unchecked Sendable 
     /// this suite wants to see reported rather than hung on.
     func awaitFailure() async -> Error? {
         for _ in 0..<100 {
-            lock.lock()
-            let (error, clean) = (failure, finishedCleanly)
-            lock.unlock()
+            let (error, clean) = state.withLock { ($0.failure, $0.finishedCleanly) }
             if let error { return error }
             if clean { return nil }
             try? await Task.sleep(nanoseconds: 50_000_000)

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Ports another part of Loom holds, which a reverse-proxy endpoint must not take.
 ///
@@ -20,40 +21,33 @@ import Foundation
 /// Lock-based and process-wide rather than actor state, for the reason `RefusalLog` is:
 /// it must be writable **synchronously at launch**, before either the MCP server or the
 /// engine has started, or the reservation loses the very race it exists to prevent.
-public final class ReservedPorts: @unchecked Sendable {
+/// The map lives inside the `Mutex`, so this is plainly `Sendable` — there is no
+/// mutable stored property left for `@unchecked` to vouch for.
+public final class ReservedPorts: Sendable {
     public static let shared = ReservedPorts()
 
-    private let lock = NSLock()
     /// port → what holds it, phrased for an operator ("Loom's MCP control port").
-    private var holders: [Int: String] = [:]
+    private let holders = Mutex<[Int: String]>([:])
 
     public init() {}
 
     /// Declare that `port` belongs to `holder`. Idempotent; a second call replaces the
     /// description, so a rebind that moved the port can update it.
     public func reserve(_ port: Int, holder: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        holders[port] = holder
+        holders.withLock { $0[port] = holder }
     }
 
     public func release(_ port: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        holders[port] = nil
+        holders.withLock { $0[port] = nil }
     }
 
     /// What holds `port`, or nil when nothing has claimed it.
     public func holder(of port: Int) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return holders[port]
+        holders.withLock { $0[port] }
     }
 
     /// For tests, and for an embedder that restarts everything in one process.
     public func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        holders.removeAll()
+        holders.withLock { $0.removeAll() }
     }
 }

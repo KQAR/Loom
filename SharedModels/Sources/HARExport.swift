@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Serializes captured flows to HAR 1.2 (HTTP Archive) — the interchange format
 /// Charles / Chrome DevTools / Proxyman read, so an agent can hand off a shareable
@@ -292,16 +293,17 @@ public enum HARExport {
     /// never varies per call, so the instance is safely reusable; the lock is what
     /// makes the shared state sound (unlike the MCP renderer's copy, `HARExport` is
     /// not confined to a single actor or queue).
-    private static let iso8601Lock = NSLock()
-    nonisolated(unsafe) private static let iso8601: ISO8601DateFormatter = {
+    /// The formatter lives *inside* the `Mutex`, which is what retires the
+    /// `nonisolated(unsafe)` this used to need: `ISO8601DateFormatter` is not
+    /// `Sendable`, and a `Mutex` is `Sendable` whatever it holds precisely because the
+    /// only way to touch the value is under the lock.
+    private static let iso8601 = Mutex<ISO8601DateFormatter>({
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
-    }()
+    }())
 
     private static func iso8601String(_ date: Date) -> String {
-        iso8601Lock.lock()
-        defer { iso8601Lock.unlock() }
-        return iso8601.string(from: date)
+        iso8601.withLock { $0.string(from: date) }
     }
 }

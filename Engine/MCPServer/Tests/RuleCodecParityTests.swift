@@ -29,7 +29,7 @@ import Testing
     /// One `actions` input per `Route` case. The `switch` is what makes a new route
     /// a compile error here: a route the codec can't express is a hole in the
     /// agent's vocabulary, and this is where that gets noticed.
-    private func actionsInput(for route: Route) -> [String: Any] {
+    private func actionsInput(for route: Route) -> sending [String: Any] {
         var actions: [String: Any] = [
             "rewrite_request": [
                 "method": "PUT",
@@ -93,7 +93,11 @@ import Testing
         ]
     }
 
-    private func maximalInput(for route: Route) -> [String: Any] {
+    /// `sending` for the same reason as `BodyWarningTests.setRule`: this suite is
+    /// `@MainActor` and `MCPToolExecutor.call` is nonisolated, so a plain return value
+    /// would belong to the main-actor region. The dictionary is built fresh here and
+    /// never kept, so it genuinely is disconnected.
+    private func maximalInput(for route: Route) -> sending [String: Any] {
         // `is_regex` and `is_exact` are alternatives, and the render only emits each
         // when true — so one route variant matches exactly and the rest by regex,
         // which is what makes the union of renders cover both fields.

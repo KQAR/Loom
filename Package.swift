@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 // SPM manifest that exposes Loom's reusable capture engine as a library, so
@@ -18,7 +18,7 @@ import PackageDescription
 let package = Package(
     name: "Loom",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v15),
     ],
     products: [
         // Pure value types (Flow, CapturedRequest/Response, HeaderPair, rules,
@@ -44,7 +44,8 @@ let package = Package(
     targets: [
         .target(
             name: "LoomSharedModels",
-            path: "SharedModels/Sources"
+            path: "SharedModels/Sources",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(
             name: "LoomProxyCore",
@@ -79,7 +80,8 @@ let package = Package(
         .testTarget(
             name: "SharedModelsTests",
             dependencies: ["LoomSharedModels"],
-            path: "SharedModels/Tests"
+            path: "SharedModels/Tests",
+            swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
 )

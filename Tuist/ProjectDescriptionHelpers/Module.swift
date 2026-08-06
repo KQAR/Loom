@@ -1,7 +1,7 @@
 import ProjectDescription
 
 public let loomBundlePrefix = "com.loom"
-public let loomDeploymentTargets: DeploymentTargets = .macOS("14.0")
+public let loomDeploymentTargets: DeploymentTargets = .macOS("15.0")
 
 public extension Target {
     /// Factory that stamps out a Loom module target with shared conventions,

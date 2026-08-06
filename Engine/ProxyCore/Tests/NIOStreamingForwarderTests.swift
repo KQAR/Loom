@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOCore
 import NIOHTTP1
 import NIOPosix
@@ -34,7 +35,7 @@ final class NIOStreamingForwarderTests {
 
     deinit {
         try? server.close().wait()
-        try? group.syncShutdownGracefully()
+        shutdownBlocking(group)
     }
 
     private var baseURL: URL { URL(string: "http://127.0.0.1:\(server.localAddress!.port!)")! }
@@ -96,7 +97,7 @@ final class NIOStreamingForwarderTests {
         // inflated, with Content-Encoding/Content-Length no longer lying about it.
         let plaintext = "hello compressed world, hello compressed world"
         let deflateGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? deflateGroup.syncShutdownGracefully() }
+        defer { shutdownBlocking(deflateGroup) }
         let deflateServer = try ServerBootstrap(group: deflateGroup)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { ch in
@@ -135,7 +136,7 @@ final class NIOStreamingForwarderTests {
         // A chunked server that emits three body parts with small gaps, so they
         // arrive as distinct reads and prove the response streams (not buffers).
         let chunkGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? chunkGroup.syncShutdownGracefully() }
+        defer { shutdownBlocking(chunkGroup) }
         let chunkServer = try ServerBootstrap(group: chunkGroup)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { ch in
@@ -235,23 +236,24 @@ private final class ChunkingResponder: ChannelInboundHandler {
 }
 
 /// Records the last request the server saw and echoes its body back with 200.
-private final class RequestRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _method = ""
-    private var _uri = ""
-    private var _headers: [(String, String)] = []
-    private var _body = ""
+private final class RequestRecorder: Sendable {
+    private struct Seen {
+        var method = ""
+        var uri = ""
+        var headers: [(String, String)] = []
+        var body = ""
+    }
+
+    private let seen = Mutex(Seen())
 
     func record(method: String, uri: String, headers: [(String, String)], body: String) {
-        lock.lock(); defer { lock.unlock() }
-        _method = method; _uri = uri; _headers = headers; _body = body
+        seen.withLock { $0 = Seen(method: method, uri: uri, headers: headers, body: body) }
     }
-    var method: String { lock.lock(); defer { lock.unlock() }; return _method }
-    var uri: String { lock.lock(); defer { lock.unlock() }; return _uri }
-    var bodyText: String { lock.lock(); defer { lock.unlock() }; return _body }
+    var method: String { seen.withLock { $0.method } }
+    var uri: String { seen.withLock { $0.uri } }
+    var bodyText: String { seen.withLock { $0.body } }
     func headerValue(_ name: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return _headers.first { $0.0.lowercased() == name.lowercased() }?.1
+        seen.withLock { $0.headers.first { $0.0.lowercased() == name.lowercased() }?.1 }
     }
 }
 

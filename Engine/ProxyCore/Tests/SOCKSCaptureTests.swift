@@ -23,7 +23,7 @@ struct SOCKSCaptureTests {
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let loop = group.next()
         let ready = loop.makePromise(of: Void.self)
         let responded = loop.makePromise(of: String.self)
@@ -73,7 +73,7 @@ struct SOCKSCaptureTests {
         let clientCtx = try NIOSSLContext(configuration: clientConfig)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let loop = group.next()
         let ready = loop.makePromise(of: Void.self)
         let responded = loop.makePromise(of: String.self)
@@ -112,7 +112,7 @@ struct SOCKSCaptureTests {
         // Not HTTP, not TLS — the case the HTTP proxy port can only blind-tunnel and
         // Loom would otherwise never see at all.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let echo = try ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(EchoHandler()) }
             .bind(host: "127.0.0.1", port: 0).wait()
@@ -164,7 +164,7 @@ struct SOCKSCaptureTests {
         // and found with `nc -X 5` against a real SSH server; the opaque test above
         // missed it because its payload was client-first.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let banner = "SSH-2.0-loom-test\r\n"
         let server = try ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(BannerHandler(banner: banner)) }
@@ -206,7 +206,7 @@ struct SOCKSCaptureTests {
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let refused = group.next().makePromise(of: [UInt8].self)
 
         let client = try ClientBootstrap(group: group)
@@ -241,7 +241,7 @@ struct SOCKSCaptureTests {
         let socksPort = try #require(try runBlocking { await engine.status().socksPort })
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let closed = group.next().makePromise(of: [UInt8].self)
         let client = try ClientBootstrap(group: group)
             .channelInitializer {
@@ -287,7 +287,7 @@ struct SOCKSCaptureTests {
 
     // MARK: - async → sync bridges
 
-    private func runBlocking<T>(_ body: @escaping () async throws -> T) throws -> T {
+    private func runBlocking<T>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
         let box = SOCKSResultBox<T>()
         let sem = DispatchSemaphore(value: 0)
         Task { await box.run(body); sem.signal() }
@@ -295,7 +295,7 @@ struct SOCKSCaptureTests {
         return try box.take()
     }
 
-    private func runBlockingVoid(_ body: @escaping () async -> Void) {
+    private func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
         let sem = DispatchSemaphore(value: 0)
         Task { await body(); sem.signal() }
         sem.wait()

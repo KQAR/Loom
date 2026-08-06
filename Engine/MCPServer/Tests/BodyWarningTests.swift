@@ -20,7 +20,13 @@ import LoomSharedModels
         try object(json)["warnings"] as? [String] ?? []
     }
 
-    private func setRule(_ executor: MCPToolExecutor, actions: [String: Any]) async throws -> String {
+    /// `actions` is `sending` because `MCPToolExecutor.call` is nonisolated and this
+    /// suite is `@MainActor`: a plain `[String: Any]` parameter would belong to the
+    /// caller's (main-actor) region, and handing it to a nonisolated async function is
+    /// exactly the escape strict concurrency flags. Every call site passes a fresh
+    /// literal, so marking it `sending` states the truth — the dictionary is
+    /// disconnected — rather than suppressing the diagnostic.
+    private func setRule(_ executor: MCPToolExecutor, actions: sending [String: Any]) async throws -> String {
         try await executor.call(name: "set_rule", arguments: [
             "name": "mock", "match": ["url_pattern": "https://api.example.com/*"], "actions": actions,
         ])

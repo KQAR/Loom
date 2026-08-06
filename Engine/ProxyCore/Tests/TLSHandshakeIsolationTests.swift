@@ -15,7 +15,7 @@ struct TLSHandshakeIsolationTests {
         let serverCtx = try ca.serverContext(for: "example.test")
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
 
         let server = try ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import NIOSSL
 import X509
 import LoomSharedModels
@@ -50,10 +51,14 @@ protocol ClientIdentityProviding: Sendable {
 /// Persisted as one JSON file (0600, inside the 0700 app-support directory) with
 /// the same lock-and-enqueue discipline as `RulesConfig`: the write is queued while
 /// the lock is held so disk order can't diverge from mutation order.
-final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendable {
-    private let lock = NSLock()
-    private var certificates: [ClientCertificate]
-    private var contexts: [UUID: NIOSSLContext] = [:]
+final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
+    private struct State {
+        var certificates: [ClientCertificate]
+        var contexts: [UUID: NIOSSLContext] = [:]
+        var cachedBaseContext: NIOSSLContext?
+    }
+
+    private let state: Mutex<State>
     private let fileURL: URL?
     private let persistQueue = DispatchQueue(label: "com.loom.clientcerts.persist")
     /// Base client TLS configuration the identity is layered onto. Production uses
@@ -64,7 +69,6 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
     /// Whether `baseConfiguration` was supplied by the caller. Only then is a
     /// separate no-identity context worth building — see `baseContext()`.
     private let isBaseConfigurationCustom: Bool
-    private var cachedBaseContext: NIOSSLContext?
 
     /// - Parameter fileURL: persistence backing; `nil` disables it (tests, and any
     ///   engine that must not read or clobber the real set).
@@ -77,9 +81,9 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
         self.isBaseConfigurationCustom = baseConfiguration != nil
         self.baseConfiguration = baseConfiguration ?? { .makeClientConfiguration() }
         if let fileURL, let saved = Self.load(from: fileURL) {
-            self.certificates = saved
+            self.state = Mutex(State(certificates: saved))
         } else {
-            self.certificates = certificates
+            self.state = Mutex(State(certificates: certificates))
         }
     }
 
@@ -93,9 +97,7 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
     // MARK: - Reads
 
     func all() -> [ClientCertificate] {
-        lock.lock()
-        defer { lock.unlock() }
-        return certificates
+        state.withLock { $0.certificates }
     }
 
     /// Secrets stripped, with each bundle's leaf parsed so an expired or
@@ -144,34 +146,20 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
     /// context instead of holding a second identical copy.
     func baseContext() throws -> NIOSSLContext? {
         guard isBaseConfigurationCustom else { return nil }
-        lock.lock()
-        if let cached = cachedBaseContext {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
-
+        // Two critical sections rather than one, deliberately: building the context
+        // parses the trust store and must not happen under the lock.
+        if let cached = state.withLock({ $0.cachedBaseContext }) { return cached }
         let context = try NIOSSLContext(configuration: baseConfiguration())
-        lock.lock()
-        cachedBaseContext = context
-        lock.unlock()
+        state.withLock { $0.cachedBaseContext = context }
         return context
     }
 
     func context(forHost host: String) throws -> NIOSSLContext? {
         guard let identity = identity(forHost: host) else { return nil }
-
-        lock.lock()
-        if let cached = contexts[identity.id] {
-            lock.unlock()
-            return cached
-        }
-        lock.unlock()
-
+        // Same two-section shape as `baseContext()`, and for the same reason.
+        if let cached = state.withLock({ $0.contexts[identity.id] }) { return cached }
         let context = try makeContext(for: identity)
-        lock.lock()
-        contexts[identity.id] = context
-        lock.unlock()
+        state.withLock { $0.contexts[identity.id] = context }
         return context
     }
 
@@ -199,24 +187,24 @@ final class ClientCertificateConfig: ClientIdentityProviding, @unchecked Sendabl
 
     /// Returns false when there was no such id.
     func delete(id: UUID) -> Bool {
-        var found = false
         mutate { certificates in
             let before = certificates.count
             certificates.removeAll { $0.id == id }
-            found = certificates.count != before
+            return certificates.count != before
         }
-        return found
     }
 
-    private func mutate(_ body: (inout [ClientCertificate]) -> Void) {
-        lock.lock()
-        body(&certificates)
-        let updated = certificates
-        // Any mutation invalidates every built context. Cheap: identities are few
-        // and a context is rebuilt on the next request to that host.
-        contexts = [:]
-        if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
-        lock.unlock()
+    @discardableResult
+    private func mutate<T>(_ body: (inout [ClientCertificate]) -> T) -> T {
+        state.withLock { state in
+            let result = body(&state.certificates)
+            let updated = state.certificates
+            // Any mutation invalidates every built context. Cheap: identities are few
+            // and a context is rebuilt on the next request to that host.
+            state.contexts = [:]
+            if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
+            return result
+        }
     }
 
     /// Block until queued writes have run — the quit handler, and any test that

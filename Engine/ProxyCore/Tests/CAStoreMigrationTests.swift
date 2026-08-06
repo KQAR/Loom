@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import LoomProxyCore
 
@@ -73,37 +74,43 @@ import Testing
 }
 
 /// Counts `load()` calls so a test can prove the Keychain wasn't touched.
-private final class CountingCAStore: CAStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var material: CAMaterial?
-    private var _loadCount = 0
+private final class CountingCAStore: CAStore, Sendable {
+    private struct State {
+        var material: CAMaterial?
+        var loadCount = 0
+    }
 
-    init(seed: CAMaterial? = nil) { material = seed }
+    private let state: Mutex<State>
 
-    var loadCount: Int { lock.lock(); defer { lock.unlock() }; return _loadCount }
+    init(seed: CAMaterial? = nil) { state = Mutex(State(material: seed)) }
+
+    var loadCount: Int { state.withLock { $0.loadCount } }
 
     func load() throws -> CAMaterial? {
-        lock.lock(); defer { lock.unlock() }
-        _loadCount += 1
-        return material
+        state.withLock { state in
+            state.loadCount += 1
+            return state.material
+        }
     }
 
     func save(_ newValue: CAMaterial) throws {
-        lock.lock(); defer { lock.unlock() }
-        material = newValue
+        state.withLock { $0.material = newValue }
     }
 }
 
 /// Fails on demand. `throwsOnceOnLoad` models a store that is unreadable now but
 /// readable after a successful write — i.e. a corrupt file that gets replaced.
-private final class ThrowingCAStore: CAStore, @unchecked Sendable {
-    private let lock = NSLock()
+private final class ThrowingCAStore: CAStore, Sendable {
+    private struct State {
+        var material: CAMaterial?
+        var loadsThrown = 0
+        var saveAttempts = 0
+    }
+
     private let onLoad: Bool
     private let onSave: Bool
     private let throwsOnceOnLoad: Bool
-    private var material: CAMaterial?
-    private var loadsThrown = 0
-    private var _saveAttempts = 0
+    private let state = Mutex(State())
 
     init(onLoad: Bool = false, onSave: Bool = false, throwsOnceOnLoad: Bool = false) {
         self.onLoad = onLoad
@@ -111,21 +118,23 @@ private final class ThrowingCAStore: CAStore, @unchecked Sendable {
         self.throwsOnceOnLoad = throwsOnceOnLoad
     }
 
-    var saveAttempts: Int { lock.lock(); defer { lock.unlock() }; return _saveAttempts }
+    var saveAttempts: Int { state.withLock { $0.saveAttempts } }
 
     func load() throws -> CAMaterial? {
-        lock.lock(); defer { lock.unlock() }
-        if onLoad, !throwsOnceOnLoad || loadsThrown == 0 {
-            loadsThrown += 1
-            throw CAStoreError.keychain(-25300)
+        try state.withLock { state in
+            if onLoad, !throwsOnceOnLoad || state.loadsThrown == 0 {
+                state.loadsThrown += 1
+                throw CAStoreError.keychain(-25300)
+            }
+            return state.material
         }
-        return material
     }
 
     func save(_ newValue: CAMaterial) throws {
-        lock.lock(); defer { lock.unlock() }
-        _saveAttempts += 1
-        if onSave { throw CAStoreError.keychain(-25299) }
-        material = newValue
+        try state.withLock { state in
+            state.saveAttempts += 1
+            if onSave { throw CAStoreError.keychain(-25299) }
+            state.material = newValue
+        }
     }
 }

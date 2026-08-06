@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import LoomHelperProtocol
 import Security
 import os
@@ -9,19 +10,16 @@ import os
 /// change mid-run.
 enum BinaryValidator {
     private static let logger = Logger(subsystem: HelperIdentity.logSubsystem, category: "BinaryValidator")
-    private static let lock = NSLock()
-    /// `nonisolated(unsafe)`: every read and write below is inside `lock`, which is
-    /// the invariant strict concurrency can't verify for a global.
-    nonisolated(unsafe) private static var cache: [String: Bool] = [:]
+    /// Inside a `Mutex`, so the `nonisolated(unsafe)` that used to carry this — with
+    /// a comment asserting the discipline — is gone.
+    private static let cache = Mutex<[String: Bool]>([:])
 
     static func isAppleSigned(at path: String) -> Bool {
-        lock.lock()
-        if let cached = cache[path] { lock.unlock(); return cached }
-        lock.unlock()
-
+        // Two critical sections: the signature check is a syscall-heavy Security
+        // call and must not run under the lock.
+        if let cached = cache.withLock({ $0[path] }) { return cached }
         let result = validate(path)
-
-        lock.lock(); cache[path] = result; lock.unlock()
+        cache.withLock { $0[path] = result }
         return result
     }
 

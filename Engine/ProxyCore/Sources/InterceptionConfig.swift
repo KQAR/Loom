@@ -1,5 +1,6 @@
 import Foundation
 import LoomSharedModels
+import Synchronization
 
 /// A thread-safe holder for the SSL-proxying scope, shared between the actor
 /// (which updates it) and the NIO handlers (which read a snapshot synchronously
@@ -8,10 +9,16 @@ import LoomSharedModels
 /// The scope is persisted (UserDefaults) so HTTPS interception survives an app
 /// relaunch — otherwise every launch resets to disabled, every HTTPS connection
 /// falls back to a blind tunnel, and nothing gets captured.
-final class InterceptionConfig: @unchecked Sendable {
-    private let lock = NSLock()
-    private var scope: SSLScope
-    private let defaults: UserDefaults?
+/// The scope lives inside the `Mutex`, so the type is plainly `Sendable`: the
+/// "every touch goes through the lock" convention is now the compiler's to enforce
+/// rather than a comment's to assert.
+final class InterceptionConfig: Sendable {
+    private let scope: Mutex<SSLScope>
+    /// `UserDefaults` has no `Sendable` conformance, though it is documented as
+    /// thread-safe. This is the one unverified thing left in the type, and it is
+    /// narrowed to the property rather than blanketing the class with
+    /// `@unchecked Sendable` — the mutable state next to it is now checked.
+    nonisolated(unsafe) private let defaults: UserDefaults?
     private let storageKey = "com.loom.sslScope"
     /// Writes serialized here and enqueued under the lock, so the stored scope can
     /// only move forward through the states the in-memory one did. Persisting after
@@ -26,23 +33,22 @@ final class InterceptionConfig: @unchecked Sendable {
     init(scope: SSLScope = .disabled, defaults: UserDefaults? = .standard) {
         self.defaults = defaults
         if let defaults, let saved = Self.load(from: defaults, key: storageKey) {
-            self.scope = saved
+            self.scope = Mutex(saved)
         } else {
-            self.scope = scope
+            self.scope = Mutex(scope)
         }
     }
 
     func snapshot() -> SSLScope {
-        lock.lock()
-        defer { lock.unlock() }
-        return scope
+        scope.withLock { $0 }
     }
 
     func update(_ newScope: SSLScope) {
-        lock.lock()
-        scope = newScope
-        persistQueue.async { [weak self] in self?.persist(newScope) }
-        lock.unlock()
+        scope.withLock {
+            $0 = newScope
+            // Enqueued under the lock — see `persistQueue`.
+            persistQueue.async { [weak self] in self?.persist(newScope) }
+        }
     }
 
     /// Block until every queued write has run — quit handler, and any test that

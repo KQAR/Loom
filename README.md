@@ -41,7 +41,7 @@ If the tools are unreachable, the Loom app isn't running — launch it.
 
 ## Build from source
 
-Requires [Tuist](https://tuist.io) (pinned in `mise.toml`) and Xcode (macOS 14+).
+Requires [Tuist](https://tuist.io) (pinned in `mise.toml`) and Xcode (macOS 15+).
 
 ```bash
 tuist install                 # resolve SPM dependencies

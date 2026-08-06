@@ -92,7 +92,7 @@ struct ProvisioningTests {
     /// End-to-end: bind the server on loopback and fetch the DER over real HTTP.
     @Test func server_servesOverHTTP() async throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-        defer { try? group.syncShutdownGracefully() }
+        defer { shutdownBlocking(group) }
         let content = try makeContent()
         let server = ProvisioningServer(group: group)
         let port = try await server.start(host: "127.0.0.1", port: 0, content: content)

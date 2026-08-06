@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Security
 import LoomSharedModels
 
@@ -123,20 +124,17 @@ final class FileCAStore: CAStore {
 
 /// In-memory store for tests. Thread-safe so it can be shared across the actor
 /// and NIO handlers without ceremony.
-final class InMemoryCAStore: CAStore, @unchecked Sendable {
-    private let lock = NSLock()
-    private var material: CAMaterial?
+final class InMemoryCAStore: CAStore, Sendable {
+    private let material: Mutex<CAMaterial?>
 
-    init(seed: CAMaterial? = nil) { material = seed }
+    init(seed: CAMaterial? = nil) { material = Mutex(seed) }
 
     func load() throws -> CAMaterial? {
-        lock.lock(); defer { lock.unlock() }
-        return material
+        material.withLock { $0 }
     }
 
     func save(_ newValue: CAMaterial) throws {
-        lock.lock(); defer { lock.unlock() }
-        material = newValue
+        material.withLock { $0 = newValue }
     }
 }
 

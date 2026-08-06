@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 import LoomSharedModels
 @testable import LoomProxyCore
 
@@ -41,13 +42,12 @@ import LoomSharedModels
     }
 }
 
-private final class FlowSpy: FlowObserving, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _ids: [UUID] = []
-    var ids: [UUID] { lock.withLock { _ids } }
-    var count: Int { lock.withLock { _ids.count } }
+private final class FlowSpy: FlowObserving, Sendable {
+    private let _ids = Mutex<[UUID]>([])
+    var ids: [UUID] { _ids.withLock { $0 } }
+    var count: Int { _ids.withLock { $0.count } }
 
     func flowDidUpdate(_ flow: Flow) {
-        lock.withLock { _ids.append(flow.id) }
+        _ids.withLock { $0.append(flow.id) }
     }
 }

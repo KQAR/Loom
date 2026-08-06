@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import Synchronization
 import LoomSharedModels
 @testable import LoomProxyCore
 
@@ -421,21 +422,16 @@ private actor BPStubUpstream: UpstreamForwarding {
     }
 }
 
-/// Lock-guarded box for a value written from the store's hold path and read from the
+/// Mutex-guarded box for a value written from the store's hold path and read from the
 /// test body — the hook fires on whichever thread parked the exchange.
-private final class BoolBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Bool?
+private final class BoolBox: Sendable {
+    private let stored = Mutex<Bool?>(nil)
 
     func set(_ value: Bool) {
-        lock.lock()
-        stored = value
-        lock.unlock()
+        stored.withLock { $0 = value }
     }
 
     var value: Bool? {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored
+        stored.withLock { $0 }
     }
 }

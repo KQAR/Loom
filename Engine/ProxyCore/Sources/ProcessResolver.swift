@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import LoomSharedModels
 
 /// Maps a proxied connection back to the local app that made it.
@@ -17,23 +18,13 @@ import LoomSharedModels
 ///
 /// Resolution only applies to loopback peers — a LAN device has no local pid. See
 /// `resolve(sourcePort:proxyPort:)`.
-final class ProcessResolver: @unchecked Sendable {
+final class ProcessResolver: Sendable {
     static let shared = ProcessResolver()
 
-    private let lock = NSLock()
-    /// Per-source-port answers, including nil ones (an unresolvable port must not
-    /// re-trigger work on every request of a keep-alive connection).
-    private var cache: [UInt16: (app: SourceApp?, at: Date)] = [:]
     private let ttl: TimeInterval = 15
     /// Above this many entries, expired ones are swept — the cache is keyed by a
     /// 16-bit port, so it's bounded, but a long session shouldn't hold 65k tuples.
     private let cacheHighWater = 4_096
-
-    /// `localPort -> owning pid` for sockets whose foreign port is the proxy's,
-    /// as of `tableBuiltAt`. One scan serves every connection in a burst.
-    private var table: [UInt16: pid_t] = [:]
-    private var tableBuiltAt: Date?
-    private var tableProxyPort: UInt16?
     /// Short: ephemeral ports are recycled, and a table older than this may not
     /// know about a just-opened connection.
     private let tableTTL: TimeInterval = 2
@@ -49,8 +40,52 @@ final class ProcessResolver: @unchecked Sendable {
     /// fails closed: measured 1 match out of 12 identical requests, silently. When
     /// the caller passes `connectionOpenedAt`, that comparison replaces this window.
     private let rescanOnMissAfter: TimeInterval = 0.25
-    /// Scans performed — a test seam for "one sweep serves the whole burst".
-    private(set) var scanCount = 0
+    /// Everything mutable, in one place. It moved inside a `Mutex` when the engine's
+    /// floor rose to macOS 15: the `*Locked` helpers below used to encode "the caller
+    /// already holds the lock" in their *names*, which is exactly the kind of
+    /// invariant a reader has to be told about. As `mutating` methods on this struct
+    /// they can only be reached with the lock held, so the suffix is gone.
+    private struct State {
+        /// Per-source-port answers, including nil ones (an unresolvable port must not
+        /// re-trigger work on every request of a keep-alive connection).
+        var cache: [UInt16: (app: SourceApp?, at: Date)] = [:]
+        /// `localPort -> owning pid` for sockets whose foreign port is the proxy's,
+        /// as of `tableBuiltAt`. One scan serves every connection in a burst.
+        var table: [UInt16: pid_t] = [:]
+        var tableBuiltAt: Date?
+        var tableProxyPort: UInt16?
+        /// Scans performed — a test seam for "one sweep serves the whole burst".
+        var scanCount = 0
+
+        func isTableStale(proxyPort: UInt16, ttl: TimeInterval) -> Bool {
+            guard tableProxyPort == proxyPort, let builtAt = tableBuiltAt else { return true }
+            return Date().timeIntervalSince(builtAt) >= ttl
+        }
+
+        func tableOlderThan(_ interval: TimeInterval) -> Bool {
+            guard let builtAt = tableBuiltAt else { return true }
+            return Date().timeIntervalSince(builtAt) >= interval
+        }
+
+        mutating func rebuildTable(proxyPort: UInt16) {
+            scanCount += 1
+            table = ProcessResolver.portTable(proxyPort: proxyPort)
+            tableBuiltAt = Date()
+            tableProxyPort = proxyPort
+        }
+
+        mutating func remember(sourcePort: UInt16, app: SourceApp?, ttl: TimeInterval, highWater: Int) {
+            if cache.count >= highWater {
+                let now = Date()
+                cache = cache.filter { now.timeIntervalSince($0.value.at) < ttl }
+            }
+            cache[sourcePort] = (app, Date())
+        }
+    }
+
+    private let state = Mutex(State())
+
+    var scanCount: Int { state.withLock { $0.scanCount } }
 
     /// Resolve the app that owns `sourcePort` (its socket's foreign port is
     /// `proxyPort`). Returns nil if the socket is already gone or the owner can't be
@@ -65,25 +100,24 @@ final class ProcessResolver: @unchecked Sendable {
     ///   that instant — otherwise the socket simply didn't exist yet to be found,
     ///   and one rescan is what separates "no owner" from "asked too early".
     func resolve(sourcePort: UInt16, proxyPort: UInt16, connectionOpenedAt: Date? = nil) -> SourceApp? {
-        lock.lock()
-        defer { lock.unlock() }
+        state.withLock { state in
+            if let entry = state.cache[sourcePort], Date().timeIntervalSince(entry.at) < ttl {
+                return entry.app
+            }
 
-        if let entry = cache[sourcePort], Date().timeIntervalSince(entry.at) < ttl {
-            return entry.app
+            var scanned = false
+            if state.isTableStale(proxyPort: proxyPort, ttl: tableTTL) {
+                state.rebuildTable(proxyPort: proxyPort)
+                scanned = true
+            }
+            var app = state.table[sourcePort].map(Self.appInfo(pid:))
+            if app == nil, !scanned, missDeservesRescan(state, connectionOpenedAt: connectionOpenedAt) {
+                state.rebuildTable(proxyPort: proxyPort)
+                app = state.table[sourcePort].map(Self.appInfo(pid:))
+            }
+            state.remember(sourcePort: sourcePort, app: app, ttl: ttl, highWater: cacheHighWater)
+            return app
         }
-
-        var scanned = false
-        if isTableStaleLocked(proxyPort: proxyPort) {
-            rebuildTableLocked(proxyPort: proxyPort)
-            scanned = true
-        }
-        var app = table[sourcePort].map(Self.appInfo(pid:))
-        if app == nil, !scanned, missDeservesRescanLocked(connectionOpenedAt: connectionOpenedAt) {
-            rebuildTableLocked(proxyPort: proxyPort)
-            app = table[sourcePort].map(Self.appInfo(pid:))
-        }
-        remember(sourcePort: sourcePort, app: app)
-        return app
     }
 
     /// Whether a miss is worth one more sweep.
@@ -96,11 +130,11 @@ final class ProcessResolver: @unchecked Sendable {
     /// sweep — is one sweep per request at a rate low enough to afford it: a sweep
     /// measures ~3 ms on a normally loaded Mac, not the "tens to hundreds" this
     /// file used to assume.
-    private func missDeservesRescanLocked(connectionOpenedAt: Date?) -> Bool {
+    private func missDeservesRescan(_ state: State, connectionOpenedAt: Date?) -> Bool {
         guard let openedAt = connectionOpenedAt else {
-            return tableOlderThanLocked(rescanOnMissAfter)
+            return state.tableOlderThan(rescanOnMissAfter)
         }
-        guard let builtAt = tableBuiltAt else { return true }
+        guard let builtAt = state.tableBuiltAt else { return true }
         return builtAt < openedAt
     }
 
@@ -157,33 +191,6 @@ final class ProcessResolver: @unchecked Sendable {
     /// Where the blocking sweep actually runs.
     private static let scanQueue = DispatchQueue(label: "com.loom.processresolver.scan")
 
-    // MARK: - Private (lock held)
-
-    private func isTableStaleLocked(proxyPort: UInt16) -> Bool {
-        guard tableProxyPort == proxyPort, let builtAt = tableBuiltAt else { return true }
-        return Date().timeIntervalSince(builtAt) >= tableTTL
-    }
-
-    private func tableOlderThanLocked(_ interval: TimeInterval) -> Bool {
-        guard let builtAt = tableBuiltAt else { return true }
-        return Date().timeIntervalSince(builtAt) >= interval
-    }
-
-    private func rebuildTableLocked(proxyPort: UInt16) {
-        scanCount += 1
-        table = Self.portTable(proxyPort: proxyPort)
-        tableBuiltAt = Date()
-        tableProxyPort = proxyPort
-    }
-
-    private func remember(sourcePort: UInt16, app: SourceApp?) {
-        if cache.count >= cacheHighWater {
-            let now = Date()
-            cache = cache.filter { now.timeIntervalSince($0.value.at) < ttl }
-        }
-        cache[sourcePort] = (app, Date())
-    }
-
     // MARK: - libproc socket scan
 
     /// One sweep of every process's sockets, collecting `localPort -> pid` for the
@@ -234,10 +241,9 @@ final class ProcessResolver: @unchecked Sendable {
     /// path, so this is memoized without a TTL — unlike a pid-keyed cache, which
     /// pid reuse would make wrong. `proc_pidpath` still runs per pid (one cheap
     /// syscall); only the `Info.plist` read is skipped.
-    private static let bundleLock = NSLock()
-    /// `nonisolated(unsafe)`: every read and write is inside `bundleLock`, which is
-    /// the invariant strict concurrency cannot verify for a global.
-    nonisolated(unsafe) private static var bundleInfo: [String: (name: String, bundleID: String?)] = [:]
+    /// Inside a `Mutex`, so the `nonisolated(unsafe)` this used to carry — with a
+    /// comment asserting "every read and write is inside `bundleLock`" — is gone.
+    private static let bundleInfo = Mutex<[String: (name: String, bundleID: String?)]>([:])
     /// Far above the number of distinct app bundles that will ever talk through one
     /// proxy session, but a bound nonetheless — this was the one in-memory
     /// collection in the engine with no cap, against the rule that every one has
@@ -267,12 +273,9 @@ final class ProcessResolver: @unchecked Sendable {
     }
 
     private static func bundleDetails(path: String) -> (name: String, bundleID: String?) {
-        bundleLock.lock()
-        if let cached = bundleInfo[path] {
-            bundleLock.unlock()
-            return cached
-        }
-        bundleLock.unlock()
+        // Two critical sections, because the `Info.plist` read in between must not
+        // happen under the lock.
+        if let cached = bundleInfo.withLock({ $0[path] }) { return cached }
 
         let fallbackName = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
         let resolved: (name: String, bundleID: String?)
@@ -285,10 +288,10 @@ final class ProcessResolver: @unchecked Sendable {
             resolved = (fallbackName, nil)
         }
 
-        bundleLock.lock()
-        if bundleInfo.count >= Self.maxBundleEntries { bundleInfo.removeAll(keepingCapacity: true) }
-        bundleInfo[path] = resolved
-        bundleLock.unlock()
+        bundleInfo.withLock { info in
+            if info.count >= Self.maxBundleEntries { info.removeAll(keepingCapacity: true) }
+            info[path] = resolved
+        }
         return resolved
     }
 }

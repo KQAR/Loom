@@ -1,5 +1,6 @@
 import Foundation
 import LoomSharedModels
+import Synchronization
 
 /// A thread-safe holder for the traffic-rules state, shared between the actor
 /// (which mutates it) and the forwarding path (which reads a snapshot per
@@ -10,9 +11,9 @@ import LoomSharedModels
 /// UserDefaults is eagerly loaded by `cfprefsd` and meant for small values, not
 /// multi-KB blobs. The whole set is loaded into memory once at launch (matching
 /// always runs over the in-memory snapshot), so a plain file is the right fit.
-final class RulesConfig: @unchecked Sendable {
-    private let lock = NSLock()
-    private var state: RulesState
+/// The rule state lives inside the `Mutex`, so this is plainly `Sendable`.
+final class RulesConfig: Sendable {
+    private let state: Mutex<RulesState>
     private let fileURL: URL?
     /// Writes are serialized here, and **enqueued while the lock is held**, so the
     /// file can only ever move forward through the same sequence of states the
@@ -31,12 +32,12 @@ final class RulesConfig: @unchecked Sendable {
     init(state: RulesState = RulesState(), fileURL: URL? = RulesConfig.defaultFileURL) {
         self.fileURL = fileURL
         if let fileURL, let saved = Self.load(from: fileURL) {
-            self.state = saved
+            self.state = Mutex(saved)
         } else if let fileURL, fileURL == Self.defaultFileURL, let migrated = Self.migrateFromUserDefaults() {
-            self.state = migrated
+            self.state = Mutex(migrated)
             Self.persist(migrated, to: fileURL)
         } else {
-            self.state = state
+            self.state = Mutex(state)
         }
     }
 
@@ -47,9 +48,7 @@ final class RulesConfig: @unchecked Sendable {
     }
 
     func snapshot() -> RulesState {
-        lock.lock()
-        defer { lock.unlock() }
-        return state
+        state.withLock { $0 }
     }
 
     func setEnabled(_ enabled: Bool) {
@@ -99,14 +98,14 @@ final class RulesConfig: @unchecked Sendable {
     }
 
     private func mutate(_ body: (inout RulesState) -> Void) {
-        lock.lock()
-        body(&state)
-        let updated = state
-        // Enqueued under the lock: that is what pins the write order to the
-        // mutation order. Only the enqueue is on the lock; the encode + write run
-        // on the queue.
-        if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
-        lock.unlock()
+        state.withLock { state in
+            body(&state)
+            let updated = state
+            // Enqueued under the lock: that is what pins the write order to the
+            // mutation order. Only the enqueue is on the lock; the encode + write run
+            // on the queue.
+            if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
+        }
     }
 
     /// Block until every queued write has run — call from the quit handler, and

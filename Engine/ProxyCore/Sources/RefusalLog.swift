@@ -1,5 +1,6 @@
 import Foundation
 import LoomSharedModels
+import Synchronization
 
 /// Bounded record of connections the listeners accepted and then refused.
 ///
@@ -11,7 +12,11 @@ import LoomSharedModels
 /// engine: the ring keeps `capacity` entries and `total` counts everything ever
 /// recorded, so a client failing on every connection shows up as a large total
 /// rather than as an unbounded array.
-final class RefusalLog: @unchecked Sendable {
+///
+/// The state lives *inside* the `Mutex`, which is why this type is plainly
+/// `Sendable` rather than `@unchecked Sendable`: there is no longer a mutable
+/// property the compiler has to be told to ignore.
+final class RefusalLog: Sendable {
     static let shared = RefusalLog()
 
     /// Small on purpose. These are read to answer "what just happened to my
@@ -19,30 +24,30 @@ final class RefusalLog: @unchecked Sendable {
     /// covered by the total and by the log stream.
     static let capacity = 20
 
-    private let lock = NSLock()
-    private var entries: [ConnectionRefusal] = []
-    private var total = 0
+    private struct State {
+        var entries: [ConnectionRefusal] = []
+        var total = 0
+    }
+
+    private let state = Mutex(State())
 
     func record(_ refusal: ConnectionRefusal) {
-        lock.lock()
-        defer { lock.unlock() }
-        total += 1
-        entries.insert(refusal, at: 0)
-        if entries.count > Self.capacity { entries.removeLast(entries.count - Self.capacity) }
+        state.withLock {
+            $0.total += 1
+            $0.entries.insert(refusal, at: 0)
+            if $0.entries.count > Self.capacity {
+                $0.entries.removeLast($0.entries.count - Self.capacity)
+            }
+        }
     }
 
     /// Newest-first refusals plus the all-time count.
     func snapshot() -> (recent: [ConnectionRefusal], total: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        return (entries, total)
+        state.withLock { ($0.entries, $0.total) }
     }
 
     /// For tests, and for an embedder that restarts the engine in one process.
     func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        entries.removeAll()
-        total = 0
+        state.withLock { $0 = State() }
     }
 }
