@@ -114,17 +114,13 @@ public struct AppFeature: Sendable {
         /// (fed by `connectedDeviceCountStream`), so a phone counts the moment it
         /// connects — even if its HTTPS is blind-tunneled and never captured.
         public var connectedDeviceCount = 0
-        // Sidebar aggregates, maintained incrementally as flows arrive rather than
-        // recomputed by scanning every flow on each render. The scan was four
-        // separate O(n) passes per render (hosts / apps / devices / error count) —
-        // and the host pass parsed 2000 URLs through `URLComponents` every time.
-        var hostCounts: [String: Int] = [:]
-        var appCounts: [String: Int] = [:]
-        var appReps: [String: SourceApp] = [:]
-        var deviceCounts: [String: Int] = [:]
-        var deviceReps: [String: SourceDevice] = [:]
-        /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge.
-        public var errorCount = 0
+        /// Sidebar counters, folded in as flows arrive rather than recomputed per
+        /// render. See `FlowAggregates` for why the six of them are one type.
+        var aggregates = FlowAggregates()
+        /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge. A
+        /// passthrough so the badge and the tests keep reading one name; everything
+        /// that *writes* it goes through `FlowAggregates`.
+        public var errorCount: Int { aggregates.errorCount }
         public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
         public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
@@ -186,10 +182,10 @@ public struct AppFeature: Sendable {
             // sink; the inspector hydrates the selected flow's body on demand.
             // An upsert replaces: retract the previous version's contribution to the
             // aggregates first, or a pending→completed update double-counts.
-            if let previous = flows[id: flow.id] { retract(previous) }
+            if let previous = flows[id: flow.id] { aggregates.retract(previous) }
             let stripped = flow.strippingBodies()
             flows[id: flow.id] = stripped
-            contribute(stripped)
+            aggregates.contribute(stripped)
             status.capturedCount = flows.count
         }
 
@@ -201,7 +197,7 @@ public struct AppFeature: Sendable {
             guard overflow > 0 else { return }
             let dropped = flows.prefix(overflow)
             let droppedIDs = Set(dropped.map(\.id))
-            for flow in dropped { retract(flow) }
+            for flow in dropped { aggregates.retract(flow) }
             flows.removeFirst(overflow)
             droppedFlowCount += overflow
             if let selected = selectedFlowID, droppedIDs.contains(selected) {
@@ -211,71 +207,17 @@ public struct AppFeature: Sendable {
         }
 
         /// Whether a flow counts as a failure for the Errors category/badge. One
-        /// definition, used by both the count and the list filter.
-        static func isError(_ flow: Flow) -> Bool {
-            (flow.statusCode ?? 0) >= 400 || flow.error != nil
-        }
-
-        /// Fold one flow into the sidebar aggregates.
-        private mutating func contribute(_ flow: Flow) {
-            if Self.isError(flow) { errorCount += 1 }
-            if let host = flow.host { hostCounts[host, default: 0] += 1 }
-            if let app = flow.sourceApp {
-                appCounts[app.groupingKey, default: 0] += 1
-                appReps[app.groupingKey] = app
-            }
-            if let device = flow.sourceDevice {
-                let key = device.groupingKey
-                deviceCounts[key, default: 0] += 1
-                if var existing = deviceReps[key] {
-                    // Keep the richest typing seen across the device's flows.
-                    if existing.platform == nil { existing.platform = device.platform }
-                    if existing.client == nil { existing.client = device.client }
-                    deviceReps[key] = existing
-                } else {
-                    deviceReps[key] = device
-                }
-            }
-        }
-
-        /// Undo `contribute` — for a replaced or evicted flow. A key that reaches
-        /// zero is removed along with its representative, so an emptied host/app/
-        /// device disappears from the sidebar instead of lingering at 0.
-        private mutating func retract(_ flow: Flow) {
-            if Self.isError(flow) { errorCount = max(0, errorCount - 1) }
-            if let host = flow.host { _ = Self.decrement(&hostCounts, key: host) }
-            if let app = flow.sourceApp, Self.decrement(&appCounts, key: app.groupingKey) {
-                appReps[app.groupingKey] = nil
-            }
-            if let device = flow.sourceDevice, Self.decrement(&deviceCounts, key: device.groupingKey) {
-                deviceReps[device.groupingKey] = nil
-            }
-        }
-
-        /// Decrement a count, removing the key at zero. Returns whether it emptied.
-        /// Static so passing one of our own dictionaries `inout` isn't an
-        /// overlapping access to `self`.
-        private static func decrement(_ counts: inout [String: Int], key: String) -> Bool {
-            guard let count = counts[key] else { return false }
-            if count <= 1 {
-                counts[key] = nil
-                return true
-            }
-            counts[key] = count - 1
-            return false
-        }
+        /// definition, used by both the count and the list filter — it lives on
+        /// `FlowAggregates` (which needs it to maintain the count) and is re-exported
+        /// here because `displayFlows` filters on it too.
+        static func isError(_ flow: Flow) -> Bool { FlowAggregates.isError(flow) }
 
         /// Drop the window's copy of the capture. Used by the Clear button and by
         /// the engine's "cleared" signal (an agent's `clear_flows`), so both paths
         /// leave exactly the same state.
         mutating func forgetCapturedFlows() {
             flows.removeAll()
-            hostCounts.removeAll()
-            appCounts.removeAll()
-            appReps.removeAll()
-            deviceCounts.removeAll()
-            deviceReps.removeAll()
-            errorCount = 0
+            aggregates.removeAll()
             selectedFlowID = nil
             selectedFlowDetail = nil
             selectedOriginalDetail = nil
@@ -291,10 +233,10 @@ public struct AppFeature: Sendable {
             switch selectedCategory ?? .all {
             case .all: return flows.isEmpty
             case .rules, .audit, .breakpoints: return true // the panel replaces the table
-            case .errors: return errorCount == 0
-            case let .host(host): return hostCounts[host, default: 0] == 0
-            case let .app(key): return appCounts[key, default: 0] == 0
-            case let .device(ip): return deviceCounts[ip, default: 0] == 0
+            case .errors: return aggregates.errorCount == 0
+            case let .host(host): return aggregates.hostCounts[host, default: 0] == 0
+            case let .app(key): return aggregates.appCounts[key, default: 0] == 0
+            case let .device(ip): return aggregates.deviceCounts[ip, default: 0] == 0
             }
         }
 
@@ -334,17 +276,19 @@ public struct AppFeature: Sendable {
         /// connected), then by most flows. Reads the incremental aggregates, so this
         /// sorts a handful of devices instead of scanning every flow.
         public var devices: [(device: SourceDevice, count: Int)] {
-            deviceCounts.sorted { a, b in
-                let da = deviceReps[a.key], db = deviceReps[b.key]
+            aggregates.deviceCounts.sorted { a, b in
+                let da = aggregates.deviceReps[a.key], db = aggregates.deviceReps[b.key]
                 let la = da?.kind == .lan, lb = db?.kind == .lan
                 if la != lb { return la }        // LAN devices float to the top
                 return a.value != b.value ? a.value > b.value : a.key < b.key
-            }.compactMap { key, count in deviceReps[key].map { (device: $0, count: count) } }
+            }.compactMap { key, count in
+                aggregates.deviceReps[key].map { (device: $0, count: count) }
+            }
         }
 
         /// Distinct hosts with counts — pinned first, then alphabetical.
         public var hosts: [(host: String, count: Int)] {
-            hostCounts.sorted { a, b in
+            aggregates.hostCounts.sorted { a, b in
                 let pa = pinnedHosts.contains(a.key), pb = pinnedHosts.contains(b.key)
                 if pa != pb { return pa }        // pinned rows float to the top
                 return a.key < b.key
@@ -355,13 +299,15 @@ public struct AppFeature: Sendable {
         /// Keyed by `groupingKey` (bundle id or name); the representative carries the
         /// display name + icon path.
         public var apps: [(app: SourceApp, count: Int)] {
-            appCounts
+            aggregates.appCounts
                 .sorted { a, b in
                     let pa = pinnedApps.contains(a.key), pb = pinnedApps.contains(b.key)
                     if pa != pb { return pa }    // pinned rows float to the top
                     return a.value != b.value ? a.value > b.value : (a.key < b.key)
                 }
-                .compactMap { key, count in appReps[key].map { (app: $0, count: count) } }
+                .compactMap { key, count in
+                    aggregates.appReps[key].map { (app: $0, count: count) }
+                }
         }
 
         public var allCount: Int { flows.count }
