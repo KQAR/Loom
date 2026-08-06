@@ -1,3 +1,4 @@
+import Foundation
 import NIOSSL
 
 /// One shared client-side `NIOSSLContext` for every upstream TLS leg (HTTPS
@@ -11,4 +12,19 @@ enum SharedTLS {
     /// at startup is preferable to a silent per-request failure.
     static let clientContext: NIOSSLContext =
         try! NIOSSLContext(configuration: .makeClientConfiguration())
+
+    /// Whether `host` is an IPv4/IPv6 literal rather than a name.
+    ///
+    /// The reason this is shared rather than a private helper on each caller:
+    /// `NIOSSLClientHandler(context:serverHostname:)` **throws**
+    /// `cannotUseIPAddressInSNI` when handed a literal, since SNI carries names only.
+    /// Every upstream-TLS site therefore has to pass `nil` for a literal, and a site
+    /// that forgets doesn't fail loudly — it fails at handler construction, which is
+    /// exactly where a `try?` turns into a plaintext connection to a TLS server.
+    /// `NIOStreamingForwarder` got this right and `WebSocketRelay` did not; one
+    /// definition is how the next upstream-TLS caller inherits the right behaviour.
+    static func isIPLiteral(_ host: String) -> Bool {
+        var v4 = in_addr(), v6 = in6_addr()
+        return host.withCString { inet_pton(AF_INET, $0, &v4) == 1 || inet_pton(AF_INET6, $0, &v6) == 1 }
+    }
 }

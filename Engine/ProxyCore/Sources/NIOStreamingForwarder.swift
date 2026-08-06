@@ -235,7 +235,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// to the channel initializer, where the connection actually happens.
     private func resolveClientTLS(host: String) throws -> (context: NIOSSLContext, serverName: String?) {
         // IP-literal peers can't take an SNI/validation hostname.
-        let serverName = Self.isIPLiteral(host) ? nil : host
+        let serverName = SharedTLS.isIPLiteral(host) ? nil : host
         // Identity for this host → its context; otherwise the provider's own
         // no-identity context (same trust settings, no client certificate), and only
         // then the process-wide default. The middle step keeps both paths on one
@@ -244,11 +244,6 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             ?? clientIdentities?.baseContext()
             ?? SharedTLS.clientContext
         return (context, serverName)
-    }
-
-    private static func isIPLiteral(_ host: String) -> Bool {
-        var v4 = in_addr(), v6 = in6_addr()
-        return host.withCString { inet_pton(AF_INET, $0, &v4) == 1 || inet_pton(AF_INET6, $0, &v6) == 1 }
     }
 }
 

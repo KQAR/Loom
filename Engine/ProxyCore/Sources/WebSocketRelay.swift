@@ -42,15 +42,21 @@ enum WebSocketRelay {
 
         ClientBootstrap(group: clientChannel.eventLoop)
             .channelInitializer { channel in
-                // Built inside the (non-`@Sendable`) `makeCompletedFuture` body rather
-                // than hoisted above the bootstrap: `NIOSSLClientHandler` is not
-                // `Sendable`, so a hoisted one crossed into the `@Sendable`
-                // initializer. Semantics are unchanged, `try?` included — a handler
-                // that won't build still means a plaintext connection to a `wss://`
-                // upstream, which is a separate question from this one.
+                // Built inside the (non-`@Sendable`) `makeCompletedFuture` body: a
+                // `NIOSSLClientHandler` hoisted above the bootstrap would cross into
+                // the `@Sendable` initializer, and it is not `Sendable`.
+                //
+                // `try`, not `try?`. This used to swallow the error and fall through to
+                // "no handler", which does not mean "no TLS attempted" — it means
+                // plaintext bytes written at a TLS server, on a `wss://` the client
+                // asked for. The reachable case was an IP-literal origin
+                // (`wss://192.168.1.10:8443/ws`), because `NIOSSLClientHandler` rejects
+                // a literal as an SNI name; `makeSSLHandler` now passes `nil` there, so
+                // that case succeeds instead of silently downgrading, and anything still
+                // failing fails the connect rather than the confidentiality.
                 channel.eventLoop.makeCompletedFuture {
-                    guard upstreamTLS, let sslHandler = try? Self.makeSSLHandler(host: host) else { return }
-                    try channel.pipeline.syncOperations.addHandler(sslHandler)
+                    guard upstreamTLS else { return }
+                    try channel.pipeline.syncOperations.addHandler(Self.makeSSLHandler(host: host))
                 }
             }
             .connect(host: host, port: port)
@@ -60,11 +66,48 @@ enum WebSocketRelay {
                     setup(client: clientChannel, upstream: upstream, head: head, requestPath: requestPath,
                           removeHandlerNames: removeHandlerNames, flowID: flowID, request: request,
                           startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice, store: store)
-                case .failure:
-                    HTTPUtil.writeResponse(channel: clientChannel, status: 502, headers: [],
-                                           body: Data("Loom: WebSocket upstream unreachable\n".utf8), keepAlive: false)
+                case let .failure(error):
+                    fail(
+                        error, client: clientChannel, host: host, port: port, upstreamTLS: upstreamTLS,
+                        flowID: flowID, request: request, startedAt: startedAt,
+                        sourceApp: sourceApp, sourceDevice: sourceDevice, store: store
+                    )
                 }
             }
+    }
+
+    /// Report a WebSocket upgrade that never got off the ground — to all three
+    /// audiences, because it used to reach none of them.
+    ///
+    /// The client got a fixed "upstream unreachable" 502 whatever went wrong, nothing
+    /// was logged, and — unlike every other exchange — **no flow was recorded**: the
+    /// splice path creates its capture sink only on success, so a failed `wss://`
+    /// upgrade was invisible to `get_recent_flows` and to the Inspector alike. An agent
+    /// asking "what happened to my WebSocket" got an empty answer, which reads exactly
+    /// like a client that never connected.
+    private static func fail(
+        _ error: Error, client: Channel, host: String, port: Int, upstreamTLS: Bool,
+        flowID: UUID, request: CapturedRequest, startedAt: Date,
+        sourceApp: SourceApp?, sourceDevice: SourceDevice?, store: FlowStore
+    ) {
+        let scheme = upstreamTLS ? "wss" : "ws"
+        let reason = error.localizedDescription
+        Log.ws.error("""
+        \(scheme, privacy: .public) upgrade to \(host, privacy: .public):\(port) \
+        failed before the splice: \(reason, privacy: .public)
+        """)
+        Task {
+            await store.upsert(Flow(
+                id: flowID, request: request, startedAt: startedAt,
+                outcome: .failed(FlowError(reason), at: Date(), partialResponse: nil),
+                sourceApp: sourceApp, sourceDevice: sourceDevice
+            ))
+        }
+        HTTPUtil.writeResponse(
+            channel: client, status: 502, headers: [],
+            body: Data("Loom: \(scheme):// upgrade to \(host):\(port) failed — \(reason)\n".utf8),
+            keepAlive: false
+        )
     }
 
     private static func setup(
@@ -134,8 +177,17 @@ enum WebSocketRelay {
         return lines.joined(separator: "\r\n") + "\r\n\r\n"
     }
 
-    private static func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
-        try NIOSSLClientHandler(context: SharedTLS.clientContext, serverHostname: host)
+    /// `serverHostname` is nil for an IP literal — SNI carries names only, and
+    /// `NIOSSLClientHandler` throws `cannotUseIPAddressInSNI` rather than quietly
+    /// skipping it. Same rule as `NIOStreamingForwarder`; `SharedTLS.isIPLiteral` is
+    /// the one definition both read.
+    /// Internal, not private, so a test can pin the IP-literal case directly — that is
+    /// the one that used to throw here and get swallowed into a plaintext connection.
+    static func makeSSLHandler(host: String) throws -> NIOSSLClientHandler {
+        try NIOSSLClientHandler(
+            context: SharedTLS.clientContext,
+            serverHostname: SharedTLS.isIPLiteral(host) ? nil : host
+        )
     }
 }
 
