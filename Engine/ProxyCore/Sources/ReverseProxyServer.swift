@@ -85,18 +85,29 @@ actor ReverseProxyServer {
                 if let ip = channel.remoteAddress?.ipAddress {
                     Task { await store.noteConnection(remoteIP: ip) }
                 }
-                let encoder = HTTPResponseEncoder()
-                let decoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
-                let proxy = ProxyHandler(
-                    store: store, group: self.group, forwarder: forwarder,
-                    ca: ca, config: config, reverseUpstream: endpoint
-                )
+                // Constructed inside `makeCompletedFuture` (a non-`@Sendable` body) so
+                // no non-`Sendable` NIO handler crosses a `@Sendable` boundary — same
+                // shape as `ProxyServer`, deliberately.
+                //
                 // The handler names are load-bearing: the WebSocket upgrade removes
                 // them by name before splicing frames, so they have to match the
                 // forward port's exactly (`ProxyHandler.startExchange`).
-                return channel.pipeline.addHandler(encoder, name: "loom.http.encoder")
-                    .flatMap { channel.pipeline.addHandler(decoder, name: "loom.http.decoder") }
-                    .flatMap { channel.pipeline.addHandler(proxy, name: "loom.proxy") }
+                let group = self.group
+                return channel.eventLoop.makeCompletedFuture {
+                    let sync = channel.pipeline.syncOperations
+                    try sync.addHandler(HTTPResponseEncoder(), name: "loom.http.encoder")
+                    try sync.addHandler(
+                        ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
+                        name: "loom.http.decoder"
+                    )
+                    try sync.addHandler(
+                        ProxyHandler(
+                            store: store, group: group, forwarder: forwarder,
+                            ca: ca, config: config, reverseUpstream: endpoint
+                        ),
+                        name: "loom.proxy"
+                    )
+                }
             }
 
         let channel = try await bootstrap.bind(host: host, port: endpoint.requestedPort).get()

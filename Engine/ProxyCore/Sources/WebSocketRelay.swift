@@ -40,14 +40,18 @@ enum WebSocketRelay {
         // can't reach a half-removed pipeline.
         _ = clientChannel.setOption(ChannelOptions.autoRead, value: false)
 
-        let sslHandler: NIOSSLClientHandler? = upstreamTLS ? try? Self.makeSSLHandler(host: host) : nil
-
         ClientBootstrap(group: clientChannel.eventLoop)
             .channelInitializer { channel in
-                if let sslHandler {
-                    return channel.pipeline.addHandler(sslHandler)
+                // Built inside the (non-`@Sendable`) `makeCompletedFuture` body rather
+                // than hoisted above the bootstrap: `NIOSSLClientHandler` is not
+                // `Sendable`, so a hoisted one crossed into the `@Sendable`
+                // initializer. Semantics are unchanged, `try?` included — a handler
+                // that won't build still means a plaintext connection to a `wss://`
+                // upstream, which is a separate question from this one.
+                channel.eventLoop.makeCompletedFuture {
+                    guard upstreamTLS, let sslHandler = try? Self.makeSSLHandler(host: host) else { return }
+                    try channel.pipeline.syncOperations.addHandler(sslHandler)
                 }
-                return channel.eventLoop.makeSucceededVoidFuture()
             }
             .connect(host: host, port: port)
             .whenComplete { result in

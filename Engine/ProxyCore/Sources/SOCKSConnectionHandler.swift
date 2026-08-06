@@ -239,7 +239,10 @@ final class SOCKSConnectionHandler: ChannelInboundHandler, RemovableChannelHandl
     private func write(_ bytes: [UInt8], context: ChannelHandlerContext, thenClose: Bool = false) {
         var buffer = context.channel.allocator.buffer(capacity: bytes.count)
         buffer.writeBytes(bytes)
-        context.writeAndFlush(wrapOutboundOut(buffer)).whenComplete { _ in
+        // `assumeIsolated()` because the completion closure captures the
+        // non-`Sendable` `context`. Every caller is a channel-handler method, so this
+        // already runs on the channel's loop; now that is checked rather than assumed.
+        context.writeAndFlush(wrapOutboundOut(buffer)).assumeIsolated().whenComplete { _ in
             if thenClose { context.close(promise: nil) }
         }
     }

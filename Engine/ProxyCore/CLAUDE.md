@@ -74,9 +74,35 @@ one kind with a removal path and one with nothing to protect — the middle kind
    (they capture an actor, e.g. `Task { await store.upsert(…) }`), and future-callback closures do
    too, because every upstream bootstrap is pinned to the client channel's loop
    (`ClientBootstrap(group: clientChannel.eventLoop)` — the `GlueHandler` splice requires it
-   anyway). **Removal path**: `NIOAsyncChannel`, plus constructing handlers *inside* the pipeline
-   closures so nothing non-Sendable is captured. That is the same rework as the ~24 residual
-   "conformance of X to Sendable is unavailable" warnings, and it is not scheduled.
+   anyway). The `@unchecked` on these handler *types* is what remains, and its removal path really
+   is `NIOAsyncChannel` — not scheduled.
+
+   **What is no longer part of that rework: the pipeline-construction warnings.** This entry used to
+   bundle the ~24 "conformance of X to Sendable is unavailable" / "capture of X in a `@Sendable`
+   closure" warnings into the same `NIOAsyncChannel` job and call the whole thing unscheduled. That
+   was wrong, and expensively so — the warnings were purely about *where handlers were built*, and
+   they are all gone now (0 warnings in this module) without touching the handlers themselves. Two
+   idioms did it, and **new pipeline code must use them**:
+
+   - **Build handlers inside `channel.eventLoop.makeCompletedFuture { … }`, adding them through
+     `channel.pipeline.syncOperations`.** That body is *not* `@Sendable` (unlike
+     `EventLoopFuture.flatMap`'s), so a non-`Sendable` handler constructed in it never crosses an
+     isolation boundary. `syncOperations` requires being on the channel's loop, which every
+     `channelInitializer` and every channel-handler method already is. This replaced every
+     `pipeline.addHandler(handlerBuiltAbove)` chain in `ProxyServer`, `ReverseProxyServer`,
+     `ProvisioningServer`, `MITMPipeline` (all four installers) and `TunnelFlow.glue`.
+   - **`eventLoop.assumeIsolated()` / `future.assumeIsolated()` when a callback captures
+     `ChannelHandlerContext`.** `context` is not `Sendable` and the plain `execute` / `scheduleTask`
+     / `whenComplete` overloads take `@Sendable` closures. The isolated variants take ordinary ones
+     and `preconditionInEventLoop()` at the call — so the assumption these handlers already run on
+     ("everything here is on this channel's loop") becomes a checked one instead of a comment.
+     Used in `TunnelSniffHandler` (×2), `SOCKSConnectionHandler.write`, `ProvisioningServer.respond`.
+
+   One thing that could **not** move inside: `NIOStreamingForwarder` must resolve the upstream
+   `NIOSSLContext` *before* connecting, because that resolution is where a configured-but-unloadable
+   client identity fails, and that error has to reach the caller naming the identity rather than
+   being wrapped in a handshake story. `NIOSSLContext` is `Sendable` and `NIOSSLClientHandler` is
+   not, so the context is captured and the handler is built inside. Keep that split.
 2. **Lock-guarded — no longer a hatch at all.** `RulesConfig`, `InterceptionConfig`,
    `ClientCertificateConfig`, `ReverseProxyConfig`, `RefusalLog`, `BreakpointStore`,
    `CertificateAuthority`, `RequestBodyCapture`, `ChannelBox`, `RequestBodyBridge.Delegate`,

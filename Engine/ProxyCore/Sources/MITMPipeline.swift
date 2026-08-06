@@ -32,17 +32,25 @@ enum MITMPipeline {
         channel: Channel, host: String, port: Int, sslContext: NIOSSLContext,
         store: FlowStore, forwarder: UpstreamForwarding
     ) -> EventLoopFuture<Void> {
-        let pipeline = channel.pipeline
-        return pipeline.addHandler(NIOSSLServerHandler(context: sslContext), name: "loom.tls", position: .first)
-            .flatMap {
-                let alpn = ApplicationProtocolNegotiationHandler { negotiated in
+        // Every `addHandler` here goes through `syncOperations` inside a
+        // `makeCompletedFuture` body, which — unlike `EventLoopFuture.flatMap`'s — is
+        // not `@Sendable`. That is the point: NIO's handler types are not `Sendable`
+        // (they are event-loop confined), so building one outside and capturing it in
+        // a `@Sendable` closure is exactly what strict concurrency objects to. Building
+        // it inside means nothing crosses. Both callers already run on this channel's
+        // loop, which `syncOperations` requires.
+        channel.eventLoop.makeCompletedFuture {
+            let sync = channel.pipeline.syncOperations
+            try sync.addHandler(NIOSSLServerHandler(context: sslContext), name: "loom.tls", position: .first)
+            try sync.addHandler(
+                ApplicationProtocolNegotiationHandler { negotiated in
                     configureIntercepted(
                         channel: channel, negotiated: negotiated,
                         host: host, port: port, store: store, forwarder: forwarder
                     )
                 }
-                return pipeline.addHandler(alpn)
-            }
+            )
+        }
     }
 
     /// Install the cleartext HTTP capture stack — same handlers as the decrypted
@@ -70,12 +78,13 @@ enum MITMPipeline {
     ) -> EventLoopFuture<Void> {
         if case .negotiated("h2") = negotiated {
             return channel.configureHTTP2Pipeline(mode: .server) { streamChannel in
-                streamChannel.pipeline.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
-                    .flatMap {
-                        streamChannel.pipeline.addHandler(
-                            TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder)
-                        )
-                    }
+                streamChannel.eventLoop.makeCompletedFuture {
+                    let sync = streamChannel.pipeline.syncOperations
+                    try sync.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
+                    try sync.addHandler(
+                        TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder)
+                    )
+                }
             }.map { _ in () }
         }
         return installHTTP1(channel: channel, host: host, port: port, store: store, forwarder: forwarder, upstreamTLS: true)
@@ -85,22 +94,20 @@ enum MITMPipeline {
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool
     ) -> EventLoopFuture<Void> {
-        let pipeline = channel.pipeline
-        return pipeline.addHandler(HTTPResponseEncoder(), name: encoderName)
-            .flatMap {
-                pipeline.addHandler(
-                    ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
-                    name: decoderName
-                )
-            }
-            .flatMap {
-                pipeline.addHandler(
-                    TLSInterceptHandler(
-                        host: host, port: port, store: store, forwarder: forwarder, upstreamTLS: upstreamTLS
-                    ),
-                    name: interceptName
-                )
-            }
+        channel.eventLoop.makeCompletedFuture {
+            let sync = channel.pipeline.syncOperations
+            try sync.addHandler(HTTPResponseEncoder(), name: encoderName)
+            try sync.addHandler(
+                ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
+                name: decoderName
+            )
+            try sync.addHandler(
+                TLSInterceptHandler(
+                    host: host, port: port, store: store, forwarder: forwarder, upstreamTLS: upstreamTLS
+                ),
+                name: interceptName
+            )
+        }
     }
 }
 
@@ -124,9 +131,14 @@ enum TunnelFlow {
     /// on the same event loop — `GlueHandler` relays by writing to its partner's
     /// context, which NIO requires happen on that loop.
     static func glue(client: Channel, upstream: Channel) -> EventLoopFuture<Void> {
-        let (clientGlue, upstreamGlue) = GlueHandler.matchedPair()
-        return client.pipeline.addHandler(clientGlue)
-            .and(upstream.pipeline.addHandler(upstreamGlue))
-            .map { _ in () }
+        // The pair is built *inside* the loop-bound body for the same reason as
+        // `MITMPipeline`'s handlers: `GlueHandler` is event-loop confined and not
+        // `Sendable`. Adding both on the one loop is also what the shared-loop
+        // requirement above already demands, so this is not a new constraint.
+        client.eventLoop.makeCompletedFuture {
+            let (clientGlue, upstreamGlue) = GlueHandler.matchedPair()
+            try client.pipeline.syncOperations.addHandler(clientGlue)
+            try upstream.pipeline.syncOperations.addHandler(upstreamGlue)
+        }
     }
 }

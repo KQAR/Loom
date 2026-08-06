@@ -40,12 +40,26 @@ actor ProxyServer {
                 if let ip = channel.remoteAddress?.ipAddress {
                     Task { await store.noteConnection(remoteIP: ip) }
                 }
-                let encoder = HTTPResponseEncoder()
-                let decoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
-                let proxy = ProxyHandler(store: store, group: group, forwarder: forwarder, ca: ca, config: config, observeTunnels: observeTunnels)
-                return channel.pipeline.addHandler(encoder, name: "loom.http.encoder")
-                    .flatMap { channel.pipeline.addHandler(decoder, name: "loom.http.decoder") }
-                    .flatMap { channel.pipeline.addHandler(proxy, name: "loom.proxy") }
+                // Handlers are constructed *inside* `makeCompletedFuture`, whose body is
+                // not `@Sendable` — that is the whole reason for this shape. Built
+                // outside and captured, each non-`Sendable` NIO handler crossed into a
+                // `@Sendable` closure and the compiler said so. See ProxyCore/CLAUDE.md
+                // § Sendable escape hatches.
+                return channel.eventLoop.makeCompletedFuture {
+                    let sync = channel.pipeline.syncOperations
+                    try sync.addHandler(HTTPResponseEncoder(), name: "loom.http.encoder")
+                    try sync.addHandler(
+                        ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes)),
+                        name: "loom.http.decoder"
+                    )
+                    try sync.addHandler(
+                        ProxyHandler(
+                            store: store, group: group, forwarder: forwarder,
+                            ca: ca, config: config, observeTunnels: observeTunnels
+                        ),
+                        name: "loom.proxy"
+                    )
+                }
             }
 
         let channel = try await bootstrap.bind(host: host, port: port).get()

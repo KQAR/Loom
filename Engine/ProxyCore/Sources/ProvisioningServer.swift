@@ -41,7 +41,14 @@ actor ProvisioningServer {
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
                 channel.pipeline.configureHTTPServerPipeline().flatMap {
-                    channel.pipeline.addHandler(ProvisioningHandler(content: content))
+                    // Built inside a non-`@Sendable` body; `ProvisioningHandler` is
+                    // event-loop confined and not `Sendable`, so constructing it out
+                    // here and capturing it is what the compiler objected to.
+                    channel.eventLoop.makeCompletedFuture {
+                        try channel.pipeline.syncOperations.addHandler(
+                            ProvisioningHandler(content: content)
+                        )
+                    }
                 }
             }
 
@@ -100,7 +107,9 @@ private final class ProvisioningHandler: ChannelInboundHandler {
         var buffer = context.channel.allocator.buffer(capacity: resource.body.count)
         buffer.writeBytes(resource.body)
         context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
-        context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in
+        // See `SOCKSConnectionHandler.write`: the closure captures `context`, which is
+        // not `Sendable`, and this runs on the channel's loop.
+        context.writeAndFlush(wrapOutboundOut(.end(nil))).assumeIsolated().whenComplete { _ in
             context.close(promise: nil)
         }
     }
