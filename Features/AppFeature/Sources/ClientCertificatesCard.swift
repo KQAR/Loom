@@ -45,20 +45,30 @@ struct ClientCertificatesCard: View {
             if let file = pickedFile {
                 form(for: file)
             } else {
+                // Same anatomy as `ReverseProxyCard`: the list is what the card is
+                // for, so the one control that adds to it sits *after* it at the
+                // trailing edge, out of the reading path — and as a bare glyph,
+                // because a card whose whole content is one list cannot be adding
+                // anything else. These two cards hang off adjacent rows of the same
+                // console; a bordered button on one and a glyph on the other read as
+                // two different kinds of surface.
                 HStack(spacing: LoomTheme.Space.sm) {
-                    Button {
-                        importing = true
-                    } label: {
-                        Label("Add…", systemImage: "plus")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(store.clientCertBusy)
-
                     if store.clientCertBusy {
                         ProgressView().controlSize(.small)
                     }
+                    Spacer(minLength: LoomTheme.Space.xs)
+                    Button {
+                        importing = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(LoomTheme.Icon.card)
+                    .disabled(store.clientCertBusy)
+                    .accessibilityLabel("Add a client certificate")
+                    .help("Add a client certificate")
                 }
+                .frame(maxWidth: .infinity)
             }
 
             if let message = store.clientCertMessage {
@@ -159,7 +169,16 @@ struct ClientCertificatesCard: View {
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.small)
 
+            // Cancel then Add, trailing-aligned, confirm-last — the platform order,
+            // and the same as `ReverseProxyCard`. It used to be Add-then-Cancel at
+            // the leading edge, which put the destructive-ish escape where the eye
+            // lands last on the card that can lose a private key.
             HStack(spacing: LoomTheme.Space.sm) {
+                Spacer(minLength: LoomTheme.Space.xs)
+                Button("Cancel") { reset() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
                 Button("Add") {
                     store.send(.addClientCertificate(
                         url: file, hostPattern: hostPattern.trimmingCharacters(in: .whitespaces),
@@ -170,11 +189,8 @@ struct ClientCertificatesCard: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(hostPattern.trimmingCharacters(in: .whitespaces).isEmpty || store.clientCertBusy)
-
-                Button("Cancel") { reset() }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
             }
+            .frame(maxWidth: .infinity)
         }
     }
 

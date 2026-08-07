@@ -27,7 +27,7 @@ Plus the headless **MCP endpoint** — the operator's surface.
 
 ### Status-bar console (config & control)
 
-Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control: a header (proxy address + on/off switch + capture dot), state rows (Connect Device · System Proxy · HTTPS · SSL Scope · Client Certificates · Rules · Breakpoints — the conditional ones absent rather than empty), Open Main Window, and a footer. The row inventory and layout live in [`DESIGN.md`](DESIGN.md) § Layout (`menu-panel` / `config-row`) — one diagram, there, not here.
+Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control, in three bands: a header (capture dot + proxy address + a Privileged Helper key + the on/off switch), a **switch strip** (System · HTTPS · Rules · Device — tinted glyph over a caption), an **alert channel** that exists only while something is wrong, **config rows** for the things whose state is a phrase (Reverse Proxies · SSL Scope · Client Certificates · Breakpoints — the conditional ones absent rather than empty), and a footer carrying the way into the main window. Which band a control belongs in, and why the alert channel is what makes a three-value tint safe, live in [`DESIGN.md`](DESIGN.md) § Layout (`menu-panel` / `header-glyph` / `switch-tile` / `console-alert` / `config-row`) — one diagram, there, not here.
 
 When faults (proxy bind failure, cert not trusted) exist, they appear as cards above the config rows — the console is the single front door for "something needs you". Otherwise it is config + control only.
 

@@ -31,7 +31,9 @@ struct SSLScopeCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
             tunneledSection
-            Divider().opacity(0.4)
+            // No hairline between the two halves: the console draws no lines
+            // anywhere (DESIGN.md § console), and the disclosure row below is
+            // already a distinct shape from the list above it.
             globDisclosure
             if store.sslGlobsExpanded {
                 globSection(
