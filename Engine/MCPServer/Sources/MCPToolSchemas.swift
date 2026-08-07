@@ -164,6 +164,15 @@ extension MCPToolExecutor {
             Either way it is a stale *description*, never a broken connection — `tools/list` is \
             the truth about what exists — so say it once, name which side is behind, carry on, \
             and don't block work on it.
+            
+            `protocolTraffic` reports which MCP revision the requests reaching this endpoint \
+            actually spoke this run, and which clients spoke them. Loom serves two revisions at \
+            once; the old one is only kept because a legacy client cannot fall forward. \
+            `legacyEraRetirable` is false while any `initialize` handshake has been seen — that \
+            handshake is the old revision's, so it proves an old client exists. \
+            `legacyBareRequests` counts requests that declared no revision at all and is \
+            deliberately *not* evidence: a stripped header or a hand-typed curl looks the same. \
+            Absent entirely when nothing is counting (the engine embedded without a server).
             """,
             inputSchema: ["type": "object", "properties": [:] as [String: Any]],
             handler: { ex, args in try await ex.handleGetVersion(args) }

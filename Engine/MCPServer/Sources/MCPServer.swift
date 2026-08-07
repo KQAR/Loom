@@ -115,6 +115,11 @@ public final class MCPServer: @unchecked Sendable {
     private let group: EventLoopGroup
     private var channel: Channel?
     private let token: String
+    /// Which protocol era the requests reaching this endpoint actually spoke. Owned
+    /// here rather than by `start()` so a stop/start cycle doesn't reset the tally —
+    /// the question it answers ("is anything still on the old revision") is about the
+    /// life of the app, not of one listener.
+    private let eraLog = MCPEraLog()
     /// Set by `shutdown()`, which is terminal — see its doc comment.
     private var didShutDown = false
 
@@ -145,9 +150,9 @@ public final class MCPServer: @unchecked Sendable {
     public func start(port: Int = 0, announce: Bool = true) async throws -> Int {
         let executor = MCPToolExecutor(
             engine: engine, appVersion: appVersion,
-            protocolVersion: Self.protocolVersion, routing: routing
+            protocolVersion: Self.protocolVersion, routing: routing, eraLog: eraLog
         )
-        let dispatcher = MCPDispatcher(executor: executor)
+        let dispatcher = MCPDispatcher(executor: executor, eraLog: eraLog)
         let token = self.token
 
         let bootstrap = ServerBootstrap(group: group)
@@ -217,9 +222,13 @@ public final class MCPServer: @unchecked Sendable {
 /// because it only holds an immutable executor.
 final class MCPDispatcher: @unchecked Sendable {
     private let executor: MCPToolExecutor
+    /// Which era each request spoke, and who spoke it. Shared with the executor, so
+    /// `get_version` reads back the same tally this writes.
+    private let eraLog: MCPEraLog
 
-    init(executor: MCPToolExecutor) {
+    init(executor: MCPToolExecutor, eraLog: MCPEraLog) {
         self.executor = executor
+        self.eraLog = eraLog
     }
 
     /// Returns the reply and the HTTP status to send it with, or nil for notifications
@@ -247,7 +256,20 @@ final class MCPDispatcher: @unchecked Sendable {
             return nil
         }
 
-        let era = MCPProtocol.era(method: method, meta: meta, headerVersion: headers.protocolVersion)
+        let decision = MCPProtocol.decide(
+            method: method, meta: meta, headerVersion: headers.protocolVersion
+        )
+        let era = decision.era
+        // Recorded before dispatch, not after: a request that fails validation still
+        // tells us which era it was speaking, and a legacy client whose calls all error
+        // is exactly the case the retirement condition must not miss.
+        eraLog.record(
+            reason: decision.reason,
+            // A legacy client names itself in `initialize`'s params; a modern one in
+            // `_meta`. Same shape, one parser.
+            client: MCPClientIdentity(params["clientInfo"])
+                ?? MCPClientIdentity(meta[MCPProtocol.MetaKey.clientInfo])
+        )
         do {
             if era == .modern {
                 try MCPProtocol.validateModern(

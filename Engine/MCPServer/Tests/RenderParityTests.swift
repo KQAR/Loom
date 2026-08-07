@@ -369,6 +369,31 @@ import Testing
         ))
     }
 
+    // MARK: - Protocol traffic
+
+    @Test func protocolTraffic_carriesEveryModelField() {
+        let log = MCPEraLog()
+        log.record(reason: .modernMeta, client: MCPClientIdentity(["name": "c"]))
+        let snapshot = log.snapshot()
+        check(Census(
+            "MCPEraLog.Snapshot → get_version.protocolTraffic",
+            model: snapshot,
+            render: ProtocolTrafficRender(snapshot),
+            accountedFor: [
+                "counts": "flattened into the three numbers a reader acts on: `modernRequests` (both modern reasons summed), `legacyHandshakes` (the evidence), `legacyBareRequests` (deliberately not evidence). A raw per-reason map would make the caller re-derive that distinction, which is the one thing this type exists to prevent them getting wrong",
+            ]
+        ))
+
+        let client = try? #require(snapshot.modernClients.first)
+        if let client {
+            check(Census(
+                "MCPEraLog.Client → protocolTraffic.modernClients[]",
+                model: client,
+                render: ProtocolClientRender(client)
+            ))
+        }
+    }
+
     // MARK: - Rules
     //
     // `RuleCodecParityTests` already censuses the rule against its *input schema*.

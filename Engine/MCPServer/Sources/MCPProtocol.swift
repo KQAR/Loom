@@ -70,10 +70,31 @@ enum MCPProtocol {
     /// quietly served under legacy rules — a client told "modern" by a gateway and
     /// "legacy" by us is how the two disagree about what ran.
     static func era(method: String, meta: [String: Any], headerVersion: String?) -> Era {
-        if meta[MetaKey.protocolVersion] != nil { return .modern }
-        if method == "initialize" { return .legacy }
-        if let headerVersion, modern.contains(headerVersion) { return .modern }
-        return .legacy
+        decide(method: method, meta: meta, headerVersion: headerVersion).era
+    }
+
+    /// The same decision, plus **which branch made it** — because "legacy" covers two
+    /// facts that must not be counted together. `initialize` is a handshake only the
+    /// old revision has, so a client sending it *is* an old client; a bare request is
+    /// legacy by fallback and proves nothing about the caller. `MCPEraLog` is the
+    /// reason the distinction is carried rather than derived (it can't be: the era
+    /// alone has lost it), and the retirement condition in ROADMAP § Structured
+    /// Channel reads only the first.
+    ///
+    /// One implementation, with `era` above as a wrapper: two functions agreeing about
+    /// how an era is chosen is exactly the kind of pair that stops agreeing.
+    static func decide(
+        method: String, meta: [String: Any], headerVersion: String?
+    ) -> Decision {
+        if meta[MetaKey.protocolVersion] != nil { return Decision(reason: .modernMeta) }
+        if method == "initialize" { return Decision(reason: .legacyHandshake) }
+        if let headerVersion, modern.contains(headerVersion) { return Decision(reason: .modernHeader) }
+        return Decision(reason: .legacyBareRequest)
+    }
+
+    struct Decision {
+        var reason: MCPEraLog.Reason
+        var era: Era { reason.isLegacy ? .legacy : .modern }
     }
 
     enum Era {

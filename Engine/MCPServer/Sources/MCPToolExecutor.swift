@@ -18,6 +18,12 @@ struct MCPToolExecutor {
     /// embedder driving the engine as a library, or a test).
     var routing: SystemRoutingControlling?
 
+    /// The era tally `get_version` reads back. Nil for an executor built without a
+    /// server around it (every test that exercises a tool directly), in which case
+    /// `get_version` omits the block rather than reporting zeros — "nothing counted"
+    /// and "nothing was counting" are different answers.
+    var eraLog: MCPEraLog?
+
     /// Name → tool, indexed from the one table in `MCPToolSchemas`. Dispatch is a
     /// lookup, not a growing switch — and no longer a second list to keep in step
     /// with the advertised one, because both come from the same values.
