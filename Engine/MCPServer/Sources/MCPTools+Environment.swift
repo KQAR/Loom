@@ -25,76 +25,54 @@ extension MCPToolExecutor {
 
     func handleGetProxyStatus(_ arguments: [String: Any]) async throws -> String {
         let status = await engine.status()
-        var payload: [String: Any] = [
-            "isRunning": status.isRunning,
-            "port": status.port,
-            "listenHost": status.listenHost,
-            "lanReachable": status.isLANReachable,
-            "capturedCount": status.capturedCount,
-            "isRecording": status.isRecording,
-        ]
-        // Reported only when there is one to point at, so its absence is an answer
-        // rather than a zero to interpret: a client that ignores HTTP proxy settings
-        // but honours `ALL_PROXY` / a SOCKS field can be aimed here instead.
-        if let socksPort = status.socksPort {
-            payload["socksPort"] = socksPort
-        }
-        // Four-valued on purpose: routed / nothing set / another proxy owns it / can't
-        // tell. Collapsing "can't tell" into `false` would have an agent "fix" a
-        // routing problem it has no way to observe; collapsing "another app owns it"
-        // into `"off"` would have it turn Loom on and silently steal the user's
-        // Charles/whistle configuration instead of saying so.
+        var render = ProxyStatusRender(
+            isRunning: status.isRunning,
+            port: status.port,
+            listenHost: status.listenHost,
+            lanReachable: status.isLANReachable,
+            capturedCount: status.capturedCount,
+            isRecording: status.isRecording,
+            socksPort: status.socksPort,
+            // No routing implementation wired (the engine embedded without the app):
+            // "unavailable" says nothing about the machine, which is the honest answer
+            // — and a different one from "off", which does.
+            systemProxy: "unavailable"
+        )
         if let routing {
             switch await routing.systemProxyRouting() {
             case .loom:
-                payload["systemProxy"] = "on"
+                render.systemProxy = "on"
             case .off:
-                payload["systemProxy"] = "off"
+                render.systemProxy = "off"
             case let .other(host, port):
-                payload["systemProxy"] = "other"
-                payload["systemProxyPointsAt"] = "\(host):\(port)"
+                render.systemProxy = "other"
+                render.systemProxyPointsAt = "\(host):\(port)"
             }
             // Whether `set_system_proxy` will stop and wait for a human. The prompt is
             // modal and only dismissable at the machine, so an agent that fires the
             // write blind looks hung for as long as nobody is looking at the screen.
             let helper = await routing.privilegedHelper()
-            payload["privilegedHelper"] = helper.rawValue
-            if helper != .enabled {
-                payload["systemProxyChangePrompts"] = true
-            }
+            render.privilegedHelper = helper.rawValue
+            if helper != .enabled { render.systemProxyChangePrompts = true }
             // Why it is not working, when Loom knows. "unresponsive" with no reason
             // sends an agent (and a human) guessing at reinstalls.
-            if let detail = await routing.privilegedHelperDetail() {
-                payload["privilegedHelperDetail"] = detail
-            }
-        } else {
-            payload["systemProxy"] = "unavailable"
+            render.privilegedHelperDetail = await routing.privilegedHelperDetail()
         }
-        // Reported only when there are any, so the common case stays quiet — but
-        // when a capture is empty this is often the whole answer, and it used to
-        // exist only as an os_log line no agent could reach. `refusedConnections`
-        // is the all-time count (this happened once vs. it is happening to every
-        // request); `recentRefusals` is the bounded tail with the reasons.
+        // Reported only when there are any, so the common case stays quiet — but when
+        // a capture is empty this is often the whole answer, and it used to exist only
+        // as an os_log line no agent could reach.
         if status.refusedConnections > 0 {
-            payload["refusedConnections"] = status.refusedConnections
-            payload["recentRefusals"] = status.recentRefusals.map { refusal in
-                var out: [String: Any] = [
-                    "at": Self.iso8601.string(from: refusal.at),
-                    "listener": refusal.listener.rawValue,
-                    "reason": refusal.reason,
-                ]
-                if let peer = refusal.peer { out["peer"] = peer }
-                return out
-            }
+            render.refusedConnections = status.refusedConnections
+            render.recentRefusals = status.recentRefusals.map(ConnectionRefusalRender.init)
         }
-        // Same rule as refusals — reported only when there are any. An endpoint in the
-        // list with no `localURL` is not listening (its `error` says why), and that is
-        // the "why is nothing captured" case for this feature: a client pointed at a
-        // dead endpoint sees connection refused, which reads like Loom isn't running.
+        // Same rule as refusals. An endpoint in the list with no `localURL` is not
+        // listening (its `error` says why), and that is the "why is nothing captured"
+        // case for this feature: a client pointed at a dead endpoint sees connection
+        // refused, which reads like Loom isn't running.
         if !status.reverseProxies.isEmpty {
-            payload["reverseProxies"] = status.reverseProxies.map(Self.renderReverseProxy)
+            render.reverseProxies = status.reverseProxies.map(ReverseProxyRender.init)
         }
-        return prettyJSON(payload)
+        return prettyJSON(MCPRender.dict(render))
     }
 
     func handleSetSystemProxy(_ arguments: [String: Any]) async throws -> String {
@@ -153,23 +131,7 @@ extension MCPToolExecutor {
 
     func handleListDevices(_ arguments: [String: Any]) async throws -> String {
         let devices = await engine.connectedDevices()
-        return prettyJSON(devices.map(Self.deviceSummary))
-    }
-
-    /// One entry for `list_devices`. Dates as ISO-8601 so the model can order them.
-    static func deviceSummary(_ summary: DeviceSummary) -> [String: Any] {
-        let device = summary.device
-        var out: [String: Any] = [
-            "ip": device.ip,
-            "kind": device.kind.rawValue,
-            "displayName": device.displayName,
-            "flowCount": summary.flowCount,
-            "lastActive": ISO8601DateFormatter().string(from: summary.lastActive),
-        ]
-        if let platform = device.platform { out["platform"] = platform }
-        if let client = device.client { out["client"] = client }
-        if let type = device.typeSummary { out["type"] = type }
-        return out
+        return prettyJSON(MCPRender.array(devices.map(DeviceSummaryRender.init)))
     }
 
     func handleGetCertificateStatus(_ arguments: [String: Any]) async throws -> String {
@@ -192,13 +154,8 @@ extension MCPToolExecutor {
         // The scope and what it is *not* covering answer one question together, so
         // they ride one call: an agent that has to ask twice will read an empty
         // capture as "the client never ran" before it gets to the second ask.
-        var payload = Self.scope(await engine.sslScope())
-        let report = await engine.tunneledHosts()
-        if !report.hosts.isEmpty {
-            payload["tunneledHosts"] = report.hosts.map(Self.tunneledHost)
-        }
-        if report.evicted > 0 { payload["tunneledHostsEvicted"] = report.evicted }
-        return prettyJSON(payload)
+        let scope = await engine.sslScope()
+        return prettyJSON(MCPRender.dict(SSLScopeRender(scope, tunneled: await engine.tunneledHosts())))
     }
 
     func handleInterceptHost(_ arguments: [String: Any]) async throws -> String {
@@ -244,24 +201,7 @@ extension MCPToolExecutor {
     func handleListClientCertificates(_ arguments: [String: Any]) async throws -> String {
         let summaries = await engine.clientCertificates()
         return prettyJSON([
-            "clientCertificates": summaries.map { summary -> [String: Any] in
-                var out: [String: Any] = [
-                    "id": summary.id.uuidString,
-                    "hostPattern": summary.hostPattern,
-                    "label": summary.label,
-                    "enabled": summary.isEnabled,
-                ]
-                if let subject = summary.subject { out["subject"] = subject }
-                if let notAfter = summary.notAfter {
-                    out["notAfter"] = Self.iso8601.string(from: notAfter)
-                    // Stated rather than left to be derived from the date: an expired
-                    // identity fails the handshake exactly like a missing one, and that
-                    // is the diagnosis this list exists to shorten.
-                    out["expired"] = summary.isExpired()
-                }
-                if let problem = summary.problem { out["problem"] = problem }
-                return out
-            },
+            "clientCertificates": MCPRender.array(summaries.map(ClientCertificateRender.init)),
         ])
     }
 
@@ -304,15 +244,7 @@ extension MCPToolExecutor {
         guard let saved = summaries.first(where: { $0.id == id }) else {
             throw MCPToolFailure("client certificate was not stored")
         }
-        return prettyJSON([
-            "saved": true,
-            "id": saved.id.uuidString,
-            "hostPattern": saved.hostPattern,
-            "label": saved.label,
-            "enabled": saved.isEnabled,
-            "subject": saved.subject ?? "unknown",
-            "notAfter": saved.notAfter.map(Self.iso8601.string(from:)) ?? "unknown",
-        ])
+        return prettyJSON(MCPRender.dict(ClientCertificateRender(saved)).merging(["saved": true]) { _, new in new })
     }
 
     func handleDeleteClientCertificate(_ arguments: [String: Any]) async throws -> String {
@@ -328,57 +260,17 @@ extension MCPToolExecutor {
     }
 
     static func certificateStatus(_ status: CertificateStatus) -> [String: Any] {
-        var out: [String: Any] = [
-            "isGenerated": status.isGenerated,
-            "isTrusted": status.isTrusted,
-        ]
-        if let cn = status.commonName { out["commonName"] = cn }
-        if let fp = status.sha256Fingerprint { out["sha256Fingerprint"] = fp }
-        if let notAfter = status.notAfter { out["notAfter"] = Self.iso8601.string(from: notAfter) }
-        if let path = status.exportedPEMPath { out["exportedPEMPath"] = path }
-        return out
+        MCPRender.dict(CertificateStatusRender(status))
     }
 
+    /// The scope on its own — `get_ssl_scope` adds what is *not* being decrypted.
     static func scope(_ scope: SSLScope) -> [String: Any] {
-        [
-            "enabled": scope.enabled,
-            "include": scope.include,
-            "exclude": scope.exclude,
-        ]
-    }
-
-    /// One origin Loom relayed without reading. `interceptable` is carried rather
-    /// than left for the model to infer from `reason`, so the follow-up action is
-    /// decidable from the row.
-    static func tunneledHost(_ entry: TunneledHost) -> [String: Any] {
-        [
-            "host": entry.host,
-            "port": entry.port,
-            "connections": entry.connections,
-            "firstSeen": iso8601.string(from: entry.firstSeen),
-            "lastSeen": iso8601.string(from: entry.lastSeen),
-            "reason": entry.reason.rawValue,
-            "interceptable": entry.interceptable,
-        ]
+        MCPRender.dict(SSLScopeRender(scope))
     }
 
     func handleGetAuditLog(_ arguments: [String: Any]) async throws -> String {
         let limit = (arguments["limit"] as? Int) ?? 50
         let entries = await engine.recentAuditEntries(limit: limit)
-        return prettyJSON(entries.map(Self.auditSummary))
-    }
-
-    /// One entry for `get_audit_log`. Timestamp as ISO-8601 so the model can order
-    /// them; `arguments` is already-truncated compact JSON (a string, not re-parsed).
-    static func auditSummary(_ entry: AuditEntry) -> [String: Any] {
-        [
-            "id": entry.id.uuidString,
-            "timestamp": iso8601.string(from: entry.timestamp),
-            "tool": entry.tool,
-            "source": entry.source.rawValue,
-            "succeeded": entry.succeeded,
-            "arguments": entry.arguments,
-            "detail": entry.detail,
-        ]
+        return prettyJSON(MCPRender.array(entries.map(AuditEntryRender.init)))
     }
 }

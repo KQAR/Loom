@@ -288,76 +288,7 @@ extension MCPToolExecutor {
     }
 
     static func rule(_ rule: TrafficRule, truncateBodies: Bool) -> [String: Any] {
-        var out: [String: Any] = [
-            "id": rule.id.uuidString,
-            "name": rule.name,
-            "enabled": rule.isEnabled,
-            "match": matchDict(rule.match),
-            "createdAt": Self.iso8601.string(from: rule.createdAt),
-        ]
-        if let comment = rule.comment { out["comment"] = comment }
-        if let group = rule.group { out["group"] = group }
-
-        var actions: [String: Any] = [:]
-        let a = rule.actions
-        switch a.route {
-        case .passthrough:
-            break
-        case .block:
-            actions["block"] = true
-        case let .mock(mock):
-            var mockOut: [String: Any] = ["statusCode": mock.statusCode]
-            if !mock.headers.isEmpty { mockOut["headers"] = headerDict(mock.headers) }
-            if let contentType = mock.contentType { mockOut["contentType"] = contentType }
-            addBody(mock.bodyText, to: &mockOut, truncate: truncateBodies)
-            if let base64 = mock.bodyBase64 {
-                mockOut["bodyBase64"] = truncateBodies && base64.count > 256
-                    ? String(base64.prefix(256)) + "…(\(base64.count) base64 chars)"
-                    : base64
-            }
-            actions["mockResponse"] = mockOut
-        case let .mapRemote(map):
-            var mapOut: [String: Any] = ["destination": map.destination]
-            if let exclude = map.excludePattern { mapOut["exclude"] = exclude }
-            if map.keepHostHeader { mapOut["keepHostHeader"] = true }
-            actions["mapRemote"] = mapOut
-        case let .mapLocal(map):
-            var mapOut: [String: Any] = ["path": map.path, "statusCode": map.statusCode]
-            if let contentType = map.contentType { mapOut["contentType"] = contentType }
-            actions["mapLocal"] = mapOut
-        }
-        if let rewrite = a.rewriteRequest, !rewrite.isEmpty {
-            var rw: [String: Any] = [:]
-            if let method = rewrite.method { rw["method"] = method }
-            if !rewrite.setHeaders.isEmpty { rw["setHeaders"] = headerDict(rewrite.setHeaders) }
-            if !rewrite.removeHeaders.isEmpty { rw["removeHeaders"] = rewrite.removeHeaders }
-            addBody(rewrite.bodyText, to: &rw, truncate: truncateBodies)
-            actions["rewriteRequest"] = rw
-        }
-        if let rewrite = a.rewriteResponse, !rewrite.isEmpty {
-            var rw: [String: Any] = [:]
-            if let status = rewrite.statusCode { rw["statusCode"] = status }
-            if !rewrite.setHeaders.isEmpty { rw["setHeaders"] = headerDict(rewrite.setHeaders) }
-            if !rewrite.removeHeaders.isEmpty { rw["removeHeaders"] = rewrite.removeHeaders }
-            addBody(rewrite.bodyText, to: &rw, truncate: truncateBodies)
-            actions["rewriteResponse"] = rw
-        }
-        if !a.activeRequestSubstitutions.isEmpty {
-            actions["requestSubstitutions"] = a.activeRequestSubstitutions.map(substitutionDict)
-        }
-        if !a.activeResponseSubstitutions.isEmpty {
-            actions["responseSubstitutions"] = a.activeResponseSubstitutions.map(substitutionDict)
-        }
-        if let delay = a.delayMilliseconds { actions["delayMs"] = delay }
-        out["actions"] = actions
-        return out
-    }
-
-    static func substitutionDict(_ sub: SubstitutionRule) -> [String: Any] {
-        var out: [String: Any] = ["field": sub.field.rawValue, "match": sub.match, "replacement": sub.replacement]
-        if sub.isRegex { out["isRegex"] = true }
-        if sub.caseSensitive { out["caseSensitive"] = true }
-        return out
+        MCPRender.dict(RuleRender(rule, truncateBodies: truncateBodies))
     }
 
     /// The one rendering of a `RuleMatch`, shared by `list_rules` and by the
