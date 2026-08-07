@@ -108,7 +108,24 @@ public struct AppFeature: Sendable {
         /// Kept by the parent, not the popover, because the popover is destroyed
         /// when it closes and the address keeps moving while it's shut.
         var publishedLANHost: String?
-        public var isRecording = true            // capture gate — the toolbar Record/Stop button
+        /// The capture gate — the toolbar's Record/Stop button and the colour of
+        /// both capture dots.
+        ///
+        /// A **projection of `status`, not a copy.** This was a separate local flag
+        /// defaulting to `true`, and the engine's own answer (`FlowStore.recording`,
+        /// carried on `ProxyStatus.isRecording`) was never merged into `status`. So
+        /// an agent's `set_recording(false)` stopped capture while the dot stayed
+        /// green and the button kept offering "Stop" — and no amount of reopening a
+        /// surface fixed it, because nothing read the engine's value anywhere. Green
+        /// dot plus no new flows is indistinguishable from a broken proxy.
+        ///
+        /// `get_proxy_status` reported it correctly to the agent the whole time,
+        /// which makes it the log-it-for-the-human/return-it-for-the-agent rule with
+        /// the human half missing.
+        public var isRecording: Bool {
+            get { status.isRecording }
+            set { status.isRecording = newValue }
+        }
         /// LAN devices connected to the proxy (excludes this Mac). Connection-derived
         /// (fed by `connectedDeviceCountStream`), so a phone counts the moment it
         /// connects — even if its HTTPS is blind-tunneled and never captured.
@@ -443,7 +460,14 @@ public struct AppFeature: Sendable {
     /// Drives the flow-batching window — a dependency so tests can control it.
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case subscription, updates, devices, cleared, localIP, phoneRepublish }
+    private enum CancelID {
+        case subscription, updates, devices, cleared, localIP, phoneRepublish, mirrorRefresh
+    }
+
+    /// Trailing window for re-reading what an agent wrote. Short enough that the
+    /// human never sees a stale surface, long enough that a scripted burst of
+    /// writes costs one refresh instead of one per write.
+    static let mirrorRefreshDebounce: Duration = .milliseconds(200)
 
     /// How long the LAN address must hold still before the phone-onboarding
     /// material is republished. A Wi-Fi join settles over several seconds and
@@ -474,11 +498,35 @@ public struct AppFeature: Sendable {
         }
         Reduce { state, action in
             switch action {
-            // Both children ask for the same thing when they change what Loom is
-            // listening on: a status re-read. The parent owns `status`, so it is the
-            // one place that knows what "the ports changed" means for the header.
-            case .audit(.delegate(.listenerAffectingWriteRecorded)),
-                 .reverseProxy(.delegate(.needsStatusRefresh)):
+            // An agent wrote something a human surface holds a copy of. The audit
+            // stream is the one signal every write tool passes through, so this is
+            // the whole fan-out: `status` (ports, and the capture gate an agent's
+            // `set_recording` moves), the rule set, and the interception config.
+            //
+            // Deliberately not narrowed per tool. The reads are in-memory snapshots,
+            // and an over-broad refresh costs microseconds while a missing one is a
+            // surface that quietly disagrees with the engine — which is the state
+            // this used to be in for eighteen of the twenty write tools. What *is*
+            // filtered out is the tools with their own live stream
+            // (`AuditFeature.liveStreamedTools`).
+            case .audit(.delegate(.mirroredStateWriteRecorded)):
+                // Coalesced rather than filtered per tool. An agent writing fifty
+                // rules in a loop must not put fifty `status()` calls behind its
+                // work — that call hops onto `FlowStore`, which every capture write
+                // queues on — but deciding *which* tools are worth a re-read is the
+                // allowlist that rotted in the first place. A trailing window gives
+                // the cheap answer without a list to keep in step: one refresh per
+                // burst, whatever the burst was made of.
+                return .run { send in
+                    try await clock.sleep(for: Self.mirrorRefreshDebounce)
+                    await send(.engineStatusRefreshed(proxyClient.status()))
+                    await send(.rules(.refreshRules))
+                    await send(.setup(.refreshAgentWritable))
+                }
+                .cancellable(id: CancelID.mirrorRefresh, cancelInFlight: true)
+
+            // A reverse-proxy write from the human's own card: only the ports moved.
+            case .reverseProxy(.delegate(.needsStatusRefresh)):
                 return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
 
             case .binding, .setup, .rules, .breakpoints, .audit, .reverseProxy:
@@ -711,6 +759,7 @@ public struct AppFeature: Sendable {
                 // (bounded, and what the "N flows" row means), and `isRunning` is
                 // driven by the toggle here. Everything else is the engine's to know.
                 state.status.port = status.port
+                state.status.isRecording = status.isRecording
                 state.status.listenHost = status.listenHost
                 state.status.socksPort = status.socksPort
                 state.status.reverseProxies = status.reverseProxies
