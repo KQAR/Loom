@@ -197,6 +197,82 @@ import Testing
         }
     }
 
+    // MARK: The capture gate is the engine's, not a second copy
+
+    /// `set_recording` is a write tool, so an agent can pause capture. `isRecording`
+    /// used to be a local flag defaulting to `true` that nothing ever reconciled —
+    /// the dot stayed green and the button kept offering "Stop" while the engine
+    /// recorded nothing, which looks exactly like a broken proxy. Reopening a surface
+    /// did not help, because no surface read the engine's answer.
+    @Test func recordingFollowsTheEngine() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        #expect(store.state.isRecording)
+
+        await store.send(.engineStatusRefreshed(
+            ProxyStatus(isRunning: true, port: 9090, capturedCount: 0, isRecording: false)
+        )) {
+            $0.status.isRecording = false
+        }
+        #expect(store.state.isRecording == false, "the toolbar must not claim to be recording")
+    }
+
+    // MARK: Every agent write reaches the human's copy of it
+
+    private nonisolated func auditEntry(tool: String, succeeded: Bool = true) -> AuditEntry {
+        AuditEntry(tool: tool, source: .mcp, succeeded: succeeded, arguments: "{}", detail: "ok")
+    }
+
+    /// The audit stream is the one signal every write tool passes through, so the
+    /// re-read hangs off it. It used to fire for two tools out of twenty
+    /// (`create_reverse_proxy`/`delete_reverse_proxy`), which left a rule, an
+    /// SSL-scope carve-out or a client identity written by an agent invisible until
+    /// the human reopened the surface — and the main window's `.task` fires once per
+    /// launch, so for that surface "until they reopen it" means "until relaunch".
+    @Test func anAgentRuleWrite_refreshesEveryMirror() async {
+        let clock = TestClock()
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+            $0.proxyClient.rulesState = { RulesState() }
+            $0.proxyClient.certificateStatus = { .notGenerated }
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+            $0.proxyClient.clientCertificates = { [] }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.audit(.entryReceived(auditEntry(tool: "set_rule"))))
+        await store.receive(\.audit.delegate.mirroredStateWriteRecorded)
+        await clock.advance(by: AppFeature.mirrorRefreshDebounce)
+        await store.receive(\.engineStatusRefreshed)
+        await store.receive(\.rules.refreshRules)
+        await store.receive(\.setup.refreshAgentWritable)
+    }
+
+    /// The opt-out. These already reach the human through their own subscription, and
+    /// `replay_flow` arrives in batches — re-reading every mirror a hundred times
+    /// would be pure waste.
+    @Test func aStreamedWrite_doesNotRefreshAnything() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        for tool in ["replay_flow", "clear_flows", "import_har",
+                     "arm_breakpoint", "disarm_breakpoint", "resume"] {
+            let entry = auditEntry(tool: tool)
+            await store.send(.audit(.entryReceived(entry))) {
+                $0.audit.entries.append(entry)
+            }
+        }
+    }
+
+    /// A failed write changed nothing, so there is nothing to re-read. It still lands
+    /// in the trail — "the agent tried and it failed" is what a supervisor needs.
+    @Test func aFailedWrite_doesNotRefresh() async {
+        let entry = auditEntry(tool: "set_ssl_scope", succeeded: false)
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        await store.send(.audit(.entryReceived(entry))) {
+            $0.audit.entries.append(entry)
+        }
+    }
+
     // MARK: The QR follows the machine
 
     /// The published material freezes an address: the QR encodes

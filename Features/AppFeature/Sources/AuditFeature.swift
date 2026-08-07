@@ -38,17 +38,32 @@ public struct AuditFeature: Sendable {
 
         @CasePathable
         public enum Delegate: Sendable, Equatable {
-            /// A write tool that changes which ports Loom is listening on was
-            /// recorded. The parent owns `status`, so it is the one that re-reads it.
-            case listenerAffectingWriteRecorded
+            /// An agent wrote something the human's surfaces hold a copy of. The
+            /// parent owns those copies (directly, or through a child), so it is the
+            /// one that re-reads them.
+            case mirroredStateWriteRecorded
         }
     }
 
-    /// Write tools that change which ports Loom is listening on. A `Set` rather than
-    /// a prefix match: "any tool starting with create_" would silently start
-    /// refreshing on unrelated writes as tools are added.
-    static let listenerAffectingTools: Set<String> = [
-        "create_reverse_proxy", "delete_reverse_proxy",
+    /// Write tools whose effect already reaches the human through a live stream, so
+    /// re-reading on them would be redundant work — flows and breakpoints each have
+    /// their own subscription, and `replay_flow` arrives in batches of up to a
+    /// hundred.
+    ///
+    /// **This is an opt-out list, and the direction is the point.** It used to be an
+    /// allowlist (`listenerAffectingTools`) naming the two reverse-proxy tools, out
+    /// of twenty write tools — so every other agent write (a rule, an SSL-scope
+    /// carve-out, a client identity, the capture gate) reached the human only if they
+    /// happened to reopen the surface. The status-bar panel re-reads on every open,
+    /// which is what hid this; the main window's `.task` fires **once per launch**,
+    /// and it is the one that stays open.
+    ///
+    /// Inverted, the cost of forgetting a new tool is a redundant in-memory read
+    /// instead of a surface that quietly disagrees with the engine. Anything added
+    /// here needs a live stream to point at.
+    static let liveStreamedTools: Set<String> = [
+        "replay_flow", "clear_flows", "import_har",   // → flowStream / flowsClearedStream
+        "arm_breakpoint", "disarm_breakpoint", "resume", // → pendingBreakpointStream
     ]
 
     @Dependency(\.proxyClient) var proxyClient
@@ -85,12 +100,15 @@ public struct AuditFeature: Sendable {
                         state.entries.removeFirst(state.entries.count - State.displayCap)
                     }
                 }
-                // An agent opening or closing a listening port has to show up in the
-                // header without waiting for the panel to be reopened — same reason
-                // `BreakpointsFeature` re-syncs after every write. The audit stream is
-                // already the one signal every write tool passes through.
-                guard Self.listenerAffectingTools.contains(entry.tool) else { return .none }
-                return .send(.delegate(.listenerAffectingWriteRecorded))
+                // What an agent wrote has to show up on the human's surfaces without
+                // waiting for one to be reopened — same reason `BreakpointsFeature`
+                // re-syncs after every write. The audit stream is already the one
+                // signal every write tool passes through, which is why the re-read
+                // hangs off it rather than off twenty individual call sites.
+                //
+                // A failed write changed nothing, so there is nothing to re-read.
+                guard entry.succeeded, !Self.liveStreamedTools.contains(entry.tool) else { return .none }
+                return .send(.delegate(.mirroredStateWriteRecorded))
 
             case .clearTapped:
                 state.entries.removeAll()

@@ -190,35 +190,63 @@ import Testing
     /// doubles as the re-sync trigger (as `BreakpointsFeature` does).
     @MainActor
     @Test func anAgentsEndpointShowsUpWithoutReopeningThePanel() async {
+        let clock = TestClock()
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.continuousClock = clock
             $0.proxyClient.status = {
                 ProxyStatus(isRunning: true, port: 9090, capturedCount: 0, reverseProxies: [endpoint()])
             }
+            $0.proxyClient.rulesState = { RulesState() }
+            $0.proxyClient.certificateStatus = { .notGenerated }
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+            $0.proxyClient.clientCertificates = { [] }
         }
         store.exhaustivity = .off
 
         await store.send(.audit(.entryReceived(
             AuditEntry(tool: "create_reverse_proxy", succeeded: true, arguments: "{}", detail: ""))))
+        await clock.advance(by: AppFeature.mirrorRefreshDebounce)
         await store.receive(\.engineStatusRefreshed)
         #expect(store.state.status.reverseProxies.count == 1)
     }
 
-    /// …but not on every write. A rule edit changes no port, and re-reading the engine on
-    /// each one would put a status call behind every agent action.
+    /// The re-read is coalesced, not run per write. `status()` hops onto `FlowStore`
+    /// — the actor every capture write queues on — so an agent writing rules in a
+    /// loop must not put one of those behind each of them.
+    ///
+    /// This used to be enforced by an allowlist naming the two reverse-proxy tools,
+    /// which meant a rule write refreshed *nothing* and the rules panel silently
+    /// disagreed with the engine until the surface was reopened. A trailing window
+    /// gets the cost without the staleness, and with no list to keep in step.
     @MainActor
-    @Test func anUnrelatedWriteDoesNotRefetchTheStatus() async {
+    @Test func aBurstOfAgentWritesCostsOneRefresh() async {
+        let clock = TestClock()
+        let statusCalls = LockIsolated(0)
         let store = TestStore(initialState: AppFeature.State()) {
             AppFeature()
         } withDependencies: {
+            $0.continuousClock = clock
             $0.proxyClient.status = {
-                Issue.record("a rule write must not re-read the listener state")
+                statusCalls.withValue { $0 += 1 }
                 return ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
             }
+            $0.proxyClient.rulesState = { RulesState() }
+            $0.proxyClient.certificateStatus = { .notGenerated }
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+            $0.proxyClient.clientCertificates = { [] }
         }
         store.exhaustivity = .off
-        await store.send(.audit(.entryReceived(
-            AuditEntry(tool: "set_rule", succeeded: true, arguments: "{}", detail: ""))))
+
+        for _ in 0..<20 {
+            await store.send(.audit(.entryReceived(
+                AuditEntry(tool: "set_rule", succeeded: true, arguments: "{}", detail: ""))))
+        }
+        await clock.advance(by: AppFeature.mirrorRefreshDebounce)
+        await store.receive(\.engineStatusRefreshed)
+        #expect(statusCalls.value == 1, "twenty rule writes must not cost twenty status reads")
     }
 }

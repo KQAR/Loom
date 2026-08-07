@@ -121,6 +121,12 @@ public struct SetupFeature: Sendable {
         case task
         /// Cheap re-sync of all setup state when a window/panel appears.
         case refresh
+        /// Re-read only the state an *agent* can write: the SSL scope, what it left
+        /// tunnelled, and the client identities. Deliberately narrower than
+        /// `.refresh` — the helper state and the system-proxy snapshot cost an XPC
+        /// round trip and a `SCDynamicStore` read, this fires on every agent write,
+        /// and both of those already have live watchers of their own.
+        case refreshAgentWritable
         case toggleSystemProxyTapped
         case systemProxyResult(enabling: Bool, ok: Bool, message: String?)
         case systemProxyStateLoaded(Bool)
@@ -210,6 +216,14 @@ public struct SetupFeature: Sendable {
                     await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
                     // Re-read on every appearance, because the other writer is an
                     // agent: an identity can appear without the human doing anything.
+                    await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
+                }
+
+            case .refreshAgentWritable:
+                return .run { send in
+                    await send(.certificateStatusLoaded(proxyClient.certificateStatus()))
+                    await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
                     await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
                 }
 
