@@ -29,12 +29,23 @@ public struct MainView: View {
     @AppStorage("com.loom.sidebar.devicesExpanded") private var devicesExpanded = true
     @AppStorage("com.loom.sidebar.appsExpanded") private var appsExpanded = true
     @AppStorage("com.loom.sidebar.hostsExpanded") private var hostsExpanded = true
+    /// Inspector pane height, set by dragging its top edge. Persisted for the same reason
+    /// the section states are: it is view-local chrome nothing else reads, and re-dragging
+    /// it on every launch is the annoyance.
+    @AppStorage("com.loom.inspector.height") private var inspectorHeight = 280.0
+    /// Height at the start of a divider drag — nil when no drag is in flight.
+    @State private var dragStartHeight: CGFloat?
+    /// Live height while a drag is in flight; `inspectorHeight` is the resting value.
+    @State private var dragHeight: CGFloat?
 
     /// DESIGN.md: sidebar-width 300, fixed. One constant because two consumers have to
     /// agree on it — the sidebar's own frame and the toolbar chip's centring offset (see
     /// `toolbarContent`). Drift between them shows as a chip off-centre by half the
     /// disagreement.
     private static let sidebarWidth: CGFloat = 300
+
+    /// Floor for either pane of the table/inspector split.
+    private static let minPaneHeight: CGFloat = 160
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -106,16 +117,16 @@ public struct MainView: View {
 
     private var sidebar: some View {
         List(selection: $store.selectedCategory.sending(\.categorySelected)) {
-            Label("All Flows", systemImage: "tray.full")
+            Label { Text("All Flows") } icon: { categoryIcon("tray.full") }
                 .badge(store.allCount)
                 .tag(FlowCategory.all)
-            Label("Errors", systemImage: "exclamationmark.triangle")
+            Label { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
                 .badge(store.errorCount)
                 .tag(FlowCategory.errors)
-            Label("Rules", systemImage: "wand.and.stars")
+            Label { Text("Rules") } icon: { categoryIcon("wand.and.stars") }
                 .badge(store.rules.rulesState.rules.count)
                 .tag(FlowCategory.rules)
-            Label("Audit", systemImage: "checklist")
+            Label { Text("Audit") } icon: { categoryIcon("checklist") }
                 .badge(store.audit.entries.count)
                 .tag(FlowCategory.audit)
             breakpointsSidebarRow
@@ -128,7 +139,7 @@ public struct MainView: View {
                         Label {
                             Text(alias ?? entry.device.displayName)
                         } icon: {
-                            Image(systemName: entry.device.kind == .lan ? "iphone" : "desktopcomputer")
+                            categoryIcon(entry.device.kind == .lan ? "iphone" : "desktopcomputer")
                         }
                         .badge(entry.count)
                         .tag(FlowCategory.device(ip))
@@ -205,6 +216,16 @@ public struct MainView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// A sidebar category glyph. `.listStyle(.sidebar)` tints a `Label`'s symbol with the
+    /// system accent, which reads as a highlight on every row at once — so these are drawn
+    /// monochrome/secondary and selection is left to say what's selected. The only glyph
+    /// allowed to carry color is the held-breakpoint one, which is an alert, not a category.
+    @ViewBuilder private func categoryIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(.secondary)
+    }
+
     /// Breakpoints category. While something is held the row goes orange and its
     /// badge counts *held exchanges*, not armed breakpoints — a parked live
     /// connection is the thing the human has to act on; how many breakpoints an
@@ -216,6 +237,7 @@ public struct MainView: View {
                 .foregroundStyle(held > 0 ? Color.orange : .primary)
         } icon: {
             Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
+                .symbolRenderingMode(.monochrome)
                 .foregroundStyle(held > 0 ? Color.orange : .secondary)
         }
         .badge(held > 0 ? held : store.breakpoints.armed.count)
@@ -344,24 +366,89 @@ public struct MainView: View {
             AuditPanelView(store: store.scope(state: \.audit, action: \.audit))
         } else if store.selectedCategory == .breakpoints {
             BreakpointsPanelView(store: store.scope(state: \.breakpoints, action: \.breakpoints))
-        } else if let flow = store.selectedFlow {
-            VSplitView {
-                requestArea
-                    .frame(minHeight: 160, idealHeight: 280, maxHeight: .infinity)
-                InspectorPanel(
-                    // The hydrated detail (with bodies) once it lands; the
-                    // metadata-only list row until then, so the panel appears
-                    // immediately and its body fills in.
-                    flow: store.selectedFlowDetail ?? flow,
-                    original: store.selectedOriginalDetail,
-                    onClose: { store.send(.flowSelected(nil)) }
-                )
-                .frame(minHeight: 160, maxHeight: .infinity)
-            }
         } else {
-            requestArea
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            flowArea
         }
+    }
+
+    /// Request table on top, inspector below when a flow is selected.
+    ///
+    /// Not a `VSplitView`, for the same reason the sidebar's collapse is hand-rolled
+    /// (see `body`): an `NSSplitView` inserts and removes its subviews outright, so the
+    /// inspector could only pop in and out. Here it slides — the panel carries a
+    /// `.move(edge: .bottom)` transition and the stack is clipped, so it travels up from
+    /// the window's bottom edge and back down out of it while the table resizes with it.
+    /// The draggable divider is hand-rolled below, which is all `VSplitView` was buying.
+    private var flowArea: some View {
+        GeometryReader { proxy in
+            // The table keeps at least a pane's worth no matter how far the divider is
+            // dragged, and a short window shrinks the inspector rather than the table.
+            let maxInspector = max(Self.minPaneHeight, proxy.size.height - Self.minPaneHeight)
+            VStack(spacing: 0) {
+                requestArea
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let flow = store.selectedFlow {
+                    VStack(spacing: 0) {
+                        inspectorDivider(maxHeight: maxInspector)
+                        InspectorPanel(
+                            // The hydrated detail (with bodies) once it lands; the
+                            // metadata-only list row until then, so the panel appears
+                            // immediately and its body fills in.
+                            flow: store.selectedFlowDetail ?? flow,
+                            original: store.selectedOriginalDetail,
+                            onClose: { store.send(.flowSelected(nil)) }
+                        )
+                        .frame(height: min(
+                            max(dragHeight ?? CGFloat(inspectorHeight), Self.minPaneHeight),
+                            maxInspector
+                        ))
+                    }
+                    .transition(.move(edge: .bottom))
+                }
+            }
+            // Bounds the slide: without it the panel is drawn outside the pane on its way
+            // in and out instead of being revealed by the window's bottom edge.
+            .clipped()
+            // Keyed on *whether* a flow is selected, never on which one: switching rows
+            // must not re-run the slide, and a divider drag must not be animated at all.
+            .animation(.snappy(duration: 0.22), value: store.selectedFlowID == nil)
+        }
+    }
+
+    /// The inspector's top edge, doubling as its resize handle. `.snappy` never sees these
+    /// height writes (see the animation note above), so the drag tracks the cursor 1:1.
+    ///
+    /// Two things here are what stop it juddering, and both are the same feedback loop:
+    /// the handle is *inside* the thing it resizes, so anything that measures against the
+    /// handle's own frame is measuring a moving ruler. Hence `.global` — a local
+    /// `translation` is re-based every time the divider moves under the cursor, which
+    /// reads as the panel fighting the drag. And hence `dragHeight`: `@AppStorage` is the
+    /// resting value only, because writing it per frame round-trips every height through
+    /// `UserDefaults` and its change notification lands a frame late.
+    private func inspectorDivider(maxHeight: CGFloat) -> some View {
+        Divider()
+            // Widens the hit target without moving the hairline.
+            .padding(.vertical, 2)
+            .contentShape(.rect)
+            .onHover { inside in
+                if inside { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { drag in
+                        let start = dragStartHeight ?? CGFloat(inspectorHeight)
+                        dragStartHeight = start
+                        // Dragging up (negative translation) grows the inspector.
+                        dragHeight = min(
+                            max(start - drag.translation.height, Self.minPaneHeight), maxHeight
+                        )
+                    }
+                    .onEnded { _ in
+                        if let settled = dragHeight { inspectorHeight = Double(settled) }
+                        dragHeight = nil
+                        dragStartHeight = nil
+                    }
+            )
     }
 
     // MARK: Toolbar
@@ -579,6 +666,21 @@ public struct MainView: View {
     static func host(_ raw: String) -> String { URLHost.host(ofURLString: raw) ?? raw }
     static func path(_ raw: String) -> String { URLHost.pathAndQuery(ofURLString: raw) }
 
+    /// The Protocol column's token. Deliberately the *scheme* — the thing that decides
+    /// whether these bytes were readable at all — and not `response.httpVersion`, which
+    /// describes Loom's own upstream hop (`NIOStreamingForwarder` speaks HTTP/1.1, so it
+    /// reads "HTTP/1.1" even for a client that negotiated h2 and would be a lie in this
+    /// column). A prefix scan, never `URLComponents`: this runs per visible row per redraw.
+    static func protocolLabel(_ flow: Flow) -> String {
+        let raw = flow.request.url
+        guard let separator = raw.range(of: "://") else { return flow.isWebSocket ? "WS" : "—" }
+        let scheme = raw[raw.startIndex ..< separator.lowerBound].uppercased()
+        // A WebSocket is captured on the URL it was *upgraded* from, so an https:// row
+        // that carries frames is a wss:// connection and says so.
+        guard flow.isWebSocket else { return scheme }
+        return scheme == "HTTPS" || scheme == "WSS" ? "WSS" : "WS"
+    }
+
     /// The Host column needs the grouping key *and* the port-bearing label; one
     /// scan yields both. A string that isn't a URL shows whole, same as `host(_:)`.
     static func hostReading(_ raw: String) -> URLHost.HostReading {
@@ -728,6 +830,18 @@ private struct RequestTableView: View {
                     .help(flow.sourceApp?.name ?? "Unknown app")
             }
             .width(36)
+
+            TableColumn("Protocol") { flow in
+                Text(MainView.protocolLabel(flow))
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.secondary)
+                    // The upstream version is the honest place to state it: it describes
+                    // Loom's own hop, not the client's (see `protocolLabel`).
+                    .help(flow.response?.httpVersion.map { "Upstream: \($0)" } ?? "")
+            }
+            // Sized to the widest token this column can hold — `HTTPS`, 5 mono glyphs —
+            // not to the header word, which is the only thing here that wants more room.
+            .width(min: 46, ideal: 52, max: 64)
 
             TableColumn("Method") { flow in
                 Text(flow.request.method).font(.callout.monospaced())
