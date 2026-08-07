@@ -50,13 +50,7 @@ extension MCPToolExecutor {
             "total": Self.statsBucket(stats.total),
             "buckets": stats.buckets.map(Self.statsBucket),
             "bucketsOmitted": stats.bucketsOmitted,
-            "slowest": stats.slowest.map { slow in
-                var item: [String: Any] = ["id": slow.id.uuidString, "method": slow.method, "url": slow.url]
-                if let statusCode = slow.statusCode { item["status"] = statusCode }
-                if let ttfbMS = slow.ttfbMS { item["ttfbMS"] = ttfbMS }
-                if let durationMS = slow.durationMS { item["durationMS"] = durationMS }
-                return item
-            },
+            "slowest": MCPRender.array(stats.slowest.map(SlowestFlowRender.init)),
         ]
         if let earliest = stats.earliest { payload["from"] = Self.iso8601.string(from: earliest) }
         if let latest = stats.latest { payload["to"] = Self.iso8601.string(from: latest) }
@@ -64,32 +58,7 @@ extension MCPToolExecutor {
     }
 
     static func statsBucket(_ bucket: FlowStats.Bucket) -> [String: Any] {
-        var out: [String: Any] = [
-            "key": bucket.key,
-            "flows": bucket.flows,
-            "errors": bucket.errors,
-            // Rounded: three decimals is finer than any capture-sized sample justifies.
-            "errorRate": (bucket.errorRate * 1000).rounded() / 1000,
-            "statusClasses": bucket.statusClasses,
-            "requestBytes": bucket.requestBytes,
-            "responseBytes": bucket.responseBytes,
-        ]
-        if bucket.failed > 0 { out["failed"] = bucket.failed }
-        if bucket.inFlight > 0 { out["inFlight"] = bucket.inFlight }
-        if let ttfb = bucket.ttfb { out["ttfbMS"] = distribution(ttfb) }
-        // Reported next to TTFB rather than left as durationMS - ttfbMS: telling
-        // "the server is slow" from "the payload is big" is what this tool is for,
-        // and a percentile of a difference is not the difference of percentiles.
-        if let receive = bucket.receive { out["receiveMS"] = distribution(receive) }
-        if let duration = bucket.duration { out["durationMS"] = distribution(duration) }
-        // Only surfaced when it applies — but never omitted when it does, because it is
-        // the difference between "this host sent 4 MB" and "at least 4 MB".
-        if bucket.sizeUnknownFlows > 0 { out["sizeUnknownFlows"] = bucket.sizeUnknownFlows }
-        return out
-    }
-
-    static func distribution(_ distribution: FlowStats.Distribution) -> [String: Any] {
-        ["p50": distribution.p50, "p95": distribution.p95, "max": distribution.max, "samples": distribution.samples]
+        MCPRender.dict(StatsBucketRender(bucket))
     }
 
     static func grouping(from arguments: [String: Any]) throws -> FlowGrouping {

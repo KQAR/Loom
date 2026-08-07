@@ -91,17 +91,10 @@ extension MCPToolExecutor {
             "succeeded": flows.count,
             "failed": failures.count,
             "statusClasses": stats.total.statusClasses,
-            "replays": flows.map { flow in
-                var item: [String: Any] = ["id": flow.id.uuidString]
-                if let status = flow.statusCode { item["status"] = status }
-                if let ttfbMS = flow.ttfbMS { item["ttfbMS"] = ttfbMS }
-                if let durationMS = flow.durationMS { item["durationMS"] = durationMS }
-                if let error = flow.error { item["error"] = error }
-                return item
-            },
+            "replays": MCPRender.array(flows.map(ReplayAttemptRender.init)),
         ]
-        if let ttfb = stats.total.ttfb { payload["ttfbMS"] = Self.distribution(ttfb) }
-        if let duration = stats.total.duration { payload["durationMS"] = Self.distribution(duration) }
+        if let ttfb = stats.total.ttfb { payload["ttfbMS"] = MCPRender.dict(DistributionRender(ttfb)) }
+        if let duration = stats.total.duration { payload["durationMS"] = MCPRender.dict(DistributionRender(duration)) }
         // Distinct messages with counts: 20 copies of "connection refused" is one fact.
         if !failures.isEmpty {
             payload["errors"] = Dictionary(grouping: failures, by: { $0 }).map { message, occurrences in
