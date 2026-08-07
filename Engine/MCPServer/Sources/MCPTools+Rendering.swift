@@ -144,18 +144,4 @@ extension MCPToolExecutor {
     static func headerDict(_ headers: [HeaderPair]) -> [String: String] {
         Dictionary(headers.map { ($0.name, $0.value) }, uniquingKeysWith: { _, last in last })
     }
-
-    /// Keep `list_rules` light: long bodies are cut to a preview + total length so
-    /// a rule list with big JSON mocks doesn't flood the agent's context.
-    static func addBody(_ text: String?, to out: inout [String: Any], truncate: Bool) {
-        guard let text else { return }
-        let limit = 200
-        if truncate, text.count > limit {
-            out["body"] = String(text.prefix(limit))
-            out["bodyLength"] = text.count
-            out["bodyTruncated"] = true
-        } else {
-            out["body"] = text
-        }
-    }
 }

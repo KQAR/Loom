@@ -345,3 +345,408 @@ struct ReplayAttemptRender: Encodable {
         error = flow.error
     }
 }
+
+// MARK: - Environment
+
+/// `get_proxy_status`. Half of it is `ProxyStatus`; the rest is what the injected
+/// `SystemRoutingControlling` knows, which the engine deliberately cannot reach
+/// (the dependency direction is one-way). One render, because an agent asking
+/// "why is nothing captured" needs both halves in the same answer.
+struct ProxyStatusRender: Encodable {
+    var isRunning: Bool
+    var port: Int
+    var listenHost: String
+    var lanReachable: Bool
+    var capturedCount: Int
+    var isRecording: Bool
+    /// Reported only when there is one to point at, so its absence is an answer
+    /// rather than a zero to interpret.
+    var socksPort: Int?
+    /// Four-valued on purpose: `on` / `off` / `other` / `unavailable`. Collapsing
+    /// "can't tell" into off would have an agent "fix" a routing problem it has no
+    /// way to observe; collapsing "another app owns it" into off would have it
+    /// silently steal the user's Charles/whistle configuration.
+    var systemProxy: String
+    var systemProxyPointsAt: String?
+    var privilegedHelper: String?
+    /// Whether `set_system_proxy` will stop and wait for a human at the machine.
+    var systemProxyChangePrompts: Bool?
+    var privilegedHelperDetail: String?
+    /// All-time count — "this happened once" vs "this is happening to every request".
+    var refusedConnections: Int?
+    var recentRefusals: [ConnectionRefusalRender]?
+    var reverseProxies: [ReverseProxyRender]?
+}
+
+struct ConnectionRefusalRender: Encodable {
+    var at: Date
+    var listener: String
+    var reason: String
+    var peer: String?
+
+    init(_ refusal: ConnectionRefusal) {
+        at = refusal.at
+        listener = refusal.listener.rawValue
+        reason = refusal.reason
+        peer = refusal.peer
+    }
+}
+
+/// One rendering, shared by `get_proxy_status`, `list_reverse_proxies` and
+/// `create_reverse_proxy` — three places an agent reads the same fact, which is
+/// three chances for them to disagree about what "listening" means.
+struct ReverseProxyRender: Encodable {
+    var id: String
+    var upstream: String
+    var listening: Bool
+    var keepHostHeader: Bool
+    var localURL: String?
+    var label: String?
+    /// Present exactly when it isn't listening, so the reason travels with the
+    /// problem instead of having to be asked for separately.
+    var error: String?
+
+    init(_ status: ReverseProxyStatus) {
+        id = status.endpoint.id.uuidString
+        upstream = status.endpoint.upstream
+        listening = status.isListening
+        keepHostHeader = status.endpoint.keepHostHeader
+        localURL = status.localURL
+        label = status.endpoint.label
+        error = status.error
+    }
+}
+
+/// One entry for `list_devices`. Dates as ISO-8601 so the model can order them.
+struct DeviceSummaryRender: Encodable {
+    var ip: String
+    var kind: String
+    var displayName: String
+    var flowCount: Int
+    var lastActive: Date
+    var platform: String?
+    var client: String?
+    var type: String?
+
+    init(_ summary: DeviceSummary) {
+        let device = summary.device
+        ip = device.ip
+        kind = device.kind.rawValue
+        displayName = device.displayName
+        flowCount = summary.flowCount
+        lastActive = summary.lastActive
+        platform = device.platform
+        client = device.client
+        type = device.typeSummary
+    }
+}
+
+struct CertificateStatusRender: Encodable {
+    var isGenerated: Bool
+    var isTrusted: Bool
+    var commonName: String?
+    var sha256Fingerprint: String?
+    var notAfter: Date?
+    var exportedPEMPath: String?
+
+    init(_ status: CertificateStatus) {
+        isGenerated = status.isGenerated
+        isTrusted = status.isTrusted
+        commonName = status.commonName
+        sha256Fingerprint = status.sha256Fingerprint
+        notAfter = status.notAfter
+        exportedPEMPath = status.exportedPEMPath
+    }
+}
+
+struct SSLScopeRender: Encodable {
+    var enabled: Bool
+    var include: [String]
+    var exclude: [String]
+    /// Origins Loom relayed without reading. Here rather than behind a second call
+    /// because an agent that has to ask twice reads an empty capture as "the client
+    /// never ran" before it gets to the second ask.
+    var tunneledHosts: [TunneledHostRender]?
+    var tunneledHostsEvicted: Int?
+
+    init(_ scope: SSLScope, tunneled: TunneledHostReport? = nil) {
+        enabled = scope.enabled
+        include = scope.include
+        exclude = scope.exclude
+        if let tunneled, !tunneled.hosts.isEmpty {
+            tunneledHosts = tunneled.hosts.map(TunneledHostRender.init)
+        }
+        if let tunneled, tunneled.evicted > 0 { tunneledHostsEvicted = tunneled.evicted }
+    }
+}
+
+/// One origin Loom relayed without reading. `interceptable` is carried rather than
+/// left for the model to infer from `reason`, so the follow-up action is decidable
+/// from the row.
+struct TunneledHostRender: Encodable {
+    var host: String
+    var port: Int
+    var connections: Int
+    var firstSeen: Date
+    var lastSeen: Date
+    var reason: String
+    var interceptable: Bool
+
+    init(_ entry: TunneledHost) {
+        host = entry.host
+        port = entry.port
+        connections = entry.connections
+        firstSeen = entry.firstSeen
+        lastSeen = entry.lastSeen
+        reason = entry.reason.rawValue
+        interceptable = entry.interceptable
+    }
+}
+
+struct ClientCertificateRender: Encodable {
+    var id: String
+    var hostPattern: String
+    var label: String
+    var enabled: Bool
+    var subject: String?
+    var notAfter: Date?
+    /// Stated rather than left to be derived from `notAfter`: an expired identity
+    /// fails the handshake exactly like a missing one, and that is the diagnosis
+    /// this list exists to shorten.
+    var expired: Bool?
+    var problem: String?
+
+    init(_ summary: ClientCertificateSummary) {
+        id = summary.id.uuidString
+        hostPattern = summary.hostPattern
+        label = summary.label
+        enabled = summary.isEnabled
+        subject = summary.subject
+        notAfter = summary.notAfter
+        expired = summary.notAfter == nil ? nil : summary.isExpired()
+        problem = summary.problem
+    }
+}
+
+/// One entry for `get_audit_log`. `arguments` is already-truncated compact JSON
+/// (a string, deliberately not re-parsed — it is a record of what was sent, not a
+/// structure to query).
+struct AuditEntryRender: Encodable {
+    var id: String
+    var timestamp: Date
+    var tool: String
+    var source: String
+    var succeeded: Bool
+    var arguments: String
+    var detail: String
+
+    init(_ entry: AuditEntry) {
+        id = entry.id.uuidString
+        timestamp = entry.timestamp
+        tool = entry.tool
+        source = entry.source.rawValue
+        succeeded = entry.succeeded
+        arguments = entry.arguments
+        detail = entry.detail
+    }
+}
+
+// MARK: - Rules
+
+/// One rule as `list_rules` shows it.
+///
+/// The render an agent reads back is not the schema it writes (`set_rule` takes
+/// snake_case, this answers in lowerCamel) and not the model's own encoding —
+/// three representations of one type, which is exactly the drift
+/// `RuleCodecParityTests` exists to catch. Being a type here means the third one
+/// is at least compiler-checked internally; the census keeps it honest against
+/// the model.
+struct RuleRender: Encodable {
+    var id: String
+    var name: String
+    var enabled: Bool
+    var match: RuleMatchRender
+    var createdAt: Date
+    var comment: String?
+    var group: String?
+    var actions: RuleActionsRender
+
+    init(_ rule: TrafficRule, truncateBodies: Bool) {
+        id = rule.id.uuidString
+        name = rule.name
+        enabled = rule.isEnabled
+        match = RuleMatchRender(rule.match)
+        createdAt = rule.createdAt
+        comment = rule.comment
+        group = rule.group
+        actions = RuleActionsRender(rule.actions, truncateBodies: truncateBodies)
+    }
+}
+
+/// What a rule does. Empty when it does nothing (`passthrough` with no rewrites) —
+/// which is a legal rule, and rendering `{}` says so more honestly than omitting
+/// the key would.
+struct RuleActionsRender: Encodable {
+    var block: Bool?
+    var mockResponse: MockResponseRender?
+    var mapRemote: MapRemoteRender?
+    var mapLocal: MapLocalRender?
+    var rewriteRequest: RequestRewriteRender?
+    var rewriteResponse: ResponseRewriteRender?
+    var requestSubstitutions: [SubstitutionRender]?
+    var responseSubstitutions: [SubstitutionRender]?
+    var delayMs: Int?
+
+    init(_ actions: RuleActions, truncateBodies: Bool) {
+        switch actions.route {
+        case .passthrough:
+            break
+        case .block:
+            block = true
+        case let .mock(mock):
+            mockResponse = MockResponseRender(mock, truncateBodies: truncateBodies)
+        case let .mapRemote(map):
+            mapRemote = MapRemoteRender(map)
+        case let .mapLocal(map):
+            mapLocal = MapLocalRender(map)
+        }
+        if let rewrite = actions.rewriteRequest, !rewrite.isEmpty {
+            rewriteRequest = RequestRewriteRender(rewrite, truncateBodies: truncateBodies)
+        }
+        if let rewrite = actions.rewriteResponse, !rewrite.isEmpty {
+            rewriteResponse = ResponseRewriteRender(rewrite, truncateBodies: truncateBodies)
+        }
+        let requests = actions.activeRequestSubstitutions
+        if !requests.isEmpty { requestSubstitutions = requests.map(SubstitutionRender.init) }
+        let responses = actions.activeResponseSubstitutions
+        if !responses.isEmpty { responseSubstitutions = responses.map(SubstitutionRender.init) }
+        delayMs = actions.delayMilliseconds
+    }
+}
+
+/// A rule body in a *list*: cut to a preview plus its true length, so a rule set
+/// with big JSON mocks doesn't flood the agent's context. `list_rules` truncates;
+/// the single-rule renders (`set_rule`'s echo) do not, because that caller is
+/// looking at exactly one body and asked for it.
+struct TruncatedBodyRender {
+    var body: String?
+    var bodyLength: Int?
+    var bodyTruncated: Bool?
+
+    init(_ text: String?, truncate: Bool) {
+        let limit = 200
+        guard let text else { return }
+        if truncate, text.count > limit {
+            body = String(text.prefix(limit))
+            bodyLength = text.count
+            bodyTruncated = true
+        } else {
+            body = text
+        }
+    }
+}
+
+struct MockResponseRender: Encodable {
+    var statusCode: Int
+    var headers: [String: String]?
+    var contentType: String?
+    var body: String?
+    var bodyLength: Int?
+    var bodyTruncated: Bool?
+    var bodyBase64: String?
+
+    init(_ mock: MockResponseAction, truncateBodies: Bool) {
+        statusCode = mock.statusCode
+        headers = mock.headers.isEmpty ? nil : MCPToolExecutor.headerDict(mock.headers)
+        contentType = mock.contentType
+        let text = TruncatedBodyRender(mock.bodyText, truncate: truncateBodies)
+        body = text.body
+        bodyLength = text.bodyLength
+        bodyTruncated = text.bodyTruncated
+        // Base64 is capped separately and says how much was cut inline: it has no
+        // preview worth reading, so the count *is* the information.
+        bodyBase64 = mock.bodyBase64.map { base64 in
+            truncateBodies && base64.count > 256
+                ? String(base64.prefix(256)) + "…(\(base64.count) base64 chars)"
+                : base64
+        }
+    }
+}
+
+struct MapRemoteRender: Encodable {
+    var destination: String
+    var exclude: String?
+    var keepHostHeader: Bool?
+
+    init(_ map: MapRemoteAction) {
+        destination = map.destination
+        exclude = map.excludePattern
+        keepHostHeader = map.keepHostHeader ? true : nil
+    }
+}
+
+struct MapLocalRender: Encodable {
+    var path: String
+    var statusCode: Int
+    var contentType: String?
+
+    init(_ map: MapLocalAction) {
+        path = map.path
+        statusCode = map.statusCode
+        contentType = map.contentType
+    }
+}
+
+struct RequestRewriteRender: Encodable {
+    var method: String?
+    var setHeaders: [String: String]?
+    var removeHeaders: [String]?
+    var body: String?
+    var bodyLength: Int?
+    var bodyTruncated: Bool?
+
+    init(_ rewrite: RequestRewriteAction, truncateBodies: Bool) {
+        method = rewrite.method
+        setHeaders = rewrite.setHeaders.isEmpty ? nil : MCPToolExecutor.headerDict(rewrite.setHeaders)
+        removeHeaders = rewrite.removeHeaders.isEmpty ? nil : rewrite.removeHeaders
+        let text = TruncatedBodyRender(rewrite.bodyText, truncate: truncateBodies)
+        body = text.body
+        bodyLength = text.bodyLength
+        bodyTruncated = text.bodyTruncated
+    }
+}
+
+struct ResponseRewriteRender: Encodable {
+    var statusCode: Int?
+    var setHeaders: [String: String]?
+    var removeHeaders: [String]?
+    var body: String?
+    var bodyLength: Int?
+    var bodyTruncated: Bool?
+
+    init(_ rewrite: ResponseRewriteAction, truncateBodies: Bool) {
+        statusCode = rewrite.statusCode
+        setHeaders = rewrite.setHeaders.isEmpty ? nil : MCPToolExecutor.headerDict(rewrite.setHeaders)
+        removeHeaders = rewrite.removeHeaders.isEmpty ? nil : rewrite.removeHeaders
+        let text = TruncatedBodyRender(rewrite.bodyText, truncate: truncateBodies)
+        body = text.body
+        bodyLength = text.bodyLength
+        bodyTruncated = text.bodyTruncated
+    }
+}
+
+struct SubstitutionRender: Encodable {
+    var field: String
+    var match: String
+    var replacement: String
+    var isRegex: Bool?
+    var caseSensitive: Bool?
+
+    init(_ sub: SubstitutionRule) {
+        field = sub.field.rawValue
+        match = sub.match
+        replacement = sub.replacement
+        isRegex = sub.isRegex ? true : nil
+        caseSensitive = sub.caseSensitive ? true : nil
+    }
+}

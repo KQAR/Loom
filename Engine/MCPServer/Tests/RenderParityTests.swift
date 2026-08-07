@@ -253,6 +253,201 @@ import Testing
         ))
     }
 
+    // MARK: - Environment
+
+    @Test func proxyStatus_carriesEveryModelField() {
+        let status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+        check(Census(
+            "ProxyStatus → get_proxy_status",
+            model: status,
+            render: ProxyStatusRender(
+                isRunning: status.isRunning, port: status.port, listenHost: status.listenHost,
+                lanReachable: status.isLANReachable, capturedCount: status.capturedCount,
+                isRecording: status.isRecording, socksPort: status.socksPort,
+                systemProxy: "unavailable"
+            )
+        ))
+    }
+
+    @Test func connectionRefusal_carriesEveryModelField() {
+        let refusal = ConnectionRefusal(listener: .socks, reason: "SOCKS4 is not supported")
+        check(Census(
+            "ConnectionRefusal → get_proxy_status.recentRefusals[]",
+            model: refusal,
+            render: ConnectionRefusalRender(refusal),
+            accountedFor: [
+                "id": "deliberately absent: a refusal is read as a list, never addressed individually — there is no tool that takes one",
+            ]
+        ))
+    }
+
+    @Test func reverseProxy_carriesEveryModelField() {
+        let status = ReverseProxyStatus(
+            endpoint: ReverseProxyEndpoint(requestedPort: 0, upstream: "https://api.example.test"),
+            boundPort: 8080
+        )
+        check(Census(
+            "ReverseProxyStatus → list_reverse_proxies[]",
+            model: status,
+            render: ReverseProxyRender(status),
+            accountedFor: [
+                "endpoint": "flattened: the endpoint's own fields are censused below, and a nested object here would make the common read two levels deep for no gain",
+                "boundPort": "folded into `listening` + `localURL`, which is the form the caller pastes into a config file",
+            ]
+        ))
+
+        let endpoint = ReverseProxyEndpoint(requestedPort: 0, upstream: "https://api.example.test")
+        check(Census(
+            "ReverseProxyEndpoint → the same render, flattened",
+            model: endpoint,
+            render: ReverseProxyRender(ReverseProxyStatus(endpoint: endpoint, boundPort: nil)),
+            accountedFor: [
+                "requestedPort": "folded: what matters is the port actually bound (`localURL`), and `0` means \"any free port\" rather than a place to connect to",
+                "createdAt": "deliberately absent: an endpoint is config, not an event — nothing an agent decides turns on when it was made",
+            ]
+        ))
+    }
+
+    @Test func deviceSummary_carriesEveryModelField() {
+        let summary = DeviceSummary(
+            device: SourceDevice(ip: "192.168.1.10", kind: .lan), flowCount: 3,
+            lastActive: Date(timeIntervalSince1970: 0)
+        )
+        check(Census(
+            "DeviceSummary → list_devices[]",
+            model: summary,
+            render: DeviceSummaryRender(summary),
+            accountedFor: [
+                "device": "flattened: its fields (ip/kind/platform/client) are lifted to the top level, where a device row reads as one thing",
+            ]
+        ))
+    }
+
+    @Test func certificateStatus_carriesEveryModelField() {
+        let status = CertificateStatus.notGenerated
+        check(Census(
+            "CertificateStatus → get_certificate_status",
+            model: status,
+            render: CertificateStatusRender(status)
+        ))
+    }
+
+    @Test func sslScope_carriesEveryModelField() {
+        let scope = SSLScope.disabled
+        check(Census("SSLScope → get_ssl_scope", model: scope, render: SSLScopeRender(scope)))
+    }
+
+    @Test func tunneledHost_carriesEveryModelField() {
+        let entry = TunneledHost(host: "gradle.example.test", port: 443, firstSeen: Date(timeIntervalSince1970: 0), lastSeen: Date(timeIntervalSince1970: 1), reason: .excluded)
+        check(Census(
+            "TunneledHost → get_ssl_scope.tunneledHosts[]",
+            model: entry,
+            render: TunneledHostRender(entry)
+        ))
+    }
+
+    @Test func clientCertificate_carriesEveryModelField() {
+        let summary = ClientCertificateSummary(
+            id: UUID(), hostPattern: "*.example.test", label: "staging", isEnabled: true
+        )
+        check(Census(
+            "ClientCertificateSummary → list_client_certificates[]",
+            model: summary,
+            render: ClientCertificateRender(summary),
+            accountedFor: [
+                "isEnabled": "renamed to `enabled` — the `is` prefix is a Swift convention, not a JSON one",
+            ]
+        ))
+    }
+
+    @Test func auditEntry_carriesEveryModelField() {
+        let entry = AuditEntry(tool: "set_rule", succeeded: true, arguments: "{}", detail: "")
+        check(Census(
+            "AuditEntry → get_audit_log[]",
+            model: entry,
+            render: AuditEntryRender(entry)
+        ))
+    }
+
+    // MARK: - Rules
+    //
+    // `RuleCodecParityTests` already censuses the rule against its *input schema*.
+    // This is the other side: the render an agent reads back.
+
+    @Test func rule_carriesEveryModelField() {
+        let rule = TrafficRule(name: "r", match: RuleMatch(urlPattern: "*"), actions: RuleActions())
+        check(Census(
+            "TrafficRule → list_rules[]",
+            model: rule,
+            render: RuleRender(rule, truncateBodies: true),
+            accountedFor: [
+                "isEnabled": "renamed to `enabled`",
+            ]
+        ))
+    }
+
+    @Test func ruleActions_carryEveryModelField() {
+        let actions = RuleActions()
+        check(Census(
+            "RuleActions → list_rules[].actions",
+            model: actions,
+            render: RuleActionsRender(actions, truncateBodies: true),
+            accountedFor: [
+                "route": "the sum type is flattened into its cases (`block` / `mockResponse` / `mapRemote` / `mapLocal`), exactly one of which appears; `passthrough` is the absence of all four",
+                "delayMilliseconds": "renamed to `delayMs`, matching the `delay_ms` an agent writes",
+            ]
+        ))
+    }
+
+    @Test func ruleActionPayloads_carryEveryModelField() {
+        let mock = MockResponseAction(statusCode: 200, headers: [])
+        check(Census(
+            "MockResponseAction → actions.mockResponse",
+            model: mock,
+            render: MockResponseRender(mock, truncateBodies: true),
+            accountedFor: [
+                "bodyText": "renamed to `body`, alongside `bodyLength` + `bodyTruncated` when a list render cuts it",
+            ]
+        ))
+
+        let mapRemote = MapRemoteAction(destination: "https://staging.example.test")
+        check(Census(
+            "MapRemoteAction → actions.mapRemote",
+            model: mapRemote,
+            render: MapRemoteRender(mapRemote),
+            accountedFor: ["excludePattern": "renamed to `exclude`"]
+        ))
+
+        let mapLocal = MapLocalAction(path: "/tmp/x.json")
+        check(Census("MapLocalAction → actions.mapLocal", model: mapLocal, render: MapLocalRender(mapLocal)))
+
+        let request = RequestRewriteAction()
+        check(Census(
+            "RequestRewriteAction → actions.rewriteRequest",
+            model: request,
+            render: RequestRewriteRender(request, truncateBodies: true),
+            accountedFor: ["bodyText": "renamed to `body` (+ `bodyLength` / `bodyTruncated`)"]
+        ))
+
+        let response = ResponseRewriteAction()
+        check(Census(
+            "ResponseRewriteAction → actions.rewriteResponse",
+            model: response,
+            render: ResponseRewriteRender(response, truncateBodies: true),
+            accountedFor: ["bodyText": "renamed to `body` (+ `bodyLength` / `bodyTruncated`)"]
+        ))
+
+        let substitution = SubstitutionRule(field: .body, match: "a", replacement: "b")
+        check(Census(
+            "SubstitutionRule → actions.requestSubstitutions[]",
+            model: substitution,
+            render: SubstitutionRender(substitution),
+            accountedFor: [
+                "id": "deliberately absent: substitutions are written and read as an ordered list on their rule — there is no tool that addresses one, so an id would be a handle to nothing",
+            ]
+        ))
+    }
+
     // MARK: - The encoding contract itself
 
     /// The three body shapes must stay distinguishable: an agent has to be able to

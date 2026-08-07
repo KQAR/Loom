@@ -69,17 +69,6 @@ extension MCPToolExecutor {
     /// `create_reverse_proxy` — three places an agent reads the same fact, which is
     /// three chances for them to disagree about what "listening" means.
     static func renderReverseProxy(_ status: ReverseProxyStatus) -> [String: Any] {
-        var out: [String: Any] = [
-            "id": status.endpoint.id.uuidString,
-            "upstream": status.endpoint.upstream,
-            "listening": status.isListening,
-            "keepHostHeader": status.endpoint.keepHostHeader,
-        ]
-        if let local = status.localURL { out["localURL"] = local }
-        if let label = status.endpoint.label { out["label"] = label }
-        // Present exactly when it isn't listening, so the reason travels with the
-        // problem instead of having to be asked for separately.
-        if let error = status.error { out["error"] = error }
-        return out
+        MCPRender.dict(ReverseProxyRender(status))
     }
 }
