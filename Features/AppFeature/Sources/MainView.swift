@@ -17,6 +17,7 @@ public struct MainView: View {
     @State private var clearHovering = false
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
     @State private var sidebarVisible = true
@@ -115,19 +116,46 @@ public struct MainView: View {
 
     // MARK: Sidebar — categories
 
+    /// A sidebar row's trailing count, drawn directly rather than through
+    /// `.badge()`.
+    ///
+    /// `.badge` gives AppKit's pill treatment, which is right for "N unread things
+    /// demanding attention" and wrong for every count here — these are just how
+    /// many flows are in a bucket, on every row at once, and a column of pills
+    /// reads as a column of alerts. Plain tertiary digits sit back where they
+    /// belong. Monospaced so a count crossing 9→10→100 doesn't shift the row.
+    private func sidebarCount(_ count: Int) -> some View {
+        Text("\(count)")
+            .font(.callout.monospacedDigit())
+            .foregroundStyle(.tertiary)
+    }
+
+    /// `Label` + a trailing count, the shape every sidebar row now uses.
+    private func countedRow<Title: View, Icon: View>(
+        count: Int,
+        @ViewBuilder title: () -> Title,
+        @ViewBuilder icon: () -> Icon
+    ) -> some View {
+        Label {
+            HStack(spacing: LoomTheme.Space.xs) {
+                title()
+                Spacer(minLength: LoomTheme.Space.xs)
+                sidebarCount(count)
+            }
+        } icon: {
+            icon()
+        }
+    }
+
     private var sidebar: some View {
         List(selection: $store.selectedCategory.sending(\.categorySelected)) {
-            Label { Text("All Flows") } icon: { categoryIcon("tray.full") }
-                .badge(store.allCount)
+            countedRow(count: store.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
                 .tag(FlowCategory.all)
-            Label { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
-                .badge(store.errorCount)
+            countedRow(count: store.errorCount) { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
                 .tag(FlowCategory.errors)
-            Label { Text("Rules") } icon: { categoryIcon("wand.and.stars") }
-                .badge(store.rules.rulesState.rules.count)
+            countedRow(count: store.rules.rulesState.rules.count) { Text("Rules") } icon: { categoryIcon("wand.and.stars") }
                 .tag(FlowCategory.rules)
-            Label { Text("Audit") } icon: { categoryIcon("checklist") }
-                .badge(store.audit.entries.count)
+            countedRow(count: store.audit.entries.count) { Text("Audit") } icon: { categoryIcon("checklist") }
                 .tag(FlowCategory.audit)
             breakpointsSidebarRow
 
@@ -136,12 +164,11 @@ public struct MainView: View {
                     ForEach(devicesExpanded ? store.devices : [], id: \.device.groupingKey) { entry in
                         let ip = entry.device.groupingKey
                         let alias = store.deviceAliases[ip]
-                        Label {
+                        countedRow(count: entry.count) {
                             Text(alias ?? entry.device.displayName)
                         } icon: {
                             categoryIcon(entry.device.kind == .lan ? "iphone" : "desktopcomputer")
                         }
-                        .badge(entry.count)
                         .tag(FlowCategory.device(ip))
                         .help(entry.device.typeSummary.map { "\($0) · \(entry.device.ip)" } ?? entry.device.ip)
                         .contextMenu {
@@ -167,12 +194,11 @@ public struct MainView: View {
                     ForEach(appsExpanded ? store.apps : [], id: \.app.groupingKey) { entry in
                         let key = entry.app.groupingKey
                         let pinned = store.pinnedApps.contains(key)
-                        Label {
+                        countedRow(count: entry.count) {
                             rowTitle(entry.app.name, pinned: pinned)
                         } icon: {
                             AppIconView(app: entry.app)
                         }
-                        .badge(entry.count)
                         .tag(FlowCategory.app(key))
                         .contextMenu {
                             Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
@@ -190,12 +216,11 @@ public struct MainView: View {
             Section {
                 ForEach(hostsExpanded ? store.hosts : [], id: \.host) { entry in
                     let pinned = store.pinnedHosts.contains(entry.host)
-                    Label {
+                    countedRow(count: entry.count) {
                         rowTitle(entry.host, pinned: pinned)
                     } icon: {
                         FaviconView(host: entry.host)
                     }
-                    .badge(entry.count)
                     .tag(FlowCategory.host(entry.host))
                     .contextMenu {
                         Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
@@ -227,20 +252,20 @@ public struct MainView: View {
     }
 
     /// Breakpoints category. While something is held the row goes orange and its
-    /// badge counts *held exchanges*, not armed breakpoints — a parked live
+    /// count is of *held exchanges*, not armed breakpoints — a parked live
     /// connection is the thing the human has to act on; how many breakpoints an
     /// agent armed is only interesting when none of them is holding anything.
     private var breakpointsSidebarRow: some View {
         let held = store.breakpoints.heldCount
-        return Label {
+        return countedRow(count: held > 0 ? held : store.breakpoints.armed.count) {
             Text("Breakpoints")
                 .foregroundStyle(held > 0 ? Color.orange : .primary)
         } icon: {
             Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(held > 0 ? Color.orange : .secondary)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
         }
-        .badge(held > 0 ? held : store.breakpoints.armed.count)
         .tag(FlowCategory.breakpoints)
         .help(held > 0
             ? "\(held) exchange\(held == 1 ? "" : "s") held — the client is still waiting"
@@ -473,17 +498,26 @@ public struct MainView: View {
     }
 
     /// Phone/QR onboarding entry, right of the toolbar's ip:port chip.
+    private var deviceReadiness: DeviceReadiness {
+        DeviceReadiness(isRunning: store.status.isRunning, lanEnabled: store.lanEnabled)
+    }
+
     private var phoneButton: some View {
         Button {
             store.send(.phoneButtonTapped(.mainWindow))
         } label: {
-            Image(systemName: "iphone")
-                // Highlighted while LAN device connection is allowed (default on).
-                .foregroundStyle(store.lanEnabled ? Color.accentColor : .secondary)
+            Image(systemName: deviceReadiness.symbol)
+                // Highlighted while a phone could actually reach Loom; secondary
+                // otherwise, whether that is because LAN capture is off or because
+                // the proxy isn't listening.
+                .foregroundStyle(deviceReadiness.isReady ? Color.accentColor : .secondary)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
         }
         .buttonStyle(.borderless)
-        .accessibilityLabel("Set up a phone to capture its traffic")
-        .help("Set up a phone to capture its traffic")
+        .disabled(!store.status.isRunning)
+        .accessibilityLabel("Connect Device")
+        .accessibilityValue(deviceReadiness.help)
+        .help(deviceReadiness.help)
         .popover(item: phonePopover, arrowEdge: .bottom) { phoneStore in
             PhoneOnboardingView(store: phoneStore)
         }
@@ -549,16 +583,26 @@ public struct MainView: View {
                 .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
 
-            if store.status.isRunning { phoneButton }
+            // Shown even while the proxy is stopped — see `DeviceReadiness`. It
+            // used to be hidden, which removed the control precisely when someone
+            // was looking for why their phone couldn't connect.
+            phoneButton
 
             Divider().frame(height: 14)
 
+            // Same split as the console's strip, and for the same reasons: the
+            // system proxy is the async one, so it pulses and does not morph (the
+            // `globe` family has no honest on/off pair — see PanelView); the two
+            // local toggles morph, because they flip instantly and a `.replace`
+            // needs two symbols to be a transition between.
             statusIcon("globe", on: store.setup.isSystemProxy,
+                       busy: store.setup.systemProxyBusy,
                        help: store.setup.isSystemProxy ? "System proxy: on" : "System proxy: off") {
                 store.send(.setup(.toggleSystemProxyTapped))
             }
             sslButton
-            statusIcon("wand.and.stars", on: store.rules.rulesEnabled,
+            statusIcon(store.rules.rulesEnabled ? "wand.and.stars.inverse" : "wand.and.stars",
+                       on: store.rules.rulesEnabled,
                        help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
                 store.send(.rules(.toggleRulesTapped))
             }
@@ -585,6 +629,7 @@ public struct MainView: View {
             HStack(spacing: 5) {
                 Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
                     .font(LoomTheme.Icon.toolbar)
+                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 Text(store.isRecording ? "Stop" : "Record")
                     .font(.callout)
             }
@@ -609,9 +654,12 @@ public struct MainView: View {
             if needsTrust { showingCertTrust = true }
             else { store.send(.setup(.toggleSSLTapped)) }
         } label: {
-            Image(systemName: "lock.shield")
+            // Filled while interception is on — including the needs-trust state,
+            // which really is on and is said by the yellow, not by an outline.
+            Image(systemName: store.setup.sslEnabled ? "lock.shield.fill" : "lock.shield")
                 .font(LoomTheme.Icon.toolbar)
                 .foregroundStyle(needsTrust ? Color.yellow : (store.setup.sslEnabled ? Color.green : Color.secondary))
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
         }
@@ -628,17 +676,30 @@ public struct MainView: View {
         }
     }
 
-    private func statusIcon(_ symbol: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
+    /// A chip toggle. `busy` drives the same repeating pulse the console's tiles
+    /// use — this window and that panel are two renderings of one state, so an
+    /// in-flight write has to look in-flight on both; a toggle that only animates
+    /// on one surface teaches the reader that the other one is frozen.
+    private func statusIcon(
+        _ symbol: String,
+        on: Bool,
+        busy: Bool = false,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(LoomTheme.Icon.toolbar)
                 .foregroundStyle(on ? Color.green : Color.secondary)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .symbolEffect(.pulse, options: .repeating, isActive: busy && !reduceMotion)
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
+        .disabled(busy)
         .accessibilityLabel(help)
-        .accessibilityValue(on ? "on" : "off")
+        .accessibilityValue(busy ? "changing" : (on ? "on" : "off"))
         .help(help)
     }
 
@@ -823,7 +884,12 @@ private struct RequestTableView: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
-            .width(min: 36, ideal: 44, max: 64)
+            // Sized for five digits, not seven. The old ideal fit a count this
+            // table will not reach — the in-memory ring caps at 2000 and the
+            // persisted store is an order of magnitude above that, so five is
+            // headroom already — and every point it took came off the Path
+            // column, which is the one column that is never wide enough.
+            .width(min: 30, ideal: 38, max: 56)
 
             TableColumn("App") { flow in
                 AppIconView(app: flow.sourceApp)

@@ -29,7 +29,24 @@ public enum LoomTheme {
     }
 
     /// Width of the status-bar console popover (DESIGN.md).
-    public static let consoleWidth: CGFloat = 300
+    ///
+    /// 272, down from 300. The panel is config and control, never traffic, so its
+    /// widest content is a row title plus a two-word state — nothing here wants a
+    /// wide surface, and a menu-bar popover that reaches a third of the way across
+    /// a laptop screen reads as a window that forgot to be a popover. What sets
+    /// the floor is the `Client Certificates` row: its title plus its longest
+    /// state is the widest line the console can produce, which is why that state
+    /// is now two words rather than three.
+    public static let consoleWidth: CGFloat = 272
+
+    /// Horizontal margin inside the console — **narrower than the main window's**
+    /// (`Space.sm`, not `Space.md`). At 300pt the margin is a percentage of the
+    /// surface, not a constant: 16pt each side spends 11 % of the width on
+    /// nothing, and it is the width that a row's trailing detail, a four-column
+    /// tile strip and a long LAN address are all competing for. Single-sourced so
+    /// the bands cannot drift apart — a card that keeps 16 while its row moves to
+    /// 12 hangs past the row it belongs to.
+    public static let consoleMargin: CGFloat = Space.sm
 
     /// Fill opacity for an attention/audit tint (e.g. the rule-modified banner),
     /// applied over the single accent — never a second accent hue (DESIGN.md).
