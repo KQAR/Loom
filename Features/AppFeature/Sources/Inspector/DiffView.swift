@@ -44,12 +44,18 @@ struct DiffView: View {
             Group {
                 if let comparison {
                     if comparison.isIdentical {
-                        Text("Identical — same request, same response.")
+                        // "Identical" is only as strong as what was captured: a
+                        // capped body means the bytes past the cap were never
+                        // compared, and saying "identical" flat would overclaim.
+                        Text(comparison.isPartial
+                            ? "Identical as far as Loom recorded — a body was capture-capped, so the bytes past the cap were never compared."
+                            : "Identical — same request, same response.")
                             .foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
                             section("Request", rows: requestRows(comparison.request))
                             section("Response", rows: responseRows(comparison.response))
+                            section("WebSocket", rows: webSocketRows(comparison.webSocket))
                             if let error = comparison.error {
                                 section("Error", rows: [.change(label: "error", change: error.strings)])
                             }
@@ -83,18 +89,15 @@ struct DiffView: View {
 
     /// One line of the diff. Modelled rather than pre-formatted so added/removed
     /// body lines can carry their own styling.
-    private enum Row: Identifiable {
+    ///
+    /// Deliberately **not** `Identifiable`: an id derived from the content collides
+    /// the moment a body diff drops two identical lines (`  },`, `}`, a blank line —
+    /// the ordinary shape of a JSON diff), and a `ForEach` over colliding ids drops
+    /// rows and logs about it. `section` enumerates instead, so position is the id.
+    private enum Row {
         case change(label: String, change: (base: String?, compared: String?))
         case note(String)
         case bodyLine(added: Bool, text: String)
-
-        var id: String {
-            switch self {
-            case let .change(label, change): return "c\(label)\(change.base ?? "")\(change.compared ?? "")"
-            case let .note(text): return "n\(text)"
-            case let .bodyLine(added, text): return "b\(added)\(text)"
-            }
-        }
     }
 
     private func requestRows(_ request: FlowComparison.MessageComparison) -> [Row] {
@@ -132,28 +135,72 @@ struct DiffView: View {
     private func bodyRows(_ body: FlowComparison.BodyComparison?) -> [Row] {
         guard let body else { return [] }
         let sizes = "body: \(body.baseBytes) → \(body.comparedBytes) bytes"
+        // A capped prefix has to say so next to the numbers: those bytes are not
+        // the payload, and the diff below them covers only the prefix.
+        var rows: [Row] = []
+        if body.isTruncated {
+            let wire = { (recorded: Int, onWire: Int?) in onWire.map { "\($0)" } ?? "\(recorded) (whole)" }
+            rows.append(.note(
+                "capture-capped — on the wire: \(wire(body.baseBytes, body.baseWireBytes)) → "
+                    + "\(wire(body.comparedBytes, body.comparedWireBytes)) bytes; "
+                    + "the diff below covers the recorded prefix only"
+            ))
+        }
         switch body.detail {
         case .binary:
-            return [.note("\(sizes) (binary — not line-diffed)")]
-        case let .tooLarge(baseLines, comparedLines, limit):
-            return [.note("\(sizes) — \(baseLines) → \(comparedLines) lines, too large to line-diff (limit \(limit))")]
+            rows.append(.note("\(sizes) (binary — not line-diffed)"))
+        case .tailNotCaptured:
+            rows.append(.note("\(sizes) — recorded prefixes are identical; the bytes past the cap were never compared"))
+        case let .tooLarge(baseLines, comparedLines, reason):
+            rows.append(.note(
+                "\(sizes) — \(baseLines) → \(comparedLines) lines, not line-diffed (\(reason.explanation))"
+            ))
         case let .lines(added, removed):
-            return [.note(sizes)]
-                + removed.map { .bodyLine(added: false, text: $0) }
-                + added.map { .bodyLine(added: true, text: $0) }
+            rows.append(.note(sizes))
+            rows += removed.map { .bodyLine(added: false, text: $0) }
+            rows += added.map { .bodyLine(added: true, text: $0) }
         }
+        return rows
+    }
+
+    private func webSocketRows(_ webSocket: FlowComparison.WebSocketComparison) -> [Row] {
+        if let presence = webSocket.presence {
+            return [.note((presence.compared ?? false)
+                ? "the replay is a WebSocket; the original isn't"
+                : "the original is a WebSocket; the replay isn't")]
+        }
+        var rows: [Row] = []
+        if let count = webSocket.messageCount {
+            rows.append(.change(label: "frames", change: count.strings))
+        }
+        if let index = webSocket.firstDifferingMessage {
+            rows.append(.note("frame logs first differ at frame \(index)"))
+        }
+        if let dropped = webSocket.droppedMessages {
+            rows.append(.change(label: "frames not recorded", change: dropped.strings))
+        }
+        if let error = webSocket.captureError {
+            rows.append(.change(label: "capture stopped", change: error.strings))
+        }
+        return rows
     }
 
     // MARK: - Presentation
 
+    /// `LazyVStack`, because a body diff is a collection that grows: up to
+    /// `FlowComparison.maxDiffLines` added plus as many removed, per section, and
+    /// this view sits inside the inspector's `ScrollView`. Rendering all of them
+    /// eagerly is the pattern AGENTS.md rules out for exactly this reason.
+    ///
+    /// Enumerated rather than `ForEach(rows)`: position is the identity (see `Row`).
     @ViewBuilder
     private func section(_ title: String, rows: [Row]) -> some View {
         if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
+            LazyVStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
                 Text(title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(rows) { row in
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     switch row {
                     case let .change(label, change):
                         Text("\(label): \(change.base ?? "(absent)") → \(change.compared ?? "(absent)")")

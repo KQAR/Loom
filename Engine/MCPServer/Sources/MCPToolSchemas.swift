@@ -528,7 +528,26 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "diff_flows",
-            description: "Diff two captured flows and report exactly what differs: request method/url, request+response headers (added/removed/changed), status code, and a line-level body diff for text payloads. Pass `base` alone to diff a replayed flow against the flow it was replayed from. This closes the capture → modify → replay → diff loop.",
+            description: """
+            Diff two captured flows and report exactly what differs: request method/url, \
+            request+response headers (added/removed/changed), status code, and a line-level body \
+            diff for text payloads. Pass `base` alone to diff a replayed flow against the flow it \
+            was replayed from. This closes the capture → modify → replay → diff loop.
+
+            Read `identical` together with `captureTruncated`. When the latter is present, a body \
+            here is a capture-capped prefix and the bytes past the cap were never compared, so \
+            `identical: true` means "identical as far as Loom recorded" — the body block then \
+            carries `baseBytesOnWire`/`comparedBytesOnWire` (the real sizes) and, when the \
+            prefixes matched, `tailNotCompared`. Two capped bodies with different wire sizes are \
+            definitely different even though no line diff is possible.
+
+            A body is not line-diffed when it is binary (`binary`) or too big — `lineDiffSkipped` \
+            says which limit it hit: total lines, total bytes, or a single line too long, the last \
+            being the ordinary minified-JSON payload. Timing is deliberately not diffed (two runs \
+            never share it, so it would make every diff differ); an absent body equals an empty \
+            one. For two WebSocket flows a `webSocket` block reports frame counts and \
+            `firstDifferingMessage` rather than a whole-log diff.
+            """,
             inputSchema: [
                 "type": "object",
                 "properties": [

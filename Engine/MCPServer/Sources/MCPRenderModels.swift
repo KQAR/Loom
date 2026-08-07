@@ -807,3 +807,211 @@ struct ProtocolClientRender: Encodable {
         lastSeen = client.lastSeen
     }
 }
+
+// MARK: - Flow diff
+
+/// `{base, compared}` with a missing side as an explicit JSON `null` rather than an
+/// absent key, so an added or removed scalar stays legible ("was there, now isn't"
+/// reads nothing like "unchanged"). That null is why this writes `encode(to:)` by
+/// hand — the synthesized one omits a nil optional, which is the opposite of what
+/// this shape means.
+struct ValueChangeRender<Value: Encodable & Equatable & Sendable>: Encodable {
+    var base: Value?
+    var compared: Value?
+
+    init(_ change: FlowComparison.ValueChange<Value>) {
+        base = change.base
+        compared = change.compared
+    }
+
+    private enum CodingKeys: String, CodingKey { case base, compared }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if let base { try container.encode(base, forKey: .base) } else { try container.encodeNil(forKey: .base) }
+        if let compared {
+            try container.encode(compared, forKey: .compared)
+        } else {
+            try container.encodeNil(forKey: .compared)
+        }
+    }
+}
+
+/// Header changes grouped into `added` / `removed` / `changed` — the shape
+/// `diff_flows` has always emitted, kept stable for existing agent prompts.
+struct HeaderDiffRender: Encodable {
+    struct NameValues: Encodable {
+        var name: String
+        var values: [String]
+    }
+
+    struct Changed: Encodable {
+        var name: String
+        var base: [String]
+        var compared: [String]
+    }
+
+    var added: [NameValues]?
+    var removed: [NameValues]?
+    var changed: [Changed]?
+
+    var isEmpty: Bool { added == nil && removed == nil && changed == nil }
+
+    init(_ changes: [FlowComparison.HeaderChange]) {
+        var added: [NameValues] = [], removed: [NameValues] = [], changed: [Changed] = []
+        for header in changes {
+            switch (header.base, header.compared) {
+            case let (nil, compared?):
+                added.append(NameValues(name: header.name, values: compared))
+            case let (base?, nil):
+                removed.append(NameValues(name: header.name, values: base))
+            case let (base?, compared?):
+                changed.append(Changed(name: header.name, base: base, compared: compared))
+            case (nil, nil):
+                break // not representable: a change with neither side
+            }
+        }
+        self.added = added.isEmpty ? nil : added
+        self.removed = removed.isEmpty ? nil : removed
+        self.changed = changed.isEmpty ? nil : changed
+    }
+}
+
+struct BodyDiffRender: Encodable {
+    /// Bytes Loom recorded on each side — a prefix when the `…OnWire` twin is set.
+    var baseBytes: Int
+    var comparedBytes: Int
+    /// Bytes that actually crossed the wire, present only for a capped side.
+    var baseBytesOnWire: Int?
+    var comparedBytesOnWire: Int?
+    /// Present (and only ever `true`) when either side is a capped prefix: every
+    /// verdict in this block covers the prefix, not the payload.
+    var captureTruncated: Bool?
+    /// Present (and only ever `true`) when the recorded prefixes are byte-identical
+    /// and at least one of them is capped — so the tails were never compared. Not
+    /// the same answer as "the bodies match"; the wire sizes are what to go on.
+    var tailNotCompared: Bool?
+    var binary: Bool?
+    var lineDiffSkipped: String?
+    var baseLines: Int?
+    var comparedLines: Int?
+    var addedLines: [String]?
+    var removedLines: [String]?
+
+    init(_ body: FlowComparison.BodyComparison) {
+        baseBytes = body.baseBytes
+        comparedBytes = body.comparedBytes
+        baseBytesOnWire = body.baseWireBytes
+        comparedBytesOnWire = body.comparedWireBytes
+        captureTruncated = body.isTruncated ? true : nil
+        switch body.detail {
+        case .binary:
+            binary = true
+        case .tailNotCaptured:
+            tailNotCompared = true
+        case let .tooLarge(baseLines, comparedLines, reason):
+            lineDiffSkipped = reason.explanation
+            self.baseLines = baseLines
+            self.comparedLines = comparedLines
+        case let .lines(added, removed):
+            addedLines = added.isEmpty ? nil : added
+            removedLines = removed.isEmpty ? nil : removed
+        }
+    }
+}
+
+struct MessageDiffRender: Encodable {
+    var method: ValueChangeRender<String>?
+    var url: ValueChangeRender<String>?
+    var headers: HeaderDiffRender?
+    var body: BodyDiffRender?
+
+    var isEmpty: Bool { method == nil && url == nil && headers == nil && body == nil }
+
+    init(_ message: FlowComparison.MessageComparison) {
+        method = message.method.map(ValueChangeRender.init)
+        url = message.url.map(ValueChangeRender.init)
+        let headers = HeaderDiffRender(message.headers)
+        self.headers = headers.isEmpty ? nil : headers
+        body = message.body.map(BodyDiffRender.init)
+    }
+}
+
+struct ResponseDiffRender: Encodable {
+    /// One side answered and the other didn't. When this is set nothing else is:
+    /// header and body diffs against a response that never arrived are noise.
+    var present: ValueChangeRender<Bool>?
+    var status: ValueChangeRender<Int>?
+    var httpVersion: ValueChangeRender<String>?
+    var headers: HeaderDiffRender?
+    var body: BodyDiffRender?
+
+    var isEmpty: Bool {
+        present == nil && status == nil && httpVersion == nil && headers == nil && body == nil
+    }
+
+    init(_ response: FlowComparison.ResponseComparison) {
+        if let presence = response.presence {
+            present = ValueChangeRender(presence)
+            return
+        }
+        status = response.status.map(ValueChangeRender.init)
+        httpVersion = response.httpVersion.map(ValueChangeRender.init)
+        let headers = HeaderDiffRender(response.headers)
+        self.headers = headers.isEmpty ? nil : headers
+        body = response.body.map(BodyDiffRender.init)
+    }
+}
+
+/// Frame-log differences. Field names match `get_flow_detail`'s `webSocket` block
+/// so the same fact isn't called two things across two tools.
+struct WebSocketDiffRender: Encodable {
+    var present: ValueChangeRender<Bool>?
+    var messageCount: ValueChangeRender<Int>?
+    var firstDifferingMessage: Int?
+    var framesNotRecorded: ValueChangeRender<Int>?
+    var captureStopped: ValueChangeRender<String>?
+
+    var isEmpty: Bool {
+        present == nil && messageCount == nil && firstDifferingMessage == nil
+            && framesNotRecorded == nil && captureStopped == nil
+    }
+
+    init(_ webSocket: FlowComparison.WebSocketComparison) {
+        present = webSocket.presence.map(ValueChangeRender.init)
+        messageCount = webSocket.messageCount.map(ValueChangeRender.init)
+        firstDifferingMessage = webSocket.firstDifferingMessage
+        framesNotRecorded = webSocket.droppedMessages.map(ValueChangeRender.init)
+        captureStopped = webSocket.captureError.map(ValueChangeRender.init)
+    }
+}
+
+/// `diff_flows`. Only the parts that differ appear; `identical` is the answer, and
+/// `captureTruncated` is how strong that answer is.
+struct FlowDiffRender: Encodable {
+    var baseId: String
+    var comparedId: String
+    var request: MessageDiffRender?
+    var response: ResponseDiffRender?
+    var webSocket: WebSocketDiffRender?
+    var error: ValueChangeRender<String>?
+    var identical: Bool
+    /// Present (and only ever `true`) when a body compared here was a capped
+    /// prefix. `identical: true` alongside it means "identical as far as Loom
+    /// recorded" — a weaker claim, and one an agent must not round up.
+    var captureTruncated: Bool?
+
+    init(_ comparison: FlowComparison) {
+        baseId = comparison.baseID.uuidString
+        comparedId = comparison.comparedID.uuidString
+        let request = MessageDiffRender(comparison.request)
+        self.request = request.isEmpty ? nil : request
+        let response = ResponseDiffRender(comparison.response)
+        self.response = response.isEmpty ? nil : response
+        let webSocket = WebSocketDiffRender(comparison.webSocket)
+        self.webSocket = webSocket.isEmpty ? nil : webSocket
+        error = comparison.error.map(ValueChangeRender.init)
+        identical = comparison.isIdentical
+        captureTruncated = comparison.isPartial ? true : nil
+    }
+}

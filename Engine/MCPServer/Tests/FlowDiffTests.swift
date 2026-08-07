@@ -99,4 +99,84 @@ import LoomSharedModels
         #expect(removed == ["b"])
         #expect(added == ["x", "d"])
     }
+
+    /// A missing side is an explicit JSON `null`, not an absent key — "was there,
+    /// now isn't" must not read as "unchanged". The DTO writes `encode(to:)` by hand
+    /// for this; the synthesized one would omit it.
+    @Test func absentScalarSide_isJSONNull() {
+        let a = flow(status: 200)
+        let b = flow(status: nil)
+        let diff = FlowDiff.diff(base: a, compared: b)
+        let present = (diff["response"] as? [String: Any])?["present"] as? [String: Any]
+        #expect(present?["base"] as? Bool == true)
+        #expect(present?["compared"] as? Bool == false)
+
+        let headers = FlowDiff.headerDiff([], [HeaderPair(name: "X", value: "1")])
+        #expect((headers["added"] as? [[String: Any]])?.first?["values"] as? [String] == ["1"])
+        #expect(headers["removed"] == nil, "an empty group is an absent key, as before")
+    }
+
+    // MARK: - Capture caps
+
+    @Test func truncatedBodies_matchingPrefixes_sayTheTailWasNotCompared() {
+        let prefix = Data("prefix".utf8)
+        let diff = FlowDiff.bodyDiff(prefix, prefix, baseWireBytes: 900, comparedWireBytes: 1_200)
+        #expect(diff["tailNotCompared"] as? Bool == true)
+        #expect(diff["captureTruncated"] as? Bool == true)
+        #expect(diff["baseBytesOnWire"] as? Int == 900)
+        #expect(diff["comparedBytesOnWire"] as? Int == 1_200)
+        #expect(diff["addedLines"] == nil)
+    }
+
+    @Test func untruncatedBody_carriesNoCapKeys() {
+        let diff = FlowDiff.bodyDiff(Data("a".utf8), Data("b".utf8))
+        #expect(diff["captureTruncated"] == nil, "a flag that only ever means true is absent otherwise")
+        #expect(diff["tailNotCompared"] == nil)
+        #expect(diff["baseBytesOnWire"] == nil)
+    }
+
+    /// `identical` alone would overclaim: the bytes past the cap were never read.
+    @Test func truncatedFlow_flagsTheWholeDiffAsPartial() {
+        let capped = Flow(
+            request: CapturedRequest(method: "GET", url: "https://a.test", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1),
+            outcome: .completed(
+                CapturedResponse(statusCode: 200, headers: [], body: Data("p".utf8), fullBodyBytes: 50_000),
+                at: Date(timeIntervalSince1970: 2)
+            )
+        )
+        let diff = FlowDiff.diff(base: capped, compared: capped)
+        #expect(diff["captureTruncated"] as? Bool == true)
+        #expect(diff["identical"] as? Bool == false)
+    }
+
+    @Test func minifiedBody_reportsWhichLimitItHit() {
+        let wide = String(repeating: "x", count: FlowComparison.maxDiffLineBytes + 1)
+        let diff = FlowDiff.bodyDiff(Data(wide.utf8), Data((wide + "y").utf8))
+        #expect(diff["lineDiffSkipped"] as? String == "a single line exceeds \(FlowComparison.maxDiffLineBytes) bytes")
+        #expect(diff["addedLines"] == nil, "the whole payload is what the limit exists to keep out")
+        #expect(diff["baseLines"] as? Int == 1)
+    }
+
+    // MARK: - WebSocket
+
+    @Test func webSocketFrameLogs_reportTheFirstDivergence() {
+        func webSocket(_ payloads: [String]) -> Flow {
+            var result = flow()
+            result.webSocketMessages = payloads.map {
+                WebSocketMessage(
+                    direction: .serverToClient, kind: .text, payload: Data($0.utf8),
+                    timestamp: Date(timeIntervalSince1970: 3)
+                )
+            }
+            return result
+        }
+        let diff = FlowDiff.diff(base: webSocket(["a", "b"]), compared: webSocket(["a", "c"]))
+        #expect(diff["identical"] as? Bool == false)
+        #expect((diff["webSocket"] as? [String: Any])?["firstDifferingMessage"] as? Int == 1)
+    }
+
+    @Test func nonWebSocketFlows_carryNoWebSocketBlock() {
+        #expect(FlowDiff.diff(base: flow(), compared: flow())["webSocket"] == nil)
+    }
 }

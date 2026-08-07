@@ -177,6 +177,96 @@ import Testing
         ))
     }
 
+    // MARK: - Flow diff
+    //
+    // `diff_flows` was the last agent-facing render still hand-building a
+    // `[String: Any]`, i.e. the last one where adding a model field compiled
+    // everywhere and the agent silently never saw it. These are the census entries
+    // that close it.
+
+    @Test func flowDiff_carriesEveryModelField() {
+        let comparison = FlowComparison(
+            baseID: UUID(),
+            comparedID: UUID(),
+            request: FlowComparison.MessageComparison(),
+            response: FlowComparison.ResponseComparison()
+        )
+        check(Census(
+            "FlowComparison → diff_flows",
+            model: comparison,
+            render: FlowDiffRender(comparison),
+            accountedFor: [
+                "baseID": "renamed to `baseId`, matching every other id key an agent reads",
+                "comparedID": "renamed to `comparedId`",
+            ]
+        ))
+    }
+
+    @Test func flowDiffPieces_carryEveryModelField() {
+        let message = FlowComparison.MessageComparison()
+        check(Census(
+            "FlowComparison.MessageComparison → diff_flows.request",
+            model: message,
+            render: MessageDiffRender(message)
+        ))
+
+        let response = FlowComparison.ResponseComparison()
+        check(Census(
+            "FlowComparison.ResponseComparison → diff_flows.response",
+            model: response,
+            render: ResponseDiffRender(response),
+            accountedFor: [
+                "presence": "renamed to `present` — the key holds the two booleans, not the concept",
+            ]
+        ))
+
+        let change = FlowComparison.ValueChange(base: "a", compared: "b")
+        check(Census(
+            "FlowComparison.ValueChange → every {base, compared} pair",
+            model: change,
+            render: ValueChangeRender(change)
+        ))
+
+        let header = FlowComparison.HeaderChange(name: "Accept", base: ["a"], compared: ["b"])
+        check(Census(
+            "FlowComparison.HeaderChange → diff_flows headers.changed[]",
+            model: header,
+            render: HeaderDiffRender.Changed(name: header.name, base: ["a"], compared: ["b"])
+        ))
+    }
+
+    @Test func bodyDiff_carriesEveryModelField() {
+        let body = FlowComparison.BodyComparison(
+            baseBytes: 1, comparedBytes: 2, baseWireBytes: 3, comparedWireBytes: 4, detail: .binary
+        )
+        check(Census(
+            "FlowComparison.BodyComparison → diff_flows body block",
+            model: body,
+            render: BodyDiffRender(body),
+            accountedFor: [
+                "baseWireBytes": "renamed to `baseBytesOnWire`, the vocabulary get_flow_detail already uses for the same fact",
+                "comparedWireBytes": "renamed to `comparedBytesOnWire`",
+                "detail": "folded: the sum type becomes `binary` / `tailNotCompared` / `lineDiffSkipped`+line counts / added+removedLines",
+            ]
+        ))
+    }
+
+    @Test func webSocketDiff_carriesEveryModelField() {
+        let webSocket = FlowComparison.WebSocketComparison(
+            presence: FlowComparison.ValueChange(base: true, compared: false)
+        )
+        check(Census(
+            "FlowComparison.WebSocketComparison → diff_flows.webSocket",
+            model: webSocket,
+            render: WebSocketDiffRender(webSocket),
+            accountedFor: [
+                "presence": "renamed to `present`",
+                "droppedMessages": "renamed to `framesNotRecorded`, matching get_flow_detail.webSocket",
+                "captureError": "renamed to `captureStopped`, matching get_flow_detail.webSocket",
+            ]
+        ))
+    }
+
     // MARK: - Stats
 
     @Test func statsBucket_carriesEveryModelField() {

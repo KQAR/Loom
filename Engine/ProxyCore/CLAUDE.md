@@ -53,7 +53,12 @@ drops Host so it follows the mapped origin). `forward` (buffered) is a **fold** 
   dropped.
 - The fact must surface everywhere: `get_recent_flows` (`captureTruncated`), `get_flow_detail`
   (`bodyCaptureTruncated` + `bodyBytesOnWire`, `webSocket.framesNotRecorded`), HAR (`bodySize` =
-  wire size + `_bodyTruncated`) and the Inspector body pane.
+  wire size + `_bodyTruncated`), the Inspector body pane — and **`diff_flows`**, which is the one
+  place where missing it produced a wrong answer rather than a thin one: two bodies capped at the
+  same byte count have identical prefixes whatever their tails did, so the comparison reported a
+  confident "no difference". `FlowComparison.compareBodies` takes both sides' `fullBodyBytes`, a
+  matching pair of prefixes is `.tailNotCaptured` rather than `nil`, and `FlowComparison.isPartial`
+  is what both surfaces qualify "identical" with.
 
 ## WebSocket
 
