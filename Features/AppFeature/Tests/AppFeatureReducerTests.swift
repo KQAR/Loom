@@ -1,3 +1,4 @@
+import AppKit
 import ComposableArchitecture
 import Foundation
 import LoomSharedModels
@@ -271,6 +272,49 @@ import Testing
         await store.send(.audit(.entryReceived(entry))) {
             $0.audit.entries.append(entry)
         }
+    }
+
+    // MARK: Coming back to Loom re-reads what a human changed elsewhere
+
+    /// The audit-stream refresh covers the writer that is an agent. CA trust has a
+    /// different one: Loom prints a `sudo security add-trusted-cert` line and the
+    /// human runs it in Terminal, or revokes it later in Keychain Access. Neither is
+    /// a write tool, and the main window's `.task` fires once per launch — so its
+    /// "Not trusted" row kept saying so afterwards.
+    @Test func appActivation_yieldsWhenLoomComesToTheFront() async {
+        var iterator = AppActivation.events().makeAsyncIterator()  // registers now
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        let received: Void? = await iterator.next()
+        #expect(received != nil, "activation must reach the reducer")
+    }
+
+    /// …and what activation triggers is the re-read, `certificateStatus` included.
+    @Test func viewAppeared_reReadsTheTrustState() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+            $0.proxyClient.rulesState = { RulesState() }
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+            $0.proxyClient.clientCertificates = { [] }
+            $0.proxyClient.certificateStatus = {
+                CertificateStatus(
+                    isGenerated: true, isTrusted: true, commonName: "Loom Root CA",
+                    sha256Fingerprint: "AA:BB", notAfter: Date(timeIntervalSince1970: 0)
+                )
+            }
+            $0.proxyClient.armedBreakpoints = { [] }
+            $0.proxyClient.pendingBreakpoints = { [] }
+            $0.updaterClient.checkInBackgroundIfDue = { }
+            $0.privilegedHelperClient.systemProxySnapshot = { .off }
+            $0.privilegedHelperClient.helperState = { .notInstalled }
+            $0.privilegedHelperClient.helperFailureReason = { nil }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.viewAppeared)
+        await store.receive(\.setup.certificateStatusLoaded)
+        #expect(store.state.setup.certificateStatus.isTrusted,
+                "trust granted outside Loom must land without a relaunch")
     }
 
     // MARK: The QR follows the machine
