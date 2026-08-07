@@ -27,10 +27,28 @@ jobs:
   # reports, leaving the PR blocked forever — whereas a job skipped by `if:`
   # reports "skipped", which branch protection treats as passing. Anything
   # ambiguous (unknown base, empty diff) falls through to running everything.
+  #
+  # The two timeouts below are split on purpose, and the reason cost three
+  # re-runs to find. `timeout-minutes` on a job covers "Set up job" too —
+  # acquiring a runner and resolving every `uses:` action — so a five-minute job
+  # budget was really a five-minute budget on GitHub's own infrastructure. During
+  # an Actions outage the setup step sat in `Failed to resolve action download
+  # info. Error: Service Unavailable` and got killed at the deadline, and the job
+  # reported **cancelled** — which reads exactly like a workflow-level cancel or
+  # a runner that was never picked up, and is neither. Re-running does not help
+  # until GitHub recovers.
+  #
+  # So: the job budget is generous enough to sit through GitHub's own retries (it
+  # gives up after roughly three minutes), and the step doing the actual work
+  # carries its own tight budget. A `git diff` against a fetched base takes
+  # seconds; if it ever takes two minutes that is a real defect, and it now fails
+  # **at that step**, by name, instead of being indistinguishable from a stalled
+  # setup. Reading a red run: no completed step other than "Set up job" means
+  # GitHub, not this repo — check https://www.githubstatus.com before diagnosing.
   changes:
     name: Detect docs-only change
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
@@ -40,6 +58,7 @@ jobs:
 
       - name: Diff against base
         id: diff
+        timeout-minutes: 2
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
