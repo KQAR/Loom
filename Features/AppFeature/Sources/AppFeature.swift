@@ -462,6 +462,7 @@ public struct AppFeature: Sendable {
 
     private enum CancelID {
         case subscription, updates, devices, cleared, localIP, phoneRepublish, mirrorRefresh
+        case activation
     }
 
     /// Trailing window for re-reading what an agent wrote. Short enough that the
@@ -633,6 +634,19 @@ public struct AppFeature: Sendable {
                         }
                     }
                     .cancellable(id: CancelID.localIP, cancelInFlight: true),
+                    // Re-sync when Loom comes back to the front. The audit-stream
+                    // refresh covers the writer that is an agent; this covers the
+                    // one that is a human in another app — running the printed
+                    // `sudo security add-trusted-cert`, revoking it in Keychain
+                    // Access, approving the helper in System Settings. None of those
+                    // is a write tool, and the main window's own `.task` fires once
+                    // per launch, so nothing re-read them while it stayed open.
+                    .run { send in
+                        for await _ in AppActivation.events() {
+                            await send(.viewAppeared)
+                        }
+                    }
+                    .cancellable(id: CancelID.activation, cancelInFlight: true),
                     // Write-action audit trail: seed history, then follow live. Owned
                     // by the child, so its cancellation lives with the state it feeds.
                     .send(.audit(.task)),
