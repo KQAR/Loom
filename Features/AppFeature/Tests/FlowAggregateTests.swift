@@ -225,3 +225,67 @@ import Testing
         #expect(seeded.hosts.map(\.count) == incremental.hosts.map(\.count))
     }
 }
+
+/// `hostByFlow` is the seventh aggregate, and it is the one keyed by *flow* rather
+/// than by host — so the mirror-image rule `contribute`/`retract` live by has a new
+/// way to go wrong: an entry that outlives its flow makes a row match a category it
+/// is no longer in, and one dropped too early makes it vanish from a filtered list
+/// while still being counted in the sidebar.
+@Suite struct FlowHostIndexTests {
+    private func flow(_ url: String) -> Flow {
+        Flow(
+            request: CapturedRequest(method: "GET", url: url, headers: []),
+            startedAt: Date()
+        )
+    }
+
+    @Test func aFlowsHostIsIndexedAndAgreesWithTheSidebarCounts() {
+        var aggregates = FlowAggregates()
+        let a = flow("https://api.example.test/v1")
+        aggregates.contribute(a)
+        #expect(aggregates.hostByFlow[a.id] == "api.example.test")
+        #expect(aggregates.hostCounts["api.example.test"] == 1)
+    }
+
+    @Test func retractDropsTheIndexEntryWithTheCount() {
+        var aggregates = FlowAggregates()
+        let a = flow("https://api.example.test/v1")
+        aggregates.contribute(a)
+        aggregates.retract(a)
+        #expect(aggregates.hostByFlow[a.id] == nil)
+        #expect(aggregates.hostCounts["api.example.test"] == nil)
+    }
+
+    @Test func removeAllClearsTheIndexToo() {
+        var aggregates = FlowAggregates()
+        aggregates.contribute(flow("https://api.example.test/v1"))
+        aggregates.removeAll()
+        #expect(aggregates.hostByFlow.isEmpty)
+    }
+
+    /// The eviction path: a flow dropped past the display cap must leave no index
+    /// entry behind, or the map grows for the life of the session.
+    @Test func aFlowEvictedByTheDisplayCapLeavesNoEntry() {
+        var state = AppFeature.State()
+        let first = flow("https://first.example.test/v1")
+        state.recordFlow(first)
+        for i in 0 ..< AppFeature.State.displayCap {
+            state.recordFlow(flow("https://bulk.example.test/\(i)"))
+        }
+        #expect(state.flows[id: first.id] == nil)
+        #expect(state.aggregates.hostByFlow[first.id] == nil)
+        #expect(state.aggregates.hostByFlow.count == state.flows.count)
+    }
+
+    /// An upsert (pending → completed) replaces rather than duplicates, and the index
+    /// must not be left pointing at the old copy's host if the URL changed.
+    @Test func replacingAFlowRepointsTheIndex() {
+        var state = AppFeature.State()
+        var moved = flow("https://before.example.test/v1")
+        state.recordFlow(moved)
+        moved.request.url = "https://after.example.test/v1"
+        state.recordFlow(moved)
+        #expect(state.aggregates.hostByFlow[moved.id] == "after.example.test")
+        #expect(state.aggregates.hostCounts["before.example.test"] == nil)
+    }
+}
