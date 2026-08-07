@@ -39,7 +39,7 @@ Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style): a ca
 2. **Request table — the requests.** A multi-column table (status · method · host · path · time), newest first, resizable columns; single selection drives the inspector. `↻` marks agent-replayed rows.
 3. **Inspector — the selected flow.** Hidden until a row is selected (the table then fills the whole pane); selecting reveals it below the table, split **Request (left) | Response (right)** — layout referenced from Proxyman, tab sets per [`DESIGN.md`](DESIGN.md) `{components.inspector-panel}`. What matters here: the **Replay** button lives in the Request pane and runs the same `ProxyEngine.shared` write path the agent uses, and the Response pane's ✕ close hides the inspector by deselecting.
 
-The window toolbar has a centered status chip — dot + `LAN-IP:port` + three gray/green quick toggles (System proxy, SSL, Map/rewrite) — and, right-aligned, a **Record** start/stop button (capture pause/resume: paused means traffic keeps flowing but isn't stored) and **Clear**. Breakpoint interception is **not** this button — held/armed breakpoints surface in the sidebar → Breakpoints panel and as the console's Breakpoints row. No search field, no window title. A normal, persistent, resizable window, opened at launch and from the console — where the human watches traffic.
+The window toolbar has a centered status chip — dot + the **listener's** `host:port` (the LAN IP while the proxy is bound to `0.0.0.0`, `127.0.0.1` while it is not — an address the listener is not on is worse than a narrow one, because it sends the human to debug their client) + three gray/green quick toggles (System proxy, SSL, Map/rewrite) — and, right-aligned, a **Record** start/stop button (capture pause/resume: paused means traffic keeps flowing but isn't stored) and **Clear**. Breakpoint interception is **not** this button — held/armed breakpoints surface in the sidebar → Breakpoints panel and as the console's Breakpoints row. No search field, no window title. A normal, persistent, resizable window, opened at launch and from the console — where the human watches traffic.
 
 ## The Guardrail: loopback boundary + full audit trail
 
@@ -66,7 +66,7 @@ The agent is never a black box the human can't interrupt.
 ## Degraded & Empty States
 
 - **Faults** (proxy bind failure, upstream unreachable, cert not trusted) render as fault cards at the top of the status-bar console. The agent's affected tool calls return the matching structured error, so human and agent learn of the fault together.
-- **Empty list** (main window) has two honest meanings and must not look identical: *proxy stopped* (start it from the console) vs *running, nothing captured yet* (hint: point a client at `127.0.0.1:<port>` / `curl -x`). Use `ContentUnavailableView` for both.
+- **Empty list** (main window) has two honest meanings and must not look identical: *proxy stopped* (start it from the console) vs *running, nothing captured yet* (hint: point a client at the listener's own `host:port` / `curl -x` — the same address the toolbar chip names, never a hardcoded `127.0.0.1`, which is wrong the moment LAN device connection is on). Use `ContentUnavailableView` for both.
 
 ## Menu-bar icon & notifications
 
