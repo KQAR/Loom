@@ -12,7 +12,7 @@ of the package on purpose.
 
 | Product | Target | For a consumer that wants… |
 |---------|--------|----------------------------|
-| `LoomSharedModels` | `SharedModels` | just the value types (`Flow`, `CapturedRequest/Response`, `HeaderPair`, rules, HAR) — Foundation-only, no NIO |
+| `LoomSharedModels` | `SharedModels` | the value types (`Flow`, `CapturedRequest/Response`, `HeaderPair`, rules, HAR), plus the handful of pure helpers both the engine and a host need one shared answer from (`LANAddress`, `URLHost`, `LoomPaths`) — Foundation-only, no NIO |
 | `LoomProxyCore` | `ProxyCore` | the full engine: NIO proxy, HTTPS MITM, on-demand CA, traffic rules, replay (pulls in `LoomSharedModels`) |
 
 ```bash
