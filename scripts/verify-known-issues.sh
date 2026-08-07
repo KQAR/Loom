@@ -58,8 +58,8 @@ check "MainView uses no NavigationSplitView/HSplitView" \
 check "the pre-26 design key is still set"         has 'UIDesignRequiresCompatibility' Project.swift
 check "release signing is ad-hoc by decision"      has 'CODE_SIGN_IDENTITY="-"' .github/workflows/release.yml
 check "Sparkle's public EdDSA key is committed"    has 'SUPublicEDKey' Project.swift
-check "NSLock is gone from every shipping target" \
-      bash -c '! grep -rn "= NSLock()" --include="*.swift" App Clients Engine Features Helper SharedModels'
+check "NSLock is gone from the repo" \
+      bash -c '! grep -rn "= NSLock()" --include="*.swift" App Clients Engine Features Helper SharedModels Tools'
 check "the custom SF Symbols still resolve"        python3 Tools/symbol-template/check.py
 
 # ProxyCore's warning-free claim. `appintentsmetadataprocessor` prints its own
