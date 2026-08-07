@@ -19,7 +19,9 @@ cd Tools/h2-stall-repro
 # Deterministic model — passes every variant. Fast.
 swift run h2-embedded
 
-# Real sockets. Needs CPU contention to reproduce: without load it passes 200/200.
+# Real sockets. CPU contention makes it frequent — but it is not required:
+# on macOS 26 / Swift 6.2 an unloaded run stalled at iteration 54 of 60 (2026-08-07),
+# with the documented signature. Treat "passes without load" as a tendency, not a rule.
 for i in $(seq 1 10); do yes > /dev/null & done
 swift run -c release h2-sockets 1500      # iterations
 kill $(jobs -p)

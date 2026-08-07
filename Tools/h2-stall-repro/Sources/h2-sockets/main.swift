@@ -12,6 +12,7 @@
 // The upload is larger than one 65535-byte flow-control window, so it can only
 // finish if consuming replenishes the window. A stall parks at exactly 65535.
 import Foundation
+import Synchronization
 import NIOCore
 import NIOPosix
 import NIOHPACK
@@ -67,37 +68,67 @@ final class Bridge: @unchecked Sendable {
 
     func finish() { source.finish() }
 
-    final class Delegate: NIOAsyncSequenceProducerDelegate, @unchecked Sendable {
-        private let lock = NSLock()
-        private var channel: Channel?
-        private var terminated = false
+    /// Mirrors `RequestBodyBridge.Delegate`, `Mutex` included — the point of this
+    /// package is to be shaped like Loom's usage with none of Loom's code, so a
+    /// difference in the harness is a difference in the evidence. Note `readMore`
+    /// takes the channel *out* of the lock and calls `read()` outside it, which is the
+    /// same two-section shape Loom uses and is not incidental: `read()` re-enters the
+    /// pipeline.
+    final class Delegate: NIOAsyncSequenceProducerDelegate, Sendable {
+        private struct State {
+            var channel: Channel?
+            var terminated = false
+        }
 
-        func setChannel(_ channel: Channel) { lock.lock(); self.channel = channel; lock.unlock() }
+        private let state = Mutex(State())
+
+        func setChannel(_ channel: Channel) { state.withLock { $0.channel = channel } }
         func produceMore() { readMore() }
-        func didTerminate() { lock.lock(); terminated = true; channel = nil; lock.unlock() }
+        func didTerminate() {
+            state.withLock {
+                $0.terminated = true
+                $0.channel = nil
+            }
+        }
+
         func readMore() {
-            lock.lock()
-            let channel = terminated ? nil : self.channel
-            lock.unlock()
+            let channel = state.withLock { $0.terminated ? nil : $0.channel }
             channel?.read()
         }
     }
 }
 
 /// Counts what each side achieved, so a stall reports the same numbers the Loom test does.
-final class Counters: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _consumed = 0
-    private var _frames = 0
-    var consumed: Int { lock.lock(); defer { lock.unlock() }; return _consumed }
-    var frames: Int { lock.lock(); defer { lock.unlock() }; return _frames }
-    private var _windowGrants = 0
-    private var _lastOutboundWindow = -1
-    var windowGrants: Int { lock.lock(); defer { lock.unlock() }; return _windowGrants }
-    var lastOutboundWindow: Int { lock.lock(); defer { lock.unlock() }; return _lastOutboundWindow }
-    func add(bytes: Int) { lock.lock(); _consumed += bytes; _frames += 1; lock.unlock() }
-    func recordGrant(outboundWindow: Int) { lock.lock(); _windowGrants += 1; _lastOutboundWindow = outboundWindow; lock.unlock() }
-    func reset() { lock.lock(); _consumed = 0; _frames = 0; _windowGrants = 0; _lastOutboundWindow = -1; lock.unlock() }
+final class Counters: Sendable {
+    private struct State {
+        var consumed = 0
+        var frames = 0
+        var windowGrants = 0
+        var lastOutboundWindow = -1
+    }
+
+    private let state = Mutex(State())
+
+    var consumed: Int { state.withLock(\.consumed) }
+    var frames: Int { state.withLock(\.frames) }
+    var windowGrants: Int { state.withLock(\.windowGrants) }
+    var lastOutboundWindow: Int { state.withLock(\.lastOutboundWindow) }
+
+    func add(bytes: Int) {
+        state.withLock {
+            $0.consumed += bytes
+            $0.frames += 1
+        }
+    }
+
+    func recordGrant(outboundWindow: Int) {
+        state.withLock {
+            $0.windowGrants += 1
+            $0.lastOutboundWindow = outboundWindow
+        }
+    }
+
+    func reset() { state.withLock { $0 = State() } }
 }
 
 let counters = Counters()

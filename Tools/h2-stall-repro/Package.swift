@@ -9,7 +9,11 @@ import PackageDescription
 // because the exact NIO / NIOHTTP2 versions are part of the evidence.
 let package = Package(
     name: "h2-stall-repro",
-    platforms: [.macOS(.v14)],
+    // macOS 15 for `Synchronization.Mutex`, matching the app graph. The old .v14 was
+    // inherited from before Loom's own floor rose in 0.0.16, not chosen — and the
+    // harness below mirrors `RequestBodyBridge.Delegate`, which is a `Mutex` now, so
+    // staying on `NSLock` here was drift from the very thing this package reproduces.
+    platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.72.0"),
         .package(url: "https://github.com/apple/swift-nio-http2.git", from: "1.30.0"),
