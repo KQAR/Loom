@@ -26,48 +26,7 @@ extension MCPToolExecutor {
     // MARK: - Rendering
 
     static func flowSummary(_ flow: Flow) -> [String: Any] {
-        var out: [String: Any] = [
-            "id": flow.id.uuidString,
-            "method": flow.request.method,
-            "url": flow.request.url,
-            // When it happened — without this an agent can't tell a flow from three
-            // hours ago from the one it just triggered, nor order across calls.
-            "startedAt": iso8601.string(from: flow.startedAt),
-        ]
-        if let status = flow.statusCode { out["status"] = status }
-        if let ms = flow.durationMS { out["durationMS"] = ms }
-        // Split the duration so "why is this slow" is answerable: ttfb is the
-        // server's share, receive is the payload's.
-        if let ms = flow.ttfbMS { out["ttfbMS"] = ms }
-        if let ms = flow.receiveMS { out["receiveMS"] = ms }
-        if let error = flow.error { out["error"] = error }
-        if let from = flow.replayedFrom { out["replayedFrom"] = from.uuidString }
-        // Loaded from a file, not observed here — the one thing that must never be
-        // implicit about an imported flow.
-        if let importedFrom = flow.importedFrom { out["importedFrom"] = importedFrom }
-        if let applied = flow.appliedRules { out["appliedRules"] = applied.map(\.name) }
-        if let messages = flow.webSocketMessages {
-            out["webSocket"] = true
-            out["wsMessageCount"] = messages.count
-        }
-        // Flag a partially-captured exchange in the *summary* too, so an agent
-        // knows a body is a prefix before it fetches (or diffs) the detail.
-        if flow.request.isBodyTruncated || flow.response?.isBodyTruncated == true
-            || flow.webSocketDroppedMessages != nil || flow.webSocketCaptureError != nil {
-            out["captureTruncated"] = true
-        }
-        if let app = flow.sourceApp {
-            var appOut: [String: Any] = ["name": app.name, "pid": Int(app.pid)]
-            if let bundleID = app.bundleID { appOut["bundleID"] = bundleID }
-            out["sourceApp"] = appOut
-        }
-        if let device = flow.sourceDevice {
-            var deviceOut: [String: Any] = ["ip": device.ip, "kind": device.kind.rawValue]
-            if let platform = device.platform { deviceOut["platform"] = platform }
-            if let client = device.client { deviceOut["client"] = client }
-            out["sourceDevice"] = deviceOut
-        }
-        return out
+        MCPRender.dict(FlowSummaryRender(flow))
     }
 
     /// One flow rendered for `get_flow_detail`. Bodies go through `bodyField`, so
@@ -80,79 +39,53 @@ extension MCPToolExecutor {
         maxBytes: Int = defaultBodyBytes,
         webSocketLimit: Int = defaultWebSocketMessages
     ) -> [String: Any] {
-        var out = flowSummary(flow)
-        var requestOut: [String: Any] = [
-            "method": flow.request.method,
-            "url": flow.request.url,
-            "headers": flow.request.headers.map { ["name": $0.name, "value": $0.value] },
-            "body": bodyField(flow.request.body, offset: offset, maxBytes: maxBytes),
-        ]
-        // Capture truncation is a different fact from render truncation above: the
-        // recorded copy itself is a prefix, so no `body_offset` can reach the rest.
-        // Say so explicitly, with the real wire size.
-        if let wireBytes = flow.request.fullBodyBytes {
-            requestOut["bodyCaptureTruncated"] = true
-            requestOut["bodyBytesOnWire"] = wireBytes
-        }
-        out["request"] = requestOut
-        if let response = flow.response {
-            var responseOut: [String: Any] = [
-                "status": response.statusCode,
-                "headers": response.headers.map { ["name": $0.name, "value": $0.value] },
-                "body": bodyField(response.body, offset: offset, maxBytes: maxBytes),
-            ]
-            if let version = response.httpVersion { responseOut["httpVersion"] = version }
-            if let wireBytes = response.fullBodyBytes {
-                responseOut["bodyCaptureTruncated"] = true
-                responseOut["bodyBytesOnWire"] = wireBytes
-            }
-            out["response"] = responseOut
-        }
-        if let graphQL = GraphQLParser.parse(flow.request) {
-            var gql: [String: Any] = ["kind": graphQL.kind.rawValue, "query": graphQL.query]
-            if let name = graphQL.operationName { gql["operationName"] = name }
-            if let variables = graphQL.variablesJSON { gql["variables"] = variables }
-            out["graphQL"] = gql
-        }
+        var webSocket: RenderedWebSocket?
         if let messages = flow.webSocketMessages {
             // A chatty socket records up to 10k frames; returning them all would
             // flood the agent's context, so hand back the most recent slice and say
             // so. Each frame's text is capped the same way a body is.
             let shown = messages.suffix(webSocketLimit)
-            var ws: [String: Any] = [
-                "messageCount": messages.count,
-                "messages": shown.map { message in
-                    var msg: [String: Any] = [
-                        "direction": message.direction.rawValue,
-                        "kind": message.kind.rawValue,
-                        "isFinal": message.isFinal,
-                    ]
-                    if message.textPayload != nil {
-                        msg["text"] = bodyField(message.payload, maxBytes: maxBytes)
-                    } else {
-                        msg["bytes"] = message.payload.count
-                    }
-                    return msg
+            webSocket = RenderedWebSocket(
+                messageCount: messages.count,
+                messages: shown.map { message in
+                    RenderedWebSocketMessage(
+                        direction: message.direction.rawValue,
+                        kind: message.kind.rawValue,
+                        isFinal: message.isFinal,
+                        text: message.textPayload != nil
+                            ? bodyField(message.payload, maxBytes: maxBytes) : nil,
+                        bytes: message.textPayload == nil ? message.payload.count : nil
+                    )
                 },
-            ]
-            if shown.count < messages.count {
-                ws["messagesTruncated"] = true
-                ws["messagesShown"] = shown.count
-            }
-            // Frames the *capture* cap dropped — never recorded, so no paging can
-            // recover them. Distinct from the render cap above.
-            if let dropped = flow.webSocketDroppedMessages {
-                ws["framesNotRecorded"] = dropped
-            }
-            // Parsing gave up mid-connection: the frame log ends here even though
-            // the socket didn't. Distinct from both caps above — nothing after this
-            // point was ever seen as a frame, so there is no count to give.
-            if let failure = flow.webSocketCaptureError {
-                ws["captureStopped"] = failure
-            }
-            out["webSocket"] = ws
+                messagesTruncated: shown.count < messages.count ? true : nil,
+                messagesShown: shown.count < messages.count ? shown.count : nil,
+                // Frames the *capture* cap dropped — never recorded, so no paging can
+                // recover them. Distinct from the render cap above.
+                framesNotRecorded: flow.webSocketDroppedMessages,
+                // Parsing gave up mid-connection: the frame log ends here even though
+                // the socket didn't. Distinct from both caps above — nothing after this
+                // point was ever seen as a frame, so there is no count to give.
+                captureStopped: flow.webSocketCaptureError
+            )
         }
-        return out
+        let detail = FlowDetailRender(
+            request: RenderedRequest(
+                flow.request,
+                body: bodyField(flow.request.body, offset: offset, maxBytes: maxBytes)
+            ),
+            response: flow.response.map { response in
+                RenderedResponse(
+                    response,
+                    body: bodyField(response.body, offset: offset, maxBytes: maxBytes)
+                )
+            },
+            graphQL: GraphQLParser.parse(flow.request).map(RenderedGraphQL.init),
+            webSocket: webSocket
+        )
+        // Merged over the summary rather than restating it: the detail owns only the
+        // keys it adds, and `webSocket` deliberately *replaces* the summary's bare
+        // `true` with the frame log.
+        return flowSummary(flow).merging(MCPRender.dict(detail)) { _, detail in detail }
     }
 
     /// Default body budget per side for one tool call. Big enough for a normal API
@@ -168,8 +101,8 @@ extension MCPToolExecutor {
     /// distinguishable), always bounded by `maxBytes`. `offset` pages into a large
     /// body; the window is a *byte* range, so a code point straddling either edge
     /// is trimmed rather than rendered as replacement characters.
-    static func bodyField(_ data: Data?, offset: Int = 0, maxBytes: Int = defaultBodyBytes) -> Any {
-        guard let data, !data.isEmpty else { return "" }
+    static func bodyField(_ data: Data?, offset: Int = 0, maxBytes: Int = defaultBodyBytes) -> RenderedBody {
+        guard let data, !data.isEmpty else { return .text("") }
         let total = data.count
         let start = min(max(0, offset), total)
         let end = min(total, start + max(0, maxBytes))
@@ -178,13 +111,11 @@ extension MCPToolExecutor {
         // doesn't decode is genuinely binary — trimming it anyway would let a PNG
         // header render as text.
         guard let text = utf8Text(window, trimLeading: start > 0, trimTrailing: end < total) else {
-            return ["binary": true, "bytes": total]
+            return .binary(bytes: total)
         }
         // Whole body, from the start: return it plainly (the common small-body case).
-        if start == 0, end == total { return text }
-        var out: [String: Any] = ["truncated": true, "preview": text, "bytes": total, "offset": start]
-        if end < total { out["nextOffset"] = end }
-        return out
+        if start == 0, end == total { return .text(text) }
+        return .window(preview: text, bytes: total, offset: start, nextOffset: end < total ? end : nil)
     }
 
     /// Decode a byte window as UTF-8, dropping a leading continuation fragment and

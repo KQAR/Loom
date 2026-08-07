@@ -90,38 +90,37 @@ extension MCPToolExecutor {
     }
 
     static func breakpoint(_ bp: Breakpoint) -> [String: Any] {
-        var out: [String: Any] = [
-            "id": bp.id.uuidString,
-            "match": matchDict(bp.match),
-            "onRequest": bp.onRequest,
-            "onResponse": bp.onResponse,
-            "createdAt": iso8601.string(from: bp.createdAt),
-        ]
-        if let comment = bp.comment { out["comment"] = comment }
-        return out
+        MCPRender.dict(BreakpointRender(
+            id: bp.id.uuidString,
+            match: RuleMatchRender(bp.match),
+            onRequest: bp.onRequest,
+            onResponse: bp.onResponse,
+            createdAt: bp.createdAt,
+            comment: bp.comment
+        ))
     }
 
     static func pendingBreakpoint(_ pending: PendingBreakpoint) -> [String: Any] {
-        var out: [String: Any] = [
-            "id": pending.id.uuidString,
-            "breakpointId": pending.breakpointID.uuidString,
-            "phase": pending.phase.rawValue,
-            "heldAt": iso8601.string(from: pending.heldAt),
-            "request": [
-                "method": pending.method,
-                "url": pending.url,
-                "headers": pending.requestHeaders.map { ["name": $0.name, "value": $0.value] },
-                "body": bodyField(pending.requestBody),
-            ],
-        ]
-        if pending.phase == .response {
-            var response: [String: Any] = [
-                "headers": (pending.responseHeaders ?? []).map { ["name": $0.name, "value": $0.value] },
-                "body": bodyField(pending.responseBody),
-            ]
-            if let statusCode = pending.statusCode { response["status"] = statusCode }
-            out["response"] = response
-        }
-        return out
+        MCPRender.dict(PendingBreakpointRender(
+            id: pending.id.uuidString,
+            breakpointId: pending.breakpointID.uuidString,
+            phase: pending.phase.rawValue,
+            heldAt: pending.heldAt,
+            request: PendingRequestRender(
+                method: pending.method,
+                url: pending.url,
+                headers: RenderedHeader.list(pending.requestHeaders),
+                body: bodyField(pending.requestBody)
+            ),
+            // Only in the response phase: the client is waiting on bytes the origin
+            // has already sent, and there is nothing to show before that.
+            response: pending.phase == .response
+                ? PendingResponseRender(
+                    headers: RenderedHeader.list(pending.responseHeaders ?? []),
+                    body: bodyField(pending.responseBody),
+                    status: pending.statusCode
+                )
+                : nil
+        ))
     }
 }

@@ -367,14 +367,6 @@ extension MCPToolExecutor {
     /// differently. `RuleMatch` is already parsed once (`ruleMatch(from:)`) and
     /// advertised once (`matchSchema`); this closes the third side.
     static func matchDict(_ match: RuleMatch) -> [String: Any] {
-        var out: [String: Any] = ["urlPattern": match.urlPattern]
-        if match.isRegex { out["isRegex"] = true }
-        if match.isExact { out["isExact"] = true }
-        if let hostPattern = match.hostPattern, !hostPattern.isEmpty { out["hostPattern"] = hostPattern }
-        if let query = match.query, !query.isEmpty { out["query"] = query }
-        if let sourceApp = match.sourceApp, !sourceApp.isEmpty { out["sourceApp"] = sourceApp }
-        if let deviceIP = match.deviceIP, !deviceIP.isEmpty { out["deviceIP"] = deviceIP }
-        if !match.methods.isEmpty { out["methods"] = match.methods }
-        return out
+        MCPRender.dict(RuleMatchRender(match))
     }
 }
