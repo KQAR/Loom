@@ -12,7 +12,7 @@ extension MCPToolExecutor {
     // MARK: - Handlers (one per tool)
 
     func handleGetVersion(_ arguments: [String: Any]) async throws -> String {
-        prettyJSON([
+        var payload: [String: Any] = [
             "app": "Loom",
             "appVersion": appVersion,
             // The newest revision served, plus the whole dual-era set — the same list
@@ -20,7 +20,14 @@ extension MCPToolExecutor {
             // one answer whichever way it asked.
             "protocolVersion": protocolVersion,
             "supportedProtocolVersions": MCPProtocol.supported,
-        ])
+        ]
+        // Which revision the requests actually spoke this run. Omitted entirely when
+        // nothing is counting (an executor built without a server around it), because
+        // "no legacy traffic" and "no tally" must not read the same.
+        if let eraLog {
+            payload["protocolTraffic"] = MCPRender.dict(ProtocolTrafficRender(eraLog.snapshot()))
+        }
+        return prettyJSON(payload)
     }
 
     func handleGetProxyStatus(_ arguments: [String: Any]) async throws -> String {

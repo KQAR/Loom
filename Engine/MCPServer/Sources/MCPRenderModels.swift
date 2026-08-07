@@ -750,3 +750,60 @@ struct SubstitutionRender: Encodable {
         caseSensitive = sub.caseSensitive ? true : nil
     }
 }
+
+// MARK: - Protocol traffic
+
+/// `get_version.protocolTraffic` — which revision the requests reaching this endpoint
+/// actually spoke.
+///
+/// Here rather than in a log line because the decision it feeds is made by whoever is
+/// cutting a release, and it is the § "log it for the human, return it for the agent"
+/// rule: an agent asked to check whether the old revision is still in use must be able
+/// to *read* the answer.
+///
+/// `legacyHandshakes` is the number the retirement condition in ROADMAP § Structured
+/// Channel reads. `legacyBareRequests` is deliberately reported next to it and
+/// deliberately *not* counted as evidence — a request that declared no era at all is
+/// legacy by fallback, and could as easily be a stripped header or a hand-typed curl
+/// as an old client.
+struct ProtocolTrafficRender: Encodable {
+    var modernRequests: Int
+    var legacyHandshakes: Int
+    var legacyBareRequests: Int
+    /// True only while `legacyHandshakes` is zero — the whole point of the tally,
+    /// stated rather than left to be derived, so a reader can't mistake a nonzero
+    /// bare-request count for a blocker.
+    var legacyEraRetirable: Bool
+    var modernClients: [ProtocolClientRender]?
+    var legacyClients: [ProtocolClientRender]?
+    /// Distinct clients dropped by the cap, per era — never silently.
+    var modernClientsOmitted: Int?
+    var legacyClientsOmitted: Int?
+
+    init(_ snapshot: MCPEraLog.Snapshot) {
+        modernRequests = (snapshot.counts[.modernMeta] ?? 0) + (snapshot.counts[.modernHeader] ?? 0)
+        legacyHandshakes = snapshot.legacyHandshakes
+        legacyBareRequests = snapshot.counts[.legacyBareRequest] ?? 0
+        legacyEraRetirable = snapshot.legacyHandshakes == 0
+        modernClients = snapshot.modernClients.isEmpty
+            ? nil : snapshot.modernClients.map(ProtocolClientRender.init)
+        legacyClients = snapshot.legacyClients.isEmpty
+            ? nil : snapshot.legacyClients.map(ProtocolClientRender.init)
+        modernClientsOmitted = snapshot.modernClientsOmitted > 0 ? snapshot.modernClientsOmitted : nil
+        legacyClientsOmitted = snapshot.legacyClientsOmitted > 0 ? snapshot.legacyClientsOmitted : nil
+    }
+}
+
+struct ProtocolClientRender: Encodable {
+    var name: String
+    var version: String?
+    var requests: Int
+    var lastSeen: Date
+
+    init(_ client: MCPEraLog.Client) {
+        name = client.name
+        version = client.version
+        requests = client.requests
+        lastSeen = client.lastSeen
+    }
+}
