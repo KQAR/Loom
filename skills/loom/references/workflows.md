@@ -54,18 +54,18 @@ arguments; this file is about sequence and interpretation.
   `export_ca_certificate` returns a PEM; trusting it is a manual admin step on the
   client.
 - **"The app made requests but Loom shows nothing for host X."** → `get_ssl_scope`
-  first, not `get_recent_flows` again. An unread relay records no flow at all, so
-  `tunneledHosts` is the only place the fact exists. `excluded` is the common answer
-  — someone carved the host out to keep a client working — and it is one
-  `intercept_host` away, as are `notInScope` and `interceptionDisabled`. `notTLSOrHTTP` (h2c, SSH, SMTP, a server-first
-  protocol), `noCertificateAuthority` and `leafMintFailed` are not: say which it is
+  first, not `get_recent_flows` again: an unread relay records no flow at all, so
+  `tunneledHosts` is the only place the fact exists. `excluded` (someone carved the
+  host out to keep a client working), `notInScope` and `interceptionDisabled` are
+  one `intercept_host` away; `notTLSOrHTTP` (h2c, SSH, SMTP, a server-first
+  protocol), `noCertificateAuthority` and `leafMintFailed` are not. Say which it is
   rather than adding globs and hoping.
 - **"Stop decrypting this host / it broke with Loom on."** → `set_ssl_scope` with
-  the host added to `exclude`. This is the answer for a client carrying its own
-  trust store (a JVM, Python, Go — a Gradle build or a `pip install` is the usual
-  one) and for a pinned host: Loom's leaf can't satisfy it, and
-  the failure surfaces at the client as a certificate error, not in Loom. Pass the
-  existing `exclude` plus the new entry — `set_ssl_scope` replaces the lists.
+  the host added to `exclude` — pass the existing `exclude` plus the new entry, the
+  call replaces the lists. This is the answer for a client carrying its own trust
+  store (a JVM, Python, Go — a Gradle build or a `pip install` is the usual one)
+  and for a pinned host: Loom's leaf can't satisfy it, and the failure surfaces at
+  the client as a certificate error, not in Loom.
 - **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
   filter; return the path. If it's going into a ticket or a chat, pass **both**
   `redact: true` and `redact_bodies: true` — headers alone leave every payload
@@ -79,15 +79,14 @@ arguments; this file is about sequence and interpretation.
 
 - **"My dev server proxies `/api` to a backend and Loom captures nothing"** →
   the browser→dev-server hop is loopback, which browsers hard-code to bypass a
-  proxy, and the dev-server→backend hop is made by a client that may ignore proxy
-  settings entirely (Node's global `fetch`/undici does; axios and Python/Go
-  clients read `HTTP_PROXY` and need nothing). For the forwarding hop, use
-  `create_reverse_proxy(upstream: "https://api.example.com")` and have the user
-  change the dev server's proxy target to the `localURL` it returns — one line of
-  config, no source patch, and no CA trust needed on that hop because it is plain
-  HTTP. Captured flows carry the **upstream** URL, so rules and breakpoints match
-  them normally. Close it with `delete_reverse_proxy` when done, and say that a
-  config still pointing at the port will then get connection refused.
+  proxy, and the dev-server→backend hop may ignore proxy settings entirely (Node's
+  global `fetch`/undici does; axios and Python/Go clients read `HTTP_PROXY` and
+  need nothing). For the forwarding hop, `create_reverse_proxy(upstream:
+  "https://api.example.com")` and have the user point the dev server's proxy target
+  at the `localURL` it returns — one line of config, no source patch, no CA trust
+  on that hop (it is plain HTTP). Captured flows carry the **upstream** URL, so
+  rules and breakpoints match them normally. Close it with `delete_reverse_proxy`,
+  and say that a config still naming the port will then get connection refused.
 
 ## Honest failure modes (report, don't fabricate)
 
@@ -119,23 +118,23 @@ arguments; this file is about sequence and interpretation.
     `create_reverse_proxy` endpoint and re-point the client at it;
   - otherwise nothing has been routed through the proxy yet (client not pointed at
     it, or recording paused). Say so.
-- No HTTPS flow at all for a host → it was passed through, which records **no flow
-  whatsoever**, not an empty one (an excluded host, or something Loom can't read). `get_ssl_scope`'s `tunneledHosts` is the
-  only surface that holds this fact; check it before reporting that the client made
-  no requests.
+- No HTTPS flow at all for a host → it was passed through (an excluded host, or
+  something Loom can't read), which records **no flow whatsoever**, not an empty
+  one. `get_ssl_scope`'s `tunneledHosts` is the only surface holding this fact;
+  check it before reporting that the client made no requests.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with
   `get_ssl_scope` + `get_certificate_status`; don't claim you saw the plaintext.
 - The flow **failed** on an `https://` host with a TLS/handshake error, and the host
   is in scope with a trusted CA → the origin may require a **client certificate**
-  (mutual TLS: common on internal and partner APIs). Check
-  `list_client_certificates` — an expired or unreadable identity fails identically to
-  a missing one — and install one with `set_client_certificate` if the user has the
-  `.p12`. Ask them for it; don't go looking through their keychain or disk for
-  credentials. **Read the flow's `error` first**: a refused handshake names the host
-  and whether Loom presented an identity or had none for it. It reports what Loom did,
-  not what the server required — Loom cannot tell a client-certificate requirement
-  from any other handshake failure, so don't restate it as one.
+  (mutual TLS: common on internal and partner APIs). Read the flow's `error` first —
+  it names the host and whether Loom presented an identity or had none — then check
+  `list_client_certificates` (an expired or unreadable identity fails identically to
+  a missing one) and install one with `set_client_certificate` if the user has the
+  `.p12`. Ask them for it; don't go hunting through their keychain or disk. The
+  error reports what Loom did, not what the server required: Loom cannot tell a
+  client-certificate requirement from any other handshake failure, so don't restate
+  it as one.
 - A write tool acts immediately and globally — there is no confirmation prompt.
   When a rule would broadly alter traffic (e.g. a wide block glob), state what it
   will affect before creating it.
