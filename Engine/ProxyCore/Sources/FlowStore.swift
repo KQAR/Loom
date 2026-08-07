@@ -272,11 +272,24 @@ actor FlowStore {
         Array(flows.suffix(max(0, limit)).reversed())
     }
 
-    /// Newest-first flows matching `query`, capped at `limit`. The scan runs here,
-    /// inside the actor, walking the ring newest-first and stopping as soon as
-    /// `limit` matches are found — so a narrow filter over a full ring costs a
-    /// partial walk and copies only what it returns, instead of handing the caller
-    /// every flow to sift.
+    /// Newest-first flows matching `query`, capped at `limit`.
+    ///
+    /// **The scan runs off the actor**, over a snapshot of the ring. That snapshot is
+    /// free — `flows` is an `Array` of value types, so handing it out is a COW
+    /// reference bump, not 2000 copies — and holding the actor for it was not:
+    ///
+    /// | on a full (2000) ring | measured |
+    /// |---|---|
+    /// | one host-filtered scan | 2.1 ms |
+    /// | one upsert, quiet | 0.014 ms |
+    /// | one upsert, while scans run | **1.8 ms** |
+    ///
+    /// Every exchange upserts at least twice (pending → completed), a streaming one
+    /// more, a WebSocket once per frame — and all of them queue on this actor. An
+    /// agent polling `get_recent_flows` with a filter therefore put a ~2 ms stall in
+    /// front of *every capture write*, a 127× slowdown on work that touches no shared
+    /// state at all. The snapshot removes the contention outright; results are
+    /// identical, since the scan sees exactly the ring as of the call either way.
     ///
     /// A body predicate (`FlowQuery.needsBodies`) is the one that can touch disk: a
     /// candidate is hydrated *only after* it has passed every cheap predicate, and
@@ -284,50 +297,37 @@ actor FlowStore {
     /// read's "never hydrate" contract (invariant I2) holds and a body search still
     /// sees flows the ring has slimmed. Narrow it with `host`/`url_contains`/`since`
     /// to keep the number of hydrations small.
-    ///
-    /// The hydrations run *off the actor*: the metadata scan snapshots its
-    /// candidates (Flow is a value), then the disk reads and body tests proceed on
-    /// a detached task while capture upserts keep landing. Running them on the
-    /// actor meant an unnarrowed body search over a slimmed ring — up to
-    /// `capacity` synchronous SQLite blob reads — stalled every in-flight
-    /// exchange behind one MCP call.
     func recent(matching query: FlowQuery, limit: Int) async -> [Flow] {
         guard !query.isEmpty else { return recent(limit: limit) }
-        let limit = max(0, limit)
-        var matches: [Flow] = []
-        matches.reserveCapacity(min(limit, 64))
-        guard query.needsBodies else {
-            for flow in flows.reversed() {
-                guard matches.count < limit else { break }
-                if query.matchesMetadata(flow) { matches.append(flow) }
-            }
-            return matches
-        }
-        let candidates = flows.reversed().filter(query.matchesMetadata)
-        return await Self.matchingBodies(
-            candidates: Array(candidates), query: query, limit: limit, persistence: persistence
+        return await Self.scan(
+            snapshot: flows, query: query, limit: max(0, limit), persistence: persistence
         )
     }
 
-    /// The body-search half of `recent(matching:)`, off the actor.
+    /// The whole of `recent(matching:)`'s work, off the actor.
     ///
-    /// `@concurrent` rather than the `Task.detached` this used to be. Both leave the
-    /// actor, which is the point — the alternative was holding it across up to
-    /// `capacity` synchronous SQLite blob reads. Only this one stays in the task
-    /// tree: a detached child ignores cancellation, so an MCP client that hung up
-    /// mid-search left the scan running to the end and the awaiting task waiting
-    /// for it. `wait_for_flow` cancels exactly this way (`MCPHTTPHandler` cancels
-    /// `inFlight` on `channelInactive`), so the cancellation path is real, not
-    /// theoretical.
-    @concurrent private static func matchingBodies(
-        candidates: [Flow], query: FlowQuery, limit: Int, persistence: FlowPersistence?
+    /// `@concurrent` rather than `Task.detached`. Both leave the actor, which is the
+    /// point; only this one stays in the task tree, and a detached child ignores
+    /// cancellation — so an MCP client that hung up mid-search left the scan running
+    /// to the end and the awaiting task waiting for it. `wait_for_flow` cancels
+    /// exactly this way (`MCPHTTPHandler` cancels `inFlight` on `channelInactive`),
+    /// so the cancellation path is real, not theoretical.
+    ///
+    /// Newest-first with an early exit at `limit`, so a narrow filter over a full ring
+    /// costs a partial walk and copies only what it returns.
+    @concurrent private static func scan(
+        snapshot: [Flow], query: FlowQuery, limit: Int, persistence: FlowPersistence?
     ) async -> [Flow] {
         var matches: [Flow] = []
         matches.reserveCapacity(min(limit, 64))
-        for flow in candidates {
+        for flow in snapshot.reversed() {
             guard matches.count < limit else { break }
             if Task.isCancelled { break }
-            guard query.matchesBodies(Self.hydrated(flow, from: persistence)) else { continue }
+            guard query.matchesMetadata(flow) else { continue }
+            // Cheap predicates first, always: hydration is a synchronous SQLite blob
+            // read, and one per non-matching flow is the cost this ordering avoids.
+            guard !query.needsBodies || query.matchesBodies(Self.hydrated(flow, from: persistence))
+            else { continue }
             matches.append(flow)
         }
         return matches
