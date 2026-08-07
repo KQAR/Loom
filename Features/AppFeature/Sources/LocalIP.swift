@@ -1,42 +1,15 @@
-import Darwin
 import Foundation
+import LoomSharedModels
 import Synchronization
 import SystemConfiguration
 
-/// Resolves the machine's primary LAN IPv4 address (prefers en0/en1), for
-/// display in the toolbar so the user can point other devices at the proxy.
+/// Watches this machine's primary LAN IPv4 address.
+///
+/// The resolve itself is `LANAddress.primaryIPv4()` in SharedModels — this had a
+/// byte-for-byte copy of it, which was fine while the two answers were only ever
+/// displayed, and stopped being fine once the app started comparing its answer
+/// with the address the engine published in the QR.
 enum LocalIP {
-    static func primaryIPv4() -> String? {
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return nil }
-        defer { freeifaddrs(ifaddr) }
-
-        var preferred: String?   // en0 / en1
-        var fallback: String?    // any other non-loopback IPv4
-
-        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
-            let flags = Int32(ptr.pointee.ifa_flags)
-            guard (flags & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING),
-                  (flags & IFF_LOOPBACK) == 0,
-                  let addr = ptr.pointee.ifa_addr,
-                  addr.pointee.sa_family == UInt8(AF_INET)
-            else { continue }
-
-            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            guard getnameinfo(addr, socklen_t(addr.pointee.sa_len),
-                              &host, socklen_t(host.count),
-                              nil, 0, NI_NUMERICHOST) == 0 else { continue }
-            let ip = String(cString: host)
-            let name = String(cString: ptr.pointee.ifa_name)
-            if name == "en0" || name == "en1" {
-                preferred = preferred ?? ip
-            } else {
-                fallback = fallback ?? ip
-            }
-        }
-        return preferred ?? fallback
-    }
-
     /// The primary LAN IPv4 every time the machine's network configuration
     /// changes, starting with the current value so a subscriber never has to seed
     /// itself separately.
@@ -66,7 +39,7 @@ enum LocalIP {
             )
             let callback: SCDynamicStoreCallBack = { _, _, info in
                 guard let info else { return }
-                Unmanaged<Sink>.fromOpaque(info).takeUnretainedValue().emit(LocalIP.primaryIPv4())
+                Unmanaged<Sink>.fromOpaque(info).takeUnretainedValue().emit(LANAddress.primaryIPv4())
             }
             guard let store = SCDynamicStoreCreate(
                 nil, "com.loom.local-ip-monitor" as CFString, callback, &context
@@ -74,7 +47,7 @@ enum LocalIP {
                 Unmanaged<Sink>.fromOpaque(info).release()
                 // Fail open and honest: emit the current value once so the UI is at
                 // least right at subscribe time, then end rather than pretend to watch.
-                continuation.yield(primaryIPv4())
+                continuation.yield(LANAddress.primaryIPv4())
                 continuation.finish()
                 return
             }
@@ -89,7 +62,7 @@ enum LocalIP {
 
             let teardown = Teardown(store: store, info: info)
             continuation.onTermination = { _ in teardown.run() }
-            sink.emit(primaryIPv4())
+            sink.emit(LANAddress.primaryIPv4())
         }
     }
 

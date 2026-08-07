@@ -1,10 +1,16 @@
 import Darwin
 import Foundation
 
-/// Resolves this machine's primary LAN IPv4 address (prefers `en0`/`en1`) so the
-/// engine can tell a phone which address to point its proxy at and embed it in
-/// the provisioning QR. Lives in the engine (not the UI) because phone
-/// onboarding is an engine capability any embedder can reuse.
+/// Resolves this machine's primary LAN IPv4 address (prefers `en0`/`en1`) — the
+/// address a phone points its proxy at, embedded in the provisioning QR.
+///
+/// It lives in the base layer because **both** sides need the same answer and a
+/// disagreement is a real defect, not a cosmetic one. The engine picks the
+/// address it publishes in `PhoneOnboardingInfo`; the app watches for the address
+/// changing and republishes when it does, which is a comparison between the two.
+/// This was a byte-for-byte duplicate in `AppFeature` (`LocalIP.primaryIPv4`)
+/// until that comparison needed the two copies to agree by construction rather
+/// than by both having been edited together.
 public enum LANAddress {
     /// The primary LAN IPv4, or `nil` if the machine has no usable non-loopback
     /// IPv4 interface (e.g. offline).

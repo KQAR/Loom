@@ -35,6 +35,11 @@ public struct PhoneOnboardingFeature: Sendable {
             /// Bubble the new setting up so the parent persists it and lights the
             /// phone icon accordingly.
             case lanEnabledChanged(Bool)
+            /// Material was published for this LAN address. The parent tracks it so
+            /// it can tell when the machine's address has moved out from under an
+            /// already-published QR — which it can only do if it knows what the QR
+            /// was published *for*, and this popover is gone the moment it closes.
+            case published(PhoneOnboardingInfo)
         }
     }
 
@@ -80,7 +85,7 @@ public struct PhoneOnboardingFeature: Sendable {
             case let .started(info):
                 state.isLoading = false
                 state.info = info
-                return .none
+                return .send(.delegate(.published(info)))
 
             case let .failed(message):
                 state.isLoading = false
