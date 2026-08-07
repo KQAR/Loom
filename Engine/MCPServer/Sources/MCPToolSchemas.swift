@@ -192,6 +192,13 @@ extension MCPToolExecutor {
             `set_system_proxy`: taking the setting works, but Loom never puts the other app's \
             configuration back, so that is the human's call.
 
+            `listenHost` / `lanReachable` answer a second empty-capture case the ports alone \
+            cannot: `127.0.0.1` means the listener is loopback-only, so a phone or any other \
+            device on the Wi-Fi cannot reach it however correctly it is configured — the \
+            connection is refused before Loom is involved, and nothing is recorded. \
+            `lanReachable` is true only when it is bound to `0.0.0.0`. If a LAN device sent \
+            nothing, read this before anything else.
+
             Two fields appear only when non-empty. `refusedConnections` / `recentRefusals`: a \
             client that reached Loom and was turned away (a SOCKS4 client, an HTTP request sent to \
             the SOCKS port, an unsupported command) looks exactly like a client that never ran, \
@@ -444,7 +451,10 @@ extension MCPToolExecutor {
             Pause or resume recording captured traffic. Paused, the proxy keeps forwarding \
             (and MITM-decrypting) normally — nothing new is stored, while flows already in \
             flight still complete. Use it to stop unrelated background traffic from burying \
-            what you are about to trigger. This is a write action.
+            what you are about to trigger. The human sees it: the panel's capture dot goes \
+            yellow and the window's button offers Record again, so a pause you leave behind \
+            reads as paused rather than as a broken proxy. Resume when you are done. \
+            `get_proxy_status.isRecording` is the current value. This is a write action.
             """,
             inputSchema: [
                 "type": "object",

@@ -116,8 +116,16 @@ arguments; this file is about sequence and interpretation.
   - the client may ignore proxy configuration altogether (Node's `fetch`/undici
     does, whatever the environment says). Neither port helps there: open a
     `create_reverse_proxy` endpoint and re-point the client at it;
-  - otherwise nothing has been routed through the proxy yet (client not pointed at
-    it, or recording paused). Say so.
+  - `lanReachable: false` (i.e. `listenHost` is `127.0.0.1`) and the client is a
+    **phone or another device** → it cannot reach Loom at all, however correctly it
+    is configured: the connection is refused before Loom is involved, so there is
+    nothing to find. The human turns LAN device connection on from the panel's
+    Device tile;
+  - `isRecording: false` → the proxy is still forwarding and decrypting, it is just
+    not *storing*. Nothing will appear until `set_recording(true)`, and a prior
+    session (yours or a human's) may have paused it;
+  - otherwise nothing has been routed through the proxy yet — the client is not
+    pointed at it. Say so.
 - No HTTPS flow at all for a host → it was passed through (an excluded host, or
   something Loom can't read), which records **no flow whatsoever**, not an empty
   one. `get_ssl_scope`'s `tunneledHosts` is the only surface holding this fact;

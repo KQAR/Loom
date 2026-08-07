@@ -53,6 +53,12 @@ The MCP server binds **loopback only** (`127.0.0.1:9092`), deliberately **not** 
 
 Every write tool call is recorded in a durable, row-capped audit log (`audit.sqlite`, survives relaunch): tool, arguments, outcome, timestamp. The human reviews it after the fact in the main window's **sidebar → Audit** panel; an agent reads it back via `get_audit_log`. Read tools are never logged, so the trail is exactly the writes — "what did it do?" is always answerable, and each rule hit also lands on the affected flow (`appliedRules`, shown as the wand icon) so a change is traceable to its rule.
 
+### 3. Supervision that does not lag (the mirror)
+
+The audit trail says what the agent *did*; the console and main window say what the state *is*. Both are supervision, and the second one is the easier to get wrong: a surface holding a copy of engine state has an agent as its other writer, so a write the human is not shown is a write they cannot supervise — indistinguishable, from where they sit, from the write never happening.
+
+So: **every agent write reaches the human's copy of it without the human reopening anything.** The audit stream is the one signal all write tools pass through, so the re-read hangs off it (opt-out, not allowlist — coalesced, so a scripted burst costs one re-read). The writer that is a *human in another app* — CA trust granted in Terminal or revoked in Keychain Access, helper approval in System Settings — is covered by re-reading when Loom comes back to the front. Mechanics and the reasoning: [`AGENTS.md`](AGENTS.md) § Scope.
+
 ## Take-over (manual override)
 
 The human can stop deferring to the agent at any time:
