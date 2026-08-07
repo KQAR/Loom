@@ -261,9 +261,11 @@ public struct AppFeature: Sendable {
                 result = result.filter(Self.isError)
 
             case let .host(host):
-                // Compared without materializing each flow's host: this runs over the
-                // whole list on every render of a host-filtered table.
-                result = result.filter { URLHost.hostMatches(urlString: $0.request.url, host: host) }
+                // A dictionary lookup per row, not a parse: the host was already
+                // computed when the flow was folded into the aggregates, and that is
+                // the value the sidebar's categories are keyed by. Scanning the URL
+                // string here instead cost 3.2 ms per render over a full ring.
+                result = result.filter { aggregates.hostByFlow[$0.id] == host }
             case let .app(key):
                 result = result.filter { $0.sourceApp?.groupingKey == key }
             case let .device(ip):

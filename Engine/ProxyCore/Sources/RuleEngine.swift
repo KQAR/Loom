@@ -45,8 +45,14 @@ enum RuleEngine {
     static func matchingRules(
         state: RulesState, method: String, url: URL, origin: RequestOrigin? = nil
     ) -> [TrafficRule] {
+        guard state.enabled else { return [] }
         let urlString = url.absoluteString
-        return state.activeRules.filter { $0.match.matches(method: method, url: urlString, origin: origin) }
+        // One pass, one allocation. `state.activeRules` would build a second array of
+        // every enabled rule before this filter touched it — on every exchange, on the
+        // event loop, to produce a result that is usually empty.
+        return state.rules.filter {
+            $0.isEnabled && $0.match.matches(method: method, url: urlString, origin: origin)
+        }
     }
 
     static func planRequest(
