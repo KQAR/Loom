@@ -79,7 +79,7 @@ components:
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Replayed (each Label + system .badge count) · Section 'Hosts' — one Label per host (globe icon + .badge count). Selection scopes the table."
   request-table:   # top of the split — a multi-column SwiftUI Table
-    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary) · App (icon) · Method (mono) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
+    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary) · App (icon) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
     order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
     tail-follow: "auto-scroll to the newest row as the list grows; a user scroll stops following, and scrolling back to the bottom resumes it (live-scroll notifications distinguish user gestures from programmatic scrolls)"
     selection: "single, drives the inspector below"
@@ -430,7 +430,7 @@ rejecting what failed:
   `{components.main-window}.toolbar` — centered status chip, Record + Clear right-aligned, no search field.
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Replayed` as `Label`s with system
   `.badge` counts, then a `Hosts` section (one `Label` per host, globe + `.badge`). Selection scopes the table.
-- **`request-table`** — a SwiftUI `Table` (resizable columns, single selection): status-pill · Method · Host ·
+- **`request-table`** — a SwiftUI `Table` (resizable columns, single selection): status-pill · Protocol · Method · Host ·
   Path (middle-truncated, `↻` accent glyph if replayed) · Time. Everything from the wire is mono.
 - **`status-pill`** — the status column, 44×20 fixed: 3-digit code in `{typography.numeric}` semibold,
   status-class color 100% text / ~15% fill; `ERR` for transport errors; a small `ProgressView` while in flight.
