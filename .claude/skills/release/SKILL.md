@@ -26,6 +26,29 @@ Tuist/.build/artifacts/sparkle/Sparkle/bin/generate_keys        # show/create th
 Tuist/.build/artifacts/sparkle/Sparkle/bin/generate_keys -x key # export private key → CI secret
 ```
 
+## Bumping the version (do this first, in one commit)
+
+`release.yml` only tags and builds — it does **not** bump anything. Four files carry a version
+and one of them is the source:
+
+| | |
+|---|---|
+| `Project.swift` `CFBundleShortVersionString` | **the source** — what the app reports through `get_version` |
+| `Project.swift` `CFBundleVersion` | the build number. **Sparkle compares this one**, so bump it every release |
+| `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.cursor-plugin/marketplace.json` | the plugin manifests |
+
+Edit the two in `Project.swift` by hand, then propagate:
+
+```bash
+./scripts/sync-plugin-versions.sh          # rewrites the three manifests from the app version
+./scripts/sync-plugin-versions.sh --check  # report only; non-zero if any is stale
+```
+
+Commit all of it in the same `chore(release)` change. The manifests were hand-edited before and
+were left behind for a whole release — they sat at 0.0.14 through the whole of 0.0.15.
+`VersionFieldParityTests` catches that now, but a failing test is a reminder to do the edit, not a
+way to do it; this script is the way.
+
 ## Release flow
 
 Fully automated by `.github/workflows/release.yml` (triggers on a `v*` tag):
