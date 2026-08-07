@@ -429,7 +429,7 @@ public struct AppFeature: Sendable {
     /// Drives the flow-batching window — a dependency so tests can control it.
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case subscription, updates, devices, cleared }
+    private enum CancelID { case subscription, updates, devices, cleared, localIP }
 
     public init() {}
 
@@ -501,7 +501,6 @@ public struct AppFeature: Sendable {
                         let pins = PinsStore.load()
                         await send(.pinsLoaded(hosts: pins.hosts, apps: pins.apps))
                         await send(.deviceAliasesLoaded(DeviceAliasStore.load()))
-                        await send(.localIPResolved(LocalIP.primaryIPv4()))
                         do {
                             let port = try await proxyClient.start(9090)
                             await send(.proxyStarted(port: port))
@@ -534,6 +533,17 @@ public struct AppFeature: Sendable {
                         }
                     }
                     .cancellable(id: CancelID.updates, cancelInFlight: true),
+                    // This machine's LAN IPv4 for the life of the app (seeds current
+                    // on subscribe). Resolved once at boot before this, which made
+                    // every displayed address a claim about the network Loom launched
+                    // on — a Wi-Fi switch or a DHCP renewal left the header naming an
+                    // address nothing answers on.
+                    .run { send in
+                        for await ip in LocalIP.addresses() {
+                            await send(.localIPResolved(ip))
+                        }
+                    }
+                    .cancellable(id: CancelID.localIP, cancelInFlight: true),
                     // Write-action audit trail: seed history, then follow live. Owned
                     // by the child, so its cancellation lives with the state it feeds.
                     .send(.audit(.task)),
