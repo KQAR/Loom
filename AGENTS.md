@@ -127,7 +127,7 @@ condition: it reads the result bundle and fails unless every named bundle ran an
 - **HeaderPair**: headers are an *ordered list*, not a dictionary — order and duplicates are preserved as seen on the wire.
 - **ReplayOverrides**: how a flow is mutated before re-send (method / url / set+remove headers / body).
 - **ProxyControlling** = `FlowProviding` (read) + `FlowReplaying` (write) + TLS / capture / rules / breakpoints / audit: the protocol the engine implements and both the TCA client and MCP server consume. `ProxyCapability` enumerates its requirements so the hand-written TCA mirror can be checked against it (see the parity note in Scope).
-- **FlowComparison**: what changed between two flows (scalars, header add/remove/change with repeats preserved, LCS line diff with a 400-line cap, binary/oversize fallbacks, "one side never answered"). **One** definition, rendered two ways — as JSON by `diff_flows`, as rows by the Inspector's diff pane. They used to disagree, which meant the agent and the human supervising it were reading different answers to the same question. A new rule about what counts as a difference goes here, never in a renderer.
+- **FlowComparison**: what changed between two flows (scalars, header add/remove/change with repeats preserved, LCS line diff, binary/oversize fallbacks, "one side never answered", WebSocket frame logs). **One** definition, rendered two ways — as JSON by `diff_flows`, as rows by the Inspector's diff pane. They used to disagree, which meant the agent and the human supervising it were reading different answers to the same question. A new rule about what counts as a difference goes here, never in a renderer. Three rules it now holds, each of which was a wrong answer first: a **capped body is not a comparison** (`isPartial` qualifies every "identical" — see ProxyCore/CLAUDE.md § "A capped capture is never silent"); the line diff is bounded in **bytes** as well as lines (`maxDiffLineBytes` / `maxDiffBytes`, because minified JSON is one line and sails straight past a 400-line cap); and **timing is deliberately not a difference** (two runs never share it, so diffing it would make `isIdentical` always false and so useless), as an absent body is not a difference from an empty one.
 
 ### Runtime Flow
 
@@ -193,7 +193,9 @@ written for after it had already cost rules a field, and it was open on every ot
 renders are `Encodable` DTOs in `MCPRenderModels.swift`, turned into JSON in one place
 (`MCPRender.dict`), and `RenderParityTests` runs a **census**: every stored property of the model
 must reach a render field or be listed with the reason it doesn't (folded, renamed, deliberately
-absent) — and a stale reason fails too. Two rules for a new render: a flag that only ever means
+absent) — and a stale reason fails too. `diff_flows` was the one render left out of that
+sweep and is in now (`FlowDiffRender` & co.), which is what closed the last place a new
+`FlowComparison` field could compile everywhere and reach nobody. Two rules for a new render: a flag that only ever means
 `true` is `Bool?`, never `Bool` (a `false` would add a key that was never there), and shaping is
 welcome (`ttfbMS` is computed, `captureTruncated` folds four fields) as long as the reason lands in
 the census. The DTOs' JSON is byte-identical to what the dictionaries produced — this was a refactor
