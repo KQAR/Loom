@@ -27,7 +27,7 @@ import SwiftUI
 /// The endpoints are read from `status.reverseProxies` (the one mirror, refreshed by
 /// `engineStatusRefreshed`) rather than being copied into a second list here.
 struct ReverseProxyCard: View {
-    @Bindable var store: StoreOf<AppFeature>
+    @Bindable var store: StoreOf<ReverseProxyFeature>
 
     /// Form state, held in the view because it is transient and dies with the form. The
     /// validation rules live in `ReverseProxyDraft`, not here, so they can be tested.
@@ -36,13 +36,13 @@ struct ReverseProxyCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
-            if store.status.reverseProxies.isEmpty {
+            if store.endpoints.isEmpty {
                 Text("No endpoints. Add one for a client that ignores proxy settings — Node's fetch/undici does — then point that client's target at the local port instead of the real origin.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                let listed = ReverseProxyList.rows(for: store.status.reverseProxies)
+                let listed = ReverseProxyList.rows(for: store.endpoints)
                 ForEach(listed.rows) { status in
                     row(status)
                 }
@@ -63,7 +63,7 @@ struct ReverseProxyCard: View {
                 // adds to it sits after it, at the trailing edge, out of the reading path
                 // rather than above the first row.
                 HStack(spacing: LoomTheme.Space.sm) {
-                    if store.reverseProxyBusy {
+                    if store.isBusy {
                         ProgressView().controlSize(.small)
                     }
                     Spacer(minLength: LoomTheme.Space.xs)
@@ -78,14 +78,14 @@ struct ReverseProxyCard: View {
                     }
                     .buttonStyle(.borderless)
                     .font(LoomTheme.Icon.card)
-                    .disabled(store.reverseProxyBusy)
+                    .disabled(store.isBusy)
                     .accessibilityLabel("Add a reverse proxy")
                     .help("Add a reverse proxy")
                 }
                 .frame(maxWidth: .infinity)
             }
 
-            if let message = store.reverseProxyMessage {
+            if let message = store.message {
                 Text(message)
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -126,13 +126,13 @@ struct ReverseProxyCard: View {
             }
             Spacer(minLength: LoomTheme.Space.xs)
             Button {
-                store.send(.deleteReverseProxyTapped(id: status.endpoint.id))
+                store.send(.deleteTapped(id: status.endpoint.id))
             } label: {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
             .font(.caption)
-            .disabled(store.reverseProxyBusy)
+            .disabled(store.isBusy)
             .accessibilityLabel("Remove the reverse proxy for \(status.endpoint.upstream)")
             .help("Stop listening on this port and forget the endpoint")
         }
@@ -190,7 +190,7 @@ struct ReverseProxyCard: View {
                     .controlSize(.small)
 
                 Button("Add") {
-                    store.send(.addReverseProxyTapped(
+                    store.send(.addTapped(
                         upstream: draft.submittedUpstream,
                         port: draft.submittedPort,
                         // Human-created endpoints carry no label — the field is gone; an
@@ -202,7 +202,7 @@ struct ReverseProxyCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(!draft.canSubmit || store.reverseProxyBusy)
+                .disabled(!draft.canSubmit || store.isBusy)
             }
             .frame(maxWidth: .infinity)
         }

@@ -14,7 +14,7 @@ import SwiftUI
 /// number + status + tool + time); clicking a row opens a detail **sheet** (like
 /// the rule editor) with up/down controls to step through actions in place.
 struct AuditPanelView: View {
-    let store: StoreOf<AppFeature>
+    let store: StoreOf<AuditFeature>
     /// The entry whose detail sheet is open, if any. Held as the entry rather than
     /// its id so `.sheet(item:)` can own the presentation — a hand-rolled
     /// `Binding(get:set:)` over an optional id had to fake `isPresented` and then
@@ -28,7 +28,7 @@ struct AuditPanelView: View {
             header
             Divider()
             Group {
-                if store.auditEntries.isEmpty {
+                if store.entries.isEmpty {
                     emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     list
@@ -37,7 +37,7 @@ struct AuditPanelView: View {
         }
         // A sheet, not a popover — a focused modal window like RuleEditorView.
         .sheet(item: $sheetEntry) { entry in
-            AuditDetailSheet(entries: store.auditEntries, currentID: entry.id)
+            AuditDetailSheet(entries: store.entries, currentID: entry.id)
         }
     }
 
@@ -55,10 +55,10 @@ struct AuditPanelView: View {
                 Label("Clear", systemImage: "trash")
             }
             .controlSize(.small)
-            .disabled(store.auditEntries.isEmpty)
+            .disabled(store.entries.isEmpty)
             .confirmationDialog("Clear the audit trail?", isPresented: $confirmingClear, titleVisibility: .visible) {
-                Button("Clear \(store.auditEntries.count) actions", role: .destructive) {
-                    store.send(.auditClearTapped)
+                Button("Clear \(store.entries.count) actions", role: .destructive) {
+                    store.send(.clearTapped)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -70,7 +70,7 @@ struct AuditPanelView: View {
     }
 
     private var summaryText: String {
-        let count = store.auditEntries.count
+        let count = store.entries.count
         return count == 0 ? "No write actions" : "\(count) write action\(count == 1 ? "" : "s")"
     }
 
@@ -79,7 +79,7 @@ struct AuditPanelView: View {
             List {
                 // Same macOS 14 constraint as JSONView: EnumeratedSequence isn't a
                 // RandomAccessCollection until macOS 26, so the Array() stays.
-                ForEach(Array(store.auditEntries.enumerated()), id: \.element.id) { idx, entry in
+                ForEach(Array(store.entries.enumerated()), id: \.element.id) { idx, entry in
                     AuditRow(entry: entry, sequence: idx + 1) { sheetEntry = entry }
                         .id(entry.id)
                         .listRowSeparator(.hidden)
@@ -89,12 +89,12 @@ struct AuditPanelView: View {
             // Tail-follow: land on the newest (bottom) on entry, and stay there as
             // new actions arrive.
             .task { scrollToNewest(proxy) }
-            .onChange(of: store.auditEntries.count) { scrollToNewest(proxy) }
+            .onChange(of: store.entries.count) { scrollToNewest(proxy) }
         }
     }
 
     private func scrollToNewest(_ proxy: ScrollViewProxy) {
-        guard let last = store.auditEntries.last?.id else { return }
+        guard let last = store.entries.last?.id else { return }
         proxy.scrollTo(last, anchor: .bottom)
     }
 

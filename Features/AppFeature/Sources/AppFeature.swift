@@ -47,21 +47,9 @@ public struct AppFeature: Sendable {
         public var selectedCategory: FlowCategory? = .all
         public var selectedFlowID: Flow.ID?
 
-        /// Write-action audit trail, newest-first (the sidebar → Audit panel).
-        /// Bounded like the flow list so a long session can't grow it unbounded;
-        /// the durable store keeps more, surfaced via the `get_audit_log` MCP tool.
-        public var auditEntries: IdentifiedArrayOf<AuditEntry> = []
-        /// Most audit entries the window keeps in memory this session; the durable
-        /// store keeps more, surfaced via the `get_audit_log` MCP tool.
-        public static let auditDisplayCap = 500
-
-        /// Write tools that change which ports Loom is listening on, so the header's
-        /// address block has to be re-read when one is recorded. A `Set` rather than a
-        /// prefix match: "any tool starting with create_" would silently start
-        /// refreshing on unrelated writes as tools are added.
-        public static let listenerAffectingAuditTools: Set<String> = [
-            "create_reverse_proxy", "delete_reverse_proxy",
-        ]
+        /// The write-action audit trail (sidebar → Audit) — split into its own
+        /// feature. Nothing here touches captured traffic or the proxy's lifecycle.
+        public var audit = AuditFeature.State()
 
         // Config surfaced in the status-bar console / toolbar.
         public var localIP: String?             // this machine's LAN IPv4, for display
@@ -128,22 +116,31 @@ public struct AppFeature: Sendable {
         /// its prominent "Update" style; a silent daily probe keeps it fresh.
         public var updateAvailability: UpdateAvailability = .unknown
 
-        // MARK: Reverse-proxy endpoints (console config section)
-        //
-        // The endpoints themselves live in `status.reverseProxies` — one mirror,
-        // refreshed by `engineStatusRefreshed` — so nothing is duplicated here. What
-        // lives here is only the *console section's* own state: whether it's open, and
-        // the outcome of the human's last create/delete.
+        /// The console's Reverse Proxies section — split into its own feature.
+        ///
+        /// **Projected, not mirrored**, like `setup`: the endpoints live in
+        /// `status.reverseProxies` (the one mirror, re-read after every write) and are
+        /// filled in on read, so the child can render them without a second list to
+        /// keep in step. Whatever it hands back for that field is ignored.
+        public var reverseProxy: ReverseProxyFeature.State {
+            get {
+                var reverseProxy = reverseProxyState
+                reverseProxy.endpoints = status.reverseProxies
+                return reverseProxy
+            }
+            set {
+                // The projected field is the parent's to own, and it is *cleared* on
+                // the way in rather than merely ignored on the next read: leaving a
+                // copy in the backing store would make two `State` values compare
+                // unequal over a list neither of them is the source of.
+                var newValue = newValue
+                newValue.endpoints = []
+                reverseProxyState = newValue
+            }
+        }
 
-        /// Whether the console's Reverse Proxies section is expanded. Collapsed by
-        /// default, like Client Certificates: a dev server is pointed at an endpoint
-        /// once and then the endpoint just sits there.
-        public var reverseProxiesExpanded = false
-        /// A create or delete is in flight (a create binds a port, so it can fail).
-        public var reverseProxyBusy = false
-        /// Why the last create/delete failed, verbatim from the engine. Nil on success:
-        /// the new (or now-absent) endpoint in the list is the confirmation.
-        public var reverseProxyMessage: String?
+        /// Backing storage for `reverseProxy` — everything that section genuinely owns.
+        var reverseProxyState = ReverseProxyFeature.State()
         var didBoot = false                      // guards the one-shot boot effect
 
         public var displayHost: String { localIP ?? "127.0.0.1" }
@@ -329,6 +326,10 @@ public struct AppFeature: Sendable {
         case setup(SetupFeature.Action)
         /// The traffic-rules child feature (rule CRUD, editor, master switch).
         case rules(RulesFeature.Action)
+        /// The write-action audit trail.
+        case audit(AuditFeature.Action)
+        /// The console's Reverse Proxies section.
+        case reverseProxy(ReverseProxyFeature.Action)
         /// The breakpoint-supervision child feature (held exchanges, arm/disarm).
         case breakpoints(BreakpointsFeature.Action)
         /// Open the phone-onboarding popover (QR + proxy address). Does not change
@@ -363,9 +364,7 @@ public struct AppFeature: Sendable {
         /// run plus a SwiftUI invalidation of the table and sidebar.
         case flowsReceived([Flow])
         /// A write action was recorded (seed at boot + live stream).
-        case auditEntryReceived(AuditEntry)
         /// The human cleared the audit trail from the panel.
-        case auditClearTapped
         case connectedDeviceCountChanged(Int)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
@@ -403,13 +402,9 @@ public struct AppFeature: Sendable {
 
         /// Console section header tapped — expands/collapses, and re-reads on open
         /// (the other writer is an agent).
-        case reverseProxiesExpandTapped
         /// Create an endpoint from the console form. `port` 0 asks the OS for a free
         /// one; a real setup pins the port its dev server config names.
-        case addReverseProxyTapped(upstream: String, port: Int, label: String?, keepHostHeader: Bool)
-        case deleteReverseProxyTapped(id: UUID)
         /// A create/delete settled. `message` is non-nil only on failure.
-        case reverseProxyFinished(message: String?)
     }
 
     @Dependency(\.proxyClient) var proxyClient
@@ -417,7 +412,7 @@ public struct AppFeature: Sendable {
     /// Drives the flow-batching window — a dependency so tests can control it.
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case subscription, updates, audit, devices, cleared }
+    private enum CancelID { case subscription, updates, devices, cleared }
 
     public init() {}
 
@@ -425,6 +420,12 @@ public struct AppFeature: Sendable {
         BindingReducer()
         Scope(state: \.setup, action: \.setup) {
             SetupFeature()
+        }
+        Scope(state: \.audit, action: \.audit) {
+            AuditFeature()
+        }
+        Scope(state: \.reverseProxy, action: \.reverseProxy) {
+            ReverseProxyFeature()
         }
         Scope(state: \.rules, action: \.rules) {
             RulesFeature()
@@ -434,7 +435,14 @@ public struct AppFeature: Sendable {
         }
         Reduce { state, action in
             switch action {
-            case .binding, .setup, .rules, .breakpoints:
+            // Both children ask for the same thing when they change what Loom is
+            // listening on: a status re-read. The parent owns `status`, so it is the
+            // one place that knows what "the ports changed" means for the header.
+            case .audit(.delegate(.listenerAffectingWriteRecorded)),
+                 .reverseProxy(.delegate(.needsStatusRefresh)):
+                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
+
+            case .binding, .setup, .rules, .breakpoints, .audit, .reverseProxy:
                 return .none
 
             case let .phoneButtonTapped(origin):
@@ -501,18 +509,9 @@ public struct AppFeature: Sendable {
                         }
                     }
                     .cancellable(id: CancelID.updates, cancelInFlight: true),
-                    // Write-action audit trail: seed history, then follow live. A
-                    // separate effect from the flow subscription because that loop
-                    // never returns (its stream is endless).
-                    .run { send in
-                        for entry in await proxyClient.recentAuditEntries(State.auditDisplayCap).reversed() {
-                            await send(.auditEntryReceived(entry))
-                        }
-                        for await entry in await proxyClient.auditStream() {
-                            await send(.auditEntryReceived(entry))
-                        }
-                    }
-                    .cancellable(id: CancelID.audit, cancelInFlight: true),
+                    // Write-action audit trail: seed history, then follow live. Owned
+                    // by the child, so its cancellation lives with the state it feeds.
+                    .send(.audit(.task)),
                     // Connected-device count: follow the proxy's live connection
                     // signal (seeds current on subscribe), so the panel's "Connect
                     // Device" row reflects phones the moment they connect.
@@ -633,30 +632,6 @@ public struct AppFeature: Sendable {
                 }
                 return .none
 
-            case let .auditEntryReceived(entry):
-                // Stored oldest-first (newest appended at the end), like the flow
-                // list — the panel shows a chronological log with the newest at the
-                // bottom. Dedup by id (a re-seed after a resubscribe could repeat),
-                // then bound to the display cap by dropping the oldest.
-                if let existing = state.auditEntries.index(id: entry.id) {
-                    state.auditEntries[existing] = entry
-                } else {
-                    state.auditEntries.append(entry)
-                    if state.auditEntries.count > State.auditDisplayCap {
-                        state.auditEntries.removeFirst(state.auditEntries.count - State.auditDisplayCap)
-                    }
-                }
-                // An agent opening or closing a listening port has to show up in the
-                // header without waiting for the panel to be reopened — same reason
-                // `BreakpointsFeature` re-syncs after every write. The audit stream is
-                // already the one signal every write tool passes through.
-                guard State.listenerAffectingAuditTools.contains(entry.tool) else { return .none }
-                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
-
-            case .auditClearTapped:
-                state.auditEntries.removeAll()
-                return .run { _ in await proxyClient.clearAudit() }
-
             case let .categorySelected(category):
                 state.selectedCategory = category
                 return .none
@@ -773,58 +748,6 @@ public struct AppFeature: Sendable {
                 state.updateAvailability = availability
                 return .none
 
-            // MARK: Reverse-proxy endpoints
-
-            case .reverseProxiesExpandTapped:
-                state.reverseProxiesExpanded.toggle()
-                // Opening is also a re-read, same as the client-certificate section:
-                // an agent can have created or removed an endpoint since the last
-                // status refresh, and the list is only as fresh as its last load.
-                guard state.reverseProxiesExpanded else { return .none }
-                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
-
-            case let .addReverseProxyTapped(upstream, port, label, keepHostHeader):
-                state.reverseProxyBusy = true
-                state.reverseProxyMessage = nil
-                return .run { send in
-                    do {
-                        _ = try await proxyClient.createReverseProxy(ReverseProxyEndpoint(
-                            requestedPort: port, upstream: upstream,
-                            label: label, keepHostHeader: keepHostHeader
-                        ))
-                        // The create binds before it persists, so a success means the
-                        // port is listening — re-read to pick up the *bound* port,
-                        // which is the number the human points their client at (and is
-                        // not the requested one when 0 asked the OS to choose).
-                        await send(.engineStatusRefreshed(proxyClient.status()))
-                        await send(.reverseProxyFinished(message: nil))
-                    } catch {
-                        // The engine validates the upstream and the bind on the way in,
-                        // so its message already names what the human can fix (no
-                        // scheme, port in use). Relay it verbatim.
-                        let message = (error as? ProxyControlError)?.message ?? error.localizedDescription
-                        await send(.reverseProxyFinished(message: message))
-                    }
-                }
-
-            case let .deleteReverseProxyTapped(id):
-                state.reverseProxyBusy = true
-                state.reverseProxyMessage = nil
-                return .run { send in
-                    do {
-                        try await proxyClient.deleteReverseProxy(id)
-                        await send(.engineStatusRefreshed(proxyClient.status()))
-                        await send(.reverseProxyFinished(message: nil))
-                    } catch {
-                        let message = (error as? ProxyControlError)?.message ?? error.localizedDescription
-                        await send(.reverseProxyFinished(message: message))
-                    }
-                }
-
-            case let .reverseProxyFinished(message):
-                state.reverseProxyBusy = false
-                state.reverseProxyMessage = message
-                return .none
             }
         }
         .ifLet(\.$phone, action: \.phone) {

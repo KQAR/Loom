@@ -129,3 +129,51 @@ import Testing
         #expect(s.selectedFlowID == nil, "a dropped selection must not dangle")
     }
 }
+
+/// The two child states the parent *projects* rather than mirrors: `setup` gets the
+/// proxy's port and running state, `reverseProxy` gets the endpoint list. Both are
+/// owned by the parent's `status`, and the reason for the projection is that the
+/// copies used to be written by hand at every site that changed the source — in
+/// step only because three call sites remembered.
+@Suite struct ProjectedChildStateTests {
+    @Test func reverseProxyEndpoints_comeFromStatus_notFromTheChild() {
+        var state = AppFeature.State()
+        let listening = ReverseProxyStatus(
+            endpoint: ReverseProxyEndpoint(requestedPort: 0, upstream: "https://api.example.test"),
+            boundPort: 54_321
+        )
+        state.status.reverseProxies = [listening]
+        #expect(state.reverseProxy.endpoints == [listening])
+    }
+
+    /// The projected field is cleared on the way back in rather than merely ignored on
+    /// the next read. A stale copy in the backing store is invisible to every view (the
+    /// getter overwrites it) but not to `Equatable` — two states agreeing about the
+    /// engine would compare unequal over a list neither of them owns, which in a
+    /// `TestStore` reads as an unexplained state mismatch.
+    @Test func aChildWriteDoesNotLeaveAStaleEndpointCopyBehind() {
+        var state = AppFeature.State()
+        state.status.reverseProxies = [
+            ReverseProxyStatus(
+                endpoint: ReverseProxyEndpoint(requestedPort: 9200, upstream: "https://api.example.test"),
+                boundPort: 9200
+            ),
+        ]
+        state.reverseProxy.isExpanded = true // a read-modify-write through the projection
+
+        var expected = AppFeature.State()
+        expected.status.reverseProxies = state.status.reverseProxies
+        expected.reverseProxy.isExpanded = true
+        #expect(state.reverseProxyState == expected.reverseProxyState)
+        #expect(state.reverseProxyState.endpoints.isEmpty)
+        #expect(state.reverseProxy.endpoints.count == 1)
+    }
+
+    @Test func setupPortAndRunningState_comeFromStatus() {
+        var state = AppFeature.State()
+        state.status.port = 9099
+        state.status.isRunning = true
+        #expect(state.setup.port == 9099)
+        #expect(state.setup.proxyRunning)
+    }
+}
