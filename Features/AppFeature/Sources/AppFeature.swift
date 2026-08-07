@@ -97,6 +97,17 @@ public struct AppFeature: Sendable {
         /// Whether LAN device connection runs (proxy on `0.0.0.0` + provisioning
         /// server). Persisted, default on; drives the phone icon's highlight.
         public var lanEnabled = true
+        /// The LAN address the phone-onboarding material was last published for.
+        ///
+        /// The QR *encodes* an address (`http://lanHost:provisioningPort/`) and the
+        /// popover prints `lanHost:proxyPort` for the phone's manual proxy fields —
+        /// both frozen at publish time. When the machine's address moves, that QR
+        /// points at a host that no longer answers, and a phone scanning it gets a
+        /// spinner with nothing to say why.
+        ///
+        /// Kept by the parent, not the popover, because the popover is destroyed
+        /// when it closes and the address keeps moving while it's shut.
+        var publishedLANHost: String?
         public var isRecording = true            // capture gate — the toolbar Record/Stop button
         /// LAN devices connected to the proxy (excludes this Mac). Connection-derived
         /// (fed by `connectedDeviceCountStream`), so a phone counts the moment it
@@ -356,6 +367,9 @@ public struct AppFeature: Sendable {
         case phone(PresentationAction<PhoneOnboardingFeature.Action>)
         /// Persisted LAN-connection setting loaded at boot.
         case lanEnabledLoaded(Bool)
+        /// Phone-onboarding material was (re)published — at boot, or by the
+        /// republish this feature runs when the machine's LAN address moves.
+        case phoneOnboardingPublished(PhoneOnboardingInfo)
         /// One-shot boot: start the proxy + subscribe to the flow stream. Sent only
         /// from the always-present menu-bar label so opening a window can't re-run
         /// it (which would cancel the live subscription and restart the proxy).
@@ -429,7 +443,15 @@ public struct AppFeature: Sendable {
     /// Drives the flow-batching window — a dependency so tests can control it.
     @Dependency(\.continuousClock) var clock
 
-    private enum CancelID { case subscription, updates, devices, cleared, localIP }
+    private enum CancelID { case subscription, updates, devices, cleared, localIP, phoneRepublish }
+
+    /// How long the LAN address must hold still before the phone-onboarding
+    /// material is republished. A Wi-Fi join settles over several seconds and
+    /// several addresses; republishing on each one would tear down and rebind the
+    /// provisioning server repeatedly, and the engine refuses a second concurrent
+    /// `startPhoneOnboarding` outright (its reentrancy guard throws), so an
+    /// un-debounced burst can end with the *last* address never published.
+    static let phoneRepublishDebounce: Duration = .seconds(2)
 
     public init() {}
 
@@ -470,10 +492,24 @@ public struct AppFeature: Sendable {
                 state.phone = PhoneOnboardingFeature.State(lanEnabled: state.lanEnabled)
                 return .none
 
+            case let .phone(.presented(.delegate(.published(info)))):
+                // The popover published (its own `.task`, or its switch turning LAN
+                // on). Recording the address here is what lets the republish below
+                // tell "the machine moved" from "we already published for this".
+                state.publishedLANHost = info.lanHost
+                return .none
+
             case let .phone(.presented(.delegate(.lanEnabledChanged(enabled)))):
                 // The popover's switch flipped — mirror it into the always-visible
                 // icon state and persist. The child already ran/stopped the engine.
                 state.lanEnabled = enabled
+                // Off means the material is gone and the listener is back on
+                // loopback. Forgetting the address it was published for matters:
+                // holding on to it would make the next address change look like a
+                // republish that had already happened.
+                if !enabled {
+                    state.publishedLANHost = nil
+                }
                 return .run { send in
                     LANCaptureStore.save(enabled)
                     // The switch *moved the listener* (`startPhoneOnboarding` /
@@ -514,7 +550,12 @@ public struct AppFeature: Sendable {
                         // the popover first. The switch in the popover flips this.
                         let lan = LANCaptureStore.load()
                         await send(.lanEnabledLoaded(lan))
-                        if lan { _ = try? await proxyClient.startPhoneOnboarding() }
+                        // The result is reported now (it used to be discarded): the
+                        // address it published for is what the republish watch below
+                        // compares against, and boot is where the first one is set.
+                        if lan, let info = try? await proxyClient.startPhoneOnboarding() {
+                            await send(.phoneOnboardingPublished(info))
+                        }
                         await send(.viewAppeared)
                         // Seed history as one batch, not 200 separate actions.
                         await send(.flowsReceived(await proxyClient.recentFlows(200).reversed()))
@@ -613,6 +654,38 @@ public struct AppFeature: Sendable {
 
             case let .localIPResolved(ip):
                 state.localIP = ip
+                // The header now follows the address (it reads `localIP` through
+                // `displayHost`), but the phone-onboarding material does not: the QR
+                // encodes `http://lanHost:provisioningPort/` and the popover prints
+                // `lanHost:proxyPort`, both frozen when they were published. After
+                // the machine moves networks that QR points at a host that no longer
+                // answers, and a phone scanning it just hangs.
+                //
+                // `startPhoneOnboarding` is idempotent and republishes (its own docs
+                // name the LAN IP changing as the case), so the repair is to run it
+                // again — but only when there is a *usable* address that is not the
+                // one already published. Going offline (`ip == nil`) republishes
+                // nothing, because there is nothing to publish: the engine would
+                // refuse for want of a LAN address, and the material Loom is holding
+                // is the last one that ever worked.
+                guard state.lanEnabled, let ip, ip != state.publishedLANHost else { return .none }
+                return .run { send in
+                    try await clock.sleep(for: Self.phoneRepublishDebounce)
+                    guard let info = try? await proxyClient.startPhoneOnboarding() else { return }
+                    await send(.phoneOnboardingPublished(info))
+                }
+                .cancellable(id: CancelID.phoneRepublish, cancelInFlight: true)
+
+            case let .phoneOnboardingPublished(info):
+                state.publishedLANHost = info.lanHost
+                // An open popover is showing the material this call just replaced —
+                // including a QR for an address that has moved. Written straight into
+                // the child rather than sent as a child action: the popover is
+                // usually *not* open when this lands (the address moves whether or
+                // not anyone is looking), and a `.presented` action into a nil
+                // presentation is the case TCA warns about, not a no-op.
+                state.phone?.info = info
+                state.phone?.isLoading = false
                 return .none
 
             case let .addRuleFromFlow(id, template):

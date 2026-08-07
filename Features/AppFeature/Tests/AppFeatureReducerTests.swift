@@ -196,4 +196,142 @@ import Testing
             $0.isRecording = false // starts true
         }
     }
+
+    // MARK: The QR follows the machine
+
+    /// The published material freezes an address: the QR encodes
+    /// `http://lanHost:provisioningPort/` and the popover prints `lanHost:proxyPort`
+    /// for the phone's manual proxy fields. Move networks and that QR points at a
+    /// host which no longer answers — a phone scanning it hangs with nothing to say
+    /// why. `startPhoneOnboarding` is idempotent and republishes; these pin *when*
+    /// it is re-run.
+    private nonisolated func onboardingInfo(host: String) -> PhoneOnboardingInfo {
+        PhoneOnboardingInfo(
+            lanHost: host,
+            proxyPort: 9090,
+            provisioningPort: 9500,
+            provisioningURL: URL(string: "http://\(host):9500/")!,
+            fingerprint: "AA:BB",
+            commonName: "Loom Root CA",
+            qrPNGData: Data()
+        )
+    }
+
+    @Test func lanAddressMoves_republishesTheOnboardingMaterial() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = true
+        initial.publishedLANHost = "192.168.1.42"
+        let clock = TestClock()
+        let republished = onboardingInfo(host: "10.0.0.7")
+        let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.proxyClient.startPhoneOnboarding = { republished }
+        }
+
+        await store.send(.localIPResolved("10.0.0.7")) {
+            $0.localIP = "10.0.0.7"
+        }
+        await clock.advance(by: AppFeature.phoneRepublishDebounce)
+        await store.receive(\.phoneOnboardingPublished) {
+            $0.publishedLANHost = "10.0.0.7"
+        }
+    }
+
+    /// A Wi-Fi join settles over several addresses. Republishing on each would
+    /// rebind the provisioning server repeatedly, and the engine refuses a second
+    /// concurrent `startPhoneOnboarding` outright — so an un-debounced burst can end
+    /// with the *last* address never published, which is the failure this fixes.
+    @Test func lanAddressFlapping_republishesOnceForTheAddressItSettledOn() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = true
+        initial.publishedLANHost = "192.168.1.42"
+        let clock = TestClock()
+        let calls = LockIsolated(0)
+        let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.proxyClient.startPhoneOnboarding = {
+                calls.withValue { $0 += 1 }
+                return self.onboardingInfo(host: "10.0.0.9")
+            }
+        }
+
+        await store.send(.localIPResolved("10.0.0.7")) { $0.localIP = "10.0.0.7" }
+        await clock.advance(by: .seconds(1))     // still settling
+        await store.send(.localIPResolved("10.0.0.9")) { $0.localIP = "10.0.0.9" }
+        await clock.advance(by: AppFeature.phoneRepublishDebounce)
+
+        await store.receive(\.phoneOnboardingPublished) {
+            $0.publishedLANHost = "10.0.0.9"
+        }
+        #expect(calls.value == 1, "the in-flight republish must be cancelled, not queued")
+    }
+
+    /// Going offline publishes nothing: the engine would refuse for want of a LAN
+    /// address, and the material Loom holds is the last one that ever worked.
+    @Test func lanAddressLost_doesNotRepublish() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = true
+        initial.publishedLANHost = "192.168.1.42"
+        initial.localIP = "192.168.1.42"
+        // `startPhoneOnboarding` is left unimplemented: calling it fails the test.
+        let store = TestStore(initialState: initial) { AppFeature() }
+        await store.send(.localIPResolved(nil)) { $0.localIP = nil }
+    }
+
+    @Test func lanDisabled_doesNotRepublish() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = false
+        // `startPhoneOnboarding` is left unimplemented: calling it fails the test.
+        let store = TestStore(initialState: initial) { AppFeature() }
+        await store.send(.localIPResolved("10.0.0.7")) { $0.localIP = "10.0.0.7" }
+    }
+
+    /// The address that is already published is not a change. Without this the
+    /// first emission of the address stream — which seeds the current value — would
+    /// republish on top of what boot just published.
+    @Test func sameAddressAgain_doesNotRepublish() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = true
+        initial.publishedLANHost = "192.168.1.42"
+        let store = TestStore(initialState: initial) { AppFeature() }
+        await store.send(.localIPResolved("192.168.1.42")) { $0.localIP = "192.168.1.42" }
+    }
+
+    /// Turning LAN off drops the material and returns the listener to loopback, so
+    /// the address it was published for has to be forgotten too — keeping it would
+    /// make the next address change look like a republish that already happened.
+    @Test func lanTurnedOff_forgetsThePublishedAddress() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = true
+        initial.publishedLANHost = "192.168.1.42"
+        initial.phone = PhoneOnboardingFeature.State(lanEnabled: true)
+        let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.phone(.presented(.delegate(.lanEnabledChanged(false)))))
+        #expect(store.state.publishedLANHost == nil)
+    }
+
+    /// An open popover is showing the material the republish just replaced. It is
+    /// usually *not* open when this lands — the address moves whether or not anyone
+    /// is looking — which is why the parent writes the child's state directly rather
+    /// than sending an action into a possibly-nil presentation.
+    @Test func republish_refreshesAnOpenPopover() async {
+        var initial = AppFeature.State()
+        initial.lanEnabled = true
+        initial.publishedLANHost = "192.168.1.42"
+        initial.phone = PhoneOnboardingFeature.State(
+            lanEnabled: true, info: onboardingInfo(host: "192.168.1.42")
+        )
+        let fresh = onboardingInfo(host: "10.0.0.7")
+        let store = TestStore(initialState: initial) { AppFeature() }
+
+        await store.send(.phoneOnboardingPublished(fresh)) {
+            $0.publishedLANHost = "10.0.0.7"
+            $0.phone?.info = fresh
+        }
+        #expect(store.state.phone?.info?.provisioningURL.absoluteString == "http://10.0.0.7:9500/")
+    }
 }
