@@ -36,20 +36,25 @@ import Testing
             }
         }
 
-        await store.send(.addReverseProxyTapped(
+        await store.send(.reverseProxy(.addTapped(
             upstream: "https://api.github.com", port: 0, label: nil, keepHostHeader: false
-        )) {
-            $0.reverseProxyBusy = true
+        ))) {
+            $0.reverseProxy.isBusy = true
+        }
+        // The re-read is now a hop through the child's delegate, so it lands after
+        // `finished` rather than before it: the child asks, the parent (which owns
+        // `status`) does the reading. The list is refreshed either way — what moved is
+        // only when the spinner stops relative to it.
+        await store.receive(\.reverseProxy.delegate.needsStatusRefresh)
+        await store.receive(\.reverseProxy.finished) {
+            $0.reverseProxy.isBusy = false
         }
         await store.receive(\.engineStatusRefreshed) {
             $0.status.port = 9090
             $0.status.reverseProxies = [created]
         }
-        await store.receive(\.reverseProxyFinished) {
-            $0.reverseProxyBusy = false
-        }
         #expect(store.state.status.reverseProxies.first?.localURL == "http://127.0.0.1:54321")
-        #expect(store.state.reverseProxyMessage == nil)
+        #expect(store.state.reverseProxy.message == nil)
     }
 
     /// A create binds before it persists, so the common failure — the port is already
@@ -66,16 +71,16 @@ import Testing
             }
         }
 
-        await store.send(.addReverseProxyTapped(
+        await store.send(.reverseProxy(.addTapped(
             upstream: "https://api.github.com", port: 9200, label: nil, keepHostHeader: false
-        )) {
-            $0.reverseProxyBusy = true
+        ))) {
+            $0.reverseProxy.isBusy = true
         }
-        await store.receive(\.reverseProxyFinished) {
-            $0.reverseProxyBusy = false
+        await store.receive(\.reverseProxy.finished) {
+            $0.reverseProxy.isBusy = false
             // Verbatim from `ProxyControlError.message`, kind prefix included: the
             // panel shows the engine's wording, not a rewrite of it.
-            $0.reverseProxyMessage = "invalid reverse proxy: port 9200 is already in use"
+            $0.reverseProxy.message = "invalid reverse proxy: port 9200 is already in use"
         }
         // No status re-read on failure: nothing changed, and a refresh would imply it did.
         #expect(store.state.status.reverseProxies.isEmpty)
@@ -93,15 +98,16 @@ import Testing
             $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
         }
 
-        await store.send(.deleteReverseProxyTapped(id: existing.endpoint.id)) {
-            $0.reverseProxyBusy = true
+        await store.send(.reverseProxy(.deleteTapped(id: existing.endpoint.id))) {
+            $0.reverseProxy.isBusy = true
+        }
+        await store.receive(\.reverseProxy.delegate.needsStatusRefresh)
+        await store.receive(\.reverseProxy.finished) {
+            $0.reverseProxy.isBusy = false
         }
         await store.receive(\.engineStatusRefreshed) {
             $0.status.port = 9090
             $0.status.reverseProxies = []
-        }
-        await store.receive(\.reverseProxyFinished) {
-            $0.reverseProxyBusy = false
         }
     }
 
@@ -119,17 +125,18 @@ import Testing
             }
         }
 
-        await store.send(.reverseProxiesExpandTapped) {
-            $0.reverseProxiesExpanded = true
+        await store.send(.reverseProxy(.expandTapped)) {
+            $0.reverseProxy.isExpanded = true
         }
+        await store.receive(\.reverseProxy.delegate.needsStatusRefresh)
         await store.receive(\.engineStatusRefreshed) {
             $0.status.port = 9090
             $0.status.reverseProxies = [agents]
         }
 
         // Collapsing reads nothing — there is no list on screen to keep fresh.
-        await store.send(.reverseProxiesExpandTapped) {
-            $0.reverseProxiesExpanded = false
+        await store.send(.reverseProxy(.expandTapped)) {
+            $0.reverseProxy.isExpanded = false
         }
     }
 
@@ -192,8 +199,8 @@ import Testing
         }
         store.exhaustivity = .off
 
-        await store.send(.auditEntryReceived(
-            AuditEntry(tool: "create_reverse_proxy", succeeded: true, arguments: "{}", detail: "")))
+        await store.send(.audit(.entryReceived(
+            AuditEntry(tool: "create_reverse_proxy", succeeded: true, arguments: "{}", detail: ""))))
         await store.receive(\.engineStatusRefreshed)
         #expect(store.state.status.reverseProxies.count == 1)
     }
@@ -211,7 +218,7 @@ import Testing
             }
         }
         store.exhaustivity = .off
-        await store.send(.auditEntryReceived(
-            AuditEntry(tool: "set_rule", succeeded: true, arguments: "{}", detail: "")))
+        await store.send(.audit(.entryReceived(
+            AuditEntry(tool: "set_rule", succeeded: true, arguments: "{}", detail: ""))))
     }
 }

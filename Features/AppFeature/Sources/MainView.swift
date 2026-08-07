@@ -116,7 +116,7 @@ public struct MainView: View {
                 .badge(store.rules.rulesState.rules.count)
                 .tag(FlowCategory.rules)
             Label("Audit", systemImage: "checklist")
-                .badge(store.auditEntries.count)
+                .badge(store.audit.entries.count)
                 .tag(FlowCategory.audit)
             breakpointsSidebarRow
 
@@ -341,7 +341,7 @@ public struct MainView: View {
         if store.selectedCategory == .rules {
             RulesPanelView(store: store.scope(state: \.rules, action: \.rules))
         } else if store.selectedCategory == .audit {
-            AuditPanelView(store: store)
+            AuditPanelView(store: store.scope(state: \.audit, action: \.audit))
         } else if store.selectedCategory == .breakpoints {
             BreakpointsPanelView(store: store.scope(state: \.breakpoints, action: \.breakpoints))
         } else if let flow = store.selectedFlow {

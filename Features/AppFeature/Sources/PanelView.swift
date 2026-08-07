@@ -319,10 +319,10 @@ public struct PanelView: View {
             detail: reverseProxyDetail,
             help: "Local ports that stand in for an upstream origin — for clients that ignore proxy settings"
         ) {
-            store.send(.reverseProxiesExpandTapped)
+            store.send(.reverseProxy(.expandTapped))
         }
-        if store.reverseProxiesExpanded {
-            ReverseProxyCard(store: store)
+        if store.reverseProxy.isExpanded {
+            ReverseProxyCard(store: store.scope(state: \.reverseProxy, action: \.reverseProxy))
                 // Leading edge lines up with the row's icon rather than with the panel
                 // margin: the card belongs to the row above it, so it must not start
                 // further left than anything in it.
