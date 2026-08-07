@@ -1,8 +1,107 @@
+import AppKit
 import SwiftUI
 
 /// Code mirror of DESIGN.md tokens. Never inline raw values in views — reference
 /// these so the design system stays single-sourced.
 public enum LoomTheme {
+    /// Loom's palette. **The values are not here** — they are color sets in
+    /// `Features/AppFeature/Resources/Assets.xcassets`, and this enum is only the
+    /// named way in. DESIGN.md § Colors Rule #1 (never write a hex literal in
+    /// SwiftUI) therefore still holds literally: no file in the app spells a
+    /// component out.
+    ///
+    /// Why a palette at all, when the system already ships semantic colors: the
+    /// stock ones are full-saturation and tuned for *any* app, so a surface using
+    /// several at once reads as un-designed — and Loom uses several at once by
+    /// construction (a status class, an on/off tint and a fault tint can all be on
+    /// screen in one row). These are one family: matched lightness, saturation
+    /// pulled back, so they sit beside each other and on the console's vibrant
+    /// material without one shouting over the rest.
+    ///
+    /// Why a catalog rather than a `dynamicProvider` closure, which is what this
+    /// started as and is a third the code:
+    ///
+    /// - **Increase Contrast is a data edit, not a branch.** Each set carries a
+    ///   `high` contrast variant per appearance, so the accessibility setting is
+    ///   honored by AppKit's own resolution. In code it would mean reading
+    ///   `accessibilityDisplayShouldIncreaseContrast` and re-deriving every hue.
+    /// - **Wide gamut stays open.** A set can add a Display P3 entry; an
+    ///   `NSColor(srgbRed:…)` is sRGB forever.
+    /// - **The lookup is checked.** Generated asset symbols mean `Color(.loomError)`
+    ///   is a compile-time name, so renaming or deleting a set breaks the build.
+    ///   `Color("LoomError")` would resolve to nothing at runtime — the same silent
+    ///   failure the custom SF Symbol cost this project once (CLAUDE.md § Known
+    ///   Issues), and the reason no string form appears here.
+    ///
+    /// Resolution is per *view* appearance, not a global read, so a color is right
+    /// inside a popover rendering in a different appearance than the window behind.
+    ///
+    /// The cost, stated because it is a real trade: `accent` no longer follows the
+    /// user's system accent. Deliberate — the accent is also the "an agent touched
+    /// this" marker, and a marker whose hue the user can set to red or orange
+    /// collides with the status voices, which are the one thing here that must
+    /// never be ambiguous.
+    public enum Palette {
+        /// Interactivity, selection, focus, and the "replayed / modified by an
+        /// agent" marker. One accent, everywhere (DESIGN.md).
+        public static let accent = Color(.loomAccent)
+        /// 2xx. Never used for "a switch is on" — that is `accent`; sharing the hue
+        /// is what made green stop meaning anything.
+        public static let success = Color(.loomSuccess)
+        /// 3xx — and `warning` is an alias of it, not a copy: one hue, two names, so
+        /// a change to what "a fault the human can fix" looks like cannot silently
+        /// restyle every redirect (DESIGN.md § Colors).
+        public static let redirect = Color(.loomRedirect)
+        /// A fault the human can fix — a warning tile, a not-listening endpoint, a
+        /// held breakpoint.
+        public static let warning = redirect
+        /// "Waiting on you" — softer than `warning`: nothing is broken yet, but
+        /// something is parked until a human acts.
+        public static let waiting = Color(.loomWaiting)
+        /// 4xx / 5xx / transport error, and fault-card fills.
+        public static let error = Color(.loomError)
+        /// In flight — no response head yet. Stays the *system* grey rather than
+        /// getting a set of its own: it is the absence of a status, not a status,
+        /// and it should track whatever the system calls disabled.
+        public static let pending = Color(nsColor: .systemGray)
+
+        /// Editor syntax highlighting — a deliberate exception to "color is status,
+        /// not decoration" (DESIGN.md § inspector). Two of the three reuse status
+        /// hues rather than introducing new ones; only the violet is its own, and
+        /// only because no status voice is violet, so it cannot be misread as one.
+        public enum Syntax {
+            public static let string = success
+            public static let number = redirect
+            public static let bool = Color(.loomSyntaxBool)
+        }
+    }
+
+    /// Recessed surfaces — the fills that lift a container off whatever is behind it.
+    ///
+    /// Three, and the count is the point. These were five values invented per site
+    /// (`0.25`, `0.3`, `0.4` of `.quaternary`, plus `.background` at `0.4` *and* `0.5`),
+    /// two of them differing by five hundredths for no reason anyone could state. A
+    /// reader can't tell 0.35 from 0.4, but they can absolutely tell that two boxes
+    /// meant to be the same kind of box aren't — and with no token, every new card
+    /// picked a sixth number.
+    ///
+    /// All three are *hierarchical* styles, never a color: they are vibrancy-aware, so
+    /// the same token is correct on the console's material and in an opaque sheet.
+    public enum Surface {
+        /// A section box that groups other controls — the outermost recess. Faintest,
+        /// because things sit *on* it and it must not compete with them.
+        public static let group = AnyShapeStyle(.quaternary.opacity(0.25))
+        /// A console card, or a well nested inside a `group`. The value DESIGN.md
+        /// already specified for the four console cards; the nested wells in the rule
+        /// editor were the same idea under a different number.
+        public static let card = AnyShapeStyle(.quaternary.opacity(0.4))
+        /// An editable well — a `TextEditor`/custom field. Uses `.background` rather
+        /// than `.quaternary` because it must read as *enterable*, i.e. brighter than
+        /// its surroundings rather than dimmer. Always paired with the hairline; use
+        /// `View.loomField()` so the pair can't come apart.
+        public static let field = AnyShapeStyle(.background.opacity(0.5))
+    }
+
     public enum Space {
         public static let xxs: CGFloat = 4
         public static let xs: CGFloat = 8
@@ -55,13 +154,99 @@ public enum LoomTheme {
     /// HTTP status class → semantic color. Color is never the only signal; it always
     /// accompanies the numeric code (see `StatusBadge`).
     public static func statusColor(status: Int?, isError: Bool) -> Color {
-        if isError { return .red }
-        guard let status else { return .gray } // in flight, no response yet
+        if isError { return Palette.error }
+        guard let status else { return Palette.pending } // in flight, no response yet
         switch status {
-        case 200 ..< 300: return .green
-        case 300 ..< 400: return .orange
-        default: return .red
+        case 200 ..< 300: return Palette.success
+        case 300 ..< 400: return Palette.redirect
+        default: return Palette.error
         }
+    }
+
+    /// Full-row fill for a request whose exchange failed — 4xx/5xx or a transport
+    /// error. An `NSColor` because the only row-sized rectangle in a SwiftUI `Table`
+    /// belongs to `NSTableRowView` (see `RequestTableBridge`).
+    ///
+    /// Nothing else in the table is ever filled. The wash exists so a failure is
+    /// findable while scrolling, and a table where several rows are tinted for several
+    /// reasons is one where none of them is a signal — a 3xx in particular does not
+    /// qualify, a redirect being the wire working.
+    ///
+    /// 7 %, deliberately weaker than `attentionOpacity`'s 12 %: a row is not a card,
+    /// and it still has to read as selectable with the system's own selection fill
+    /// drawn over it.
+    public static let rowFillError = NSColor(resource: .loomError).withAlphaComponent(0.07)
+
+    /// Whether a flow's outcome earns `rowFillError`. One predicate, so the table's
+    /// AppKit fill and anything else that ever asks cannot disagree about what
+    /// "failed" means.
+    public static func isFailure(status: Int?, isError: Bool) -> Bool {
+        isError || (status ?? 0) >= 400
+    }
+
+    /// Duration → ink for the request table's `Time` column.
+    ///
+    /// "Why is this slow" is the second question a capture proxy answers — the first
+    /// being "did it fail" — and that column said nothing about it: 40 ms and 4 s were
+    /// the same grey. Three bands, and only the outlier is chromatic:
+    ///
+    /// - under `slowMS`: `.secondary`, i.e. metadata, which is what a fast request is.
+    /// - `slowMS …< verySlowMS`: `.primary`. **Weight, not hue** — it deserves to be
+    ///   read, but a second color here would compete with the status class beside it
+    ///   for the same glance.
+    /// - `verySlowMS` and up: `warning`. A fault the human can act on, which is what
+    ///   the hue means everywhere else in the app.
+    ///
+    /// The thresholds are a judgment call, not a measurement: 1 s is where an API call
+    /// stops feeling like one, 3 s is where a human assumes something hung.
+    public static func durationStyle(ms: Int?) -> AnyShapeStyle {
+        guard let ms else { return AnyShapeStyle(.tertiary) } // no duration yet
+        if ms >= verySlowMS { return AnyShapeStyle(Palette.warning) }
+        if ms >= slowMS { return AnyShapeStyle(.primary) }
+        return AnyShapeStyle(.secondary)
+    }
+
+    public static let slowMS = 1000
+    public static let verySlowMS = 3000
+
+    /// HTTP method → ink. **Only methods that change server state get a hue**; the
+    /// safe ones stay `.primary`.
+    ///
+    /// The restraint is the feature. Coloring all seven methods turns the column
+    /// into a legend the reader has to learn, and a `GET` list — the common case —
+    /// would be a wall of one color, which carries no information at all. Tinting
+    /// only the mutating ones means the color appears exactly when it answers the
+    /// question the column is there for: *would replaying this row do something?*
+    public static func methodColor(_ method: String) -> Color {
+        mutatingMethodColor(method) ?? .primary
+    }
+
+    /// The same split, but `nil` for the safe methods — for surfaces where "no tint"
+    /// is a different *shape*, not a different hue (`MethodBadge`'s neutral capsule).
+    /// One function so a badge and a table row cannot disagree about which methods
+    /// change server state.
+    public static func mutatingMethodColor(_ method: String) -> Color? {
+        switch method.uppercased() {
+        case "DELETE": return Palette.error
+        case "POST", "PUT", "PATCH": return Palette.accent
+        default: return nil // GET / HEAD / OPTIONS / TRACE — safe
+        }
+    }
+}
+
+extension View {
+    /// An editable well: `Surface.field` plus the hairline that makes it read as a
+    /// field rather than as a tinted block. One modifier because the two were written
+    /// out together at five sites, and a fill without its stroke is indistinguishable
+    /// from a decorative panel.
+    func loomField(radius: CGFloat = LoomTheme.Radius.sm) -> some View {
+        background(LoomTheme.Surface.field, in: RoundedRectangle(cornerRadius: radius))
+            .overlay { RoundedRectangle(cornerRadius: radius).stroke(.quaternary) }
+    }
+
+    /// A grouping box (`Surface.group`) or a card / nested well (`Surface.card`).
+    func loomSurface(_ style: AnyShapeStyle, radius: CGFloat = LoomTheme.Radius.sm) -> some View {
+        background(style, in: RoundedRectangle(cornerRadius: radius))
     }
 }
 

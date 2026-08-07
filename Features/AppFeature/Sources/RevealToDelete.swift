@@ -41,7 +41,7 @@ struct RevealToDelete<Content: View>: View {
             Button("Delete", action: onDelete)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .tint(.red)
+                .tint(LoomTheme.Palette.error)
                 .disabled(disabled)
                 .opacity(isRevealed ? 1 : 0)
                 // Not just hidden: an invisible button still takes hits, and this one

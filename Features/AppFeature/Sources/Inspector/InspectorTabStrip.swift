@@ -16,7 +16,7 @@ struct InspectorTabStrip<Tab: Hashable>: View {
                         .padding(.vertical, LoomTheme.Space.xs)
                         .overlay(alignment: .bottom) {
                             Rectangle()
-                                .fill(selection == tab ? Color.accentColor : .clear)
+                                .fill(selection == tab ? LoomTheme.Palette.accent : .clear)
                                 .frame(height: 2)
                         }
                 }

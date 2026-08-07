@@ -88,12 +88,12 @@ struct ReverseProxyCard: View {
             if let message = store.message {
                 Text(message)
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(LoomTheme.Palette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(LoomTheme.Space.sm)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+        .loomSurface(LoomTheme.Surface.card)
     }
 
     // MARK: Rows
@@ -120,7 +120,7 @@ struct ReverseProxyCard: View {
                     .truncationMode(.middle)
                 Text(ReverseProxyList.caption(for: status))
                     .font(.caption2)
-                    .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .foregroundStyle(status.isListening ? AnyShapeStyle(.secondary) : AnyShapeStyle(LoomTheme.Palette.warning))
                     .lineLimit(2)
                     .truncationMode(.middle)
             }
@@ -168,7 +168,7 @@ struct ReverseProxyCard: View {
             if let problem = draft.portProblem ?? draft.upstreamProblem {
                 Text(problem)
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(LoomTheme.Palette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             } else if draft.port.trimmingCharacters(in: .whitespaces).isEmpty {
                 Text("Leave the port blank and Loom picks a free one.")

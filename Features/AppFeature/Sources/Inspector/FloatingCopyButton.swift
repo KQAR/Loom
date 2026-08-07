@@ -15,7 +15,7 @@ struct FloatingCopyButton: View {
         } label: {
             Image(systemName: copied ? "checkmark" : "doc.on.doc")
                 .font(.callout)
-                .foregroundStyle(copied ? Color.accentColor : .secondary)
+                .foregroundStyle(copied ? LoomTheme.Palette.accent : .secondary)
                 .padding(6)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
                 .overlay {

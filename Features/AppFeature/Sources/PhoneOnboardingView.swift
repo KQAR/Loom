@@ -81,6 +81,10 @@ struct PhoneOnboardingView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 180, height: 180)
                 .padding(LoomTheme.Space.sm)
+                // The one literal color in the app, and it is not a design choice: a QR
+                // code's quiet zone has to be white in *both* appearances or scanners
+                // lose the contrast they decode against. Not a `Surface` token, and not
+                // a candidate for one.
                 .background(.white, in: RoundedRectangle(cornerRadius: LoomTheme.Radius.md))
         } else {
             // QR generation failed — the URL below is still actionable.
@@ -123,7 +127,7 @@ struct PhoneOnboardingView: View {
         }
         .padding(.horizontal, LoomTheme.Space.sm)
         .padding(.vertical, LoomTheme.Space.xs)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+        .loomSurface(LoomTheme.Surface.card)
     }
 
     private func fingerprint(_ info: PhoneOnboardingInfo) -> some View {
@@ -148,7 +152,7 @@ struct PhoneOnboardingView: View {
         VStack(spacing: LoomTheme.Space.xs) {
             Image(systemName: "exclamationmark.triangle")
                 .font(LoomTheme.Icon.card)
-                .foregroundStyle(.orange)
+                .foregroundStyle(LoomTheme.Palette.warning)
             Text(message)
                 .font(.callout)
                 .foregroundStyle(.secondary)

@@ -46,17 +46,16 @@ struct SubstitutionRow: View {
                 .font(.callout.monospaced())
         }
         .padding(LoomTheme.Space.sm)
-        .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-        .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
+        .loomField()
     }
 
     private func iconToggle(_ text: String, on: Bool, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(text)
                 .font(.caption.monospaced().weight(.bold))
-                .foregroundStyle(on ? Color.accentColor : Color.secondary)
+                .foregroundStyle(on ? LoomTheme.Palette.accent : Color.secondary)
                 .frame(width: 24, height: 20)
-                .background(on ? Color.accentColor.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
+                .background(on ? LoomTheme.Palette.accent.opacity(0.15) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
         .help(help)

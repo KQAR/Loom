@@ -118,6 +118,14 @@ let project = Project(
         .module(
             name: "AppFeature",
             sources: ["Features/AppFeature/Sources/**"],
+            // The design system's color sets (`LoomTheme.Palette`). They live with
+            // the views rather than in the app's own catalog because the palette is
+            // the design layer's, and because a framework-owned catalog resolves
+            // through the generated asset symbols — a color that is renamed or
+            // deleted then fails to compile instead of resolving to nothing at
+            // runtime, which is the failure mode the custom SF Symbol already cost
+            // this project once (CLAUDE.md § Known Issues).
+            resources: ["Features/AppFeature/Resources/**"],
             dependencies: [
                 .external(name: "ComposableArchitecture"),
                 .target(name: "ProxyClient"),

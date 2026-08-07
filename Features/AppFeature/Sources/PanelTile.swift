@@ -197,7 +197,7 @@ struct PanelTile: View {
                 // console draws no standing fills; this one exists because a
                 // control with no border still has to show its hit target.
                 RoundedRectangle(cornerRadius: LoomTheme.Radius.md)
-                    .fill(Color.accentColor.opacity(hovering && !disabled ? LoomTheme.attentionOpacity : 0))
+                    .fill(LoomTheme.Palette.accent.opacity(hovering && !disabled ? LoomTheme.attentionOpacity : 0))
             )
             .contentShape(RoundedRectangle(cornerRadius: LoomTheme.Radius.md))
         }
@@ -220,8 +220,8 @@ struct PanelTile: View {
     private var tint: AnyShapeStyle {
         switch mode {
         case .off: return AnyShapeStyle(.secondary)
-        case .on: return AnyShapeStyle(Color.accentColor)
-        case .warning: return AnyShapeStyle(Color.orange)
+        case .on: return AnyShapeStyle(LoomTheme.Palette.accent)
+        case .warning: return AnyShapeStyle(LoomTheme.Palette.warning)
         }
     }
 
@@ -248,7 +248,7 @@ struct ConsoleAlertRow: View {
     /// system proxy is the human's to fix, in that app). Then the row is a
     /// statement, not a button, and shows no chevron.
     var action: (() -> Void)?
-    var tint: Color = .orange
+    var tint: Color = LoomTheme.Palette.warning
     var busy: Bool = false
 
     @State private var hovering = false
@@ -350,7 +350,7 @@ struct PanelGlyphButton: View {
                 .frame(width: 18, height: 18)
                 .background(
                     RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
-                        .fill(Color.accentColor.opacity(hovering && !disabled ? LoomTheme.attentionOpacity : 0))
+                        .fill(LoomTheme.Palette.accent.opacity(hovering && !disabled ? LoomTheme.attentionOpacity : 0))
                         .padding(-3)
                 )
                 .contentShape(Rectangle())

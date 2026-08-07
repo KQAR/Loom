@@ -11,7 +11,7 @@ struct SegmentBar: View {
                     HStack(spacing: 4) {
                         Text(seg.label)
                         if active.contains(seg) {
-                            Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                            Circle().fill(LoomTheme.Palette.accent).frame(width: 6, height: 6)
                         }
                     }
                     .font(.caption.weight(selection == seg ? .semibold : .regular))
@@ -19,7 +19,7 @@ struct SegmentBar: View {
                     .padding(.vertical, LoomTheme.Space.xs)
                     .frame(maxWidth: .infinity)
                     .background(
-                        selection == seg ? Color.accentColor.opacity(0.15) : Color.clear,
+                        selection == seg ? LoomTheme.Palette.accent.opacity(0.15) : Color.clear,
                         in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
                     )
                     .contentShape(Rectangle())
@@ -28,6 +28,6 @@ struct SegmentBar: View {
             }
         }
         .padding(3)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.md))
+        .loomSurface(LoomTheme.Surface.group, radius: LoomTheme.Radius.md)
     }
 }
