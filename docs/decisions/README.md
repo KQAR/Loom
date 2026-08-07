@@ -1,0 +1,33 @@
+# Decision records
+
+Long-form records moved out of [`AGENTS.md`](../../AGENTS.md), which loads in full at the
+start of every session and had grown to ~24 % postmortem.
+
+The split is by **kind of statement**, not by topic:
+
+- `AGENTS.md` holds the **invariant** — what a change must not break, and how to recognise
+  the failure. It stays short enough to read every time.
+- A file here holds the **record** — what was tried, what it cost, which belief turned out
+  to be wrong. Read it when you are about to re-open the question; skip it otherwise.
+
+Each `AGENTS.md` entry links to its record, so nothing is lost, and each record links back
+to the section whose invariant it produced.
+
+| Record | The invariant it produced |
+|---|---|
+| [`ci-red-run-triage.md`](ci-red-run-triage.md) | A red run on `main` is not automatically a regression — and the three other things it can be |
+| [`privileged-helper.md`](privileged-helper.md) | The helper's four hard rules, and why it will never install CA trust |
+| [`tsan-continuation-race.md`](tsan-continuation-race.md) | A red TSan job means something now: ask whether Loom code *performs* the racing access |
+| [`h2-upload-stall.md`](h2-upload-stall.md) | The stall signature is `consumed = 65535` exactly; reads-issued does not distinguish it |
+| [`navigation-split-view.md`](navigation-split-view.md) | `MainView` is a plain `HStack`, and three measured dead ends around it |
+
+## Writing one
+
+Move text here when it is *history* — an incident, a rejected design, a measurement that
+settled an argument. Leave the one or two sentences a reader needs in order to not break the
+thing, and link. Do not summarise the record in `AGENTS.md` beyond that: two versions of the
+same story is the problem this split exists to end.
+
+Records are **not** maintained. They are dated, and they describe the state at that date; if
+one is contradicted by later work, the `AGENTS.md` invariant is what gets corrected, and the
+record gains a note saying so rather than being rewritten.
