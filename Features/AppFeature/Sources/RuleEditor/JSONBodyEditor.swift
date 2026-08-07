@@ -45,16 +45,14 @@ struct JSONBodyEditor: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(minHeight: 120, maxHeight: 260)
-                .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
+                .loomField()
             } else {
                 TextEditor(text: $text)
                     .font(.callout.monospaced())
                     .frame(minHeight: 96)
                     .scrollContentBackground(.hidden)
                     .padding(4)
-                    .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                    .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
+                    .loomField()
             }
         }
     }

@@ -11,7 +11,20 @@ system-design:
   expiry: "Apple documents the key as temporary and intends to drop it after Xcode 26. When it stops working the glass chrome returns; that is a decision to re-make here — adopt it deliberately, per surface — not a build regression to chase."
 
 colors:
-  accent: "#007AFF"                # Color.accentColor — dark #0A84FF. Interactivity + "replayed by AI" marker.
+  source: "Features/AppFeature/Resources/Assets.xcassets — every chromatic token below is a
+           color SET there, reached in code ONLY through LoomTheme.Palette (which is itself only
+           named accessors over generated asset symbols, so a renamed set fails to compile).
+           Each set carries four entries: Any · Dark · High-Contrast Any · High-Contrast Dark.
+           The last two are the reason this is a catalog and not a dynamicProvider closure —
+           Increase Contrast becomes a data edit instead of a branch in every view. The ink and
+           surface tokens below stay SEMANTIC system colors and get no set: they must track
+           whatever the OS calls label/window/separator."
+  accent: "LoomAccent"             # #3B7DD8 · dark #5B9CF0. Interactivity + "replayed by AI" marker.
+                                   # NOT Color.accentColor any more, and that is the one deliberate
+                                   # break with system-first: the accent doubles as the "an agent
+                                   # touched this" marker, and a marker the user can set to red or
+                                   # orange in System Settings collides with the status voices, which
+                                   # are the one channel here that must never be ambiguous.
   ink: "#000000D9"                 # Color.primary — dark #FFFFFFD9
   ink-secondary: "#0000008C"       # .secondary — dark #FFFFFF8C
   ink-tertiary: "#00000042"        # .tertiary — dark #FFFFFF42
@@ -20,17 +33,42 @@ colors:
   attention-fill: "{colors.accent}"   # attention-card tint at ~12% fill
   window-canvas: "#ECECEC"         # Main-window base — windowBackgroundColor, dark #282828
   window-content: "#FFFFFF"        # main-window code wells — controlBackgroundColor, dark #1E1E1E
-  status-success: "#28CD41"        # 2xx — Color.green, dark #32D74B
-  status-redirect: "#FF9500"       # 3xx — Color.orange, dark #FF9F0A
-  status-error: "#FF3B30"          # 4xx / 5xx / transport error — Color.red, dark #FF453A
-  status-pending: "#8E8E93"        # in flight, no response — Color(.systemGray)
-  status-warning: "#FF9500"        # Color.orange — a fault the human can fix (a warning switch-tile, a
-                                   # not-listening endpoint, an unreadable client identity, held traffic).
-                                   # Same hue as {colors.status-redirect}, deliberately named apart: one is
-                                   # a wire fact, this one is a console state, and they change for
-                                   # different reasons. Yellow (Color.yellow) is its softer sibling and
-                                   # means "waiting on you", not "broken".
+  status-success: "LoomSuccess"    # 2xx — #2FA35C · dark #3FBF71. NEVER "a switch is on" — that is
+                                   # {colors.accent}. Three toolbar toggles wearing 2xx-green is what
+                                   # made this hue stop reading as a status at all.
+  status-redirect: "LoomRedirect"  # 3xx — #C9722E · dark #E08A46
+  status-error: "LoomError"        # 4xx / 5xx / transport error — #C7453C · dark #E05A50
+  status-pending: "#8E8E93"        # in flight, no response — Color(.systemGray), no set: the ABSENCE
+                                   # of a status, so it tracks whatever the system calls disabled.
+  status-warning: "LoomRedirect"   # a fault the human can fix (a warning switch-tile, a not-listening
+                                   # endpoint, an unreadable client identity, held traffic). The SAME
+                                   # SET as {colors.status-redirect} — an alias in code, not a copy —
+                                   # deliberately named apart: one is a wire fact, this one is a console
+                                   # state, and they change for different reasons.
+  status-waiting: "LoomWaiting"    # #BF9A1F · dark #DFBE45 — the softer sibling of status-warning:
+                                   # "waiting on you", not "broken". Nothing is wrong yet; something is
+                                   # parked until a human acts (helper approval, cert trust).
+  row-fill-error: "{colors.status-error} @ 7%"
+                                   # Request-table row wash for a failed exchange — see § main-window.
+  syntax-string: "{colors.status-success}"   # editor highlighting reuses the status hues rather than
+  syntax-number: "{colors.status-redirect}"  # inventing new ones …
+  syntax-bool: "LoomSyntaxBool"    # … except the violet (#8B5FBF · dark #A981D9), which is its own only
+                                   # because no status voice is violet, so it cannot be misread as one.
   separator: "#0000001A"           # separatorColor — dark #FFFFFF1A. Row + section hairlines.
+  surface-group: ".quaternary @ 25%"    # a section box that GROUPS other controls — the outermost recess,
+                                        # faintest, because things sit on it and it must not compete.
+  surface-card: ".quaternary @ 40%"     # a console card, or a well nested inside a surface-group.
+  surface-field: ".background @ 50%"    # an EDITABLE well. `.background`, not `.quaternary`, because it has
+                                        # to read as enterable — brighter than its surroundings, not dimmer.
+                                        # ALWAYS with the {colors.separator} hairline; `View.loomField()`
+                                        # ships the pair so it cannot come apart.
+                                        # Three, and the count is the spec. These were FIVE values invented
+                                        # per site (.quaternary at 25/30/40 %, .background at 40 AND 50 %),
+                                        # two of them five hundredths apart for no stateable reason. Nobody
+                                        # reads 0.35 vs 0.4; everybody reads two boxes that were meant to be
+                                        # the same kind of box and are not. All three are HIERARCHICAL styles,
+                                        # never colors, so one token is correct on the console's vibrant
+                                        # material and in an opaque sheet alike (`LoomTheme.Surface`).
   on-accent: "#FFFFFF"
 
 typography:
@@ -98,18 +136,34 @@ components:
     structure: "HStack(spacing: 0): sidebar | VSplitView(request-table top / inspector-panel bottom). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its divider was already fixed and undraggable here. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH 300↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
     defaultSize: "{metrics.main-window-default}"
     titlebar: "FROSTED, not opaque and not bare: the request table extends under the toolbar band and blurs beneath it. Content surfaces below stay opaque — the frost is the band only. NSVisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active) at the BACK of the titlebar container, so toolbar items read crisply over it. .withinWindow is load-bearing: it samples the table below it in this window, where .behindWindow would blur the desktop and leave the rows crisp. NO baseline hairline (titlebarSeparatorStyle = .none, showsBaselineSeparator = false), no border, no shadow — the frost is the only separation. Two rejected: SwiftUI .toolbarBackground(.visible, for: .windowToolbar) is a no-op under .windowStyle(.hiddenTitleBar); titlebarAppearsTransparent = false gives AppKit's OPAQUE fill, not a translucent one."
-    toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + LAN-IP:port (verbatim, no digit grouping) + three gray/green status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars'). Right (.primaryAction, flat): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
+    toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + LAN-IP:port (verbatim, no digit grouping) + three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') tinted secondary off / {colors.accent} on — the SAME three values the console's switch-tiles use, because this window and that panel are two renderings of one state. They used to be green, which both contradicted the tile spec and spent the 2xx hue on something that is not a status; SSL keeps one extra value, {colors.status-waiting} for on-but-CA-not-trusted, which is 'waiting on you', not broken. Right (.primaryAction, flat): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search, no title. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Rules · Audit · Breakpoints (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): the pill is for attention, and these are bucket sizes on every row at once) · Sections 'Devices' / 'Apps' / 'Hosts', one Label per entry with the same trailing count. Selection scopes the table."
   request-table:   # top of the split — a multi-column SwiftUI Table
-    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the ring caps at 2000 and every extra point comes off Path, which is never wide enough) · App (icon) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
+    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the ring caps at 2000 and every extra point comes off Path, which is never wide enough) · App (icon) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono, tinted only when mutating — see `method-column`) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
     order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
     tail-follow: "auto-scroll to the newest row as the list grows; a user scroll stops following, and scrolling back to the bottom resumes it (live-scroll notifications distinguish user gestures from programmatic scrolls)"
     selection: "single, drives the inspector below"
     row-context-menu: "right-click a row → Copy ▸ Host · Path · URL · as cURL (curl reconstructs method/headers/body)"
   status-dot:      # the table's status column
-    anatomy: "a 9pt status-class color dot: green 2xx · orange 3xx · red 4xx/5xx/error · gray in-flight. Color is not the only signal — the numeric code is a tooltip and appears in the inspector Summary. Method is a separate ink column, never chromatic."
+    anatomy: "a 9pt status-class color dot: {colors.status-success} 2xx · {colors.status-redirect} 3xx · {colors.status-error} 4xx/5xx/error · {colors.status-pending} in-flight. Color is not the only signal — the numeric code is a tooltip and appears in the inspector Summary."
+  row-fill:        # the failed-row wash
+    what: "a FAILED row (4xx/5xx or a transport error) is washed {colors.row-fill-error} across its full width. Nothing else in the table is ever tinted: the wash exists so a failure is findable while scrolling, and a table where several rows are tinted for several reasons is one where none of them is a signal. A 3xx does NOT qualify — a redirect is the wire working."
+    weaker-than-a-card: "7 %, not {colors.attention-fill}'s 12 %. A row is not a card, and it still has to read as selectable under the system's own selection fill."
+    how: "`NSTableRowView.backgroundColor`, through `RequestTableBridge` — SwiftUI's Table has no row-background API on macOS at all. It was first built in pure SwiftUI as a fill on every cell with a bleed to cover the inter-column gutter; that is eight rectangles pretending to be one, and it showed seams where the bleed fell short, doubled-opacity bands where two bleeds overlapped, and required every new column to remember to join in. A row is one thing and gets one fill. Do NOT reintroduce the per-cell version."
+  method-column:   # the only non-status chromatic channel in the table
+    tint: "ONLY methods that change server state: DELETE {colors.status-error} · POST/PUT/PATCH {colors.accent} · GET/HEAD/OPTIONS/TRACE stay {colors.ink}."
+    why-not-all-seven: "coloring every method turns the column into a legend the reader has to learn, and a GET-heavy list — the common case — becomes a wall of one hue, which carries nothing. Tinting only the mutating ones makes the color appear exactly when it answers the question the column is there for: would replaying this row DO something?"
+  duration-column: # Time
+    what: "under 1 s .secondary · 1–3 s {colors.ink} · over 3 s {colors.status-warning}. 'Why is this slow' is the second question this app answers and the column said nothing about it — 40 ms and 4 s were the same grey."
+    weight-then-hue: "the middle band is WEIGHT, not a hue. It deserves to be read, but a second color there would compete with the status class beside it for the same glance; only the outlier — which is a fault the human can act on — earns the chromatic channel."
+    thresholds: "a judgment call, not a measurement: 1 s is where an API call stops feeling like one, 3 s is where a human assumes it hung (`LoomTheme.slowMS` / `verySlowMS`)."
+  sidebar-counts:
+    rule: "plain {typography.numeric} .tertiary on every row — these are bucket SIZES, and a column of colored digits reads as a column of alerts."
+    one-exception: "a non-zero **Errors** count is {colors.status-error}. It is the one number in the sidebar that is a fault rather than a size, and the one a human opens this window to check."
+  inspector-parity:
+    rule: "a fact rendered in both the table and the inspector uses the SAME token, from the same function. Status code → `LoomTheme.statusColor` (dot and Summary row), method → `LoomTheme.mutatingMethodColor` (Method column and `MethodBadge`, where 'no tint' becomes the neutral capsule rather than a different hue), duration → `LoomTheme.durationStyle`. Two renderings of one fact disagreeing is the bug this prevents — the list showed a red dot while Summary showed plain ink."
   seq-column:      # request order
     anatomy: "1-based capture order (#1 = first request), {typography.numeric} .tertiary. Global + stable per flow, independent of the current filter/sort."
   inspector-panel: # bottom of the split — Request | Response, referenced from Proxyman
@@ -120,7 +174,7 @@ components:
     responsePane: "tab strip [Raw(default) · Headers(n) · Cookies(n, only if any) · Body] + status badge + ✕ close (deselects). Raw = status line + headers + body with a line-number gutter."
     cookies-tab: "shown only when present — request from the `Cookie` header (name=value pairs), response from `Set-Cookie` headers (name/value + attributes). Rendered as the SAME aligned two-column table as Headers (one shared `KeyValueGrid`; titles Name/Value), so values line up in a column and can be read down. `Set-Cookie` attributes (Path/HttpOnly/SameSite/…) sit inside the value cell as a .tertiary caption line, not a third column: only responses have them, so a column would be dead space on every request pane. Names, values and attributes all selectable."
     body-copy: "Body panes (request + response) show a floating copy button pinned top-right that copies the whole body; flips to a checkmark briefly."
-    body-json: "when a body parses as JSON (object/array, ≤200KB), Body renders a collapsible, syntax-highlighted tree (JSONView) preserving original key order — chevron nodes, keys .label, strings green, numbers orange, bool purple, null secondary; deep nodes start collapsed. Non-JSON / oversized falls back to the line-numbered raw view. Editor syntax colors are a deliberate exception to 'color only for status'."
+    body-json: "when a body parses as JSON (object/array, ≤200KB), Body renders a collapsible, syntax-highlighted tree (JSONView) preserving original key order — chevron nodes, keys .label, strings {colors.syntax-string}, numbers {colors.syntax-number}, bool {colors.syntax-bool}, null secondary; deep nodes start collapsed. Non-JSON / oversized falls back to the line-numbered raw view. Editor syntax colors are a deliberate exception to 'color only for status'."
     tabStrip: "text tabs, selected = semibold + 2pt accent underline (custom, not segmented)"
   button-primary:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+
@@ -163,20 +217,36 @@ utility — closer to the system's own controls than to a themed Electron tool.
 - **The console is vibrant material.** Background `{colors.panel-material}`; config rows sit on it directly
   (no opaque cards). The main window uses opaque content surfaces (`{colors.window-canvas}` / list).
 - **One accent.** `{colors.accent}` carries every interactive signal *and* marks an agent-replayed flow.
-- **Color = HTTP status, not decoration.** The only chromatic color in the list is the status class:
-  green 2xx, orange 3xx, red 4xx/5xx/error, gray pending — always with the numeric code. **Method is not
-  status**: it stays ink-colored on the row's second line.
+- **Color = HTTP status, not decoration.** The chromatic channel in the list is the status class —
+  `{colors.status-success}` 2xx, `{colors.status-redirect}` 3xx, `{colors.status-error}` 4xx/5xx/error,
+  `{colors.status-pending}` pending — always with the numeric code, plus the failed-row wash
+  (`{colors.row-fill-error}`) which is the same fact at row scale. The one addition beyond status is the
+  **mutating half of the Method column** (§ main-window `methodColumn`): still not decoration — it answers
+  "would replaying this do something?", which no other column says.
 - **Everything from the wire is monospaced.** URLs, headers, bodies, method glyphs, codes, durations.
-- **System-first.** Semantic colors, Dynamic Type text styles, SF Symbols, system materials,
-  `ContentUnavailableView`. Hexes here are reference renderings of semantic tokens, never literals in code.
+- **System-first, with one named exception.** Dynamic Type text styles, SF Symbols, system materials,
+  `ContentUnavailableView`, and the semantic *ink and surface* colors. The chromatic tokens are Loom's own
+  (`{colors.source}`) because the stock hues are full-saturation and tuned for any app, so a surface using
+  several at once — which every row here does — reads as un-designed. Hexes in this file are reference
+  renderings of asset entries, never literals in code.
 
 ## Colors
 
-> **Rule #1**: never write a hex literal in SwiftUI. Each token names the semantic color to use; the hex
-> pairs exist only so agents and designers can reason about contrast.
+> **Rule #1**: never write a hex literal in SwiftUI — and now there is nowhere to put one. A chromatic
+> color is a set in `{colors.source}`; every view reaches it as `LoomTheme.Palette.<name>`, which is a
+> generated asset symbol, so a set that is renamed or deleted breaks the build instead of resolving to
+> nothing at runtime. `Color("LoomError")` — the string form — is banned for exactly that reason: it is the
+> same silent failure a custom SF Symbol already cost this project once. The hex pairs in the frontmatter
+> are readings of the catalog so agents and designers can reason about contrast, not a second source.
+>
+> **Rule #2**: a semantic color that must track the OS gets no set. Ink (`.primary`/`.secondary`/
+> `.tertiary`), window and control surfaces, `separatorColor`, materials, and `status-pending` stay
+> system — they are the platform's answer to "what does disabled look like", not Loom's.
 
-- **Accent** (`Color.accentColor`): prominent buttons (the `Approve`, the `Start` when stopped), selection,
-  focus, and the `↻` glyph on an agent-replayed flow. Loom respects the user's system accent.
+- **Accent** (`{colors.accent}`): prominent buttons (the `Approve`, the `Start` when stopped), selection,
+  focus, the "on" tint of every switch-tile and toolbar toggle, and the `↻` glyph on an agent-replayed
+  flow. Loom's own hue, **not** the user's system accent — see the token's note for why, and tint AppKit
+  controls (`Toggle`) explicitly, since they default to the system one.
 - **Ink ladder** (`.primary` / `.secondary` / `.tertiary`): text and metadata inside the vibrant panel —
   the hierarchical styles are *vibrancy-aware* and adapt to the material automatically. Never manual opacity.
 - **Panel material** (`{colors.panel-material}`): the popover background. A system menu/vibrant material —
@@ -644,8 +714,8 @@ rejecting what failed:
   it is the **footer wordmark**, glyph + word as one `{typography.caption}` button.
 - **Console cards** (`ReverseProxyCard`, `ClientCertificatesCard`, `SSLScopeCard`) share one anatomy, because
   they hang off adjacent rows of the same 272pt panel and a bordered button on one beside a bare glyph on
-  another reads as two different kinds of surface: `{spacing.sm}` padding on a `{rounded.sm}` `.quaternary`
-  0.4 fill · the **list first** (it is what the card is for) · an empty-state sentence when there is none ·
+  another reads as two different kinds of surface: `{spacing.sm}` padding on a `{rounded.sm}`
+  `{colors.surface-card}` fill · the **list first** (it is what the card is for) · an empty-state sentence when there is none ·
   a bottom-right bare **`plus` glyph** (borderless, no label — the card's only content is the list, so the
   position already says what is being added; the tooltip and accessibility label carry the words), which
   swaps in the form · form buttons trailing-aligned, **Cancel then Add**, confirm last.

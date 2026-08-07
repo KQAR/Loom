@@ -29,7 +29,7 @@ struct BreakpointsPanelView: View {
                     Spacer(minLength: 0)
                 }
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(LoomTheme.Palette.error)
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.vertical, LoomTheme.Space.xs)
             }
@@ -47,7 +47,7 @@ struct BreakpointsPanelView: View {
         HStack(spacing: LoomTheme.Space.sm) {
             Text(summaryText)
                 .font(.callout)
-                .foregroundStyle(store.pending.isEmpty ? .secondary : Color.orange)
+                .foregroundStyle(store.pending.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(LoomTheme.Palette.warning))
             Spacer()
             if !store.pending.isEmpty {
                 Button {
@@ -127,7 +127,7 @@ private struct HeldRow: View {
         HStack(alignment: .center, spacing: LoomTheme.Space.sm) {
             Image(systemName: "pause.circle.fill")
                 .font(LoomTheme.Icon.card)
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(LoomTheme.Palette.warning)
                 .help("Held — the client is still waiting")
 
             VStack(alignment: .leading, spacing: 2) {
@@ -199,7 +199,7 @@ private struct ArmedRow: View {
                     if heldCount > 0 {
                         Text("holding \(heldCount)")
                             .font(.caption)
-                            .foregroundStyle(Color.orange)
+                            .foregroundStyle(LoomTheme.Palette.warning)
                     }
                 }
                 if let comment = breakpoint.comment, !comment.isEmpty {

@@ -123,7 +123,7 @@ private struct AuditRow: View {
                     .frame(minWidth: 28, alignment: .trailing)
                 Image(systemName: entry.succeeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
                     .font(LoomTheme.Icon.card)
-                    .foregroundStyle(entry.succeeded ? Color.green : Color.red)
+                    .foregroundStyle(entry.succeeded ? LoomTheme.Palette.success : LoomTheme.Palette.error)
                     .help(entry.succeeded ? "Succeeded" : "Failed")
                 Text(entry.tool)
                     .font(.callout.weight(.medium).monospaced())
@@ -172,7 +172,7 @@ private struct AuditDetailSheet: View {
                         }
                         if !entry.detail.isEmpty {
                             block(entry.succeeded ? "Result" : "Error", entry.detail,
-                                  tint: entry.succeeded ? .primary : Color.red)
+                                  tint: entry.succeeded ? .primary : LoomTheme.Palette.error)
                         }
                     }
                     .padding(LoomTheme.Space.md)
@@ -188,7 +188,7 @@ private struct AuditDetailSheet: View {
             if let entry {
                 Image(systemName: entry.succeeded ? "checkmark.circle.fill" : "xmark.octagon.fill")
                     .font(.title3)
-                    .foregroundStyle(entry.succeeded ? Color.green : Color.red)
+                    .foregroundStyle(entry.succeeded ? LoomTheme.Palette.success : LoomTheme.Palette.error)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(entry.tool).font(.headline.monospaced())
                     Text(AuditFormat.full.string(from: entry.timestamp))

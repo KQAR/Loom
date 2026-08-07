@@ -37,7 +37,7 @@ struct WebSocketMessagesView: View {
                     HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
                         Image(systemName: message.direction == .clientToServer ? "arrow.up" : "arrow.down")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(message.direction == .clientToServer ? Color.orange : Color.accentColor)
+                            .foregroundStyle(message.direction == .clientToServer ? LoomTheme.Palette.warning : LoomTheme.Palette.accent)
                             .frame(width: 14)
                         CapsuleBadge(text: message.kind.rawValue, hPadding: 5, vPadding: 1)
                         if let text = message.textPayload {
@@ -63,6 +63,6 @@ struct WebSocketMessagesView: View {
             systemImage: "exclamationmark.triangle"
         )
         .font(.caption)
-        .foregroundStyle(.orange)
+        .foregroundStyle(LoomTheme.Palette.warning)
     }
 }

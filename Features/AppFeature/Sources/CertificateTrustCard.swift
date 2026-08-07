@@ -15,7 +15,7 @@ struct CertificateTrustCard: View {
             HStack(spacing: LoomTheme.Space.sm) {
                 Image(systemName: state.systemImageName)
                     .font(LoomTheme.Icon.card)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(LoomTheme.Palette.warning)
                     .frame(width: 20)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(state.title).font(.callout.weight(.semibold))
@@ -82,7 +82,7 @@ struct CertificateTrustCard: View {
             }
         }
         .padding(LoomTheme.Space.sm)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+        .loomSurface(LoomTheme.Surface.card)
     }
 
     private func manualCommand(path: String) -> some View {

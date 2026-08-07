@@ -33,7 +33,7 @@ struct RulesPanelView: View {
                     Spacer(minLength: 0)
                 }
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(LoomTheme.Palette.error)
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.vertical, LoomTheme.Space.xs)
             }

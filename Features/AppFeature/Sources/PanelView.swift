@@ -111,6 +111,11 @@ public struct PanelView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
+                // AppKit's switch fills with the *system* accent, which is a hue the
+                // user sets and Loom's is not (see `LoomTheme.Palette`). Untinted it
+                // sits one row above four tiles wearing Loom's accent for the same
+                // meaning — "on" — in a visibly different blue.
+                .tint(LoomTheme.Palette.accent)
                 .help(store.status.isRunning ? "Proxy running — tap to stop" : "Proxy stopped — tap to start")
             }
 
@@ -155,7 +160,7 @@ public struct PanelView: View {
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
     private var captureDotColor: Color {
         guard store.status.isRunning else { return .secondary }
-        return store.isRecording ? .green : .yellow
+        return store.isRecording ? LoomTheme.Palette.success : LoomTheme.Palette.waiting
     }
 
     // MARK: Switch strip
@@ -354,13 +359,13 @@ public struct PanelView: View {
             ConsoleAlertRow(
                 text: message,
                 action: { store.send(.setup(.helperRowTapped)) },
-                tint: store.setup.helperState == .requiresApproval ? .yellow : .orange
+                tint: store.setup.helperState == .requiresApproval ? LoomTheme.Palette.waiting : LoomTheme.Palette.warning
             )
         } else if store.setup.helperState == .requiresApproval {
             ConsoleAlertRow(
                 text: "Loom's background helper needs your approval in Login Items.",
                 action: { store.send(.setup(.helperRowTapped)) },
-                tint: .yellow
+                tint: LoomTheme.Palette.waiting
             )
         } else if store.setup.helperState == .unresponsive {
             ConsoleAlertRow(
@@ -407,8 +412,8 @@ public struct PanelView: View {
     /// here" at a glance. Orange outranks it when one isn't listening — a fault has
     /// to read as a fault, not as an active feature.
     private var reverseProxyIconTint: Color? {
-        if brokenReverseProxies > 0 { return .orange }
-        return store.status.reverseProxies.isEmpty ? nil : Color.accentColor
+        if brokenReverseProxies > 0 { return LoomTheme.Palette.warning }
+        return store.status.reverseProxies.isEmpty ? nil : LoomTheme.Palette.accent
     }
 
     /// Endpoints that exist in the config but aren't listening. Their client gets
@@ -436,7 +441,7 @@ public struct PanelView: View {
             PanelRow(
                 kind: .expand(isExpanded: store.setup.sslScopeExpanded),
                 icon: "list.bullet.rectangle",
-                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty ? nil : .orange,
+                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty ? nil : LoomTheme.Palette.warning,
                 title: "SSL Scope",
                 detail: sslScopeDetail,
                 help: "Hosts Loom passes through instead of decrypting, and what it saw but couldn't read"
@@ -484,7 +489,7 @@ public struct PanelView: View {
             PanelRow(
                 kind: .expand(isExpanded: store.setup.clientCertsExpanded),
                 icon: store.setup.clientCertificates.isEmpty ? "person.badge.key" : "person.badge.key.fill",
-                iconTint: store.setup.brokenClientCertificates.isEmpty ? nil : .orange,
+                iconTint: store.setup.brokenClientCertificates.isEmpty ? nil : LoomTheme.Palette.warning,
                 title: "Client Certificates",
                 detail: clientCertsDetail,
                 help: "Certificates Loom presents when a server demands one (mutual TLS)"
@@ -525,7 +530,7 @@ public struct PanelView: View {
             PanelRow(
                 kind: .navigate,
                 icon: held > 0 ? "pause.circle.fill" : "pause.circle",
-                iconTint: held > 0 ? Color.orange : .secondary,
+                iconTint: held > 0 ? LoomTheme.Palette.warning : .secondary,
                 title: "Breakpoints",
                 detail: breakpointsDetail,
                 help: held > 0
@@ -541,7 +546,7 @@ public struct PanelView: View {
                     ForEach(Array(store.breakpoints.pending.prefix(3))) { pending in
                         Label("\(pending.method) \(pending.url)", systemImage: "pause.circle.fill")
                             .font(.caption)
-                            .foregroundStyle(Color.orange)
+                            .foregroundStyle(LoomTheme.Palette.warning)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -600,11 +605,11 @@ public struct PanelView: View {
 
     private var helperIconTint: Color? {
         switch store.setup.helperState {
-        case .enabled: return .accentColor
-        case .requiresApproval: return .yellow
+        case .enabled: return LoomTheme.Palette.accent
+        case .requiresApproval: return LoomTheme.Palette.waiting
         // Orange, like the broken-client-certificate row: approved but not working is
         // a fault the human can fix, not a state they chose.
-        case .unresponsive: return .orange
+        case .unresponsive: return LoomTheme.Palette.warning
         case .notInstalled, .notFound: return .secondary
         }
     }
@@ -674,7 +679,7 @@ public struct PanelView: View {
             .padding(.vertical, LoomTheme.Space.xxs)
             .background(
                 RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
-                    .fill(Color.accentColor.opacity(hoveringWordmark ? LoomTheme.attentionOpacity : 0))
+                    .fill(LoomTheme.Palette.accent.opacity(hoveringWordmark ? LoomTheme.attentionOpacity : 0))
             )
             .contentShape(Rectangle())
         }
@@ -792,7 +797,7 @@ struct PanelRow: View {
         .disabled(disabled)
         .background(
             RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
-                .fill(Color.accentColor.opacity(hovering && !disabled ? LoomTheme.attentionOpacity : 0))
+                .fill(LoomTheme.Palette.accent.opacity(hovering && !disabled ? LoomTheme.attentionOpacity : 0))
                 .padding(.horizontal, LoomTheme.Space.xs)
         )
         .onHover { hovering = $0 }

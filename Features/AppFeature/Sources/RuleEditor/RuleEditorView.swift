@@ -50,13 +50,13 @@ struct RuleEditorView: View {
             }
             if let error {
                 HStack(spacing: LoomTheme.Space.xs) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(LoomTheme.Palette.warning)
                     Text(error).font(.callout).foregroundStyle(.secondary)
                     Spacer()
                 }
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.vertical, LoomTheme.Space.sm)
-                .background(Color.orange.opacity(0.08))
+                .background(LoomTheme.Palette.warning.opacity(0.08))
             }
             Divider()
             footer
@@ -136,11 +136,11 @@ struct RuleEditorView: View {
                 Text("URL").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if draft.isRegex {
-                    Text("Regex enabled").font(.caption).foregroundStyle(.green)
+                    Text("Regex enabled").font(.caption).foregroundStyle(LoomTheme.Palette.success)
                 } else if draft.isExact {
-                    Text("Exact match").font(.caption).foregroundStyle(.green)
+                    Text("Exact match").font(.caption).foregroundStyle(LoomTheme.Palette.success)
                 } else if draft.urlPattern.contains("*") {
-                    Text("Wildcards enabled").font(.caption).foregroundStyle(.green)
+                    Text("Wildcards enabled").font(.caption).foregroundStyle(LoomTheme.Palette.success)
                 }
             }
             HStack(spacing: LoomTheme.Space.sm) {
@@ -158,14 +158,14 @@ struct RuleEditorView: View {
                 .frame(width: 84)
                 .padding(.horizontal, LoomTheme.Space.xs)
                 .padding(.vertical, 5)
-                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+                .loomSurface(LoomTheme.Surface.card)
 
                 TextField("", text: $draft.urlPattern, prompt: Text("https://api.example.com/*"))
                     .textFieldStyle(.plain)
                     .font(.callout.monospaced())
                     .padding(.horizontal, LoomTheme.Space.sm)
                     .padding(.vertical, 6)
-                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+                    .loomSurface(LoomTheme.Surface.card)
                     .overlay(alignment: .trailing) {
                         HStack(spacing: 2) {
                             // Regex and exact are mutually exclusive; enabling one
@@ -176,7 +176,7 @@ struct RuleEditorView: View {
                             } label: {
                                 Text("=")
                                     .font(.callout.monospaced().weight(.bold))
-                                    .foregroundStyle(draft.isExact ? Color.accentColor : Color.secondary)
+                                    .foregroundStyle(draft.isExact ? LoomTheme.Palette.accent : Color.secondary)
                                     .padding(.horizontal, 6)
                             }
                             .buttonStyle(.plain)
@@ -187,7 +187,7 @@ struct RuleEditorView: View {
                             } label: {
                                 Text(".*")
                                     .font(.callout.monospaced().weight(.bold))
-                                    .foregroundStyle(draft.isRegex ? Color.accentColor : Color.secondary)
+                                    .foregroundStyle(draft.isRegex ? LoomTheme.Palette.accent : Color.secondary)
                                     .padding(.horizontal, 6)
                             }
                             .buttonStyle(.plain)
@@ -285,7 +285,7 @@ struct RuleEditorView: View {
             }
             .padding(LoomTheme.Space.sm)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.md))
+            .loomSurface(LoomTheme.Surface.group, radius: LoomTheme.Radius.md)
         }
     }
 
@@ -357,8 +357,7 @@ struct RuleEditorView: View {
                         .frame(minHeight: 96)
                         .scrollContentBackground(.hidden)
                         .padding(4)
-                        .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                        .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
+                        .loomField()
                 }
             } else {
                 JSONBodyEditor(title: "Body", text: $draft.mockBody)
@@ -395,7 +394,7 @@ struct RuleEditorView: View {
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.sm)
-        .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.md))
+        .loomSurface(LoomTheme.Surface.group, radius: LoomTheme.Radius.md)
     }
 
     private func sectionHint(_ text: String) -> some View {

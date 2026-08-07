@@ -12,8 +12,7 @@ struct HeaderEditor: View {
                 .frame(minHeight: 44)
                 .scrollContentBackground(.hidden)
                 .padding(4)
-                .background(.background.opacity(0.5), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
-                .overlay { RoundedRectangle(cornerRadius: LoomTheme.Radius.sm).stroke(.quaternary) }
+                .loomField()
         }
     }
 }

@@ -74,10 +74,10 @@ struct ResponsePane: View {
                         .textSelection(.enabled)
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(LoomTheme.Palette.accent)
                 .padding(.horizontal, LoomTheme.Space.md)
                 .padding(.vertical, LoomTheme.Space.xs)
-                .background(Color.accentColor.opacity(LoomTheme.attentionOpacity))
+                .background(LoomTheme.Palette.accent.opacity(LoomTheme.attentionOpacity))
                 Divider()
             }
 
@@ -114,7 +114,7 @@ struct ResponsePane: View {
             case .body: BodyView(data: response.body, identity: "resp-body:\(flow.id)", fullBodyBytes: response.fullBodyBytes)
             }
         } else if let error = flow.error {
-            Scrolled { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
+            Scrolled { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(LoomTheme.Palette.error) }
         } else {
             Scrolled { Text("Waiting for response…").foregroundStyle(.secondary) }
         }

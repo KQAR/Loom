@@ -216,7 +216,7 @@ struct DiffView: View {
                         // so this reads the same without color (DESIGN.md).
                         Text("\(added ? "+" : "−") \(text)")
                             .font(.callout.monospaced())
-                            .foregroundStyle(added ? Color.green : Color.red)
+                            .foregroundStyle(added ? LoomTheme.Palette.success : LoomTheme.Palette.error)
                             .textSelection(.enabled)
                     }
                 }

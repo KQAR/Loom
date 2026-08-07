@@ -348,9 +348,9 @@ private struct JSONNode: View {
 
     private var valueText: Text {
         switch value {
-        case let .string(s): return Text("\"\(s)\"").foregroundStyle(.green)
-        case let .number(n): return Text(n).foregroundStyle(.orange)
-        case let .bool(b): return Text(b ? "true" : "false").foregroundStyle(.purple)
+        case let .string(s): return Text("\"\(s)\"").foregroundStyle(LoomTheme.Palette.Syntax.string)
+        case let .number(n): return Text(n).foregroundStyle(LoomTheme.Palette.Syntax.number)
+        case let .bool(b): return Text(b ? "true" : "false").foregroundStyle(LoomTheme.Palette.Syntax.bool)
         case .null: return Text("null").foregroundStyle(.secondary)
         default: return Text("")
         }

@@ -63,7 +63,7 @@ struct SSLScopeCard: View {
             }
         }
         .padding(LoomTheme.Space.sm)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+        .loomSurface(LoomTheme.Surface.card)
     }
 
     // MARK: Seen but not decrypted

@@ -74,12 +74,12 @@ struct ClientCertificatesCard: View {
             if let message = store.clientCertMessage {
                 Text(message)
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(LoomTheme.Palette.warning)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(LoomTheme.Space.sm)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
+        .loomSurface(LoomTheme.Surface.card)
         .fileImporter(isPresented: $importing, allowedContentTypes: Self.bundleTypes) { result in
             if case let .success(url) = result {
                 pickedFile = url
@@ -119,7 +119,7 @@ struct ClientCertificatesCard: View {
                     .truncationMode(.middle)
                 Text(caption(for: summary))
                     .font(.caption2)
-                    .foregroundStyle(summary.problem != nil || summary.isExpired() ? Color.orange : .secondary)
+                    .foregroundStyle(summary.problem != nil || summary.isExpired() ? LoomTheme.Palette.warning : .secondary)
                     .lineLimit(2)
                     .truncationMode(.middle)
             }
@@ -129,7 +129,7 @@ struct ClientCertificatesCard: View {
     }
 
     private func tint(for summary: ClientCertificateSummary) -> Color {
-        if summary.problem != nil || summary.isExpired() { return .orange }
+        if summary.problem != nil || summary.isExpired() { return LoomTheme.Palette.warning }
         return summary.isEnabled ? .secondary : Color.secondary.opacity(0.5)
     }
 

@@ -124,15 +124,20 @@ public struct MainView: View {
     /// many flows are in a bucket, on every row at once, and a column of pills
     /// reads as a column of alerts. Plain tertiary digits sit back where they
     /// belong. Monospaced so a count crossing 9→10→100 doesn't shift the row.
-    private func sidebarCount(_ count: Int) -> some View {
+    /// `tint` is for the ONE bucket whose name is itself a fault. Every other count
+    /// here is a bucket size — how many flows, how many rules — and tinting those
+    /// would turn the column into a row of alerts, which is the exact reason these
+    /// are plain digits and not `.badge()` pills (see `countedRow`).
+    private func sidebarCount(_ count: Int, tint: Color? = nil) -> some View {
         Text("\(count)")
             .font(.callout.monospacedDigit())
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(tint.map(AnyShapeStyle.init) ?? AnyShapeStyle(.tertiary))
     }
 
     /// `Label` + a trailing count, the shape every sidebar row now uses.
     private func countedRow<Title: View, Icon: View>(
         count: Int,
+        countTint: Color? = nil,
         @ViewBuilder title: () -> Title,
         @ViewBuilder icon: () -> Icon
     ) -> some View {
@@ -140,7 +145,7 @@ public struct MainView: View {
             HStack(spacing: LoomTheme.Space.xs) {
                 title()
                 Spacer(minLength: LoomTheme.Space.xs)
-                sidebarCount(count)
+                sidebarCount(count, tint: countTint)
             }
         } icon: {
             icon()
@@ -151,7 +156,11 @@ public struct MainView: View {
         List(selection: $store.selectedCategory.sending(\.categorySelected)) {
             countedRow(count: store.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
                 .tag(FlowCategory.all)
-            countedRow(count: store.errorCount) { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
+            // The only tinted count in the sidebar: a non-zero Errors bucket is the one
+            // number here that is a fault rather than a size, and it is the number a
+            // human opens this window to check.
+            countedRow(count: store.errorCount,
+                       countTint: store.errorCount > 0 ? LoomTheme.Palette.error : nil) { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
                 .tag(FlowCategory.errors)
             countedRow(count: store.rules.rulesState.rules.count) { Text("Rules") } icon: { categoryIcon("wand.and.stars") }
                 .tag(FlowCategory.rules)
@@ -259,11 +268,11 @@ public struct MainView: View {
         let held = store.breakpoints.heldCount
         return countedRow(count: held > 0 ? held : store.breakpoints.armed.count) {
             Text("Breakpoints")
-                .foregroundStyle(held > 0 ? Color.orange : .primary)
+                .foregroundStyle(held > 0 ? LoomTheme.Palette.warning : .primary)
         } icon: {
             Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
                 .symbolRenderingMode(.monochrome)
-                .foregroundStyle(held > 0 ? Color.orange : .secondary)
+                .foregroundStyle(held > 0 ? LoomTheme.Palette.warning : .secondary)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
         }
         .tag(FlowCategory.breakpoints)
@@ -339,18 +348,18 @@ public struct MainView: View {
                         .overlay { Circle().strokeBorder(.quaternary, lineWidth: 1) }
                     Circle()
                         .trim(from: 0, to: clearProgress)
-                        .stroke(Color.red, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .stroke(LoomTheme.Palette.error, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                         .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
                         .padding(3)
                     Image(systemName: "trash")
                         .font(LoomTheme.Icon.fab)
-                        .foregroundStyle(Color.red)
+                        .foregroundStyle(LoomTheme.Palette.error)
                 }
                 // Grow out of the dot: scale up from the corner + fade in.
                 .transition(.scale(scale: 0.3, anchor: .bottomTrailing).combined(with: .opacity))
             } else {
                 Circle()
-                    .fill(Color.red)
+                    .fill(LoomTheme.Palette.error)
                     .frame(width: 12, height: 12)
                     .transition(.scale(scale: 0.5).combined(with: .opacity))
             }
@@ -510,7 +519,7 @@ public struct MainView: View {
                 // Highlighted while a phone could actually reach Loom; secondary
                 // otherwise, whether that is because LAN capture is off or because
                 // the proxy isn't listening.
-                .foregroundStyle(deviceReadiness.isReady ? Color.accentColor : .secondary)
+                .foregroundStyle(deviceReadiness.isReady ? LoomTheme.Palette.accent : .secondary)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
         }
         .buttonStyle(.borderless)
@@ -619,7 +628,7 @@ public struct MainView: View {
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
     private var captureDotColor: Color {
         guard store.status.isRunning else { return .secondary }
-        return store.isRecording ? .green : .yellow
+        return store.isRecording ? LoomTheme.Palette.success : LoomTheme.Palette.waiting
     }
 
     /// Start/stop capture. Idle shows a circular record symbol; recording shows a
@@ -633,7 +642,7 @@ public struct MainView: View {
                 Text(store.isRecording ? "Stop" : "Record")
                     .font(.callout)
             }
-            .foregroundStyle(store.isRecording ? Color.orange : Color.red)
+            .foregroundStyle(store.isRecording ? LoomTheme.Palette.warning : LoomTheme.Palette.error)
             .frame(height: 26)
             .contentShape(Rectangle())
         }
@@ -647,7 +656,7 @@ public struct MainView: View {
     /// root CA isn't trusted yet, HTTPS can't be decrypted — the icon goes **yellow**
     /// and a tap opens the same install-&-trust popover as the status-bar panel
     /// (reusing `CertificateTrustCard`) instead of toggling. Otherwise it's the
-    /// normal on/off toggle (green when on).
+    /// normal on/off toggle (accent when on).
     private var sslButton: some View {
         let needsTrust = store.setup.sslEnabled && !store.setup.certificateStatus.trustState.isReady
         return Button {
@@ -658,7 +667,7 @@ public struct MainView: View {
             // which really is on and is said by the yellow, not by an outline.
             Image(systemName: store.setup.sslEnabled ? "lock.shield.fill" : "lock.shield")
                 .font(LoomTheme.Icon.toolbar)
-                .foregroundStyle(needsTrust ? Color.yellow : (store.setup.sslEnabled ? Color.green : Color.secondary))
+                .foregroundStyle(needsTrust ? LoomTheme.Palette.waiting : (store.setup.sslEnabled ? LoomTheme.Palette.accent : Color.secondary))
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
@@ -690,7 +699,13 @@ public struct MainView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(LoomTheme.Icon.toolbar)
-                .foregroundStyle(on ? Color.green : Color.secondary)
+                // ON is the accent, not green — the console's switch-tiles say "on"
+                // that way (DESIGN.md § switch-tile), and this window and that panel
+                // are two renderings of one state. It also hands green back to the
+                // status classes, which are the only place it means something
+                // specific: three toolbar toggles wearing 2xx-green is what made the
+                // color stop reading as a status at all.
+                .foregroundStyle(on ? LoomTheme.Palette.accent : Color.secondary)
                 .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
                 .symbolEffect(.pulse, options: .repeating, isActive: busy && !reduceMotion)
                 .frame(width: 30, height: 26)
@@ -910,7 +925,9 @@ private struct RequestTableView: View {
             .width(min: 46, ideal: 52, max: 64)
 
             TableColumn("Method") { flow in
-                Text(flow.request.method).font(.callout.monospaced())
+                Text(flow.request.method)
+                    .font(.callout.monospaced())
+                    .foregroundStyle(LoomTheme.methodColor(flow.request.method))
             }
             .width(min: 52, ideal: 62, max: 90)
 
@@ -939,7 +956,7 @@ private struct RequestTableView: View {
                     if flow.replayedFrom != nil {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .font(.caption2)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(LoomTheme.Palette.accent)
                     }
                     // Loaded from a file, not seen on this machine's wire. Marked for
                     // the same reason a replay is: the row would otherwise read as
@@ -953,13 +970,13 @@ private struct RequestTableView: View {
                     if let applied = flow.appliedRules, !applied.isEmpty {
                         Image(systemName: "wand.and.stars")
                             .font(.caption2)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(LoomTheme.Palette.accent)
                             .help("Modified by rules: \(applied.map(\.name).joined(separator: ", "))")
                     }
                     if flow.isWebSocket {
                         Image(systemName: "bolt.horizontal.circle")
                             .font(.caption2)
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(LoomTheme.Palette.accent)
                             .help("WebSocket · \(flow.webSocketMessages?.count ?? 0) messages")
                     }
                 }
@@ -968,11 +985,25 @@ private struct RequestTableView: View {
             TableColumn("Time") { flow in
                 Text(flow.durationMS.map { "\($0)ms" } ?? "—")
                     .font(.callout.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LoomTheme.durationStyle(ms: flow.durationMS))
             }
             .width(min: 56, ideal: 70, max: 100)
         }
-        .background(RequestTableAutoScroll(rowCount: rows.count, follow: $followTail))
+        // Selection is an interactive signal, so it is the accent's job (DESIGN.md
+        // § Colors) — untinted, `NSTableView` fills the row with the *system* accent,
+        // a hue the user sets and Loom's is not, right next to accent-tinted method
+        // glyphs and toolbar toggles.
+        .tint(LoomTheme.Palette.accent)
+        .background(RequestTableBridge(
+            rowCount: rows.count,
+            // One pass over the rows already built above. The failed set has to be
+            // computed here rather than inside the bridge, which sees NSTableView row
+            // *indices* and has no way back to a flow.
+            failedRows: IndexSet(rows.indices.filter {
+                LoomTheme.isFailure(status: rows[$0].statusCode, isError: rows[$0].error != nil)
+            }),
+            follow: $followTail
+        ))
         .contextMenu(forSelectionType: Flow.ID.self) { ids in
             if let id = ids.first, let flow = store.flows[id: id] {
                 // Parsed once for the whole menu, not once per action closure.
