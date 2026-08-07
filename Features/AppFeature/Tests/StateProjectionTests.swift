@@ -176,4 +176,42 @@ import Testing
         #expect(state.setup.port == 9099)
         #expect(state.setup.proxyRunning)
     }
+
+    // MARK: - displayHost
+
+    // The address every surface tells the human to point a client at (panel header,
+    // toolbar chip, the SOCKS tooltip, the empty state's `curl -x`). It is a fact
+    // about the *listener*, and reading it off `localIP` alone advertised a LAN
+    // address while the proxy was bound to loopback — an address that refuses the
+    // connection, which sends someone debugging their client instead of the switch.
+
+    @Test func displayHost_loopbackBinding_ignoresTheLANAddress() {
+        var state = AppFeature.State()
+        state.localIP = "192.168.1.42"
+        state.status.listenHost = "127.0.0.1"
+        #expect(state.displayHost == "127.0.0.1")
+    }
+
+    @Test func displayHost_lanBinding_namesTheLANAddress() {
+        var state = AppFeature.State()
+        state.localIP = "192.168.1.42"
+        state.status.listenHost = "0.0.0.0"
+        #expect(state.displayHost == "192.168.1.42")
+    }
+
+    /// Bound to every interface but no IPv4 resolved (Wi-Fi down, or the first
+    /// resolve hasn't landed). `0.0.0.0` is reachable-but-unnamed; `127.0.0.1` would
+    /// be a lie in the other direction.
+    @Test func displayHost_lanBindingWithNoResolvedAddress_saysWildcard() {
+        var state = AppFeature.State()
+        state.localIP = nil
+        state.status.listenHost = "0.0.0.0"
+        #expect(state.displayHost == "0.0.0.0")
+    }
+
+    /// The default `ProxyStatus` binds loopback, so a state nobody has told about
+    /// the engine must not start out claiming a LAN address.
+    @Test func displayHost_defaultState_isLoopback() {
+        #expect(AppFeature.State().displayHost == "127.0.0.1")
+    }
 }

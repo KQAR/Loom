@@ -143,7 +143,22 @@ public struct AppFeature: Sendable {
         var reverseProxyState = ReverseProxyFeature.State()
         var didBoot = false                      // guards the one-shot boot effect
 
-        public var displayHost: String { localIP ?? "127.0.0.1" }
+        /// The address to *tell someone to point a client at* — which is a question
+        /// about the listener, not about this machine's addresses. It used to be
+        /// `localIP ?? "127.0.0.1"`, i.e. the LAN IP whenever one could be resolved,
+        /// regardless of where the proxy was actually bound. Turning LAN device
+        /// connection off rebinds the listener to loopback
+        /// (`ProxyEngine.stopPhoneOnboarding`) and left the header, the toolbar chip
+        /// and the empty state's `curl -x` hint all advertising `192.168.x.x:9090` —
+        /// an address that refuses the connection. A wrong address is worse than a
+        /// narrow one: it sends someone debugging their client rather than the switch.
+        ///
+        /// So the listener decides. Bound to `0.0.0.0` with no LAN IPv4 resolved
+        /// (Wi-Fi down, or the resolve hasn't landed yet), the honest answer is
+        /// `0.0.0.0` — it is reachable on every interface, we just can't name one.
+        public var displayHost: String {
+            status.isLANReachable ? (localIP ?? "0.0.0.0") : "127.0.0.1"
+        }
 
         public init() {}
 
@@ -459,7 +474,15 @@ public struct AppFeature: Sendable {
                 // The popover's switch flipped — mirror it into the always-visible
                 // icon state and persist. The child already ran/stopped the engine.
                 state.lanEnabled = enabled
-                return .run { _ in LANCaptureStore.save(enabled) }
+                return .run { send in
+                    LANCaptureStore.save(enabled)
+                    // The switch *moved the listener* (`startPhoneOnboarding` /
+                    // `stopPhoneOnboarding` rebind between `0.0.0.0` and loopback),
+                    // and `listenHost` is what `displayHost` now reads. Only
+                    // `.viewAppeared` re-read it, so the main window's toolbar kept
+                    // naming the old interface until the panel was next opened.
+                    await send(.engineStatusRefreshed(proxyClient.status()))
+                }
 
             case .phone:
                 return .none
