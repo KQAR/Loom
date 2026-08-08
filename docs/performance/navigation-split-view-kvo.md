@@ -1,8 +1,17 @@
-# NavigationSplitView's quadratic KVO teardown (why `MainView` uses `HSplitView`)
+# NavigationSplitView's quadratic KVO teardown (why `MainView` is not a `NavigationSplitView`)
 
 The conclusion lives in AGENTS.md § Known Issues and DESIGN.md `{components.main-window}.structure`:
-**`MainView` uses `HSplitView` — do not swap it back to `NavigationSplitView`.** This page is the
-full two-round investigation record backing that decision, kept so nobody has to re-earn it.
+**do not swap `MainView` back to `NavigationSplitView`.** This page is the full two-round
+investigation record backing that decision, kept so nobody has to re-earn it.
+
+> **Later note (0.0.19).** This record was written when the replacement was `HSplitView`, and says
+> so throughout. `HSplitView` was dropped afterwards as well — a bare `NSSplitView` has no collapse
+> semantics, so the sidebar could only be inserted and removed, which pops. `MainView` is a plain
+> `HStack` animating the pane's width; see
+> [`../decisions/navigation-split-view.md`](../decisions/navigation-split-view.md). Nothing below
+> changes: the measurement, the stacks and the A/B matrix are all about `NavigationSplitView`, and
+> that half of the conclusion is unaffected. Per `docs/decisions/README.md`, a record earns a note
+> rather than a rewrite.
 
 ## The symptom
 

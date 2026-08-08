@@ -8,6 +8,18 @@ agent talking **MCP** — and the MCP surface exposes **write actions** (replay,
 rules), not just read queries. The agent closes the debug loop
 (capture → modify → replay → diff) while you supervise from the menu-bar panel.
 
+## Install the app
+
+Loom's tools are served by the running app — the plugin below only points your
+agent at it. Grab `Loom.dmg` from the
+[latest release](https://github.com/KQAR/Loom/releases/latest), or build from
+source (below).
+
+> **First launch needs right-click → Open.** Releases are signed ad-hoc, not with
+> a Developer ID certificate, so Gatekeeper blocks a plain double-click. This is a
+> standing decision, not a bug: updates are authenticated by Sparkle's EdDSA
+> signature instead. Subsequent launches are normal.
+
 ## Install the plugin (Claude Code)
 
 Loom ships as a Claude Code plugin that connects to the running app's MCP server.
