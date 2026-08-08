@@ -155,296 +155,1249 @@ tailwind.config = {
   "meta": {
     "project": "Loom",
     "tagline": "AI-operable HTTP/HTTPS debugging proxy for macOS — the MCP surface exposes write actions, not just read queries.",
-    "platform": "macOS 14+",
-    "stack": ["SwiftUI", "The Composable Architecture", "SwiftNIO", "Tuist", "SPM", "Swift 6 (NIO modules Swift 5)"],
-    "ports": { "proxy": 9090, "mcp": 9092 },
+    "platform": "macOS 15+",
+    "stack": [
+      "SwiftUI",
+      "The Composable Architecture",
+      "SwiftNIO",
+      "Tuist",
+      "SPM",
+      "Swift 6 language mode (every target, test bundles included)"
+    ],
+    "ports": {
+      "proxy": 9090,
+      "socks": 9091,
+      "mcp": 9092,
+      "reverseProxies": "per endpoint, chosen at create time"
+    },
     "invariants": [
       "One write path: the UI and the agent both act through ProxyEngine.shared.",
       "Dependency direction is one-way: App -> AppFeature -> ProxyClient -> ProxyCore -> SharedModels; MCPServer -> SharedModels.",
       "Every MCP write tool is audited at the MCPToolExecutor.call choke point.",
       "ProxyCapability makes the TCA mirror's parity with ProxyControlling a compile-time check.",
-      "Every in-memory collection is capped (flow ring 2000, audit 500) and truncation is surfaced, never silent.",
-      "Fail-open engine paths always log at error level through Log (subsystem com.loom)."
+      "Every in-memory collection is capped (flow ring 2000, audit 1000 in the engine / 500 in the UI list, favicons 512, per-host TLS contexts 512) and truncation is surfaced, never silent.",
+      "Fail-open engine paths always log at error level through Log (subsystem com.loom).",
+      "A human surface mirroring engine state re-reads it: every agent write is picked up off the audit stream (opt-out, coalesced), and what a human changes in another app is picked up when Loom is activated.",
+      "Capture strategy is decided by sniffing the first bytes (ProtocolSniff), never from the port number — CONNECT included."
     ]
   },
-
   "layers": [
-    { "id": "source",   "label": "Traffic & AI clients", "color": "#38bdf8" },
-    { "id": "ingress",  "label": "Ingress / MITM",       "color": "#22d3ee" },
-    { "id": "forward",  "label": "Forwarding chain",     "color": "#a78bfa" },
-    { "id": "engine",   "label": "Engine core",          "color": "#34d399" },
-    { "id": "store",    "label": "Persistence",          "color": "#fbbf24" },
-    { "id": "mcp",      "label": "MCP control plane",    "color": "#f472b6" },
-    { "id": "client",   "label": "Clients (TCA)",        "color": "#60a5fa" },
-    { "id": "ui",       "label": "UI / Features",        "color": "#818cf8" },
-    { "id": "system",   "label": "System integration",   "color": "#fb923c" },
-    { "id": "model",    "label": "Shared models",        "color": "#94a3b8" }
+    {
+      "id": "source",
+      "label": "Traffic & AI clients",
+      "color": "#38bdf8"
+    },
+    {
+      "id": "ingress",
+      "label": "Ingress / MITM",
+      "color": "#22d3ee"
+    },
+    {
+      "id": "forward",
+      "label": "Forwarding chain",
+      "color": "#a78bfa"
+    },
+    {
+      "id": "engine",
+      "label": "Engine core",
+      "color": "#34d399"
+    },
+    {
+      "id": "store",
+      "label": "Persistence",
+      "color": "#fbbf24"
+    },
+    {
+      "id": "mcp",
+      "label": "MCP control plane",
+      "color": "#f472b6"
+    },
+    {
+      "id": "client",
+      "label": "Clients (TCA)",
+      "color": "#60a5fa"
+    },
+    {
+      "id": "ui",
+      "label": "UI / Features",
+      "color": "#818cf8"
+    },
+    {
+      "id": "system",
+      "label": "System integration",
+      "color": "#fb923c"
+    },
+    {
+      "id": "model",
+      "label": "Shared models",
+      "color": "#94a3b8"
+    }
   ],
-
   "nodes": [
-    { "id": "client-local", "label": "Local app / curl", "sub": "curl -x · system proxy", "layer": "source", "x": 24, "y": 24,
-      "module": "—", "file": "—",
-      "desc": "Loopback client. Its pid is resolvable, so the flow gets a sourceApp via one cached libproc localPort→pid sweep per burst." },
-
-    { "id": "client-lan", "label": "LAN device / phone", "sub": "Wi-Fi proxy → this Mac", "layer": "source", "x": 212, "y": 24,
-      "module": "—", "file": "—",
-      "desc": "A LAN peer has no local pid, so it is keyed on remote IP and typed from User-Agent into a SourceDevice. Reaching it requires the proxy bound to 0.0.0.0 (phone-onboarding mode)." },
-
-    { "id": "proxy-server", "label": "ProxyServer", "sub": ":9090 · NIO bootstrap", "layer": "ingress", "x": 24, "y": 106,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/ProxyServer.swift",
-      "desc": "SwiftNIO ServerBootstrap on a 2-thread MultiThreadedEventLoopGroup. Binds 127.0.0.1 normally, 0.0.0.0 only when LAN device capture is on." },
-
-    { "id": "proxy-handler", "label": "ProxyHandler", "sub": "head/body/end · CONNECT", "layer": "ingress", "x": 24, "y": 188,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/ProxyHandler.swift",
-      "desc": "Per-connection channel handler. Plain requests start an exchange with a streaming RequestBody; CONNECT either blind-tunnels or triggers MITM pipeline surgery. Must abort the RequestBodyBridge on channelInactive/errorCaught or an interrupted upload crashes the process (fixed in #101)." },
-
-    { "id": "connect-tunnel", "label": "Blind CONNECT tunnel", "sub": "host out of SSL scope", "layer": "ingress", "x": 588, "y": 188,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/ProxyHandler.swift",
-      "desc": "Raw byte splice between client and upstream. Nothing is decrypted; only a tunnel record (host/port/timing) reaches the FlowStore." },
-
-    { "id": "tls-intercept", "label": "TLSInterceptHandler", "sub": "MITM · terminate TLS", "layer": "ingress", "x": 212, "y": 270,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/TLSInterceptHandler.swift",
-      "desc": "Pipeline surgery is order-sensitive: the swap runs on .end, handlers must be RemovableChannelHandler, the HTTP encoder is removed before TLS writes, and NIOSSL is inserted at the pipeline head. Changing this order reintroduces WRONG_VERSION / decode crashes." },
-
-    { "id": "ca", "label": "CertificateAuthority", "sub": "P-256 root + per-host leaf", "layer": "ingress", "x": 400, "y": 270,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/CertificateAuthority.swift",
-      "desc": "Mints on-demand leaves. makeSerialNumber() clears the top bit so serials stay ≤20 octets — the default initializer can emit 21, which Secure Transport rejects with -1015 while lenient browsers still work. Leaves carry SKI/AKI and advertise ALPN h2 + http/1.1." },
-
-    { "id": "castore", "label": "FileCAStore", "sub": "0600 ca-store.pem", "layer": "store", "x": 588, "y": 270,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/CAStore.swift",
-      "desc": "CA lives in a file, not the Keychain, on purpose: a Keychain ACL is bound to the code signature, so every ad-hoc dev rebuild re-prompted for the login password. ProxyEngine.migratedCAStore() migrates a legacy Keychain CA once." },
-
-    { "id": "h2-codec", "label": "HTTP/2 ↔ HTTP/1 codec", "sub": "ALPN h2 · per-stream demux", "layer": "ingress", "x": 212, "y": 352,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/TLSInterceptHandler.swift",
-      "desc": "Each h2 stream is demuxed into the same h1 capture path. Known upstream defect: an h2 upload > 65535 bytes can deadlock ~1% of the time (NIOHTTP2 stops emitting WINDOW_UPDATE) — issue #99, reproduced with plain SwiftNIO in Tools/h2-stall-repro." },
-
-    { "id": "ws-relay", "label": "WebSocketRelay + tap", "sub": "ws:// and wss:// frames", "layer": "ingress", "x": 400, "y": 352,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/WebSocketRelay.swift",
-      "desc": "An upgraded connection stays one flow; frames (direction/kind/text-or-bytes) are captured capped and surface under webSocket.messages in get_flow_detail." },
-
-    { "id": "breakpoint-fwd", "label": "BreakpointForwarder", "sub": "outermost decorator", "layer": "forward", "x": 24, "y": 434,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/BreakpointForwarder.swift",
-      "desc": "Outermost UpstreamForwarding decorator. If an armed Breakpoint matches, the exchange is parked on a continuation — a real client connection is held open until resume." },
-
-    { "id": "breakpoint-store", "label": "BreakpointStore", "sub": "lock-based · pendingStream()", "layer": "forward", "x": 212, "y": 434,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/BreakpointStore.swift",
-      "desc": "Holds armed breakpoints and parked exchanges. Deliberately NOT persisted — a held exchange owns a live connection, so it cannot survive a relaunch. Feeds wait_for_pending via pendingStream()." },
-
-    { "id": "rule-fwd", "label": "RuleApplyingForwarder", "sub": "the one choke point", "layer": "forward", "x": 24, "y": 516,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/RuleApplyingForwarder.swift",
-      "desc": "Every path — live streaming, live buffered, replay, resumed breakpoint — goes through here, so a rule can never apply to one path and not another." },
-
-    { "id": "rule-engine", "label": "RuleEngine", "sub": "match → actions", "layer": "forward", "x": 212, "y": 516,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/RuleEngine.swift",
-      "desc": "Structured TrafficRule semantics (whistle-inspired, no text DSL by owner decision): mock / map-local / map-remote / rewrite / block / delay, scoped by RuleMatch including sourceApp and deviceIP — fail-closed on unattributed traffic. A rule needing the whole body forces buffering." },
-
-    { "id": "rules-config", "label": "RulesConfig", "sub": "UserDefaults com.loom.rules", "layer": "store", "x": 400, "y": 516,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/RulesConfig.swift",
-      "desc": "Rules + groups persisted across launches. An unreadable rules file fails open to an empty set — and logs at error level." },
-
-    { "id": "nio-fwd", "label": "NIOStreamingForwarder", "sub": "hand-rolled upstream client", "layer": "forward", "x": 24, "y": 598,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/NIOStreamingForwarder.swift",
-      "desc": "Loom owns every request header. forward (buffered) and replay are both folds over forwardStream, so there is one production path. Runs a NIOHTTPResponseDecompressor and therefore drops Content-Encoding/Content-Length on .head — otherwise the client re-decodes plaintext and fails with -1015." },
-
-    { "id": "stream-relay", "label": "StreamRelay", "sub": "back-pressured · capped capture", "layer": "forward", "x": 212, "y": 598,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/StreamRelay.swift",
-      "desc": "Moves wire bytes under high/low-watermark back-pressure while taking a capped observation copy. A capped capture is never silent: true wire size and dropped-frame counts surface in get_recent_flows / get_flow_detail / HAR / Inspector." },
-
-    { "id": "upstream", "label": "Origin server", "sub": "the real endpoint", "layer": "source", "x": 24, "y": 680,
-      "module": "—", "file": "—",
-      "desc": "Or a rule's map-remote target, or a local file (map-local), or nothing at all when a mock/block rule short-circuits the exchange." },
-
-    { "id": "engine", "label": "ProxyEngine (actor)", "sub": "ProxyEngine.shared", "layer": "engine", "x": 588, "y": 434,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/ProxyEngine.swift",
-      "desc": "The single owner and the single write path. Implements ProxyControlling; split across +Flows / +Rules / +TLS / +Replay / +Breakpoints / +Audit / +PhoneOnboarding. Guards against actor-reentrancy double-start." },
-
-    { "id": "flow-store", "label": "FlowStore (actor)", "sub": "ring 2000 · O(1) upsert", "layer": "engine", "x": 212, "y": 680,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/FlowStore.swift",
-      "desc": "Ring buffer + AsyncStream fan-out. An id→absolute-position map makes the several upserts per exchange dictionary lookups, not scans. flow(id:) reads through to SQLite when a flow has aged out, so an id the agent legitimately holds still resolves." },
-
-    { "id": "flow-persistence", "label": "FlowPersistence", "sub": "flows.sqlite · WAL", "layer": "store", "x": 212, "y": 762,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/FlowPersistence.swift",
-      "desc": "Row-capped, an order of magnitude larger than the ring. Writes batch into a 50 ms window (or 256 rows) through one reused prepared statement; the cap is enforced off a counter, not an index scan. Bodies are out-of-line BLOBs hydrated on demand. flush()/deinit drain so a quit can't lose the tail." },
-
-    { "id": "process-resolver", "label": "ProcessResolver", "sub": "libproc localPort→pid", "layer": "engine", "x": 400, "y": 680,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/ProcessResolver.swift",
-      "desc": "One cached sweep per burst. Loopback peers only — a LAN device has no local pid and its remote port could collide with a local socket's." },
-
-    { "id": "ua-parser", "label": "UserAgentParser", "sub": "→ SourceDevice", "layer": "engine", "x": 588, "y": 680,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/UserAgentParser.swift",
-      "desc": "Types the originating device (this Mac vs a LAN device) from the User-Agent, keyed on remote IP. mDNS reverse lookup was tried and removed; device aliases stay a pure UI concept." },
-
-    { "id": "audit-store", "label": "AuditStore (actor)", "sub": "cap 500 · fan-out", "layer": "engine", "x": 400, "y": 762,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/AuditStore.swift",
-      "desc": "Sibling of FlowStore, exposed via AuditControlling (recordAudit / recentAuditEntries / auditStream). This is what lets the supervising human see what the agent did to real traffic." },
-
-    { "id": "audit-persistence", "label": "AuditPersistence", "sub": "audit.sqlite · row-capped", "layer": "store", "x": 400, "y": 844,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/AuditPersistence.swift",
-      "desc": "Durable across relaunch — an audit trail that vanishes on quit is not an audit trail." },
-
-    { "id": "shared-models", "label": "SharedModels", "sub": "LoomSharedModels (SPM)", "layer": "model", "x": 24, "y": 926,
-      "module": "SharedModels", "file": "SharedModels/Sources/",
-      "desc": "Pure value types, no deps: Flow, HeaderPair (ordered list — order and duplicates preserved as seen on the wire), ReplayOverrides, FlowQuery, FlowComparison, SSLScope, Rules, Breakpoints, HAR. Ships as a public SPM product, so app-deployment detail must stay out of it." },
-
-    { "id": "proxy-controlling", "label": "ProxyControlling + ProxyCapability", "sub": "the control-surface contract", "layer": "model", "x": 212, "y": 926,
-      "module": "SharedModels", "file": "SharedModels/Sources/ProxyControl.swift",
-      "desc": "FlowProviding (read) + FlowReplaying (write) + TLS / capture / rules / breakpoints / audit. ProxyCapability enumerates every requirement and ProxyClientParityTests switches over it exhaustively — adding a protocol requirement fails to compile until it is wired to ProxyClient or recorded as .deliberatelyAbsent(reason)." },
-
-    { "id": "ai-http", "label": "Claude Code / Cursor", "sub": "type: http MCP client", "layer": "source", "x": 800, "y": 24,
-      "module": "plugin", "file": ".mcp.json · .claude-plugin/ · .cursor-plugin/",
-      "desc": "The repo root doubles as a Claude Code / Cursor plugin. The client just connects to http://127.0.0.1:9092/mcp — it does not launch or build anything. If the tools are unreachable, the app isn't running; the skill tells the agent to launch Loom rather than fabricate data." },
-
-    { "id": "ai-stdio", "label": "Claude Desktop", "sub": "stdio-only MCP client", "layer": "source", "x": 1176, "y": 24,
-      "module": "—", "file": "—",
-      "desc": "Cannot speak HTTP MCP, so it launches the loom-mcp bridge instead." },
-
-    { "id": "bridge", "label": "loom-mcp", "sub": "stdio ↔ HTTP bridge", "layer": "mcp", "x": 1176, "y": 106,
-      "module": "loom-mcp", "file": "Bridge/Sources/main.swift",
-      "desc": "Zero business logic. Reads the handshake, then forwards each JSON-RPC line to the app's HTTP endpoint with Authorization: Bearer <token>." },
-
-    { "id": "handshake", "label": "mcp-handshake.json", "sub": "0600 · {token, port}", "layer": "store", "x": 1364, "y": 188,
-      "module": "MCPServer", "file": "Engine/MCPServer/Sources/Handshake.swift",
-      "desc": "Written by the app at ~/Library/Application Support/com.loom/ with whatever port it bound (now the fixed 9092)." },
-
-    { "id": "mcp-server", "label": "MCPServer", "sub": "127.0.0.1:9092/mcp", "layer": "mcp", "x": 800, "y": 106,
-      "module": "MCPServer", "file": "Engine/MCPServer/Sources/MCPServer.swift",
-      "desc": "In-process JSON-RPC over HTTP, sharing memory with the capture store. Loopback requests need no token (a missing Authorization header is allowed); a token, when sent, must still match. Deliberately NOT on the proxy's 9090, which binds 0.0.0.0 in LAN mode and would expose the write-capable control plane to the whole Wi-Fi." },
-
-    { "id": "mcp-executor", "label": "MCPToolExecutor", "sub": "dispatch + audit choke point", "layer": "mcp", "x": 800, "y": 188,
-      "module": "MCPServer", "file": "Engine/MCPServer/Sources/MCPToolExecutor.swift",
-      "desc": "call(name:arguments:) is the single place a write is recorded. writeTools is an explicit set (not description string-matching) so a typo can't silently stop auditing; MCPServerTests asserts it matches the write-marked definitions." },
-
-    { "id": "mcp-schemas", "label": "MCPToolSchemas", "sub": "everything tools/list advertises", "layer": "mcp", "x": 988, "y": 188,
-      "module": "MCPServer", "file": "Engine/MCPServer/Sources/MCPToolSchemas.swift",
-      "desc": "Adding a tool touches three places — a definition here, a handler in its domain file, an entry in `handlers` (plus writeTools if it writes). All three pairings are test-covered, so an advertised-but-undispatchable tool fails rather than ships." },
-
-    { "id": "mcp-tools", "label": "MCPTools+<domain>", "sub": "29 tools · 15 are writes", "layer": "mcp", "x": 800, "y": 270,
-      "module": "MCPServer", "file": "Engine/MCPServer/Sources/MCPTools+*.swift",
-      "desc": "Environment / Flows / Waits / Replay / HAR / Rules / Breakpoints / Rendering. Write tools are the reason Loom exists — a read-only proxy can't close the capture → modify → replay → diff loop." },
-
-    { "id": "app", "label": "LoomApp @main", "sub": "MenuBarExtra + Window", "layer": "ui", "x": 1176, "y": 270,
-      "module": "Loom", "file": "App/Sources/LoomApp.swift",
-      "desc": "Single-instance guard in applicationWillFinishLaunching uses exit(0), not NSApp.terminate — terminate would run the quit cleanup and tear down the *first* instance's system proxy. Starts the MCP server; the proxy itself is started by AppFeature's one-shot boot effect (the single start owner)." },
-
-    { "id": "proxy-client", "label": "ProxyClient", "sub": "@DependencyClient (TCA)", "layer": "client", "x": 800, "y": 434,
-      "module": "ProxyClient", "file": "Clients/ProxyClient/Sources/ProxyClient.swift",
-      "desc": "The hand-written TCA mirror of ProxyControlling — and the side that drifted, which is how the breakpoint supervision gap opened. Breakpoint endpoints (arm/disarm/armed/pending/pendingStream/resume) now exist here; no AppFeature state consumes them yet." },
-
-    { "id": "provisioning", "label": "ProvisioningServer + QRCode", "sub": "LAN onboarding", "layer": "engine", "x": 988, "y": 434,
-      "module": "ProxyCore", "file": "Engine/ProxyCore/Sources/ProvisioningServer.swift",
-      "desc": "Serves the CA and proxy settings to a phone over the LAN; the QR is generated engine-side with CoreImage." },
-
-    { "id": "app-feature", "label": "AppFeature", "sub": "the one TCA reducer + Store", "layer": "ui", "x": 800, "y": 516,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/AppFeature.swift",
-      "desc": "Side effects only through Effect; reducers never touch NIO. Sidebar counts are maintained incrementally as flows arrive (recordFlow → contribute/retract), never recomputed on render, and the live flow stream is batched into one action per ~100 ms window." },
-
-    { "id": "panel", "label": "PanelView", "sub": "status-bar console", "layer": "ui", "x": 800, "y": 598,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/PanelView.swift",
-      "desc": "The human supervision surface: proxy address + on/off, capture dot (green recording · yellow paused · grey off), state rows (Connect Device, System Proxy, HTTPS, Rules), footer (version · wordmark · Quit)." },
-
-    { "id": "main-view", "label": "MainView", "sub": "table + tabbed inspector", "layer": "ui", "x": 988, "y": 598,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/MainView.swift",
-      "desc": "The working surface, opened at launch. The request list is NSTableView-backed (Table) — never an eager ScrollView { ForEach } over an unbounded collection." },
-
-    { "id": "setup-feature", "label": "SetupFeature", "sub": "CA trust · system proxy", "layer": "ui", "x": 1176, "y": 598,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/SetupFeature.swift",
-      "desc": "Projects the proxy state rather than copying it. Owns the Install & Trust action and the system-proxy toggle." },
-
-    { "id": "inspector", "label": "InspectorPanel", "sub": "headers/body/WS/GraphQL/diff", "layer": "ui", "x": 800, "y": 680,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/Inspector/",
-      "desc": "Renders FlowComparison as rows — the same single definition diff_flows renders as JSON. They used to disagree, which meant the agent and the human supervising it read different answers to the same question. Genuinely large text goes to NSTextView, not a SwiftUI Text." },
-
-    { "id": "rules-panel", "label": "RulesPanelView + editor", "sub": "structured rule UI", "layer": "ui", "x": 988, "y": 680,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/RulesPanelView.swift",
-      "desc": "Sidebar rules panel, row context-menu rule templates, rule-hit indicators. Same TrafficRule model the MCP tools write — no second schema." },
-
-    { "id": "audit-panel", "label": "AuditPanelView", "sub": "read-only timeline", "layer": "ui", "x": 1176, "y": 680,
-      "module": "AppFeature", "file": "Features/AppFeature/Sources/AuditPanelView.swift",
-      "desc": "Newest-first list of what the agent did. Owner decision: there is no approval mode — MCP write tools act directly, so this after-the-fact trail is the supervision mechanism." },
-
-    { "id": "updater", "label": "UpdaterClient (Sparkle)", "sub": "silent daily probe", "layer": "client", "x": 1364, "y": 598,
-      "module": "UpdaterClient", "file": "Clients/UpdaterClient/Sources/UpdaterCoordinator.swift",
-      "desc": "SUEnableAutomaticChecks is deliberately off so the probe stays UI-less; it self-gates on com.loom.lastUpdateCheck. Armed end-to-end (real EdDSA key, SPARKLE_EDDSA_KEY set, appcast published) — only Developer ID signing/notarization is missing." },
-
-    { "id": "helper-client", "label": "PrivilegedHelperClient", "sub": "networksetup + osascript", "layer": "client", "x": 1176, "y": 762,
-      "module": "PrivilegedHelperClient", "file": "Clients/PrivilegedHelperClient/Sources/PrivilegedHelperClient.swift",
-      "desc": "系统代理的 TCA 客户端：setSystemProxy / systemProxySnapshot(s) / restoreOrphanedQUICBlock。名字是历史遗留 —— 它曾经包着一个 root daemon 的 SMAppService + XPC 半边，那半边连同 daemon 已在 0.0.16 删除（ad-hoc 签名下永远加载不了，见 ROADMAP § M2）。现在它不需要任何调用点之外的特权。" },
-
-    { "id": "system-proxy", "label": "SystemProxyApplier + QUICBlocker", "sub": "networksetup + pf anchor", "layer": "system", "x": 1176, "y": 844,
-      "module": "PrivilegedHelperClient", "file": "Clients/PrivilegedHelperClient/Sources/SystemProxyApplier.swift",
-      "desc": "Runs networksetup directly — admin users need no password, non-admin falls back to one osascript prompt. QUICBlocker appends a com.loom.quic pf anchor dropping outbound UDP 443, because browsers default to HTTP/3 and would otherwise bypass a TCP proxy entirely. It copies /etc/pf.conf and never overwrites; restore reloads the pristine ruleset." }
+    {
+      "id": "client-local",
+      "label": "Local app / curl",
+      "sub": "curl -x · system proxy",
+      "layer": "source",
+      "x": 24,
+      "y": 24,
+      "module": "—",
+      "file": "—",
+      "desc": "Loopback client. Its pid is resolvable, so the flow gets a sourceApp via one cached libproc localPort→pid sweep per burst."
+    },
+    {
+      "id": "client-lan",
+      "label": "LAN device / phone",
+      "sub": "Wi-Fi proxy → this Mac",
+      "layer": "source",
+      "x": 212,
+      "y": 24,
+      "module": "—",
+      "file": "—",
+      "desc": "A LAN peer has no local pid, so it is keyed on remote IP and typed from User-Agent into a SourceDevice. Reaching it requires the proxy bound to 0.0.0.0 (phone-onboarding mode)."
+    },
+    {
+      "id": "proxy-server",
+      "label": "ProxyServer",
+      "sub": ":9090 · NIO bootstrap",
+      "layer": "ingress",
+      "x": 24,
+      "y": 106,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ProxyServer.swift",
+      "desc": "SwiftNIO ServerBootstrap on a 2-thread MultiThreadedEventLoopGroup. Binds 127.0.0.1 normally, 0.0.0.0 only when LAN device capture is on."
+    },
+    {
+      "id": "proxy-handler",
+      "label": "ProxyHandler",
+      "sub": "head/body/end · CONNECT",
+      "layer": "ingress",
+      "x": 24,
+      "y": 188,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ProxyHandler.swift",
+      "desc": "Per-connection channel handler. Plain requests start an exchange with a streaming RequestBody; CONNECT either blind-tunnels or triggers MITM pipeline surgery. Must abort the RequestBodyBridge on channelInactive/errorCaught or an interrupted upload crashes the process (fixed in #101)."
+    },
+    {
+      "id": "connect-tunnel",
+      "label": "Blind CONNECT tunnel",
+      "sub": "host out of SSL scope",
+      "layer": "ingress",
+      "x": 588,
+      "y": 188,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ProxyHandler.swift",
+      "desc": "Raw byte splice between client and upstream. Nothing is decrypted; only a tunnel record (host/port/timing) reaches the FlowStore."
+    },
+    {
+      "id": "tls-intercept",
+      "label": "TLSInterceptHandler",
+      "sub": "MITM · terminate TLS",
+      "layer": "ingress",
+      "x": 212,
+      "y": 270,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/TLSInterceptHandler.swift",
+      "desc": "Pipeline surgery is order-sensitive: the swap runs on .end, handlers must be RemovableChannelHandler, the HTTP encoder is removed before TLS writes, and NIOSSL is inserted at the pipeline head. Changing this order reintroduces WRONG_VERSION / decode crashes."
+    },
+    {
+      "id": "ca",
+      "label": "CertificateAuthority",
+      "sub": "P-256 root + per-host leaf",
+      "layer": "ingress",
+      "x": 400,
+      "y": 270,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/CertificateAuthority.swift",
+      "desc": "Mints on-demand leaves. makeSerialNumber() clears the top bit so serials stay ≤20 octets — the default initializer can emit 21, which Secure Transport rejects with -1015 while lenient browsers still work. Leaves carry SKI/AKI and advertise ALPN h2 + http/1.1."
+    },
+    {
+      "id": "castore",
+      "label": "FileCAStore",
+      "sub": "0600 ca-store.pem",
+      "layer": "store",
+      "x": 588,
+      "y": 270,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/CAStore.swift",
+      "desc": "CA lives in a file, not the Keychain, on purpose: a Keychain ACL is bound to the code signature, so every ad-hoc dev rebuild re-prompted for the login password. ProxyEngine.migratedCAStore() migrates a legacy Keychain CA once."
+    },
+    {
+      "id": "h2-codec",
+      "label": "HTTP/2 ↔ HTTP/1 codec",
+      "sub": "ALPN h2 · per-stream demux",
+      "layer": "ingress",
+      "x": 212,
+      "y": 352,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/TLSInterceptHandler.swift",
+      "desc": "Each h2 stream is demuxed into the same h1 capture path. Known upstream defect: an h2 upload > 65535 bytes can deadlock ~1% of the time (NIOHTTP2 stops emitting WINDOW_UPDATE) — issue #99, reproduced with plain SwiftNIO in Tools/h2-stall-repro."
+    },
+    {
+      "id": "ws-relay",
+      "label": "WebSocketRelay + tap",
+      "sub": "ws:// and wss:// frames",
+      "layer": "ingress",
+      "x": 400,
+      "y": 352,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/WebSocketRelay.swift",
+      "desc": "An upgraded connection stays one flow; frames (direction/kind/text-or-bytes) are captured capped and surface under webSocket.messages in get_flow_detail."
+    },
+    {
+      "id": "breakpoint-fwd",
+      "label": "BreakpointForwarder",
+      "sub": "outermost decorator",
+      "layer": "forward",
+      "x": 24,
+      "y": 434,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/BreakpointForwarder.swift",
+      "desc": "Outermost UpstreamForwarding decorator. If an armed Breakpoint matches, the exchange is parked on a continuation — a real client connection is held open until resume."
+    },
+    {
+      "id": "breakpoint-store",
+      "label": "BreakpointStore",
+      "sub": "lock-based · pendingStream()",
+      "layer": "forward",
+      "x": 212,
+      "y": 434,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/BreakpointStore.swift",
+      "desc": "Holds armed breakpoints and parked exchanges. Deliberately NOT persisted — a held exchange owns a live connection, so it cannot survive a relaunch. Feeds wait_for_pending via pendingStream()."
+    },
+    {
+      "id": "rule-fwd",
+      "label": "RuleApplyingForwarder",
+      "sub": "the one choke point",
+      "layer": "forward",
+      "x": 24,
+      "y": 516,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/RuleApplyingForwarder.swift",
+      "desc": "Every path — live streaming, live buffered, replay, resumed breakpoint — goes through here, so a rule can never apply to one path and not another."
+    },
+    {
+      "id": "rule-engine",
+      "label": "RuleEngine",
+      "sub": "match → actions",
+      "layer": "forward",
+      "x": 212,
+      "y": 516,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/RuleEngine.swift",
+      "desc": "Structured TrafficRule semantics (whistle-inspired, no text DSL by owner decision): mock / map-local / map-remote / rewrite / block / delay, scoped by RuleMatch including sourceApp and deviceIP — fail-closed on unattributed traffic. A rule needing the whole body forces buffering."
+    },
+    {
+      "id": "rules-config",
+      "label": "RulesConfig",
+      "sub": "UserDefaults com.loom.rules",
+      "layer": "store",
+      "x": 400,
+      "y": 516,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/RulesConfig.swift",
+      "desc": "Rules + groups persisted across launches. An unreadable rules file fails open to an empty set — and logs at error level."
+    },
+    {
+      "id": "nio-fwd",
+      "label": "NIOStreamingForwarder",
+      "sub": "hand-rolled upstream client",
+      "layer": "forward",
+      "x": 24,
+      "y": 598,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/NIOStreamingForwarder.swift",
+      "desc": "Loom owns every request header. forward (buffered) and replay are both folds over forwardStream, so there is one production path. Runs a NIOHTTPResponseDecompressor and therefore drops Content-Encoding/Content-Length on .head — otherwise the client re-decodes plaintext and fails with -1015."
+    },
+    {
+      "id": "stream-relay",
+      "label": "StreamRelay",
+      "sub": "back-pressured · capped capture",
+      "layer": "forward",
+      "x": 212,
+      "y": 598,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/StreamRelay.swift",
+      "desc": "Moves wire bytes under high/low-watermark back-pressure while taking a capped observation copy. A capped capture is never silent: true wire size and dropped-frame counts surface in get_recent_flows / get_flow_detail / HAR / Inspector."
+    },
+    {
+      "id": "upstream",
+      "label": "Origin server",
+      "sub": "the real endpoint",
+      "layer": "source",
+      "x": 24,
+      "y": 680,
+      "module": "—",
+      "file": "—",
+      "desc": "Or a rule's map-remote target, or a local file (map-local), or nothing at all when a mock/block rule short-circuits the exchange."
+    },
+    {
+      "id": "engine",
+      "label": "ProxyEngine (actor)",
+      "sub": "ProxyEngine.shared",
+      "layer": "engine",
+      "x": 588,
+      "y": 434,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ProxyEngine.swift",
+      "desc": "The single owner and the single write path. Implements ProxyControlling; split across +Flows / +Rules / +TLS / +Replay / +Breakpoints / +Audit / +PhoneOnboarding. Guards against actor-reentrancy double-start."
+    },
+    {
+      "id": "flow-store",
+      "label": "FlowStore (actor)",
+      "sub": "ring 2000 · O(1) upsert",
+      "layer": "engine",
+      "x": 212,
+      "y": 680,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/FlowStore.swift",
+      "desc": "Ring buffer + AsyncStream fan-out. An id→absolute-position map makes the several upserts per exchange dictionary lookups, not scans. flow(id:) reads through to SQLite when a flow has aged out, so an id the agent legitimately holds still resolves."
+    },
+    {
+      "id": "flow-persistence",
+      "label": "FlowPersistence",
+      "sub": "flows.sqlite · WAL",
+      "layer": "store",
+      "x": 212,
+      "y": 762,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/FlowPersistence.swift",
+      "desc": "Row-capped, an order of magnitude larger than the ring. Writes batch into a 50 ms window (or 256 rows) through one reused prepared statement; the cap is enforced off a counter, not an index scan. Bodies are out-of-line BLOBs hydrated on demand. flush()/deinit drain so a quit can't lose the tail."
+    },
+    {
+      "id": "process-resolver",
+      "label": "ProcessResolver",
+      "sub": "libproc localPort→pid",
+      "layer": "engine",
+      "x": 400,
+      "y": 680,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ProcessResolver.swift",
+      "desc": "One cached sweep per burst. Loopback peers only — a LAN device has no local pid and its remote port could collide with a local socket's."
+    },
+    {
+      "id": "ua-parser",
+      "label": "UserAgentParser",
+      "sub": "→ SourceDevice",
+      "layer": "engine",
+      "x": 588,
+      "y": 680,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/UserAgentParser.swift",
+      "desc": "Types the originating device (this Mac vs a LAN device) from the User-Agent, keyed on remote IP. mDNS reverse lookup was tried and removed; device aliases stay a pure UI concept."
+    },
+    {
+      "id": "audit-store",
+      "label": "AuditStore (actor)",
+      "sub": "cap 500 · fan-out",
+      "layer": "engine",
+      "x": 400,
+      "y": 762,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/AuditStore.swift",
+      "desc": "Sibling of FlowStore, exposed via AuditControlling (recordAudit / recentAuditEntries / auditStream). This is what lets the supervising human see what the agent did to real traffic."
+    },
+    {
+      "id": "audit-persistence",
+      "label": "AuditPersistence",
+      "sub": "audit.sqlite · row-capped",
+      "layer": "store",
+      "x": 400,
+      "y": 844,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/AuditPersistence.swift",
+      "desc": "Durable across relaunch — an audit trail that vanishes on quit is not an audit trail."
+    },
+    {
+      "id": "shared-models",
+      "label": "SharedModels",
+      "sub": "LoomSharedModels (SPM)",
+      "layer": "model",
+      "x": 24,
+      "y": 926,
+      "module": "SharedModels",
+      "file": "SharedModels/Sources/",
+      "desc": "Pure value types, no deps: Flow, HeaderPair (ordered list — order and duplicates preserved as seen on the wire), ReplayOverrides, FlowQuery, FlowComparison, SSLScope, Rules, Breakpoints, HAR. Ships as a public SPM product, so app-deployment detail must stay out of it."
+    },
+    {
+      "id": "proxy-controlling",
+      "label": "ProxyControlling + ProxyCapability",
+      "sub": "the control-surface contract",
+      "layer": "model",
+      "x": 212,
+      "y": 926,
+      "module": "SharedModels",
+      "file": "SharedModels/Sources/ProxyControl.swift",
+      "desc": "FlowProviding (read) + FlowReplaying (write) + TLS / capture / rules / breakpoints / audit. ProxyCapability enumerates every requirement and ProxyClientParityTests switches over it exhaustively — adding a protocol requirement fails to compile until it is wired to ProxyClient or recorded as .deliberatelyAbsent(reason)."
+    },
+    {
+      "id": "ai-http",
+      "label": "Claude Code / Cursor",
+      "sub": "type: http MCP client",
+      "layer": "source",
+      "x": 800,
+      "y": 24,
+      "module": "plugin",
+      "file": ".mcp.json · .claude-plugin/ · .cursor-plugin/",
+      "desc": "The repo root doubles as a Claude Code / Cursor plugin. The client just connects to http://127.0.0.1:9092/mcp — it does not launch or build anything. If the tools are unreachable, the app isn't running; the skill tells the agent to launch Loom rather than fabricate data."
+    },
+    {
+      "id": "ai-stdio",
+      "label": "Claude Desktop",
+      "sub": "stdio-only MCP client",
+      "layer": "source",
+      "x": 1176,
+      "y": 24,
+      "module": "—",
+      "file": "—",
+      "desc": "Cannot speak HTTP MCP, so it launches the loom-mcp bridge instead."
+    },
+    {
+      "id": "bridge",
+      "label": "loom-mcp",
+      "sub": "stdio ↔ HTTP bridge",
+      "layer": "mcp",
+      "x": 1176,
+      "y": 106,
+      "module": "loom-mcp",
+      "file": "Bridge/Sources/main.swift",
+      "desc": "Zero business logic. Reads the handshake, then forwards each JSON-RPC line to the app's HTTP endpoint with Authorization: Bearer <token>."
+    },
+    {
+      "id": "handshake",
+      "label": "mcp-handshake.json",
+      "sub": "0600 · {token, port}",
+      "layer": "store",
+      "x": 1364,
+      "y": 188,
+      "module": "MCPServer",
+      "file": "Engine/MCPServer/Sources/Handshake.swift",
+      "desc": "Written by the app at ~/Library/Application Support/com.loom/ with whatever port it bound (now the fixed 9092)."
+    },
+    {
+      "id": "mcp-server",
+      "label": "MCPServer",
+      "sub": "127.0.0.1:9092/mcp",
+      "layer": "mcp",
+      "x": 800,
+      "y": 106,
+      "module": "MCPServer",
+      "file": "Engine/MCPServer/Sources/MCPServer.swift",
+      "desc": "In-process JSON-RPC over HTTP, sharing memory with the capture store. Loopback requests need no token (a missing Authorization header is allowed); a token, when sent, must still match. Deliberately NOT on the proxy's 9090, which binds 0.0.0.0 in LAN mode and would expose the write-capable control plane to the whole Wi-Fi."
+    },
+    {
+      "id": "mcp-executor",
+      "label": "MCPToolExecutor",
+      "sub": "dispatch + audit choke point",
+      "layer": "mcp",
+      "x": 800,
+      "y": 188,
+      "module": "MCPServer",
+      "file": "Engine/MCPServer/Sources/MCPToolExecutor.swift",
+      "desc": "call(name:arguments:) is the single place a write is recorded. writeTools is an explicit set (not description string-matching) so a typo can't silently stop auditing; MCPServerTests asserts it matches the write-marked definitions."
+    },
+    {
+      "id": "mcp-schemas",
+      "label": "MCPToolSchemas",
+      "sub": "everything tools/list advertises",
+      "layer": "mcp",
+      "x": 988,
+      "y": 188,
+      "module": "MCPServer",
+      "file": "Engine/MCPServer/Sources/MCPToolSchemas.swift",
+      "desc": "Adding a tool touches three places — a definition here, a handler in its domain file, an entry in `handlers` (plus writeTools if it writes). All three pairings are test-covered, so an advertised-but-undispatchable tool fails rather than ships."
+    },
+    {
+      "id": "mcp-tools",
+      "label": "MCPTools+<domain>",
+      "sub": "29 tools · 15 are writes",
+      "layer": "mcp",
+      "x": 800,
+      "y": 270,
+      "module": "MCPServer",
+      "file": "Engine/MCPServer/Sources/MCPTools+*.swift",
+      "desc": "Environment / Flows / Waits / Replay / HAR / Rules / Breakpoints / Rendering. Write tools are the reason Loom exists — a read-only proxy can't close the capture → modify → replay → diff loop."
+    },
+    {
+      "id": "app",
+      "label": "LoomApp @main",
+      "sub": "MenuBarExtra + Window",
+      "layer": "ui",
+      "x": 1176,
+      "y": 270,
+      "module": "Loom",
+      "file": "App/Sources/LoomApp.swift",
+      "desc": "Single-instance guard in applicationWillFinishLaunching uses exit(0), not NSApp.terminate — terminate would run the quit cleanup and tear down the *first* instance's system proxy. Starts the MCP server; the proxy itself is started by AppFeature's one-shot boot effect (the single start owner)."
+    },
+    {
+      "id": "proxy-client",
+      "label": "ProxyClient",
+      "sub": "@DependencyClient (TCA)",
+      "layer": "client",
+      "x": 800,
+      "y": 434,
+      "module": "ProxyClient",
+      "file": "Clients/ProxyClient/Sources/ProxyClient.swift",
+      "desc": "The hand-written TCA mirror of ProxyControlling — and the side that drifted, which is how the breakpoint supervision gap opened. Breakpoint endpoints (arm/disarm/armed/pending/pendingStream/resume) now exist here; no AppFeature state consumes them yet."
+    },
+    {
+      "id": "provisioning",
+      "label": "ProvisioningServer + QRCode",
+      "sub": "LAN onboarding",
+      "layer": "engine",
+      "x": 988,
+      "y": 434,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ProvisioningServer.swift",
+      "desc": "Serves the CA and proxy settings to a phone over the LAN; the QR is generated engine-side with CoreImage."
+    },
+    {
+      "id": "app-feature",
+      "label": "AppFeature",
+      "sub": "the one TCA reducer + Store",
+      "layer": "ui",
+      "x": 800,
+      "y": 516,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/AppFeature.swift",
+      "desc": "Side effects only through Effect; reducers never touch NIO. Sidebar counts are maintained incrementally as flows arrive (recordFlow → contribute/retract), never recomputed on render, and the live flow stream is batched into one action per ~100 ms window."
+    },
+    {
+      "id": "panel",
+      "label": "PanelView",
+      "sub": "status-bar console",
+      "layer": "ui",
+      "x": 800,
+      "y": 598,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/PanelView.swift",
+      "desc": "The human supervision surface: proxy address + on/off, capture dot (green recording · yellow paused · grey off), state rows (Connect Device, System Proxy, HTTPS, Rules), footer (version · wordmark · Quit)."
+    },
+    {
+      "id": "main-view",
+      "label": "MainView",
+      "sub": "table + tabbed inspector",
+      "layer": "ui",
+      "x": 988,
+      "y": 598,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/MainView.swift",
+      "desc": "The working surface, opened at launch. The request list is NSTableView-backed (Table) — never an eager ScrollView { ForEach } over an unbounded collection."
+    },
+    {
+      "id": "setup-feature",
+      "label": "SetupFeature",
+      "sub": "CA trust · system proxy",
+      "layer": "ui",
+      "x": 1176,
+      "y": 598,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/SetupFeature.swift",
+      "desc": "Projects the proxy state rather than copying it. Owns the Install & Trust action and the system-proxy toggle."
+    },
+    {
+      "id": "inspector",
+      "label": "InspectorPanel",
+      "sub": "headers/body/WS/GraphQL/diff",
+      "layer": "ui",
+      "x": 800,
+      "y": 680,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/Inspector/",
+      "desc": "Renders FlowComparison as rows — the same single definition diff_flows renders as JSON. They used to disagree, which meant the agent and the human supervising it read different answers to the same question. Genuinely large text goes to NSTextView, not a SwiftUI Text."
+    },
+    {
+      "id": "rules-panel",
+      "label": "RulesPanelView + editor",
+      "sub": "structured rule UI",
+      "layer": "ui",
+      "x": 988,
+      "y": 680,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/RulesPanelView.swift",
+      "desc": "Sidebar rules panel, row context-menu rule templates, rule-hit indicators. Same TrafficRule model the MCP tools write — no second schema."
+    },
+    {
+      "id": "audit-panel",
+      "label": "AuditPanelView",
+      "sub": "read-only timeline",
+      "layer": "ui",
+      "x": 1176,
+      "y": 680,
+      "module": "AppFeature",
+      "file": "Features/AppFeature/Sources/AuditPanelView.swift",
+      "desc": "Newest-first list of what the agent did. Owner decision: there is no approval mode — MCP write tools act directly, so this after-the-fact trail is the supervision mechanism."
+    },
+    {
+      "id": "updater",
+      "label": "UpdaterClient (Sparkle)",
+      "sub": "silent daily probe",
+      "layer": "client",
+      "x": 1364,
+      "y": 598,
+      "module": "UpdaterClient",
+      "file": "Clients/UpdaterClient/Sources/UpdaterCoordinator.swift",
+      "desc": "SUEnableAutomaticChecks is deliberately off so the probe stays UI-less; it self-gates on com.loom.lastUpdateCheck. Armed end-to-end (real EdDSA key, SPARKLE_EDDSA_KEY set, appcast published) — only Developer ID signing/notarization is missing."
+    },
+    {
+      "id": "helper-client",
+      "label": "PrivilegedHelperClient",
+      "sub": "helper XPC, or networksetup",
+      "layer": "client",
+      "x": 1176,
+      "y": 762,
+      "module": "PrivilegedHelperClient",
+      "file": "Clients/PrivilegedHelperClient/Sources/PrivilegedHelperClient.swift",
+      "desc": "系统代理的 TCA 客户端：setSystemProxy / systemProxySnapshot(s) / restoreOrphanedQUICBlock，外加 helper 的生命周期（helperState / installHelper / uninstallHelper）。两条路径一个入口：root helper 装好并批准时走它，否则直接 networksetup + 一次 osascript 提权。（此节点旧版写着 daemon 已在 0.0.16 删除、ad-hoc 签名下永不可加载 —— 那个判断被实测推翻，helper 已在 0.0.17 回归，见 docs/decisions/privileged-helper.md。）"
+    },
+    {
+      "id": "system-proxy",
+      "label": "SystemProxyApplier + QUICBlocker",
+      "sub": "networksetup + pf anchor",
+      "layer": "system",
+      "x": 1176,
+      "y": 844,
+      "module": "PrivilegedHelperClient",
+      "file": "Clients/PrivilegedHelperClient/Sources/SystemProxyApplier.swift",
+      "desc": "Runs networksetup directly — admin users need no password, non-admin falls back to one osascript prompt. QUICBlocker appends a com.loom.quic pf anchor dropping outbound UDP 443, because browsers default to HTTP/3 and would otherwise bypass a TCP proxy entirely. It copies /etc/pf.conf and never overwrites; restore reloads the pristine ruleset."
+    },
+    {
+      "id": "socks-server",
+      "label": "SOCKSServer",
+      "sub": ":9091 · 第二个入口",
+      "layer": "ingress",
+      "x": 212,
+      "y": 106,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/SOCKSServer.swift",
+      "desc": "给 HTTP 口永远看不到的客户端：只认 ALL_PROXY 的工具、设置里只有 SOCKS 字段的 App、以及 SSH/SMTP/MySQL 这类非 HTTP 协议。fail-open —— 端口被占就不起，所以它的端口号推不出来，由 get_proxy_status.socksPort 报出。"
+    },
+    {
+      "id": "reverse-proxy-server",
+      "label": "ReverseProxyServer",
+      "sub": "本地端口 → 一个上游 origin",
+      "layer": "ingress",
+      "x": 400,
+      "y": 106,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ReverseProxyServer.swift",
+      "desc": "给根本没法指向代理的客户端（实测案例：Node 的全局 fetch/undici 直接无视 HTTP_PROXY）。入站恒为明文 HTTP 即使上游是 https，所以不需要 NODE_EXTRA_CA_CERTS。它是 ProxyHandler 的一个模式而不是第二个 handler，捕获/规则/断点/WebSocket 因此不会分叉。抓到的 flow 记的是上游 URL，绝不是 127.0.0.1:port。"
+    },
+    {
+      "id": "protocol-sniff",
+      "label": "TunnelSniffHandler + ProtocolSniff",
+      "sub": "看首包，不看端口",
+      "layer": "ingress",
+      "x": 400,
+      "y": 188,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/TunnelSniffHandler.swift",
+      "desc": "两个入口共用的一份分类逻辑，CONNECT 也走它。150ms 的嗅探超时是承重的：SSH/SMTP/IMAP/MySQL/PostgreSQL 是服务端先说话，只凭客户端字节分类会把它们锁死；只有这类连接付这个超时。"
+    },
+    {
+      "id": "tunneled-host-log",
+      "label": "TunneledHostLog",
+      "sub": "被放行而未解密的 origin",
+      "layer": "store",
+      "x": 24,
+      "y": 270,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/TunneledHostLog.swift",
+      "desc": "一次未读的转发不产生任何 flow，因此和「客户端压根没跑」长得一模一样 —— 这正是 set_ssl_scope 开个口子之后主机会进入的状态。按 host:port 聚合（上限 256，逐出计数不静默），带 TunnelReason 区分「差一步就能抓」和「改 scope 也没用」。读取时按当前 scope 过滤，人看 SSL Scope 卡片，agent 读 get_ssl_scope.tunneledHosts。"
+    },
+    {
+      "id": "client-cert-config",
+      "label": "ClientCertificateConfig",
+      "sub": "双向 TLS 身份",
+      "layer": "engine",
+      "x": 588,
+      "y": 516,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ClientCertificateConfig.swift",
+      "desc": "PKCS#12 + 口令，按 host glob 生效。配了却加载不了时抛错而不是裸连；bundle 在写入时就校验（口令错在那一刻失败，不是几小时后）；审计里 pkcs12_base64 / passphrase 被抹掉。每个身份缓存一个 NIOSSLContext，并在改动时丢弃 —— 否则改过的身份还在出示旧的。"
+    },
+    {
+      "id": "helper-daemon",
+      "label": "loom-helper (root LaunchDaemon)",
+      "sub": "SMAppService + XPC",
+      "layer": "system",
+      "x": 1364,
+      "y": 844,
+      "module": "loom-helper",
+      "file": "Helper/Daemon/Sources/main.swift",
+      "desc": "0.0.17 回归。存在的理由：开系统代理时顺带用 pf 挡 QUIC，而 /dev/pf 即使对管理员也要 root，于是每次开启都要一次密码。XPC 接口收的是参数不是脚本，host 也硬编码成 127.0.0.1，所以这个面无法用来改道整机流量。它从不承重：helper 缺席/未批准/不应答时 SystemProxyApplier 退回 networksetup + osascript。刻意不做 CA 信任 —— ad-hoc 签名下调用方校验退化成 identifier 单条，本机任何进程都能伪造。"
+    }
   ],
-
   "edges": [
-    { "id": "e1",  "from": "client-local",     "to": "proxy-server",      "label": "HTTP / CONNECT :9090",        "kind": "traffic" },
-    { "id": "e2",  "from": "client-lan",       "to": "proxy-server",      "label": "LAN (0.0.0.0 bind)",          "kind": "traffic" },
-    { "id": "e3",  "from": "proxy-server",     "to": "proxy-handler",     "label": "channel pipeline",            "kind": "traffic" },
-    { "id": "e4",  "from": "proxy-handler",    "to": "connect-tunnel",    "label": "host out of SSL scope",       "kind": "traffic" },
-    { "id": "e5",  "from": "proxy-handler",    "to": "tls-intercept",     "label": "in SSL scope → MITM",         "kind": "traffic" },
-    { "id": "e6",  "from": "tls-intercept",    "to": "ca",                "label": "mint leaf for host",          "kind": "control" },
-    { "id": "e7",  "from": "ca",               "to": "castore",           "label": "load / persist root",         "kind": "data" },
-    { "id": "e8",  "from": "tls-intercept",    "to": "h2-codec",          "label": "ALPN h2",                     "kind": "traffic" },
-    { "id": "e9",  "from": "tls-intercept",    "to": "ws-relay",          "label": "Upgrade: websocket",          "kind": "traffic" },
-    { "id": "e10", "from": "proxy-handler",    "to": "breakpoint-fwd",    "label": "plain HTTP exchange",         "kind": "traffic" },
-    { "id": "e11", "from": "tls-intercept",    "to": "breakpoint-fwd",    "label": "decrypted exchange",          "kind": "traffic" },
-    { "id": "e12", "from": "h2-codec",         "to": "breakpoint-fwd",    "label": "per-stream exchange",         "kind": "traffic" },
-    { "id": "e13", "from": "breakpoint-fwd",   "to": "breakpoint-store",  "label": "match? park continuation",    "kind": "control" },
-    { "id": "e14", "from": "breakpoint-fwd",   "to": "rule-fwd",          "label": "not held / resumed",          "kind": "traffic" },
-    { "id": "e15", "from": "rule-fwd",         "to": "rule-engine",       "label": "match + apply actions",       "kind": "control" },
-    { "id": "e16", "from": "rule-engine",      "to": "rules-config",      "label": "read rules / groups",         "kind": "data" },
-    { "id": "e17", "from": "rule-fwd",         "to": "nio-fwd",           "label": "rewritten request",           "kind": "traffic" },
-    { "id": "e18", "from": "nio-fwd",          "to": "stream-relay",      "label": "UpstreamResponseEvent",       "kind": "stream" },
-    { "id": "e19", "from": "nio-fwd",          "to": "upstream",          "label": "upstream request",            "kind": "traffic" },
-    { "id": "e20", "from": "upstream",         "to": "nio-fwd",           "label": "response (decompressed)",     "kind": "traffic" },
-    { "id": "e21", "from": "stream-relay",     "to": "proxy-handler",     "label": "bytes back to client",        "kind": "traffic" },
-    { "id": "e22", "from": "stream-relay",     "to": "flow-store",        "label": "capped capture + timings",    "kind": "stream" },
-    { "id": "e23", "from": "ws-relay",         "to": "flow-store",        "label": "frames (capped)",             "kind": "stream" },
-    { "id": "e24", "from": "connect-tunnel",   "to": "flow-store",        "label": "tunnel record",               "kind": "stream" },
-    { "id": "e25", "from": "flow-store",       "to": "flow-persistence",  "label": "batched 50ms / 256 rows",     "kind": "data" },
-    { "id": "e26", "from": "flow-persistence", "to": "flow-store",        "label": "read-through / boot reload",  "kind": "data" },
-    { "id": "e27", "from": "process-resolver", "to": "flow-store",        "label": "sourceApp",                   "kind": "control" },
-    { "id": "e28", "from": "ua-parser",        "to": "flow-store",        "label": "sourceDevice",                "kind": "control" },
-    { "id": "e29", "from": "engine",           "to": "flow-store",        "label": "owns",                        "kind": "own" },
-    { "id": "e30", "from": "engine",           "to": "audit-store",       "label": "owns",                        "kind": "own" },
-    { "id": "e31", "from": "audit-store",      "to": "audit-persistence", "label": "row-capped sqlite",           "kind": "data" },
-    { "id": "e32", "from": "engine",           "to": "breakpoint-store",  "label": "owns",                        "kind": "own" },
-    { "id": "e33", "from": "engine",           "to": "rules-config",      "label": "owns",                        "kind": "own" },
-    { "id": "e34", "from": "engine",           "to": "proxy-server",      "label": "start / stop / bind host",    "kind": "control" },
-    { "id": "e35", "from": "ai-http",          "to": "mcp-server",        "label": "JSON-RPC over HTTP (loopback)", "kind": "mcp" },
-    { "id": "e36", "from": "ai-stdio",         "to": "bridge",            "label": "stdio JSON-RPC",              "kind": "mcp" },
-    { "id": "e37", "from": "bridge",           "to": "handshake",         "label": "read {token, port}",          "kind": "data" },
-    { "id": "e38", "from": "bridge",           "to": "mcp-server",        "label": "HTTP + Bearer token",         "kind": "mcp" },
-    { "id": "e39", "from": "mcp-server",       "to": "mcp-executor",      "label": "tools/call",                  "kind": "mcp" },
-    { "id": "e40", "from": "mcp-server",       "to": "mcp-schemas",       "label": "tools/list",                  "kind": "mcp" },
-    { "id": "e41", "from": "mcp-executor",     "to": "mcp-tools",         "label": "dispatch handler",            "kind": "mcp" },
-    { "id": "e42", "from": "mcp-executor",     "to": "audit-store",       "label": "AuditEntry (writes only)",    "kind": "control" },
-    { "id": "e43", "from": "mcp-tools",        "to": "engine",            "label": "ProxyControlling",            "kind": "control" },
-    { "id": "e44", "from": "mcp-server",       "to": "handshake",         "label": "write at boot (0600)",        "kind": "data" },
-    { "id": "e45", "from": "proxy-client",     "to": "engine",            "label": "ProxyEngine.shared",          "kind": "control" },
-    { "id": "e46", "from": "app-feature",      "to": "proxy-client",      "label": "Effect only",                 "kind": "control" },
-    { "id": "e47", "from": "app-feature",      "to": "panel",             "label": "one Store",                   "kind": "ui" },
-    { "id": "e48", "from": "app-feature",      "to": "main-view",         "label": "one Store",                   "kind": "ui" },
-    { "id": "e49", "from": "app-feature",      "to": "setup-feature",     "label": "scoped child",                "kind": "ui" },
-    { "id": "e50", "from": "main-view",        "to": "inspector",         "label": "selected flow",               "kind": "ui" },
-    { "id": "e51", "from": "main-view",        "to": "rules-panel",       "label": "sidebar",                     "kind": "ui" },
-    { "id": "e52", "from": "main-view",        "to": "audit-panel",       "label": "sidebar",                     "kind": "ui" },
-    { "id": "e53", "from": "setup-feature",    "to": "helper-client",     "label": "trust / system proxy",        "kind": "control" },
-    { "id": "e54", "from": "helper-client",    "to": "system-proxy",      "label": "networksetup + pf",           "kind": "control" },
-    { "id": "e56", "from": "app-feature",      "to": "updater",           "label": "probe / check",               "kind": "control" },
-    { "id": "e57", "from": "engine",           "to": "provisioning",      "label": "QR + LAN server",             "kind": "control" },
-    { "id": "e58", "from": "flow-store",       "to": "proxy-client",      "label": "flowStream (batched ~100ms)", "kind": "stream" },
-    { "id": "e59", "from": "flow-store",       "to": "mcp-tools",         "label": "queries / blocking waits",    "kind": "stream" },
-    { "id": "e60", "from": "audit-store",      "to": "proxy-client",      "label": "auditStream",                 "kind": "stream" },
-    { "id": "e61", "from": "app",              "to": "mcp-server",        "label": "start on fixed 9092",         "kind": "control" },
-    { "id": "e62", "from": "app",              "to": "app-feature",       "label": "one Store · boot .task",      "kind": "control" },
-    { "id": "e63", "from": "engine",           "to": "proxy-controlling", "label": "implements",                  "kind": "dep" },
-    { "id": "e64", "from": "mcp-executor",     "to": "proxy-controlling", "label": "consumes",                    "kind": "dep" },
-    { "id": "e65", "from": "proxy-client",     "to": "proxy-controlling", "label": "mirrors (ProxyCapability)",   "kind": "dep" },
-    { "id": "e66", "from": "proxy-controlling","to": "shared-models",     "label": "declared in",                 "kind": "dep" },
-    { "id": "e67", "from": "flow-store",       "to": "shared-models",     "label": "Flow / FlowQuery",            "kind": "dep" },
-    { "id": "e68", "from": "provisioning",     "to": "client-lan",        "label": "CA + settings + QR",          "kind": "control" }
+    {
+      "id": "e1",
+      "from": "client-local",
+      "to": "proxy-server",
+      "label": "HTTP / CONNECT :9090",
+      "kind": "traffic"
+    },
+    {
+      "id": "e2",
+      "from": "client-lan",
+      "to": "proxy-server",
+      "label": "LAN (0.0.0.0 bind)",
+      "kind": "traffic"
+    },
+    {
+      "id": "e3",
+      "from": "proxy-server",
+      "to": "proxy-handler",
+      "label": "channel pipeline",
+      "kind": "traffic"
+    },
+    {
+      "id": "e4",
+      "from": "proxy-handler",
+      "to": "connect-tunnel",
+      "label": "host out of SSL scope",
+      "kind": "traffic"
+    },
+    {
+      "id": "e5",
+      "from": "proxy-handler",
+      "to": "tls-intercept",
+      "label": "in SSL scope → MITM",
+      "kind": "traffic"
+    },
+    {
+      "id": "e6",
+      "from": "tls-intercept",
+      "to": "ca",
+      "label": "mint leaf for host",
+      "kind": "control"
+    },
+    {
+      "id": "e7",
+      "from": "ca",
+      "to": "castore",
+      "label": "load / persist root",
+      "kind": "data"
+    },
+    {
+      "id": "e8",
+      "from": "tls-intercept",
+      "to": "h2-codec",
+      "label": "ALPN h2",
+      "kind": "traffic"
+    },
+    {
+      "id": "e9",
+      "from": "tls-intercept",
+      "to": "ws-relay",
+      "label": "Upgrade: websocket",
+      "kind": "traffic"
+    },
+    {
+      "id": "e10",
+      "from": "proxy-handler",
+      "to": "breakpoint-fwd",
+      "label": "plain HTTP exchange",
+      "kind": "traffic"
+    },
+    {
+      "id": "e11",
+      "from": "tls-intercept",
+      "to": "breakpoint-fwd",
+      "label": "decrypted exchange",
+      "kind": "traffic"
+    },
+    {
+      "id": "e12",
+      "from": "h2-codec",
+      "to": "breakpoint-fwd",
+      "label": "per-stream exchange",
+      "kind": "traffic"
+    },
+    {
+      "id": "e13",
+      "from": "breakpoint-fwd",
+      "to": "breakpoint-store",
+      "label": "match? park continuation",
+      "kind": "control"
+    },
+    {
+      "id": "e14",
+      "from": "breakpoint-fwd",
+      "to": "rule-fwd",
+      "label": "not held / resumed",
+      "kind": "traffic"
+    },
+    {
+      "id": "e15",
+      "from": "rule-fwd",
+      "to": "rule-engine",
+      "label": "match + apply actions",
+      "kind": "control"
+    },
+    {
+      "id": "e16",
+      "from": "rule-engine",
+      "to": "rules-config",
+      "label": "read rules / groups",
+      "kind": "data"
+    },
+    {
+      "id": "e17",
+      "from": "rule-fwd",
+      "to": "nio-fwd",
+      "label": "rewritten request",
+      "kind": "traffic"
+    },
+    {
+      "id": "e18",
+      "from": "nio-fwd",
+      "to": "stream-relay",
+      "label": "UpstreamResponseEvent",
+      "kind": "stream"
+    },
+    {
+      "id": "e19",
+      "from": "nio-fwd",
+      "to": "upstream",
+      "label": "upstream request",
+      "kind": "traffic"
+    },
+    {
+      "id": "e20",
+      "from": "upstream",
+      "to": "nio-fwd",
+      "label": "response (decompressed)",
+      "kind": "traffic"
+    },
+    {
+      "id": "e21",
+      "from": "stream-relay",
+      "to": "proxy-handler",
+      "label": "bytes back to client",
+      "kind": "traffic"
+    },
+    {
+      "id": "e22",
+      "from": "stream-relay",
+      "to": "flow-store",
+      "label": "capped capture + timings",
+      "kind": "stream"
+    },
+    {
+      "id": "e23",
+      "from": "ws-relay",
+      "to": "flow-store",
+      "label": "frames (capped)",
+      "kind": "stream"
+    },
+    {
+      "id": "e24",
+      "from": "connect-tunnel",
+      "to": "flow-store",
+      "label": "tunnel record",
+      "kind": "stream"
+    },
+    {
+      "id": "e25",
+      "from": "flow-store",
+      "to": "flow-persistence",
+      "label": "batched 50ms / 256 rows",
+      "kind": "data"
+    },
+    {
+      "id": "e26",
+      "from": "flow-persistence",
+      "to": "flow-store",
+      "label": "read-through / boot reload",
+      "kind": "data"
+    },
+    {
+      "id": "e27",
+      "from": "process-resolver",
+      "to": "flow-store",
+      "label": "sourceApp",
+      "kind": "control"
+    },
+    {
+      "id": "e28",
+      "from": "ua-parser",
+      "to": "flow-store",
+      "label": "sourceDevice",
+      "kind": "control"
+    },
+    {
+      "id": "e29",
+      "from": "engine",
+      "to": "flow-store",
+      "label": "owns",
+      "kind": "own"
+    },
+    {
+      "id": "e30",
+      "from": "engine",
+      "to": "audit-store",
+      "label": "owns",
+      "kind": "own"
+    },
+    {
+      "id": "e31",
+      "from": "audit-store",
+      "to": "audit-persistence",
+      "label": "row-capped sqlite",
+      "kind": "data"
+    },
+    {
+      "id": "e32",
+      "from": "engine",
+      "to": "breakpoint-store",
+      "label": "owns",
+      "kind": "own"
+    },
+    {
+      "id": "e33",
+      "from": "engine",
+      "to": "rules-config",
+      "label": "owns",
+      "kind": "own"
+    },
+    {
+      "id": "e34",
+      "from": "engine",
+      "to": "proxy-server",
+      "label": "start / stop / bind host",
+      "kind": "control"
+    },
+    {
+      "id": "e35",
+      "from": "ai-http",
+      "to": "mcp-server",
+      "label": "JSON-RPC over HTTP (loopback)",
+      "kind": "mcp"
+    },
+    {
+      "id": "e36",
+      "from": "ai-stdio",
+      "to": "bridge",
+      "label": "stdio JSON-RPC",
+      "kind": "mcp"
+    },
+    {
+      "id": "e37",
+      "from": "bridge",
+      "to": "handshake",
+      "label": "read {token, port}",
+      "kind": "data"
+    },
+    {
+      "id": "e38",
+      "from": "bridge",
+      "to": "mcp-server",
+      "label": "HTTP + Bearer token",
+      "kind": "mcp"
+    },
+    {
+      "id": "e39",
+      "from": "mcp-server",
+      "to": "mcp-executor",
+      "label": "tools/call",
+      "kind": "mcp"
+    },
+    {
+      "id": "e40",
+      "from": "mcp-server",
+      "to": "mcp-schemas",
+      "label": "tools/list",
+      "kind": "mcp"
+    },
+    {
+      "id": "e41",
+      "from": "mcp-executor",
+      "to": "mcp-tools",
+      "label": "dispatch handler",
+      "kind": "mcp"
+    },
+    {
+      "id": "e42",
+      "from": "mcp-executor",
+      "to": "audit-store",
+      "label": "AuditEntry (writes only)",
+      "kind": "control"
+    },
+    {
+      "id": "e43",
+      "from": "mcp-tools",
+      "to": "engine",
+      "label": "ProxyControlling",
+      "kind": "control"
+    },
+    {
+      "id": "e44",
+      "from": "mcp-server",
+      "to": "handshake",
+      "label": "write at boot (0600)",
+      "kind": "data"
+    },
+    {
+      "id": "e45",
+      "from": "proxy-client",
+      "to": "engine",
+      "label": "ProxyEngine.shared",
+      "kind": "control"
+    },
+    {
+      "id": "e46",
+      "from": "app-feature",
+      "to": "proxy-client",
+      "label": "Effect only",
+      "kind": "control"
+    },
+    {
+      "id": "e47",
+      "from": "app-feature",
+      "to": "panel",
+      "label": "one Store",
+      "kind": "ui"
+    },
+    {
+      "id": "e48",
+      "from": "app-feature",
+      "to": "main-view",
+      "label": "one Store",
+      "kind": "ui"
+    },
+    {
+      "id": "e49",
+      "from": "app-feature",
+      "to": "setup-feature",
+      "label": "scoped child",
+      "kind": "ui"
+    },
+    {
+      "id": "e50",
+      "from": "main-view",
+      "to": "inspector",
+      "label": "selected flow",
+      "kind": "ui"
+    },
+    {
+      "id": "e51",
+      "from": "main-view",
+      "to": "rules-panel",
+      "label": "sidebar",
+      "kind": "ui"
+    },
+    {
+      "id": "e52",
+      "from": "main-view",
+      "to": "audit-panel",
+      "label": "sidebar",
+      "kind": "ui"
+    },
+    {
+      "id": "e53",
+      "from": "setup-feature",
+      "to": "helper-client",
+      "label": "trust / system proxy",
+      "kind": "control"
+    },
+    {
+      "id": "e54",
+      "from": "helper-client",
+      "to": "system-proxy",
+      "label": "networksetup + pf",
+      "kind": "control"
+    },
+    {
+      "id": "e56",
+      "from": "app-feature",
+      "to": "updater",
+      "label": "probe / check",
+      "kind": "control"
+    },
+    {
+      "id": "e57",
+      "from": "engine",
+      "to": "provisioning",
+      "label": "QR + LAN server",
+      "kind": "control"
+    },
+    {
+      "id": "e58",
+      "from": "flow-store",
+      "to": "proxy-client",
+      "label": "flowStream (batched ~100ms)",
+      "kind": "stream"
+    },
+    {
+      "id": "e59",
+      "from": "flow-store",
+      "to": "mcp-tools",
+      "label": "queries / blocking waits",
+      "kind": "stream"
+    },
+    {
+      "id": "e60",
+      "from": "audit-store",
+      "to": "proxy-client",
+      "label": "auditStream",
+      "kind": "stream"
+    },
+    {
+      "id": "e61",
+      "from": "app",
+      "to": "mcp-server",
+      "label": "start on fixed 9092",
+      "kind": "control"
+    },
+    {
+      "id": "e62",
+      "from": "app",
+      "to": "app-feature",
+      "label": "one Store · boot .task",
+      "kind": "control"
+    },
+    {
+      "id": "e63",
+      "from": "engine",
+      "to": "proxy-controlling",
+      "label": "implements",
+      "kind": "dep"
+    },
+    {
+      "id": "e64",
+      "from": "mcp-executor",
+      "to": "proxy-controlling",
+      "label": "consumes",
+      "kind": "dep"
+    },
+    {
+      "id": "e65",
+      "from": "proxy-client",
+      "to": "proxy-controlling",
+      "label": "mirrors (ProxyCapability)",
+      "kind": "dep"
+    },
+    {
+      "id": "e66",
+      "from": "proxy-controlling",
+      "to": "shared-models",
+      "label": "declared in",
+      "kind": "dep"
+    },
+    {
+      "id": "e67",
+      "from": "flow-store",
+      "to": "shared-models",
+      "label": "Flow / FlowQuery",
+      "kind": "dep"
+    },
+    {
+      "id": "e68",
+      "from": "provisioning",
+      "to": "client-lan",
+      "label": "CA + settings + QR",
+      "kind": "control"
+    },
+    {
+      "id": "e69",
+      "from": "client-local",
+      "to": "socks-server",
+      "label": "SOCKS5 :9091",
+      "kind": "traffic"
+    },
+    {
+      "id": "e70",
+      "from": "client-lan",
+      "to": "socks-server",
+      "label": "ALL_PROXY / SOCKS 字段",
+      "kind": "traffic"
+    },
+    {
+      "id": "e71",
+      "from": "socks-server",
+      "to": "protocol-sniff",
+      "label": "首包分类",
+      "kind": "traffic"
+    },
+    {
+      "id": "e72",
+      "from": "proxy-handler",
+      "to": "protocol-sniff",
+      "label": "CONNECT 也嗅探",
+      "kind": "traffic"
+    },
+    {
+      "id": "e73",
+      "from": "protocol-sniff",
+      "to": "tls-intercept",
+      "label": "看着像 TLS 且在 scope 内",
+      "kind": "traffic"
+    },
+    {
+      "id": "e74",
+      "from": "protocol-sniff",
+      "to": "connect-tunnel",
+      "label": "其余一律原样转发",
+      "kind": "traffic"
+    },
+    {
+      "id": "e75",
+      "from": "protocol-sniff",
+      "to": "tunneled-host-log",
+      "label": "记下放行原因",
+      "kind": "data"
+    },
+    {
+      "id": "e76",
+      "from": "client-local",
+      "to": "reverse-proxy-server",
+      "label": "指向本地端口",
+      "kind": "traffic"
+    },
+    {
+      "id": "e77",
+      "from": "reverse-proxy-server",
+      "to": "proxy-handler",
+      "label": "同一个 handler 的另一个模式",
+      "kind": "traffic"
+    },
+    {
+      "id": "e78",
+      "from": "client-cert-config",
+      "to": "nio-fwd",
+      "label": "上游握手出示身份",
+      "kind": "control"
+    },
+    {
+      "id": "e79",
+      "from": "engine",
+      "to": "client-cert-config",
+      "label": "set/delete_client_certificate",
+      "kind": "own"
+    },
+    {
+      "id": "e80",
+      "from": "engine",
+      "to": "tunneled-host-log",
+      "label": "get_ssl_scope.tunneledHosts",
+      "kind": "own"
+    },
+    {
+      "id": "e81",
+      "from": "helper-client",
+      "to": "helper-daemon",
+      "label": "XPC（装好并批准时）",
+      "kind": "control"
+    },
+    {
+      "id": "e82",
+      "from": "helper-daemon",
+      "to": "system-proxy",
+      "label": "networksetup + pfctl，以 root",
+      "kind": "control"
+    }
   ],
-
   "flows": [
     {
       "id": "plain-http",
@@ -452,14 +1405,107 @@ tailwind.config = {
       "accent": "#38bdf8",
       "desc": "最短的一条路径。绝对形式请求进来，穿过三层 forwarder 装饰器，回到客户端的同时留下一条 Flow。",
       "steps": [
-        { "title": "客户端把请求发到 :9090", "detail": "curl -x 或系统代理注入的绝对形式 URL。ProxyServer 绑在 127.0.0.1（仅在开启 LAN 设备捕获时才是 0.0.0.0）。", "nodes": ["client-local","proxy-server"], "edges": ["e1"] },
-        { "title": "ProxyHandler 解析 head，开一条流式 RequestBody", "detail": "body 以背压方式流入，不整包缓冲——除非某条规则或断点必须看到完整 body。", "nodes": ["proxy-handler"], "edges": ["e3"] },
-        { "title": "BreakpointForwarder（最外层）检查已 arm 的断点", "detail": "没有命中就直接透传。命中会把交换挂在 continuation 上，见 breakpoint flow。", "nodes": ["breakpoint-fwd","breakpoint-store"], "edges": ["e10","e13"] },
-        { "title": "RuleApplyingForwarder —— 规则唯一的施加点", "detail": "所有路径（实时流式、实时缓冲、replay、断点恢复）都经过这里，所以一条规则不可能只对其中一条路径生效。", "nodes": ["rule-fwd","rule-engine","rules-config"], "edges": ["e14","e15","e16"] },
-        { "title": "NIOStreamingForwarder 发往上游", "detail": "Loom 自己拥有每一个请求头。forward（缓冲）和 replay 都是 forwardStream 的折叠，生产路径只有一条。响应经 NIOHTTPResponseDecompressor 解压，因此 Content-Encoding / Content-Length 在 .head 上被剥掉。", "nodes": ["nio-fwd","upstream"], "edges": ["e17","e19","e20"] },
-        { "title": "StreamRelay 回吐字节，同时取一份带上限的观测副本", "detail": "数据面走背压（高/低水位），观测面只留截断副本。真实 wire size 与丢帧数会如实上报，截断从不静默。", "nodes": ["stream-relay","proxy-handler"], "edges": ["e18","e21","e22"] },
-        { "title": "FlowStore upsert（O(1)）+ 来源归属", "detail": "id→绝对位置 的映射让每次 exchange 的多次 upsert 变成字典查找而非环形缓冲扫描。sourceApp 来自 libproc 的一次批量 sweep，sourceDevice 来自 User-Agent。", "nodes": ["flow-store","process-resolver","ua-parser"], "edges": ["e22","e27","e28"] },
-        { "title": "落盘 + 双向扇出", "detail": "写入按 50ms / 256 行批处理进 flows.sqlite；同一条 Flow 以 ~100ms 批次推给 TCA，也供 MCP 查询与阻塞等待。", "nodes": ["flow-persistence","proxy-client","mcp-tools"], "edges": ["e25","e58","e59"] }
+        {
+          "title": "客户端把请求发到 :9090",
+          "detail": "curl -x 或系统代理注入的绝对形式 URL。ProxyServer 绑在 127.0.0.1（仅在开启 LAN 设备捕获时才是 0.0.0.0）。",
+          "nodes": [
+            "client-local",
+            "proxy-server"
+          ],
+          "edges": [
+            "e1"
+          ]
+        },
+        {
+          "title": "ProxyHandler 解析 head，开一条流式 RequestBody",
+          "detail": "body 以背压方式流入，不整包缓冲——除非某条规则或断点必须看到完整 body。",
+          "nodes": [
+            "proxy-handler"
+          ],
+          "edges": [
+            "e3"
+          ]
+        },
+        {
+          "title": "BreakpointForwarder（最外层）检查已 arm 的断点",
+          "detail": "没有命中就直接透传。命中会把交换挂在 continuation 上，见 breakpoint flow。",
+          "nodes": [
+            "breakpoint-fwd",
+            "breakpoint-store"
+          ],
+          "edges": [
+            "e10",
+            "e13"
+          ]
+        },
+        {
+          "title": "RuleApplyingForwarder —— 规则唯一的施加点",
+          "detail": "所有路径（实时流式、实时缓冲、replay、断点恢复）都经过这里，所以一条规则不可能只对其中一条路径生效。",
+          "nodes": [
+            "rule-fwd",
+            "rule-engine",
+            "rules-config"
+          ],
+          "edges": [
+            "e14",
+            "e15",
+            "e16"
+          ]
+        },
+        {
+          "title": "NIOStreamingForwarder 发往上游",
+          "detail": "Loom 自己拥有每一个请求头。forward（缓冲）和 replay 都是 forwardStream 的折叠，生产路径只有一条。响应经 NIOHTTPResponseDecompressor 解压，因此 Content-Encoding / Content-Length 在 .head 上被剥掉。",
+          "nodes": [
+            "nio-fwd",
+            "upstream"
+          ],
+          "edges": [
+            "e17",
+            "e19",
+            "e20"
+          ]
+        },
+        {
+          "title": "StreamRelay 回吐字节，同时取一份带上限的观测副本",
+          "detail": "数据面走背压（高/低水位），观测面只留截断副本。真实 wire size 与丢帧数会如实上报，截断从不静默。",
+          "nodes": [
+            "stream-relay",
+            "proxy-handler"
+          ],
+          "edges": [
+            "e18",
+            "e21",
+            "e22"
+          ]
+        },
+        {
+          "title": "FlowStore upsert（O(1)）+ 来源归属",
+          "detail": "id→绝对位置 的映射让每次 exchange 的多次 upsert 变成字典查找而非环形缓冲扫描。sourceApp 来自 libproc 的一次批量 sweep，sourceDevice 来自 User-Agent。",
+          "nodes": [
+            "flow-store",
+            "process-resolver",
+            "ua-parser"
+          ],
+          "edges": [
+            "e22",
+            "e27",
+            "e28"
+          ]
+        },
+        {
+          "title": "落盘 + 双向扇出",
+          "detail": "写入按 50ms / 256 行批处理进 flows.sqlite；同一条 Flow 以 ~100ms 批次推给 TCA，也供 MCP 查询与阻塞等待。",
+          "nodes": [
+            "flow-persistence",
+            "proxy-client",
+            "mcp-tools"
+          ],
+          "edges": [
+            "e25",
+            "e58",
+            "e59"
+          ]
+        }
       ]
     },
     {
@@ -468,13 +1514,93 @@ tailwind.config = {
       "accent": "#22d3ee",
       "desc": "CONNECT 之后的分叉：在 SSL scope 内就做管线手术终止 TLS，否则盲隧道。解密后的交换汇入与明文完全相同的链路。",
       "steps": [
-        { "title": "CONNECT host:443 到达", "detail": "ProxyHandler 解析 authority，然后查 SSL scope（持久化在 UserDefaults com.loom.sslScope，否则每次启动都会重置成 disabled、全部盲隧道）。", "nodes": ["client-local","proxy-server","proxy-handler"], "edges": ["e1","e3"] },
-        { "title": "分叉：盲隧道 vs MITM", "detail": "不在 scope 内 → 原始字节 splice，只记一条 tunnel 记录；在 scope 内 → 进入管线手术。", "nodes": ["connect-tunnel","tls-intercept"], "edges": ["e4","e5","e24"] },
-        { "title": "管线手术（顺序敏感）", "detail": "swap 必须发生在 .end；handler 必须 conform RemovableChannelHandler；HTTP encoder 要在 TLS 写之前移除；NIOSSL 插到管线头部。改动顺序会重新引入 WRONG_VERSION / decode 崩溃。", "nodes": ["tls-intercept"], "edges": ["e5"] },
-        { "title": "按需签发该 host 的叶子证书", "detail": "序列号必须 ≤20 octet（默认初始化器会给出 21 octet，Secure Transport 直接 -1015 拒绝，而宽容的浏览器照样能用——半数 host 会静默失效）。叶子带 SKI/AKI，ALPN 广告 h2 + http/1.1。根 CA 存在 0600 的 PEM 文件而非 Keychain。", "nodes": ["ca","castore"], "edges": ["e6","e7"] },
-        { "title": "按协商结果继续：h2 / http1.1 / WebSocket", "detail": "ALPN 命中 h2 → 每条 h2 stream 解复用回 h1 捕获路径；Upgrade: websocket → 帧被 tap，整条连接仍算一个 Flow。", "nodes": ["h2-codec","ws-relay"], "edges": ["e8","e9","e23"] },
-        { "title": "解密后的交换汇入同一条 forwarder 链", "detail": "断点、规则、上游转发的代码与明文 HTTP 完全相同——没有第二条写路径。", "nodes": ["breakpoint-fwd","rule-fwd","nio-fwd"], "edges": ["e11","e12","e14","e17"] },
-        { "title": "捕获与明文路径完全一致", "detail": "Apple 域名因证书固定而失败是预期行为，不是 bug。客户端只有信任了 Loom 的根 CA 才会接受叶子证书。", "nodes": ["flow-store","stream-relay"], "edges": ["e22"] }
+        {
+          "title": "CONNECT host:443 到达",
+          "detail": "ProxyHandler 解析 authority，然后查 SSL scope（持久化在 UserDefaults com.loom.sslScope，否则每次启动都会重置成 disabled、全部盲隧道）。",
+          "nodes": [
+            "client-local",
+            "proxy-server",
+            "proxy-handler"
+          ],
+          "edges": [
+            "e1",
+            "e3"
+          ]
+        },
+        {
+          "title": "分叉：盲隧道 vs MITM",
+          "detail": "不在 scope 内 → 原始字节 splice，只记一条 tunnel 记录；在 scope 内 → 进入管线手术。",
+          "nodes": [
+            "connect-tunnel",
+            "tls-intercept"
+          ],
+          "edges": [
+            "e4",
+            "e5",
+            "e24"
+          ]
+        },
+        {
+          "title": "管线手术（顺序敏感）",
+          "detail": "swap 必须发生在 .end；handler 必须 conform RemovableChannelHandler；HTTP encoder 要在 TLS 写之前移除；NIOSSL 插到管线头部。改动顺序会重新引入 WRONG_VERSION / decode 崩溃。",
+          "nodes": [
+            "tls-intercept"
+          ],
+          "edges": [
+            "e5"
+          ]
+        },
+        {
+          "title": "按需签发该 host 的叶子证书",
+          "detail": "序列号必须 ≤20 octet（默认初始化器会给出 21 octet，Secure Transport 直接 -1015 拒绝，而宽容的浏览器照样能用——半数 host 会静默失效）。叶子带 SKI/AKI，ALPN 广告 h2 + http/1.1。根 CA 存在 0600 的 PEM 文件而非 Keychain。",
+          "nodes": [
+            "ca",
+            "castore"
+          ],
+          "edges": [
+            "e6",
+            "e7"
+          ]
+        },
+        {
+          "title": "按协商结果继续：h2 / http1.1 / WebSocket",
+          "detail": "ALPN 命中 h2 → 每条 h2 stream 解复用回 h1 捕获路径；Upgrade: websocket → 帧被 tap，整条连接仍算一个 Flow。",
+          "nodes": [
+            "h2-codec",
+            "ws-relay"
+          ],
+          "edges": [
+            "e8",
+            "e9",
+            "e23"
+          ]
+        },
+        {
+          "title": "解密后的交换汇入同一条 forwarder 链",
+          "detail": "断点、规则、上游转发的代码与明文 HTTP 完全相同——没有第二条写路径。",
+          "nodes": [
+            "breakpoint-fwd",
+            "rule-fwd",
+            "nio-fwd"
+          ],
+          "edges": [
+            "e11",
+            "e12",
+            "e14",
+            "e17"
+          ]
+        },
+        {
+          "title": "捕获与明文路径完全一致",
+          "detail": "Apple 域名因证书固定而失败是预期行为，不是 bug。客户端只有信任了 Loom 的根 CA 才会接受叶子证书。",
+          "nodes": [
+            "flow-store",
+            "stream-relay"
+          ],
+          "edges": [
+            "e22"
+          ]
+        }
       ]
     },
     {
@@ -483,12 +1609,94 @@ tailwind.config = {
       "accent": "#f472b6",
       "desc": "Loom 存在的理由。这是唯一一条只有 AI 在开、人类在旁监督的路径，也是与只读代理的分水岭。",
       "steps": [
-        { "title": "Agent 连上（loopback 直连，无需 token）", "detail": "Claude Code / Cursor 通过插件根目录的 .mcp.json 直接连 http://127.0.0.1:9092/mcp。客户端不启动、不构建任何东西——工具不可达就意味着 app 没运行，skill 会让 agent 去启动 Loom 而不是编造数据。", "nodes": ["ai-http","mcp-server"], "edges": ["e35"] },
-        { "title": "读：get_recent_flows / get_flow_detail / get_stats", "detail": "读工具不写审计。列表读是 body-free 的；body 只在打开某一行时按需 hydrate，绝不为渲染列表加载 MB 级 body。", "nodes": ["mcp-executor","mcp-tools","flow-store"], "edges": ["e39","e41","e59"] },
-        { "title": "改：set_rule 写入结构化 TrafficRule", "detail": "没有文本 DSL（owner 决策），只有类型化模型 + 可选 group（批量启停、场景切换）。落到 UserDefaults，并在唯一的 choke point 施加。", "nodes": ["mcp-tools","engine","rules-config","rule-fwd","rule-engine"], "edges": ["e43","e33","e15","e16"] },
-        { "title": "重放：replay_flow(overrides, count, concurrency)", "detail": "与人类点 Replay 跑的是同一段代码。ReplayOverrides = method / url / set+remove headers / body；产出的 Flow 带 replayedFrom。", "nodes": ["mcp-tools","engine","rule-fwd","nio-fwd","upstream"], "edges": ["e43","e17","e19","e20"] },
-        { "title": "比对：diff_flows → 一个 FlowComparison", "detail": "标量、header 增删改（保留重复）、LCS 行 diff（400 行上限）、二进制/超大回退、\"一侧从未回答\"。同一个定义渲染两次：这里是 JSON，Inspector 里是行——它们曾经互相矛盾，意味着 agent 和监督它的人在读同一个问题的不同答案。", "nodes": ["mcp-tools","flow-store","inspector"], "edges": ["e59","e50"] },
-        { "title": "每一次写都留痕", "detail": "MCPToolExecutor.call 是唯一的审计 choke point，成功失败都记。owner 决策：不做 approval 模式，写工具直接生效——所以事后可读的审计轨迹就是监督机制本身。", "nodes": ["mcp-executor","audit-store","audit-persistence","audit-panel"], "edges": ["e42","e31","e60","e52"] }
+        {
+          "title": "Agent 连上（loopback 直连，无需 token）",
+          "detail": "Claude Code / Cursor 通过插件根目录的 .mcp.json 直接连 http://127.0.0.1:9092/mcp。客户端不启动、不构建任何东西——工具不可达就意味着 app 没运行，skill 会让 agent 去启动 Loom 而不是编造数据。",
+          "nodes": [
+            "ai-http",
+            "mcp-server"
+          ],
+          "edges": [
+            "e35"
+          ]
+        },
+        {
+          "title": "读：get_recent_flows / get_flow_detail / get_stats",
+          "detail": "读工具不写审计。列表读是 body-free 的；body 只在打开某一行时按需 hydrate，绝不为渲染列表加载 MB 级 body。",
+          "nodes": [
+            "mcp-executor",
+            "mcp-tools",
+            "flow-store"
+          ],
+          "edges": [
+            "e39",
+            "e41",
+            "e59"
+          ]
+        },
+        {
+          "title": "改：set_rule 写入结构化 TrafficRule",
+          "detail": "没有文本 DSL（owner 决策），只有类型化模型 + 可选 group（批量启停、场景切换）。落到 UserDefaults，并在唯一的 choke point 施加。",
+          "nodes": [
+            "mcp-tools",
+            "engine",
+            "rules-config",
+            "rule-fwd",
+            "rule-engine"
+          ],
+          "edges": [
+            "e43",
+            "e33",
+            "e15",
+            "e16"
+          ]
+        },
+        {
+          "title": "重放：replay_flow(overrides, count, concurrency)",
+          "detail": "与人类点 Replay 跑的是同一段代码。ReplayOverrides = method / url / set+remove headers / body；产出的 Flow 带 replayedFrom。",
+          "nodes": [
+            "mcp-tools",
+            "engine",
+            "rule-fwd",
+            "nio-fwd",
+            "upstream"
+          ],
+          "edges": [
+            "e43",
+            "e17",
+            "e19",
+            "e20"
+          ]
+        },
+        {
+          "title": "比对：diff_flows → 一个 FlowComparison",
+          "detail": "标量、header 增删改（保留重复）、LCS 行 diff（400 行上限）、二进制/超大回退、\"一侧从未回答\"。同一个定义渲染两次：这里是 JSON，Inspector 里是行——它们曾经互相矛盾，意味着 agent 和监督它的人在读同一个问题的不同答案。",
+          "nodes": [
+            "mcp-tools",
+            "flow-store",
+            "inspector"
+          ],
+          "edges": [
+            "e59",
+            "e50"
+          ]
+        },
+        {
+          "title": "每一次写都留痕",
+          "detail": "MCPToolExecutor.call 是唯一的审计 choke point，成功失败都记。owner 决策：不做 approval 模式，写工具直接生效——所以事后可读的审计轨迹就是监督机制本身。",
+          "nodes": [
+            "mcp-executor",
+            "audit-store",
+            "audit-persistence",
+            "audit-panel"
+          ],
+          "edges": [
+            "e42",
+            "e31",
+            "e60",
+            "e52"
+          ]
+        }
       ]
     },
     {
@@ -497,12 +1705,89 @@ tailwind.config = {
       "accent": "#a78bfa",
       "desc": "唯一一条会持有真实客户端连接的路径——也是目前人类监督面存在缺口的地方。",
       "steps": [
-        { "title": "arm_breakpoint(match)", "detail": "Breakpoint 复用 RuleMatch 的匹配语义（含 sourceApp / deviceIP 的来源限定，未归属流量 fail-closed）。断点刻意不持久化：被持有的交换攥着一条活连接，重启活不下来。", "nodes": ["ai-http","mcp-server","mcp-executor","mcp-tools","engine","breakpoint-store"], "edges": ["e35","e39","e41","e43","e32"] },
-        { "title": "命中的交换在最外层被拦下", "detail": "BreakpointForwarder 把交换挂到一个 continuation 上。客户端此刻正在等待——一条真实连接被持有。", "nodes": ["breakpoint-fwd","breakpoint-store"], "edges": ["e13"] },
-        { "title": "Agent 取回：list_pending（轮询）或 wait_for_pending（阻塞）", "detail": "阻塞版由 BreakpointStore.pendingStream() 喂，避免 agent 打轮询循环——M6 的核心动机就是让 agent 的每一轮更便宜。", "nodes": ["mcp-tools","breakpoint-store"], "edges": ["e41","e43"] },
-        { "title": "resume(edit | abort) 释放 continuation", "detail": "edit 可改写请求后继续，abort 直接掐断。两者都记审计。", "nodes": ["mcp-tools","breakpoint-store","breakpoint-fwd"], "edges": ["e43","e13"] },
-        { "title": "交换沿原链继续", "detail": "释放后照常经过规则层与上游转发——恢复的交换不会绕过规则。", "nodes": ["rule-fwd","nio-fwd","upstream"], "edges": ["e14","e17","e19"] },
-        { "title": "⚠ 缺口：没有任何 AppFeature state 消费 BreakpointControlling", "detail": "引擎里完整、MCP 可达、ProxyClient 也已暴露 arm/disarm/armed/pending/pendingStream/resume——但没有 state 和 view 用它。agent 可以攥着真实流量，而人类面板上什么都看不到、也放不掉。剩下的活是 UI，不是管线。", "nodes": ["proxy-client","app-feature","panel"], "edges": ["e45","e46","e47"] }
+        {
+          "title": "arm_breakpoint(match)",
+          "detail": "Breakpoint 复用 RuleMatch 的匹配语义（含 sourceApp / deviceIP 的来源限定，未归属流量 fail-closed）。断点刻意不持久化：被持有的交换攥着一条活连接，重启活不下来。",
+          "nodes": [
+            "ai-http",
+            "mcp-server",
+            "mcp-executor",
+            "mcp-tools",
+            "engine",
+            "breakpoint-store"
+          ],
+          "edges": [
+            "e35",
+            "e39",
+            "e41",
+            "e43",
+            "e32"
+          ]
+        },
+        {
+          "title": "命中的交换在最外层被拦下",
+          "detail": "BreakpointForwarder 把交换挂到一个 continuation 上。客户端此刻正在等待——一条真实连接被持有。",
+          "nodes": [
+            "breakpoint-fwd",
+            "breakpoint-store"
+          ],
+          "edges": [
+            "e13"
+          ]
+        },
+        {
+          "title": "Agent 取回：list_pending（轮询）或 wait_for_pending（阻塞）",
+          "detail": "阻塞版由 BreakpointStore.pendingStream() 喂，避免 agent 打轮询循环——M6 的核心动机就是让 agent 的每一轮更便宜。",
+          "nodes": [
+            "mcp-tools",
+            "breakpoint-store"
+          ],
+          "edges": [
+            "e41",
+            "e43"
+          ]
+        },
+        {
+          "title": "resume(edit | abort) 释放 continuation",
+          "detail": "edit 可改写请求后继续，abort 直接掐断。两者都记审计。",
+          "nodes": [
+            "mcp-tools",
+            "breakpoint-store",
+            "breakpoint-fwd"
+          ],
+          "edges": [
+            "e43",
+            "e13"
+          ]
+        },
+        {
+          "title": "交换沿原链继续",
+          "detail": "释放后照常经过规则层与上游转发——恢复的交换不会绕过规则。",
+          "nodes": [
+            "rule-fwd",
+            "nio-fwd",
+            "upstream"
+          ],
+          "edges": [
+            "e14",
+            "e17",
+            "e19"
+          ]
+        },
+        {
+          "title": "⚠ 缺口：没有任何 AppFeature state 消费 BreakpointControlling",
+          "detail": "引擎里完整、MCP 可达、ProxyClient 也已暴露 arm/disarm/armed/pending/pendingStream/resume——但没有 state 和 view 用它。agent 可以攥着真实流量，而人类面板上什么都看不到、也放不掉。剩下的活是 UI，不是管线。",
+          "nodes": [
+            "proxy-client",
+            "app-feature",
+            "panel"
+          ],
+          "edges": [
+            "e45",
+            "e46",
+            "e47"
+          ]
+        }
       ]
     },
     {
@@ -511,10 +1796,54 @@ tailwind.config = {
       "accent": "#fb7185",
       "desc": "只会说 stdio 的客户端的接入方式。桥本身零业务逻辑。",
       "steps": [
-        { "title": "客户端拉起 loom-mcp", "detail": "由 MCP 客户端负责启动进程，Loom app 不管。", "nodes": ["ai-stdio","bridge"], "edges": ["e36"] },
-        { "title": "读 handshake 拿 {token, port}", "detail": "~/Library/Application Support/com.loom/mcp-handshake.json，权限 0600。app 在启动时写入它实际绑定的端口（现在固定 9092）。", "nodes": ["bridge","handshake"], "edges": ["e37","e44"] },
-        { "title": "逐行 JSON-RPC 转发到 HTTP 端点", "detail": "带 Authorization: Bearer <token>。loopback 允许缺失 header，但一旦带了就必须匹配。", "nodes": ["bridge","mcp-server"], "edges": ["e38"] },
-        { "title": "之后与 HTTP 直连完全同一套工具面", "detail": "所有工具和状态都在 app 内，与捕获存储共享内存。", "nodes": ["mcp-executor","mcp-tools","engine"], "edges": ["e39","e41","e43"] }
+        {
+          "title": "客户端拉起 loom-mcp",
+          "detail": "由 MCP 客户端负责启动进程，Loom app 不管。",
+          "nodes": [
+            "ai-stdio",
+            "bridge"
+          ],
+          "edges": [
+            "e36"
+          ]
+        },
+        {
+          "title": "读 handshake 拿 {token, port}",
+          "detail": "~/Library/Application Support/com.loom/mcp-handshake.json，权限 0600。app 在启动时写入它实际绑定的端口（现在固定 9092）。",
+          "nodes": [
+            "bridge",
+            "handshake"
+          ],
+          "edges": [
+            "e37",
+            "e44"
+          ]
+        },
+        {
+          "title": "逐行 JSON-RPC 转发到 HTTP 端点",
+          "detail": "带 Authorization: Bearer <token>。loopback 允许缺失 header，但一旦带了就必须匹配。",
+          "nodes": [
+            "bridge",
+            "mcp-server"
+          ],
+          "edges": [
+            "e38"
+          ]
+        },
+        {
+          "title": "之后与 HTTP 直连完全同一套工具面",
+          "detail": "所有工具和状态都在 app 内，与捕获存储共享内存。",
+          "nodes": [
+            "mcp-executor",
+            "mcp-tools",
+            "engine"
+          ],
+          "edges": [
+            "e39",
+            "e41",
+            "e43"
+          ]
+        }
       ]
     },
     {
@@ -523,13 +1852,99 @@ tailwind.config = {
       "accent": "#34d399",
       "desc": "谁负责启动什么，以及为什么退出清理必须做完。",
       "steps": [
-        { "title": "单实例守卫（用 exit(0)，不是 NSApp.terminate）", "detail": "terminate 会跑退出清理，而那份系统代理属于*第一个*实例——在这里拆掉就会把活着的那个搞坏。重复实例必须在不碰任何共享系统状态的情况下死掉。", "nodes": ["app"], "edges": [] },
-        { "title": "MCP server 起在固定的 9092，并写下 handshake", "detail": "固定端口是为了让插件的 http MCP 配置无需发现即可连上。它与代理端口分开：9090 在 LAN 模式下绑 0.0.0.0，把可写、token 可选的控制面暴露给整个 Wi-Fi 是不可接受的。", "nodes": ["app","mcp-server","handshake"], "edges": ["e61","e44"] },
-        { "title": "菜单栏 label 的 .task 触发 AppFeature.task —— 唯一的启动者", "detail": "代理不由 LoomApp.init 启动，避免与 boot effect 抢绑定同一个端口。", "nodes": ["app","app-feature"], "edges": ["e62"] },
-        { "title": "Boot effects：启引擎 / 恢复 SSL scope / 同步系统代理 / 回灌 flows", "detail": "SSL scope 从 UserDefaults 恢复（否则每次启动 HTTPS 全盲）；系统代理真实状态用 SCDynamicStoreCopyProxies 校验，从而在崩溃遗留了 override 时如实显示出来。", "nodes": ["app-feature","proxy-client","engine","proxy-server","flow-persistence","flow-store"], "edges": ["e46","e45","e34","e26"] },
-        { "title": "订阅 flowStream（~100ms 批）与 auditStream", "detail": "批处理是硬性能要求：一条 action 对应一个 emission 会在高流量下压垮 reducer。", "nodes": ["flow-store","audit-store","proxy-client","app-feature"], "edges": ["e58","e60","e46"] },
-        { "title": "主窗口打开，面板呈现地址与状态", "detail": "这是个无 Dock 图标的菜单栏 app，所以启动时主动开窗，否则人类得先从面板里找。", "nodes": ["main-view","panel","inspector"], "edges": ["e48","e47","e50"] },
-        { "title": "退出：关系统代理、还原 pf、清空写队列", "detail": "不关代理的话，机器上每个 app 都会继续往一个死端口发流量。flushFlows() 保证最后几条写不被退出赛过去。崩溃会跳过这一步——下次启动的状态同步负责把它暴露出来。", "nodes": ["app","helper-client","system-proxy","flow-persistence"], "edges": ["e54","e25"] }
+        {
+          "title": "单实例守卫（用 exit(0)，不是 NSApp.terminate）",
+          "detail": "terminate 会跑退出清理，而那份系统代理属于*第一个*实例——在这里拆掉就会把活着的那个搞坏。重复实例必须在不碰任何共享系统状态的情况下死掉。",
+          "nodes": [
+            "app"
+          ],
+          "edges": []
+        },
+        {
+          "title": "MCP server 起在固定的 9092，并写下 handshake",
+          "detail": "固定端口是为了让插件的 http MCP 配置无需发现即可连上。它与代理端口分开：9090 在 LAN 模式下绑 0.0.0.0，把可写、token 可选的控制面暴露给整个 Wi-Fi 是不可接受的。",
+          "nodes": [
+            "app",
+            "mcp-server",
+            "handshake"
+          ],
+          "edges": [
+            "e61",
+            "e44"
+          ]
+        },
+        {
+          "title": "菜单栏 label 的 .task 触发 AppFeature.task —— 唯一的启动者",
+          "detail": "代理不由 LoomApp.init 启动，避免与 boot effect 抢绑定同一个端口。",
+          "nodes": [
+            "app",
+            "app-feature"
+          ],
+          "edges": [
+            "e62"
+          ]
+        },
+        {
+          "title": "Boot effects：启引擎 / 恢复 SSL scope / 同步系统代理 / 回灌 flows",
+          "detail": "SSL scope 从 UserDefaults 恢复（否则每次启动 HTTPS 全盲）；系统代理真实状态用 SCDynamicStoreCopyProxies 校验，从而在崩溃遗留了 override 时如实显示出来。",
+          "nodes": [
+            "app-feature",
+            "proxy-client",
+            "engine",
+            "proxy-server",
+            "flow-persistence",
+            "flow-store"
+          ],
+          "edges": [
+            "e46",
+            "e45",
+            "e34",
+            "e26"
+          ]
+        },
+        {
+          "title": "订阅 flowStream（~100ms 批）与 auditStream",
+          "detail": "批处理是硬性能要求：一条 action 对应一个 emission 会在高流量下压垮 reducer。",
+          "nodes": [
+            "flow-store",
+            "audit-store",
+            "proxy-client",
+            "app-feature"
+          ],
+          "edges": [
+            "e58",
+            "e60",
+            "e46"
+          ]
+        },
+        {
+          "title": "主窗口打开，面板呈现地址与状态",
+          "detail": "这是个无 Dock 图标的菜单栏 app，所以启动时主动开窗，否则人类得先从面板里找。",
+          "nodes": [
+            "main-view",
+            "panel",
+            "inspector"
+          ],
+          "edges": [
+            "e48",
+            "e47",
+            "e50"
+          ]
+        },
+        {
+          "title": "退出：关系统代理、还原 pf、清空写队列",
+          "detail": "不关代理的话，机器上每个 app 都会继续往一个死端口发流量。flushFlows() 保证最后几条写不被退出赛过去。崩溃会跳过这一步——下次启动的状态同步负责把它暴露出来。",
+          "nodes": [
+            "app",
+            "helper-client",
+            "system-proxy",
+            "flow-persistence"
+          ],
+          "edges": [
+            "e54",
+            "e25"
+          ]
+        }
       ]
     },
     {
@@ -538,11 +1953,70 @@ tailwind.config = {
       "accent": "#60a5fa",
       "desc": "把代理从 loopback 改绑 0.0.0.0，并用一个临时的 LAN provisioning 服务把 CA 和设置递给手机。",
       "steps": [
-        { "title": "人类点面板代理行上的手机按钮", "detail": "这是需要人类在场的动作之一：它把监听面从 loopback 扩到局域网。", "nodes": ["panel","app-feature"], "edges": ["e47"] },
-        { "title": "Effect 经 ProxyClient 落到 engine.startPhoneOnboarding", "detail": "reducer 不碰 NIO，只发 Effect。", "nodes": ["proxy-client","engine"], "edges": ["e46","e45"] },
-        { "title": "引擎改绑 0.0.0.0，起 provisioning 服务并生成二维码", "detail": "二维码在引擎侧用 CoreImage 生成（曾试过 mDNS 反查设备名，后来移除）。", "nodes": ["engine","proxy-server","provisioning"], "edges": ["e34","e57"] },
-        { "title": "手机扫码 → 装 CA → Wi-Fi 代理指向这台 Mac", "detail": "设备必须信任 Loom 的根 CA 才能被 MITM；否则只能看到盲隧道。", "nodes": ["client-lan","provisioning","ca"], "edges": ["e68","e6"] },
-        { "title": "设备流量被捕获，按 remoteIP + User-Agent 归属", "detail": "LAN 设备没有本地 pid，且它的远端端口可能和本机某个 socket 撞车，所以只能按 IP 归属、按 UA 判型。设备别名是纯 UI 概念。", "nodes": ["client-lan","proxy-server","flow-store","ua-parser"], "edges": ["e2","e28","e22"] }
+        {
+          "title": "人类点面板代理行上的手机按钮",
+          "detail": "这是需要人类在场的动作之一：它把监听面从 loopback 扩到局域网。",
+          "nodes": [
+            "panel",
+            "app-feature"
+          ],
+          "edges": [
+            "e47"
+          ]
+        },
+        {
+          "title": "Effect 经 ProxyClient 落到 engine.startPhoneOnboarding",
+          "detail": "reducer 不碰 NIO，只发 Effect。",
+          "nodes": [
+            "proxy-client",
+            "engine"
+          ],
+          "edges": [
+            "e46",
+            "e45"
+          ]
+        },
+        {
+          "title": "引擎改绑 0.0.0.0，起 provisioning 服务并生成二维码",
+          "detail": "二维码在引擎侧用 CoreImage 生成（曾试过 mDNS 反查设备名，后来移除）。",
+          "nodes": [
+            "engine",
+            "proxy-server",
+            "provisioning"
+          ],
+          "edges": [
+            "e34",
+            "e57"
+          ]
+        },
+        {
+          "title": "手机扫码 → 装 CA → Wi-Fi 代理指向这台 Mac",
+          "detail": "设备必须信任 Loom 的根 CA 才能被 MITM；否则只能看到盲隧道。",
+          "nodes": [
+            "client-lan",
+            "provisioning",
+            "ca"
+          ],
+          "edges": [
+            "e68",
+            "e6"
+          ]
+        },
+        {
+          "title": "设备流量被捕获，按 remoteIP + User-Agent 归属",
+          "detail": "LAN 设备没有本地 pid，且它的远端端口可能和本机某个 socket 撞车，所以只能按 IP 归属、按 UA 判型。设备别名是纯 UI 概念。",
+          "nodes": [
+            "client-lan",
+            "proxy-server",
+            "flow-store",
+            "ua-parser"
+          ],
+          "edges": [
+            "e2",
+            "e28",
+            "e22"
+          ]
+        }
       ]
     },
     {
@@ -551,8 +2025,32 @@ tailwind.config = {
       "accent": "#fbbf24",
       "desc": "三条路径，按现实可用性排序。没有信任就没有 HTTPS 捕获。",
       "steps": [
-        { "title": "一键（user domain）—— 今天就能用，不需要 helper、不需要 Developer ID", "detail": "面板 Install & Trust → SetupFeature.installAndTrustCATapped → CertificateTrust.installUserTrust：加进登录钥匙串并通过 Authorization Services 设置 user-domain 信任，一次登录密码提示。这是默认应该走的路。", "nodes": ["panel","setup-feature","ca","castore"], "edges": ["e47","e49","e7"] },
-        { "title": "手动（system domain）", "detail": "面板给出可复制的 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <path>；路径由 export_ca_certificate 提供。", "nodes": ["castore","mcp-tools"], "edges": ["e43"] }
+        {
+          "title": "一键（user domain）—— 今天就能用，不需要 helper、不需要 Developer ID",
+          "detail": "面板 Install & Trust → SetupFeature.installAndTrustCATapped → CertificateTrust.installUserTrust：加进登录钥匙串并通过 Authorization Services 设置 user-domain 信任，一次登录密码提示。这是默认应该走的路。",
+          "nodes": [
+            "panel",
+            "setup-feature",
+            "ca",
+            "castore"
+          ],
+          "edges": [
+            "e47",
+            "e49",
+            "e7"
+          ]
+        },
+        {
+          "title": "手动（system domain）",
+          "detail": "面板给出可复制的 sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <path>；路径由 export_ca_certificate 提供。",
+          "nodes": [
+            "castore",
+            "mcp-tools"
+          ],
+          "edges": [
+            "e43"
+          ]
+        }
       ]
     },
     {
@@ -561,11 +2059,64 @@ tailwind.config = {
       "accent": "#fb923c",
       "desc": "让机器上的流量真的流过 Loom。人类开关和 MCP 的 set_system_proxy 落在同一处。",
       "steps": [
-        { "title": "两个入口，一个落点", "detail": "面板开关，或 agent 调 set_system_proxy（写工具，记审计）。get_proxy_status.systemProxy 让 agent 能自己看出\"根本没人指向代理\"并修好它。", "nodes": ["panel","mcp-tools","setup-feature"], "edges": ["e47","e43","e49"] },
-        { "title": "SystemProxyApplier 逐 service 跑 networksetup", "detail": "管理员用户无需密码；非管理员回退到一次 osascript 提权提示。", "nodes": ["helper-client","system-proxy"], "edges": ["e53","e54"] },
-        { "title": "QUICBlocker 追加 pf anchor 丢弃出站 UDP 443", "detail": "浏览器默认走 HTTP/3 over QUIC，TCP 代理拦不到——不阻断的话浏览器整个绕过 Loom，只剩 TCP 的 h1/h2 应用流量。它复制 /etc/pf.conf 后追加 com.loom.quic anchor，从不覆写；还原时重载原始 ruleset。", "nodes": ["system-proxy"], "edges": [] },
-        { "title": "状态用 SCDynamicStoreCopyProxies 校验后同步进 UI", "detail": "不信自己刚写下去的值，读回真实系统状态。", "nodes": ["setup-feature","app-feature","panel"], "edges": ["e49","e47"] },
-        { "title": "退出时自动关闭；崩溃会遗留，下次启动暴露", "detail": "诚实优先于假装干净。", "nodes": ["app","system-proxy"], "edges": ["e54"] }
+        {
+          "title": "两个入口，一个落点",
+          "detail": "面板开关，或 agent 调 set_system_proxy（写工具，记审计）。get_proxy_status.systemProxy 让 agent 能自己看出\"根本没人指向代理\"并修好它。",
+          "nodes": [
+            "panel",
+            "mcp-tools",
+            "setup-feature"
+          ],
+          "edges": [
+            "e47",
+            "e43",
+            "e49"
+          ]
+        },
+        {
+          "title": "SystemProxyApplier 逐 service 跑 networksetup",
+          "detail": "管理员用户无需密码；非管理员回退到一次 osascript 提权提示。",
+          "nodes": [
+            "helper-client",
+            "system-proxy"
+          ],
+          "edges": [
+            "e53",
+            "e54"
+          ]
+        },
+        {
+          "title": "QUICBlocker 追加 pf anchor 丢弃出站 UDP 443",
+          "detail": "浏览器默认走 HTTP/3 over QUIC，TCP 代理拦不到——不阻断的话浏览器整个绕过 Loom，只剩 TCP 的 h1/h2 应用流量。它复制 /etc/pf.conf 后追加 com.loom.quic anchor，从不覆写；还原时重载原始 ruleset。",
+          "nodes": [
+            "system-proxy"
+          ],
+          "edges": []
+        },
+        {
+          "title": "状态用 SCDynamicStoreCopyProxies 校验后同步进 UI",
+          "detail": "不信自己刚写下去的值，读回真实系统状态。",
+          "nodes": [
+            "setup-feature",
+            "app-feature",
+            "panel"
+          ],
+          "edges": [
+            "e49",
+            "e47"
+          ]
+        },
+        {
+          "title": "退出时自动关闭；崩溃会遗留，下次启动暴露",
+          "detail": "诚实优先于假装干净。",
+          "nodes": [
+            "app",
+            "system-proxy"
+          ],
+          "edges": [
+            "e54"
+          ]
+        }
       ]
     },
     {
@@ -574,10 +2125,140 @@ tailwind.config = {
       "accent": "#94a3b8",
       "desc": "把捕获带出去，或把别人的捕获带进来。两个方向都是写工具语义下的审计对象。",
       "steps": [
-        { "title": "export_har(redact:) —— recentHydrated 从磁盘补齐", "detail": "不是只导出内存环里剩下的那些：读路径会 read-through 到 sqlite，否则导出会静默缺失。", "nodes": ["mcp-tools","flow-store","flow-persistence"], "edges": ["e59","e26"] },
-        { "title": "时序映射：ttfb → timings.wait，receive → timings.receive", "detail": "Loom 没测的阶段一律填 -1，而不是编一个数字。startedAt → firstByteAt → completedAt 让\"为什么慢\"是可回答的：ttfbMS 是服务端思考时间，receiveMS 是 body 传输。", "nodes": ["flow-store","shared-models"], "edges": ["e67"] },
-        { "title": "import_har 把外部 HAR 灌成 Flow", "detail": "灌进来的 flow 和捕获的走同一套模型，因此 diff / replay 对它们同样成立。", "nodes": ["mcp-tools","flow-store"], "edges": ["e59"] },
-        { "title": "两个方向都记审计", "detail": "export_har 和 import_har 都在 writeTools 集合里——导出会把真实流量搬离本机，这本身就是需要留痕的动作。", "nodes": ["mcp-executor","audit-store","audit-panel"], "edges": ["e42","e31","e52"] }
+        {
+          "title": "export_har(redact:) —— recentHydrated 从磁盘补齐",
+          "detail": "不是只导出内存环里剩下的那些：读路径会 read-through 到 sqlite，否则导出会静默缺失。",
+          "nodes": [
+            "mcp-tools",
+            "flow-store",
+            "flow-persistence"
+          ],
+          "edges": [
+            "e59",
+            "e26"
+          ]
+        },
+        {
+          "title": "时序映射：ttfb → timings.wait，receive → timings.receive",
+          "detail": "Loom 没测的阶段一律填 -1，而不是编一个数字。startedAt → firstByteAt → completedAt 让\"为什么慢\"是可回答的：ttfbMS 是服务端思考时间，receiveMS 是 body 传输。",
+          "nodes": [
+            "flow-store",
+            "shared-models"
+          ],
+          "edges": [
+            "e67"
+          ]
+        },
+        {
+          "title": "import_har 把外部 HAR 灌成 Flow",
+          "detail": "灌进来的 flow 和捕获的走同一套模型，因此 diff / replay 对它们同样成立。",
+          "nodes": [
+            "mcp-tools",
+            "flow-store"
+          ],
+          "edges": [
+            "e59"
+          ]
+        },
+        {
+          "title": "两个方向都记审计",
+          "detail": "export_har 和 import_har 都在 writeTools 集合里——导出会把真实流量搬离本机，这本身就是需要留痕的动作。",
+          "nodes": [
+            "mcp-executor",
+            "audit-store",
+            "audit-panel"
+          ],
+          "edges": [
+            "e42",
+            "e31",
+            "e52"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "socks",
+      "name": "SOCKS5 入口",
+      "accent": "#34d399",
+      "desc": "HTTP 口只能服务懂 HTTP_PROXY / 会发 CONNECT 的客户端。剩下那批走这里，而抓不抓得到由首包决定，不由端口决定。",
+      "steps": [
+        {
+          "title": "客户端连 :9091 并谈妥 SOCKS5",
+          "detail": "只认 ALL_PROXY 的 CLI、设置里只有 SOCKS 字段的 App，或者干脆是 SSH/MySQL。",
+          "nodes": [
+            "client-local",
+            "socks-server"
+          ],
+          "edges": [
+            "e69"
+          ]
+        },
+        {
+          "title": "嗅探首包决定怎么处理",
+          "detail": "像 HTTP 就按 HTTP 抓；像 TLS 且在 scope 内就 MITM；其余原样转发。服务端先说话的协议会等满 150ms 再判定 —— 只凭客户端字节分类会把它们锁死。",
+          "nodes": [
+            "socks-server",
+            "protocol-sniff"
+          ],
+          "edges": [
+            "e71"
+          ]
+        },
+        {
+          "title": "能读的进 FlowStore，不能读的进 TunneledHostLog",
+          "detail": "后者是关键：一次未读转发不产生 flow，不记下来就和「客户端没跑」无法区分。",
+          "nodes": [
+            "protocol-sniff",
+            "tunneled-host-log",
+            "flow-store"
+          ],
+          "edges": [
+            "e75"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reverse-proxy",
+      "name": "反向代理端点",
+      "accent": "#f472b6",
+      "desc": "给没法被指向任何代理的客户端留的口子。实测案例是 Node 的全局 fetch/undici —— 它直接无视 HTTP_PROXY。",
+      "steps": [
+        {
+          "title": "面板（或 agent 的 create_reverse_proxy）开一个本地端口顶替一个上游 origin",
+          "detail": "create 先绑定后持久化，绑不上就抛错 —— 调用方在等；开机时则逐个 fail-open，原因写进 ReverseProxyStatus.error，因为重启没人在等。",
+          "nodes": [
+            "panel",
+            "engine",
+            "reverse-proxy-server"
+          ],
+          "edges": [
+            "e77"
+          ]
+        },
+        {
+          "title": "客户端把 baseURL 改成那个本地端口",
+          "detail": "入站恒为明文 HTTP，即使上游是 https —— 所以不需要装 CA，也没有钥匙串那一步。刻意不提供 HTTPS 入站，那会把这一步加回来。",
+          "nodes": [
+            "client-local",
+            "reverse-proxy-server"
+          ],
+          "edges": [
+            "e77"
+          ]
+        },
+        {
+          "title": "走的还是 ProxyHandler，只是换了个模式",
+          "detail": "所以 body 流式、捕获、规则、断点、WebSocket 拼接在两个入口之间不会分叉。记录的 flow 写上游 URL，绝不写 127.0.0.1:port —— 否则 agent 按真实 host 写的规则会突然不匹配。",
+          "nodes": [
+            "reverse-proxy-server",
+            "proxy-handler",
+            "flow-store"
+          ],
+          "edges": [
+            "e78"
+          ]
+        }
       ]
     }
   ]

@@ -9,19 +9,23 @@
       "SwiftNIO",
       "Tuist",
       "SPM",
-      "Swift 6 (NIO modules Swift 5)"
+      "Swift 6 language mode (every target, test bundles included)"
     ],
     "ports": {
       "proxy": 9090,
-      "mcp": 9092
+      "socks": 9091,
+      "mcp": 9092,
+      "reverseProxies": "per endpoint, chosen at create time"
     },
     "invariants": [
       "One write path: the UI and the agent both act through ProxyEngine.shared.",
       "Dependency direction is one-way: App -> AppFeature -> ProxyClient -> ProxyCore -> SharedModels; MCPServer -> SharedModels.",
       "Every MCP write tool is audited at the MCPToolExecutor.call choke point.",
       "ProxyCapability makes the TCA mirror's parity with ProxyControlling a compile-time check.",
-      "Every in-memory collection is capped (flow ring 2000, audit 500) and truncation is surfaced, never silent.",
-      "Fail-open engine paths always log at error level through Log (subsystem com.loom)."
+      "Every in-memory collection is capped (flow ring 2000, audit 1000 in the engine / 500 in the UI list, favicons 512, per-host TLS contexts 512) and truncation is surfaced, never silent.",
+      "Fail-open engine paths always log at error level through Log (subsystem com.loom).",
+      "A human surface mirroring engine state re-reads it: every agent write is picked up off the audit stream (opt-out, coalesced), and what a human changes in another app is picked up when Loom is activated.",
+      "Capture strategy is decided by sniffing the first bytes (ProtocolSniff), never from the port number — CONNECT included."
     ]
   },
   "layers": [
@@ -586,13 +590,13 @@
     {
       "id": "helper-client",
       "label": "PrivilegedHelperClient",
-      "sub": "networksetup + osascript",
+      "sub": "helper XPC, or networksetup",
       "layer": "client",
       "x": 1176,
       "y": 762,
       "module": "PrivilegedHelperClient",
       "file": "Clients/PrivilegedHelperClient/Sources/PrivilegedHelperClient.swift",
-      "desc": "系统代理的 TCA 客户端：setSystemProxy / systemProxySnapshot(s) / restoreOrphanedQUICBlock。名字是历史遗留 —— 它曾经包着一个 root daemon 的 SMAppService + XPC 半边，那半边连同 daemon 已在 0.0.16 删除（ad-hoc 签名下永远加载不了，见 ROADMAP § M2）。现在它不需要任何调用点之外的特权。"
+      "desc": "系统代理的 TCA 客户端：setSystemProxy / systemProxySnapshot(s) / restoreOrphanedQUICBlock，外加 helper 的生命周期（helperState / installHelper / uninstallHelper）。两条路径一个入口：root helper 装好并批准时走它，否则直接 networksetup + 一次 osascript 提权。（此节点旧版写着 daemon 已在 0.0.16 删除、ad-hoc 签名下永不可加载 —— 那个判断被实测推翻，helper 已在 0.0.17 回归，见 docs/decisions/privileged-helper.md。）"
     },
     {
       "id": "system-proxy",
@@ -604,6 +608,72 @@
       "module": "PrivilegedHelperClient",
       "file": "Clients/PrivilegedHelperClient/Sources/SystemProxyApplier.swift",
       "desc": "Runs networksetup directly — admin users need no password, non-admin falls back to one osascript prompt. QUICBlocker appends a com.loom.quic pf anchor dropping outbound UDP 443, because browsers default to HTTP/3 and would otherwise bypass a TCP proxy entirely. It copies /etc/pf.conf and never overwrites; restore reloads the pristine ruleset."
+    },
+    {
+      "id": "socks-server",
+      "label": "SOCKSServer",
+      "sub": ":9091 · 第二个入口",
+      "layer": "ingress",
+      "x": 212,
+      "y": 106,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/SOCKSServer.swift",
+      "desc": "给 HTTP 口永远看不到的客户端：只认 ALL_PROXY 的工具、设置里只有 SOCKS 字段的 App、以及 SSH/SMTP/MySQL 这类非 HTTP 协议。fail-open —— 端口被占就不起，所以它的端口号推不出来，由 get_proxy_status.socksPort 报出。"
+    },
+    {
+      "id": "reverse-proxy-server",
+      "label": "ReverseProxyServer",
+      "sub": "本地端口 → 一个上游 origin",
+      "layer": "ingress",
+      "x": 400,
+      "y": 106,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ReverseProxyServer.swift",
+      "desc": "给根本没法指向代理的客户端（实测案例：Node 的全局 fetch/undici 直接无视 HTTP_PROXY）。入站恒为明文 HTTP 即使上游是 https，所以不需要 NODE_EXTRA_CA_CERTS。它是 ProxyHandler 的一个模式而不是第二个 handler，捕获/规则/断点/WebSocket 因此不会分叉。抓到的 flow 记的是上游 URL，绝不是 127.0.0.1:port。"
+    },
+    {
+      "id": "protocol-sniff",
+      "label": "TunnelSniffHandler + ProtocolSniff",
+      "sub": "看首包，不看端口",
+      "layer": "ingress",
+      "x": 400,
+      "y": 188,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/TunnelSniffHandler.swift",
+      "desc": "两个入口共用的一份分类逻辑，CONNECT 也走它。150ms 的嗅探超时是承重的：SSH/SMTP/IMAP/MySQL/PostgreSQL 是服务端先说话，只凭客户端字节分类会把它们锁死；只有这类连接付这个超时。"
+    },
+    {
+      "id": "tunneled-host-log",
+      "label": "TunneledHostLog",
+      "sub": "被放行而未解密的 origin",
+      "layer": "store",
+      "x": 24,
+      "y": 270,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/TunneledHostLog.swift",
+      "desc": "一次未读的转发不产生任何 flow，因此和「客户端压根没跑」长得一模一样 —— 这正是 set_ssl_scope 开个口子之后主机会进入的状态。按 host:port 聚合（上限 256，逐出计数不静默），带 TunnelReason 区分「差一步就能抓」和「改 scope 也没用」。读取时按当前 scope 过滤，人看 SSL Scope 卡片，agent 读 get_ssl_scope.tunneledHosts。"
+    },
+    {
+      "id": "client-cert-config",
+      "label": "ClientCertificateConfig",
+      "sub": "双向 TLS 身份",
+      "layer": "engine",
+      "x": 588,
+      "y": 516,
+      "module": "ProxyCore",
+      "file": "Engine/ProxyCore/Sources/ClientCertificateConfig.swift",
+      "desc": "PKCS#12 + 口令，按 host glob 生效。配了却加载不了时抛错而不是裸连；bundle 在写入时就校验（口令错在那一刻失败，不是几小时后）；审计里 pkcs12_base64 / passphrase 被抹掉。每个身份缓存一个 NIOSSLContext，并在改动时丢弃 —— 否则改过的身份还在出示旧的。"
+    },
+    {
+      "id": "helper-daemon",
+      "label": "loom-helper (root LaunchDaemon)",
+      "sub": "SMAppService + XPC",
+      "layer": "system",
+      "x": 1364,
+      "y": 844,
+      "module": "loom-helper",
+      "file": "Helper/Daemon/Sources/main.swift",
+      "desc": "0.0.17 回归。存在的理由：开系统代理时顺带用 pf 挡 QUIC，而 /dev/pf 即使对管理员也要 root，于是每次开启都要一次密码。XPC 接口收的是参数不是脚本，host 也硬编码成 127.0.0.1，所以这个面无法用来改道整机流量。它从不承重：helper 缺席/未批准/不应答时 SystemProxyApplier 退回 networksetup + osascript。刻意不做 CA 信任 —— ad-hoc 签名下调用方校验退化成 identifier 单条，本机任何进程都能伪造。"
     }
   ],
   "edges": [
@@ -1074,6 +1144,104 @@
       "from": "provisioning",
       "to": "client-lan",
       "label": "CA + settings + QR",
+      "kind": "control"
+    },
+    {
+      "id": "e69",
+      "from": "client-local",
+      "to": "socks-server",
+      "label": "SOCKS5 :9091",
+      "kind": "traffic"
+    },
+    {
+      "id": "e70",
+      "from": "client-lan",
+      "to": "socks-server",
+      "label": "ALL_PROXY / SOCKS 字段",
+      "kind": "traffic"
+    },
+    {
+      "id": "e71",
+      "from": "socks-server",
+      "to": "protocol-sniff",
+      "label": "首包分类",
+      "kind": "traffic"
+    },
+    {
+      "id": "e72",
+      "from": "proxy-handler",
+      "to": "protocol-sniff",
+      "label": "CONNECT 也嗅探",
+      "kind": "traffic"
+    },
+    {
+      "id": "e73",
+      "from": "protocol-sniff",
+      "to": "tls-intercept",
+      "label": "看着像 TLS 且在 scope 内",
+      "kind": "traffic"
+    },
+    {
+      "id": "e74",
+      "from": "protocol-sniff",
+      "to": "connect-tunnel",
+      "label": "其余一律原样转发",
+      "kind": "traffic"
+    },
+    {
+      "id": "e75",
+      "from": "protocol-sniff",
+      "to": "tunneled-host-log",
+      "label": "记下放行原因",
+      "kind": "data"
+    },
+    {
+      "id": "e76",
+      "from": "client-local",
+      "to": "reverse-proxy-server",
+      "label": "指向本地端口",
+      "kind": "traffic"
+    },
+    {
+      "id": "e77",
+      "from": "reverse-proxy-server",
+      "to": "proxy-handler",
+      "label": "同一个 handler 的另一个模式",
+      "kind": "traffic"
+    },
+    {
+      "id": "e78",
+      "from": "client-cert-config",
+      "to": "nio-fwd",
+      "label": "上游握手出示身份",
+      "kind": "control"
+    },
+    {
+      "id": "e79",
+      "from": "engine",
+      "to": "client-cert-config",
+      "label": "set/delete_client_certificate",
+      "kind": "own"
+    },
+    {
+      "id": "e80",
+      "from": "engine",
+      "to": "tunneled-host-log",
+      "label": "get_ssl_scope.tunneledHosts",
+      "kind": "own"
+    },
+    {
+      "id": "e81",
+      "from": "helper-client",
+      "to": "helper-daemon",
+      "label": "XPC（装好并批准时）",
+      "kind": "control"
+    },
+    {
+      "id": "e82",
+      "from": "helper-daemon",
+      "to": "system-proxy",
+      "label": "networksetup + pfctl，以 root",
       "kind": "control"
     }
   ],
@@ -1851,6 +2019,91 @@
             "e42",
             "e31",
             "e52"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "socks",
+      "name": "SOCKS5 入口",
+      "accent": "#34d399",
+      "desc": "HTTP 口只能服务懂 HTTP_PROXY / 会发 CONNECT 的客户端。剩下那批走这里，而抓不抓得到由首包决定，不由端口决定。",
+      "steps": [
+        {
+          "title": "客户端连 :9091 并谈妥 SOCKS5",
+          "detail": "只认 ALL_PROXY 的 CLI、设置里只有 SOCKS 字段的 App，或者干脆是 SSH/MySQL。",
+          "nodes": [
+            "client-local",
+            "socks-server"
+          ],
+          "edges": [
+            "e69"
+          ]
+        },
+        {
+          "title": "嗅探首包决定怎么处理",
+          "detail": "像 HTTP 就按 HTTP 抓；像 TLS 且在 scope 内就 MITM；其余原样转发。服务端先说话的协议会等满 150ms 再判定 —— 只凭客户端字节分类会把它们锁死。",
+          "nodes": [
+            "socks-server",
+            "protocol-sniff"
+          ],
+          "edges": [
+            "e71"
+          ]
+        },
+        {
+          "title": "能读的进 FlowStore，不能读的进 TunneledHostLog",
+          "detail": "后者是关键：一次未读转发不产生 flow，不记下来就和「客户端没跑」无法区分。",
+          "nodes": [
+            "protocol-sniff",
+            "tunneled-host-log",
+            "flow-store"
+          ],
+          "edges": [
+            "e75"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "reverse-proxy",
+      "name": "反向代理端点",
+      "accent": "#f472b6",
+      "desc": "给没法被指向任何代理的客户端留的口子。实测案例是 Node 的全局 fetch/undici —— 它直接无视 HTTP_PROXY。",
+      "steps": [
+        {
+          "title": "面板（或 agent 的 create_reverse_proxy）开一个本地端口顶替一个上游 origin",
+          "detail": "create 先绑定后持久化，绑不上就抛错 —— 调用方在等；开机时则逐个 fail-open，原因写进 ReverseProxyStatus.error，因为重启没人在等。",
+          "nodes": [
+            "panel",
+            "engine",
+            "reverse-proxy-server"
+          ],
+          "edges": [
+            "e77"
+          ]
+        },
+        {
+          "title": "客户端把 baseURL 改成那个本地端口",
+          "detail": "入站恒为明文 HTTP，即使上游是 https —— 所以不需要装 CA，也没有钥匙串那一步。刻意不提供 HTTPS 入站，那会把这一步加回来。",
+          "nodes": [
+            "client-local",
+            "reverse-proxy-server"
+          ],
+          "edges": [
+            "e77"
+          ]
+        },
+        {
+          "title": "走的还是 ProxyHandler，只是换了个模式",
+          "detail": "所以 body 流式、捕获、规则、断点、WebSocket 拼接在两个入口之间不会分叉。记录的 flow 写上游 URL，绝不写 127.0.0.1:port —— 否则 agent 按真实 host 写的规则会突然不匹配。",
+          "nodes": [
+            "reverse-proxy-server",
+            "proxy-handler",
+            "flow-store"
+          ],
+          "edges": [
+            "e78"
           ]
         }
       ]
