@@ -244,7 +244,9 @@ App → AppFeature → ProxyClient → ProxyCore → SharedModels
 
 Features never depend on each other (M1 keeps a single `AppFeature`; split later). Engine modules never depend on TCA.
 
-[`docs/architecture/`](docs/architecture/) holds a map of this graph — nodes/edges/flows as JSON, each node naming its module and file. It is a **hand-authored snapshot, not generated from the code**: useful for orientation, but where it and the code disagree the code is right. It carried a rendered HTML page of the same data too; that copy is gone, because two hand-edited copies of one graph drift in a way no reader can catch (the HTML still claimed macOS 14 after the floor moved to 15, and asserted the privileged helper could never load after that had been measured false). Adding a renderer back means generating it from this file, never a second thing to edit.
+There is **no separate map of this graph, deliberately.** `docs/architecture/` held one — nodes, edges and flows, hand-authored, in JSON plus a rendered HTML copy of the same data. Both are gone. It cost what a hand-authored snapshot always costs and paid nothing back: it stopped at M8 (no SOCKS listener, no reverse-proxy endpoints, no mutual TLS, no privileged helper), the two copies drifted from each other, and it went on asserting that the privileged helper could never load for two releases after that was measured false — with a citation, which is worse than a blank. A newcomer reading it would have been misled about four subsystems and one decision.
+
+So the graph above, the § Key Modules table and each module's own `CLAUDE.md` are the map. Anything reintroduced here must be **generated from the code**, never a second thing to edit.
 
 ### Library reuse (SPM)
 
