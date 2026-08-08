@@ -62,12 +62,9 @@ check "NSLock is gone from the repo" \
       bash -c '! grep -rn "= NSLock()" --include="*.swift" App Clients Engine Features Helper SharedModels Tools'
 check "the custom SF Symbols still resolve"        python3 Tools/symbol-template/check.py
 
-# The architecture map used to ship twice — as JSON and embedded in a rendered HTML
-# page — and a check here compared the copies, because they had already drifted (the
-# HTML still said macOS 14+ after the floor moved to 15). The page is gone, so the
-# check is too: one copy cannot disagree with itself.
-check "the architecture map is valid JSON" python3 -c '
-import json; json.load(open("docs/architecture/loom-architecture.json"))'
+# There was a check here comparing the architecture map's two copies, then one
+# validating the single copy that survived. The map itself is gone now (AGENTS.md
+# § Layering says why), so there is nothing left to check.
 
 # ProxyCore's warning-free claim. `appintentsmetadataprocessor` prints its own
 # `warning:` lines on every build and they are not the compiler's — grepping the raw
