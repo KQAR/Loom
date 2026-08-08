@@ -14,7 +14,19 @@ import LoomSharedModels
 /// demuxed, forwarded, and captured — proving the ALPN branch + h2→h1 stream path.
 @Suite("HTTP/2 interception", .timeLimit(.minutes(1)))
 struct HTTP2InterceptionTests {
+    /// Instrumented for the same reason the upload test below is, and after the same
+    /// mistake was made twice: this test timed out on CI at the suite's one-minute
+    /// limit with **no information at all**, so every red run could only be answered
+    /// with a re-run. One cause was found and fixed (test bodies blocking the
+    /// cooperative pool — see `EngineTeardown.swift`), and the timeout outlived it,
+    /// which is exactly the situation an uninstrumented deadline cannot report on.
+    ///
+    /// So it now fails at a bounded per-stage deadline with the stage it reached, the
+    /// negotiated ALPN, and a stack sample, rather than tripping the suite limit
+    /// silently. `Self.getTimeout` is deliberately under the suite's 60 s so this
+    /// report is what a reader sees first.
     @Test func h2RequestIsDecryptedForwardedAndCaptured() async throws {
+        let progress = H2Progress()
         let responseBody = #"{"via":"loom-h2"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
@@ -23,6 +35,7 @@ struct HTTP2InterceptionTests {
         await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
         let caURL = try await engine.exportCACertificate()
         let caPEM = try String(contentsOf: caURL)
+        progress.mark("engine listening on :\(port)")
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
@@ -40,13 +53,22 @@ struct HTTP2InterceptionTests {
             .channelInitializer { $0.pipeline.addHandler(sender) }
             .connect(host: "127.0.0.1", port: port).get()
         defer { client.close(promise: nil) }
+        progress.mark("TCP connected")
 
-        try await connected.futureResult.get()
+        try await awaitOrReport(connected.futureResult, stage: "CONNECT ack",
+                                timeout: Self.connectTimeout, progress: progress)
+        progress.mark("CONNECT acked")
         try await client.pipeline.removeHandler(sender).get()
 
         let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
+        // Marker first, then TLS, both at `.first` — TLS ends up at the head with the
+        // marker right behind it, which is where it sees `handshakeCompleted` and the
+        // ALPN that came with it. A leaf that negotiated `http/1.1` while this client
+        // speaks h2 would hang exactly like a stall, and read nothing like one.
+        try await client.pipeline.addHandler(HandshakeMarker(progress: progress), position: .first).get()
         try await client.pipeline.addHandler(tls, position: .first).get()
         let multiplexer = try await client.configureHTTP2Pipeline(mode: .client).get()
+        progress.mark("h2 pipeline configured")
 
         let responded = group.next().makePromise(of: H2Response.self)
         multiplexer.createStreamChannel(promise: nil) { stream in
@@ -55,7 +77,8 @@ struct HTTP2InterceptionTests {
             }
         }
 
-        let response = try await responded.futureResult.get()
+        let response = try await awaitOrReport(responded.futureResult, stage: "response end",
+                                               timeout: Self.getTimeout, progress: progress)
         #expect(response.status == 200)
         #expect(response.body == responseBody)
 
@@ -165,6 +188,9 @@ struct HTTP2InterceptionTests {
     /// sample), so the watchdog reports first. A passing run takes ~0.05 s.
     private static let connectTimeout: TimeInterval = 8
     private static let uploadTimeout: TimeInterval = 25
+    /// Under the suite's 60 s limit on purpose: whichever fires first is what the
+    /// reader sees, and only one of them says anything.
+    private static let getTimeout: TimeInterval = 25
 }
 
 // MARK: - Stall diagnostics (issue #99)
