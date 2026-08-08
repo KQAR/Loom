@@ -98,15 +98,15 @@ final class NIOStreamingForwarderTests {
         let plaintext = "hello compressed world, hello compressed world"
         let deflateGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { shutdownBlocking(deflateGroup) }
-        let deflateServer = try ServerBootstrap(group: deflateGroup)
+        let deflateServer = try await ServerBootstrap(group: deflateGroup)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { ch in
                 ch.pipeline.configureHTTPServerPipeline().flatMap {
                     ch.pipeline.addHandler(DeflateResponder(plaintext: plaintext))
                 }
             }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? deflateServer.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { deflateServer.close(promise: nil) }
         let url = URL(string: "http://127.0.0.1:\(deflateServer.localAddress!.port!)/compressed")!
 
         let forwarder = NIOStreamingForwarder(group: group)
@@ -137,15 +137,15 @@ final class NIOStreamingForwarderTests {
         // arrive as distinct reads and prove the response streams (not buffers).
         let chunkGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { shutdownBlocking(chunkGroup) }
-        let chunkServer = try ServerBootstrap(group: chunkGroup)
+        let chunkServer = try await ServerBootstrap(group: chunkGroup)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { ch in
                 ch.pipeline.configureHTTPServerPipeline().flatMap {
                     ch.pipeline.addHandler(ChunkingResponder())
                 }
             }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? chunkServer.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { chunkServer.close(promise: nil) }
         let url = URL(string: "http://127.0.0.1:\(chunkServer.localAddress!.port!)/stream")!
 
         let forwarder = NIOStreamingForwarder(group: group)

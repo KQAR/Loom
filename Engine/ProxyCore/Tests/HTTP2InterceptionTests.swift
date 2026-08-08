@@ -27,10 +27,6 @@ struct HTTP2InterceptionTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
             shutdownBlocking(group)
-            // Blocking, not `Task { … }`: a detached teardown runs during the *next*
-            // test (see `EngineTeardown.swift`), and `shutdown()` rather than `stop()`
-            // so this engine's event-loop threads actually go away.
-            runBlockingVoid { await engine.shutdown() }
         }
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -40,17 +36,17 @@ struct HTTP2InterceptionTests {
 
         let connected = group.next().makePromise(of: Void.self)
         let sender = ConnectSender(connected: connected)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(sender) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
 
-        try connected.futureResult.wait()
-        try client.pipeline.removeHandler(sender).wait()
+        try await connected.futureResult.get()
+        try await client.pipeline.removeHandler(sender).get()
 
         let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
-        try client.pipeline.addHandler(tls, position: .first).wait()
-        let multiplexer = try client.configureHTTP2Pipeline(mode: .client).wait()
+        try await client.pipeline.addHandler(tls, position: .first).get()
+        let multiplexer = try await client.configureHTTP2Pipeline(mode: .client).get()
 
         let responded = group.next().makePromise(of: H2Response.self)
         multiplexer.createStreamChannel(promise: nil) { stream in
@@ -59,7 +55,7 @@ struct HTTP2InterceptionTests {
             }
         }
 
-        let response = try responded.futureResult.wait()
+        let response = try await responded.futureResult.get()
         #expect(response.status == 200)
         #expect(response.body == responseBody)
 
@@ -70,6 +66,10 @@ struct HTTP2InterceptionTests {
         #expect(flow.request.url.hasPrefix("https://"))
         #expect(flow.response?.statusCode == 200)
         #expect(forwarder.lastURL?.absoluteString == "https://example.test/h2/thing")
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
     /// An h2 POST body (DATA frames, no Content-Length) must stream through and be
@@ -101,10 +101,6 @@ struct HTTP2InterceptionTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
             shutdownBlocking(group)
-            // Blocking, not `Task { … }`: a detached teardown runs during the *next*
-            // test (see `EngineTeardown.swift`), and `shutdown()` rather than `stop()`
-            // so this engine's event-loop threads actually go away.
-            runBlockingVoid { await engine.shutdown() }
         }
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -117,7 +113,7 @@ struct HTTP2InterceptionTests {
         let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(sender) }
             .connect(host: "127.0.0.1", port: port).get()
-        defer { try? client.close().wait() }
+        defer { client.close(promise: nil) }
         progress.mark("TCP connected")
 
         try await awaitOrReport(connected.futureResult, stage: "CONNECT ack",
@@ -159,6 +155,10 @@ struct HTTP2InterceptionTests {
         })
         #expect(flow.request.method == "POST")
         #expect(flow.request.body == payload, "the captured h2 request body should match (200KB < cap)")
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
     /// Both comfortably inside the suite's 1-minute limit (with room for the stack

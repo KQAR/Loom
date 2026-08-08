@@ -61,7 +61,6 @@ struct CookieCrumbTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer {
             shutdownBlocking(group)
-            runBlockingVoid { await engine.shutdown() }
         }
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -71,17 +70,17 @@ struct CookieCrumbTests {
 
         let connected = group.next().makePromise(of: Void.self)
         let sender = CookieConnectSender(connected: connected)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(sender) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
 
-        try connected.futureResult.wait()
-        try client.pipeline.removeHandler(sender).wait()
+        try await connected.futureResult.get()
+        try await client.pipeline.removeHandler(sender).get()
 
         let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
-        try client.pipeline.addHandler(tls, position: .first).wait()
-        let multiplexer = try client.configureHTTP2Pipeline(mode: .client).wait()
+        try await client.pipeline.addHandler(tls, position: .first).get()
+        let multiplexer = try await client.configureHTTP2Pipeline(mode: .client).get()
 
         let responded = group.next().makePromise(of: Int.self)
         multiplexer.createStreamChannel(promise: nil) { stream in
@@ -89,7 +88,7 @@ struct CookieCrumbTests {
                 stream.pipeline.addHandler(CrumbedRequestHandler(promise: responded))
             }
         }
-        #expect(try responded.futureResult.wait() == 200)
+        #expect(try await responded.futureResult.get() == 200)
 
         let flow = try #require(await awaitFlow(from: engine) {
             $0.request.url.contains("example.test/needs-cookies") && $0.response != nil
@@ -99,6 +98,10 @@ struct CookieCrumbTests {
         #expect(sent.first?.value == "a=1; user_session=abc; z=9")
         // The captured flow must show what Loom actually sent, not the crumbs.
         #expect(flow.request.headers.filter { $0.name.lowercased() == "cookie" }.count == 1)
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 }
 
