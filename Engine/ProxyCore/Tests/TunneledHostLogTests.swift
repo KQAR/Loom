@@ -68,7 +68,7 @@ struct TunneledHostLogTests {
 
     // MARK: pending(_:under:)
 
-    @Test func aHostTheScopeNowDecrypts_stopsBeingOffered() {
+    @Test func aHostTheScopeNowDecrypts_stopsBeingOffered() throws {
         let entry = TunneledHost(
             host: "api.example.com", port: 443, firstSeen: Date(), lastSeen: Date(), reason: .notInScope
         )
@@ -78,7 +78,7 @@ struct TunneledHostLogTests {
         #expect(TunneledHostLog.pending([entry], under: scope).isEmpty)
     }
 
-    @Test func aHostNoScopeChangeFixes_staysListedEvenWhenInScope() {
+    @Test func aHostNoScopeChangeFixes_staysListedEvenWhenInScope() throws {
         let entry = TunneledHost(
             host: "ssh.example.com", port: 22, firstSeen: Date(), lastSeen: Date(), reason: .notTLSOrHTTP
         )
@@ -88,7 +88,7 @@ struct TunneledHostLogTests {
         #expect(TunneledHostLog.pending([entry], under: scope).count == 1)
     }
 
-    @Test func anExcludedHostStaysListed_becauseTheExclusionIsReversible() {
+    @Test func anExcludedHostStaysListed_becauseTheExclusionIsReversible() throws {
         let entry = TunneledHost(
             host: "dl.google.com", port: 443, firstSeen: Date(), lastSeen: Date(), reason: .excluded
         )
@@ -100,24 +100,22 @@ struct TunneledHostLogTests {
 
     /// The load-bearing case: an out-of-scope `CONNECT` used to leave nothing at all
     /// behind, which is byte-for-byte what an agent sees when the client never ran.
-    @Test func anOutOfScopeCONNECT_isRecordedWithItsReason() throws {
-        TunneledHostLog.shared.reset()
+    @Test func anOutOfScopeCONNECT_isRecordedWithItsReason() async throws {
         let engine = ProxyEngine(
             forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore()
         )
-        let port = try runBlocking { try await engine.start(port: 0) }
+        let port = try await engine.start(port: 0)
         // Interception on with nothing in scope: not the shipping default, but the
         // narrowest way to drive a pass-through, and the state this record explains.
-        runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: [])) }
-        defer { runBlockingVoid { await engine.shutdown() } }
+        await engine.setSSLScope(SSLScope(enabled: true, include: []))
 
         // A listener to CONNECT to, so the tunnel actually establishes.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { shutdownBlocking(group) }
-        let origin = try ServerBootstrap(group: group)
+        let origin = try await ServerBootstrap(group: group)
             .childChannelInitializer { _ in group.next().makeSucceededVoidFuture() }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? origin.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { origin.close(promise: nil) }
         let originPort = try #require(origin.localAddress?.port)
 
         let loop = group.next()
@@ -129,17 +127,21 @@ struct TunneledHostLogTests {
             request: "CONNECT 127.0.0.1:\(originPort) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
             acked: acked
         )
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(connect) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
-        try acked.futureResult.wait()
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
+        try await acked.futureResult.get()
 
-        let report = try runBlocking { await engine.tunneledHosts() }
+        let report = await engine.tunneledHosts()
         let entry = try #require(report.hosts.first { $0.host == "127.0.0.1" && $0.port == originPort })
         #expect(entry.reason == .notInScope, "distinguishes 'add it to the list' from 'can't be read'")
         #expect(entry.interceptable)
         #expect(entry.connections == 1)
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
     /// The attribution both entry points share. Deliberately unit-level: driving a
@@ -190,21 +192,26 @@ struct TunneledHostLogTests {
     /// `interceptHost` is one engine call rather than the read-modify-write an agent
     /// would otherwise do, because the human at the console is an independent writer
     /// of the same scope.
-    @Test func interceptHost_narrowsTheScopeAndClearsTheEntry() throws {
-        TunneledHostLog.shared.reset()
+    @Test func interceptHost_narrowsTheScopeAndClearsTheEntry() async throws {
         let engine = ProxyEngine(
             forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore()
         )
-        defer { runBlockingVoid { await engine.shutdown() } }
         TunneledHostLog.shared.record(host: "api.example.com", port: 443, reason: .notInScope)
 
-        let outcome = try runBlocking { await engine.interceptHost("api.example.com") }
+        let outcome = await engine.interceptHost("api.example.com")
         #expect(outcome.effective)
         #expect(outcome.enabledInterception, "the scope started disabled")
 
-        let scope = try runBlocking { await engine.sslScope() }
+        let scope = await engine.sslScope()
         #expect(scope.enabled)
         #expect(scope.include == ["api.example.com"])
-        #expect(try runBlocking { await engine.tunneledHosts() }.hosts.isEmpty)
+        // Scoped to this test's own host, never `hosts.isEmpty`: the log is
+        // process-wide and any suite driving a pass-through CONNECT beside this
+        // one writes to it, so global emptiness is a claim about the whole run.
+        #expect(await engine.tunneledHosts().hosts.contains { $0.host == "api.example.com" } == false)
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 }

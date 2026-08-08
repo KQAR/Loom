@@ -47,8 +47,8 @@ import LoomSharedModels
     @Test func eachAcceptedChunkPullsTheNextRead() async throws {
         let channel = EmbeddedChannel()
         let counter = ReadCounter()
-        try channel.pipeline.addHandler(counter).wait()
-        try channel.setOption(ChannelOptions.autoRead, value: false).wait()
+        try await channel.pipeline.addHandler(counter).get()
+        try await channel.setOption(ChannelOptions.autoRead, value: false).get()
 
         let bridge = RequestBodyBridge(capture: RequestBodyCapture())
         // The producer is built with `finishOnDeinit: false` (the engine finishes it
@@ -72,11 +72,11 @@ import LoomSharedModels
 
     /// A terminated consumer must stop the pump: reads after teardown would keep
     /// pulling bytes nobody is waiting for.
-    @Test func aTerminatedConsumerStopsTheReads() throws {
+    @Test func aTerminatedConsumerStopsTheReads() async throws {
         let channel = EmbeddedChannel()
         let counter = ReadCounter()
-        try channel.pipeline.addHandler(counter).wait()
-        try channel.setOption(ChannelOptions.autoRead, value: false).wait()
+        try await channel.pipeline.addHandler(counter).get()
+        try await channel.setOption(ChannelOptions.autoRead, value: false).get()
 
         let bridge = RequestBodyBridge(capture: RequestBodyCapture())
         defer { bridge.finish() }
@@ -100,11 +100,11 @@ import LoomSharedModels
     ///
     /// Pinned here because a counter that silently stops counting is worse than no
     /// counter — it reads as "we never asked", i.e. it would accuse Loom.
-    @Test func readsIssuedTracksTheActualReads() throws {
+    @Test func readsIssuedTracksTheActualReads() async throws {
         let channel = EmbeddedChannel()
         let counter = ReadCounter()
-        try channel.pipeline.addHandler(counter).wait()
-        try channel.setOption(ChannelOptions.autoRead, value: false).wait()
+        try await channel.pipeline.addHandler(counter).get()
+        try await channel.setOption(ChannelOptions.autoRead, value: false).get()
 
         let bridge = RequestBodyBridge(capture: RequestBodyCapture())
         defer { bridge.finish() }

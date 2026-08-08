@@ -57,7 +57,7 @@ struct WebSocketUpstreamTLSTests {
         let deadOrigin = "http://127.0.0.1:1/socket"
         let client = try await ClientBootstrap(group: group)
             .connect(host: "127.0.0.1", port: port).get()
-        defer { try? client.close().wait() }
+        defer { client.close(promise: nil) }
 
         var buffer = client.allocator.buffer(capacity: 256)
         buffer.writeString("""

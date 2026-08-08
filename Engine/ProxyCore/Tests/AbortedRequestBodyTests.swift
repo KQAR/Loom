@@ -72,7 +72,7 @@ struct AbortedRequestBodyTests {
                     }
             }
             .bind(host: "127.0.0.1", port: 0).get()
-        defer { try? server.close().wait() }
+        defer { server.close(promise: nil) }
 
         let client = try await ClientBootstrap(group: group)
             .connect(host: "127.0.0.1", port: server.localAddress!.port!).get()

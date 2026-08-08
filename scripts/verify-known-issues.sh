@@ -62,6 +62,21 @@ check "NSLock is gone from the repo" \
       bash -c '! grep -rn "= NSLock()" --include="*.swift" App Clients Engine Features Helper SharedModels Tools'
 check "the custom SF Symbols still resolve"        python3 Tools/symbol-template/check.py
 
+# Swift Testing runs every test body — sync or async — on the cooperative pool, so a
+# blocking wait there parks one of its threads while the engine work it waits for needs
+# another (`CapturedExchange.handle` forwards inside `Task {}`). That is the h2 suite's
+# CI timeout. `EngineTeardown.swift` § "Why there is no runBlocking here any more" has
+# the whole story; the compiler will not catch a relapse, because NIO's
+# `@available(*, noasync)` on `wait()` produced no diagnostic for any of the 109 call
+# sites this replaced. The two allowed uses wait on event-loop threads, never on a task.
+check "no test body blocks on a future" bash -c '
+! grep -rn "\.wait()" --include="*.swift" Engine/*/Tests Features/*/Tests Clients/*/Tests SharedModels/Tests \
+  | grep -vE ":[0-9]+: *(//|///|\*)" \
+  | grep -v "syncShutdownGracefully" \
+  | grep -vE "(bind|close)\(.*\)\.wait\(\)|\.close\(\)\.wait\(\)"'
+check "the blocking test bridges stay deleted" bash -c '
+! grep -rn "func runBlocking\|func awaitFlowBlocking" --include="*.swift" Engine Features Clients SharedModels'
+
 # There was a check here comparing the architecture map's two copies, then one
 # validating the single copy that survived. The map itself is gone now (AGENTS.md
 # § Layering says why), so there is nothing left to check.

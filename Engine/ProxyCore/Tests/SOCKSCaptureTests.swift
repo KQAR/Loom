@@ -14,13 +14,12 @@ import LoomSharedModels
 /// "did it capture" is the assertion that matters, not "did it connect".
 @Suite("SOCKS5 capture", .timeLimit(.minutes(1)))
 struct SOCKSCaptureTests {
-    @Test func capturesCleartextHTTPOverSOCKS() throws {
+    @Test func capturesCleartextHTTPOverSOCKS() async throws {
         let responseBody = #"{"ok":true,"via":"loom-socks"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
-        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
-        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+        _ = try await engine.start(port: 0, socksPort: 0)
+        let socksPort = try #require(await engine.status().socksPort)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { shutdownBlocking(group) }
@@ -30,24 +29,24 @@ struct SOCKSCaptureTests {
 
         let handshake = SOCKSHandshakeClient(host: "example.test", port: 80, ready: ready)
         let collector = ByteCollector(sentinel: responseBody, promise: responded)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(handshake) }
-            .connect(host: "127.0.0.1", port: socksPort).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: socksPort).get()
+        defer { client.close(promise: nil) }
 
-        try ready.futureResult.wait()
-        try client.pipeline.removeHandler(handshake).wait()
-        try client.pipeline.addHandler(collector).wait()
+        try await ready.futureResult.get()
+        try await client.pipeline.removeHandler(handshake).get()
+        try await client.pipeline.addHandler(collector).get()
 
         var request = client.allocator.buffer(capacity: 128)
         request.writeString("GET /api/thing HTTP/1.1\r\nHost: example.test\r\nX-Loom-Test: socks\r\nConnection: close\r\n\r\n")
         client.writeAndFlush(request, promise: nil)
 
-        let raw = try responded.futureResult.wait()
+        let raw = try await responded.futureResult.get()
         #expect(raw.contains("200"))
         #expect(raw.contains(responseBody))
 
-        let flow = try #require(awaitFlowBlocking(from: engine) {
+        let flow = try #require(await awaitFlow(from: engine) {
             $0.request.url.contains("example.test/api/thing")
         })
         #expect(flow.request.method == "GET")
@@ -55,18 +54,21 @@ struct SOCKSCaptureTests {
         #expect(flow.request.headers.contains { $0.name.lowercased() == "x-loom-test" && $0.value == "socks" })
         #expect(forwarder.lastURL?.absoluteString == "http://example.test/api/thing",
                 "the re-sent leg must stay cleartext too")
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func interceptsTLSOverSOCKS() throws {
+    @Test func interceptsTLSOverSOCKS() async throws {
         let responseBody = #"{"ok":true,"via":"loom-socks-mitm"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
-        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
-        let caPEM = try runBlocking { try await engine.exportCACertificate() }
+        _ = try await engine.start(port: 0, socksPort: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
+        let caPEM = try await engine.exportCACertificate()
         let caText = try String(contentsOf: caPEM)
-        defer { runBlockingVoid { await engine.shutdown() } }
-        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+        let socksPort = try #require(await engine.status().socksPort)
 
         var clientConfig = TLSConfiguration.makeClientConfiguration()
         clientConfig.trustRoots = .certificates([try NIOSSLCertificate(bytes: Array(caText.utf8), format: .pem)])
@@ -80,49 +82,52 @@ struct SOCKSCaptureTests {
 
         let handshake = SOCKSHandshakeClient(host: "example.test", port: 443, ready: ready)
         let collector = ByteCollector(sentinel: responseBody, promise: responded)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(handshake) }
-            .connect(host: "127.0.0.1", port: socksPort).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: socksPort).get()
+        defer { client.close(promise: nil) }
 
-        try ready.futureResult.wait()
-        try client.pipeline.removeHandler(handshake).wait()
+        try await ready.futureResult.get()
+        try await client.pipeline.removeHandler(handshake).get()
         let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
-        try client.pipeline.addHandler(tls, position: .first).wait()
-        try client.pipeline.addHandler(collector).wait()
+        try await client.pipeline.addHandler(tls, position: .first).get()
+        try await client.pipeline.addHandler(collector).get()
 
         var request = client.allocator.buffer(capacity: 128)
         request.writeString("GET /secure HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
         client.writeAndFlush(request, promise: nil)
 
-        let raw = try responded.futureResult.wait()
+        let raw = try await responded.futureResult.get()
         #expect(raw.contains(responseBody), "the client should get the decrypted body back")
 
         // The body is the part that lands last, so wait for it rather than for the
         // flow: this is the assertion that started failing once CI stopped caching
         // build products.
-        let flow = try #require(awaitFlowBlocking(from: engine) {
+        let flow = try #require(await awaitFlow(from: engine) {
             $0.request.url.contains("example.test/secure") && $0.response?.body != nil
         })
         #expect(flow.request.url == "https://example.test/secure")
         #expect(flow.response?.body == Data(responseBody.utf8))
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func relaysOpaqueTCPAndRecordsItAsATunnel() throws {
+    @Test func relaysOpaqueTCPAndRecordsItAsATunnel() async throws {
         // Not HTTP, not TLS — the case the HTTP proxy port can only blind-tunnel and
         // Loom would otherwise never see at all.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { shutdownBlocking(group) }
-        let echo = try ServerBootstrap(group: group)
+        let echo = try await ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(EchoHandler()) }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? echo.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { echo.close(promise: nil) }
         let echoPort = try #require(echo.localAddress?.port)
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
-        _ = try runBlocking { try await engine.start(port: 0, observeTunnels: true, socksPort: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
-        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+        _ = try await engine.start(port: 0, observeTunnels: true, socksPort: 0)
+        let socksPort = try #require(await engine.status().socksPort)
 
         let loop = group.next()
         let ready = loop.makePromise(of: Void.self)
@@ -130,14 +135,14 @@ struct SOCKSCaptureTests {
 
         let handshake = SOCKSHandshakeClient(host: "127.0.0.1", port: echoPort, ready: ready)
         let collector = ByteCollector(sentinel: "pong-marker", promise: echoed)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(handshake) }
-            .connect(host: "127.0.0.1", port: socksPort).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: socksPort).get()
+        defer { client.close(promise: nil) }
 
-        try ready.futureResult.wait()
-        try client.pipeline.removeHandler(handshake).wait()
-        try client.pipeline.addHandler(collector).wait()
+        try await ready.futureResult.get()
+        try await client.pipeline.removeHandler(handshake).get()
+        try await client.pipeline.addHandler(collector).get()
 
         // Leading NUL: nothing HTTP- or TLS-shaped, so it must be relayed verbatim.
         var payload = client.allocator.buffer(capacity: 32)
@@ -145,18 +150,22 @@ struct SOCKSCaptureTests {
         payload.writeString("pong-marker")
         client.writeAndFlush(payload, promise: nil)
 
-        let seen = try echoed.futureResult.wait()
+        let seen = try await echoed.futureResult.get()
         #expect(seen.contains("pong-marker"), "opaque bytes must round-trip untouched")
 
         #expect(
-            awaitFlowBlocking(from: engine) {
+            await awaitFlow(from: engine) {
                 $0.request.method == "CONNECT" && $0.request.url.contains("127.0.0.1:\(echoPort)")
             } != nil,
             "an observed tunnel should be visible as activity even though it wasn't read"
         )
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func relaysAServerFirstProtocolThatNeverSpeaksFirst() throws {
+    @Test func relaysAServerFirstProtocolThatNeverSpeaksFirst() async throws {
         // SSH, SMTP, IMAP, MySQL, PostgreSQL: the *server* sends a banner before the
         // client says a word. Classifying from the client's first bytes deadlocks
         // those outright — the client waits for a banner, and Loom hasn't opened the
@@ -166,16 +175,15 @@ struct SOCKSCaptureTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { shutdownBlocking(group) }
         let banner = "SSH-2.0-loom-test\r\n"
-        let server = try ServerBootstrap(group: group)
+        let server = try await ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(BannerHandler(banner: banner)) }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? server.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { server.close(promise: nil) }
         let bannerPort = try #require(server.localAddress?.port)
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
-        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
-        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+        _ = try await engine.start(port: 0, socksPort: 0)
+        let socksPort = try #require(await engine.status().socksPort)
 
         let loop = group.next()
         let ready = loop.makePromise(of: Void.self)
@@ -183,44 +191,51 @@ struct SOCKSCaptureTests {
 
         let handshake = SOCKSHandshakeClient(host: "127.0.0.1", port: bannerPort, ready: ready)
         let collector = ByteCollector(sentinel: "loom-test", promise: received)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(handshake) }
-            .connect(host: "127.0.0.1", port: socksPort).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: socksPort).get()
+        defer { client.close(promise: nil) }
 
-        try ready.futureResult.wait()
-        try client.pipeline.removeHandler(handshake).wait()
-        try client.pipeline.addHandler(collector).wait()
+        try await ready.futureResult.get()
+        try await client.pipeline.removeHandler(handshake).get()
+        try await client.pipeline.addHandler(collector).get()
 
         // Deliberately writes nothing. The banner has to arrive on the strength of the
         // sniff deadline alone.
-        #expect(try received.futureResult.wait().contains(banner.trimmingCharacters(in: .whitespacesAndNewlines)))
+        #expect(try await received.futureResult.get().contains(banner.trimmingCharacters(in: .whitespacesAndNewlines)))
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func refusesUDPAssociateInsteadOfHanging() throws {
+    @Test func refusesUDPAssociateInsteadOfHanging() async throws {
         // A QUIC-minded client asks for UDP. Loom is a TCP proxy: say so, so the
         // client falls back instead of waiting on a reply that never comes.
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
-        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
-        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+        _ = try await engine.start(port: 0, socksPort: 0)
+        let socksPort = try #require(await engine.status().socksPort)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { shutdownBlocking(group) }
         let refused = group.next().makePromise(of: [UInt8].self)
 
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(RawSOCKSProbe(
                 // Greeting, then UDP ASSOCIATE for 1.2.3.4:443.
                 request: [5, 0x03, 0x00, 0x01, 1, 2, 3, 4, 0x01, 0xBB],
                 reply: refused
             )) }
-            .connect(host: "127.0.0.1", port: socksPort).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: socksPort).get()
+        defer { client.close(promise: nil) }
 
-        let reply = try refused.futureResult.wait()
+        let reply = try await refused.futureResult.get()
         #expect(reply.count >= 2)
         #expect(reply[1] == SOCKS5.Reply.commandNotSupported.rawValue)
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
     /// The third answer to "why is nothing captured".
@@ -230,33 +245,32 @@ struct SOCKSCaptureTests {
     /// happened — the first byte was `G`, not a SOCKS5 greeting — but that only ever
     /// reached `os_log`, so over MCP an empty capture looked identical to a client
     /// that never ran. The refusal is now readable from `get_proxy_status`.
-    @Test func aRefusedConnectionIsVisibleInTheStatus() throws {
+    @Test func aRefusedConnectionIsVisibleInTheStatus() async throws {
         // No `reset()` and no exact count: `RefusalLog.shared` is process-wide and
         // this suite runs in parallel, so another test's refusal may land in the
         // same log. The assertion is about *this* refusal being findable, which is
         // the property under test; pinning a total would be pinning test ordering.
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
-        _ = try runBlocking { try await engine.start(port: 0, socksPort: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
-        let socksPort = try #require(try runBlocking { await engine.status().socksPort })
+        _ = try await engine.start(port: 0, socksPort: 0)
+        let socksPort = try #require(await engine.status().socksPort)
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { shutdownBlocking(group) }
         let closed = group.next().makePromise(of: [UInt8].self)
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer {
                 // "GET / HTTP/1.1" — an HTTP proxy request aimed at the SOCKS port.
                 $0.pipeline.addHandler(RawSOCKSProbe(request: Array("GET / HTTP/1.1\r\n\r\n".utf8), reply: closed))
             }
-            .connect(host: "127.0.0.1", port: socksPort).wait()
-        defer { try? client.close().wait() }
-        _ = try? closed.futureResult.wait()   // the server closes without replying
+            .connect(host: "127.0.0.1", port: socksPort).get()
+        defer { client.close(promise: nil) }
+        _ = try? await closed.futureResult.get()   // the server closes without replying
 
         // The status is polled: the refusal is recorded on the event loop handling
         // that connection, which races the assertion otherwise.
         var refusal: ConnectionRefusal?
         for _ in 0 ..< 100 where refusal == nil {
-            let status = try runBlocking { await engine.status() }
+            let status = await engine.status()
             refusal = status.recentRefusals.first { $0.reason.contains("0x47") }
             if refusal == nil { usleep(20_000) }
         }
@@ -266,6 +280,10 @@ struct SOCKSCaptureTests {
         // fixed by aiming the client at the other port.
         #expect(found.reason.contains("HTTP proxy port"), "got \(found.reason)")
         #expect(found.peer?.contains("127.0.0.1") == true)
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
     /// Bounded like every other in-memory collection in the engine, and honest

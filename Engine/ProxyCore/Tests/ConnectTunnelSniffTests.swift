@@ -20,16 +20,15 @@ import LoomSharedModels
 /// treated as TLS.
 @Suite("CONNECT tunnel sniffing", .timeLimit(.minutes(1)))
 struct ConnectTunnelSniffTests {
-    @Test func capturesACleartextRequestInsideAnInScopeCONNECT() throws {
+    @Test func capturesACleartextRequestInsideAnInScopeCONNECT() async throws {
         let responseBody = #"{"ok":true,"via":"loom-connect-cleartext"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
-        let port = try runBlocking { try await engine.start(port: 0) }
+        let port = try await engine.start(port: 0)
         // In scope — the configuration under which this used to break. Out of scope
         // it was always blind-tunnelled and worked, which is why the failure looked
         // like "HTTPS interception breaks my dev server".
-        runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
-        defer { runBlockingVoid { await engine.shutdown() } }
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
 
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         defer { shutdownBlocking(group) }
@@ -41,14 +40,14 @@ struct ConnectTunnelSniffTests {
             request: "CONNECT example.test:8765 HTTP/1.1\r\nHost: example.test:8765\r\n\r\n",
             acked: acked
         )
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(connect) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
 
-        try acked.futureResult.wait()
-        try client.pipeline.removeHandler(connect).wait()
-        try client.pipeline.addHandler(TextCollector(sentinel: responseBody, promise: responded)).wait()
+        try await acked.futureResult.get()
+        try await client.pipeline.removeHandler(connect).get()
+        try await client.pipeline.addHandler(TextCollector(sentinel: responseBody, promise: responded)).get()
 
         // Plain origin-form request, no TLS — the shape a browser sends inside a
         // `ws://` tunnel, and the shape the old code's TLS terminator swallowed.
@@ -60,10 +59,10 @@ struct ConnectTunnelSniffTests {
 
         // The client getting an answer at all is half the assertion: before the sniff,
         // this write vanished into a dead TLS handshake.
-        let raw = try responded.futureResult.wait()
+        let raw = try await responded.futureResult.get()
         #expect(raw.contains(responseBody))
 
-        let flow = try #require(awaitFlowBlocking(from: engine) {
+        let flow = try #require(await awaitFlow(from: engine) {
             $0.request.url.contains("example.test:8765/socket")
         })
         #expect(flow.request.url == "http://example.test:8765/socket",
@@ -74,25 +73,28 @@ struct ConnectTunnelSniffTests {
         )
         #expect(forwarder.lastURL?.absoluteString == "http://example.test:8765/socket",
                 "the re-sent leg must stay cleartext too")
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func capturesABrowserStyleWebSocketThroughCONNECT() throws {
+    @Test func capturesABrowserStyleWebSocketThroughCONNECT() async throws {
         // The reported symptom, end to end: a real upgrade against a real server,
         // reached through a CONNECT whose host is in the SSL scope. The upgrade splice
         // connects upstream itself (no stub can stand in for it), so this needs a
         // listener that speaks the handshake and echoes frames.
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { shutdownBlocking(group) }
-        let server = try ServerBootstrap(group: group)
+        let server = try await ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(WebSocketEchoServer()) }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? server.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { server.close(promise: nil) }
         let wsPort = try #require(server.localAddress?.port)
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
-        let port = try runBlocking { try await engine.start(port: 0) }
-        runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
-        defer { runBlockingVoid { await engine.shutdown() } }
+        let port = try await engine.start(port: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
 
         let loop = group.next()
         let acked = loop.makePromise(of: Void.self)
@@ -102,14 +104,14 @@ struct ConnectTunnelSniffTests {
             request: "CONNECT 127.0.0.1:\(wsPort) HTTP/1.1\r\nHost: 127.0.0.1:\(wsPort)\r\n\r\n",
             acked: acked
         )
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(connect) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
 
-        try acked.futureResult.wait()
-        try client.pipeline.removeHandler(connect).wait()
-        try client.pipeline.addHandler(WebSocketProbe(promise: echoed)).wait()
+        try await acked.futureResult.get()
+        try await client.pipeline.removeHandler(connect).get()
+        try await client.pipeline.addHandler(WebSocketProbe(promise: echoed)).get()
 
         var upgrade = client.allocator.buffer(capacity: 256)
         upgrade.writeString(
@@ -119,13 +121,13 @@ struct ConnectTunnelSniffTests {
         )
         client.writeAndFlush(upgrade, promise: nil)
 
-        #expect(try echoed.futureResult.wait().contains("loom-ws-marker"),
+        #expect(try await echoed.futureResult.get().contains("loom-ws-marker"),
                 "the frame must round-trip — a killed tunnel is the bug this pins")
 
         // The frame is part of the wait, not an assertion after it: frames land on the
         // event loop after the client already has its echo, so a flow that merely
         // exists proves nothing yet (the reason `awaitFlow` takes a condition at all).
-        let flow = try #require(awaitFlowBlocking(from: engine) { flow in
+        let flow = try #require(await awaitFlow(from: engine) { flow in
             flow.request.url.contains("127.0.0.1:\(wsPort)/ws")
                 && flow.webSocketMessages?.contains(where: { $0.textPayload?.contains("loom-ws-marker") == true }) == true
         }, "the frames are the capture; a flow with none is just a tunnel")
@@ -133,9 +135,13 @@ struct ConnectTunnelSniffTests {
         #expect(flow.request.url.hasPrefix("http://"),
                 "an unencrypted upgrade must not be recorded as https — got \(flow.request.url)")
         #expect(flow.webSocketMessages?.contains { $0.direction == .clientToServer } == true)
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func relaysAServerFirstTunnelInsteadOfWaitingForATLSHandshake() throws {
+    @Test func relaysAServerFirstTunnelInsteadOfWaitingForATLSHandshake() async throws {
         // SSH/SMTP/IMAP/MySQL through a CONNECT: the server speaks first, so there are
         // no client bytes to classify. Committing to TLS on the strength of the CONNECT
         // hung these forever — the client waited for a banner that Loom's TLS handler
@@ -143,16 +149,15 @@ struct ConnectTunnelSniffTests {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { shutdownBlocking(group) }
         let banner = "SSH-2.0-loom-connect-test\r\n"
-        let server = try ServerBootstrap(group: group)
+        let server = try await ServerBootstrap(group: group)
             .childChannelInitializer { $0.pipeline.addHandler(BannerOnConnect(banner: banner)) }
-            .bind(host: "127.0.0.1", port: 0).wait()
-        defer { try? server.close().wait() }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { server.close(promise: nil) }
         let bannerPort = try #require(server.localAddress?.port)
 
         let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
-        let port = try runBlocking { try await engine.start(port: 0) }
-        runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
-        defer { runBlockingVoid { await engine.shutdown() } }
+        let port = try await engine.start(port: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
 
         let loop = group.next()
         let acked = loop.makePromise(of: Void.self)
@@ -162,18 +167,22 @@ struct ConnectTunnelSniffTests {
             request: "CONNECT 127.0.0.1:\(bannerPort) HTTP/1.1\r\nHost: 127.0.0.1:\(bannerPort)\r\n\r\n",
             acked: acked
         )
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(connect) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
 
-        try acked.futureResult.wait()
-        try client.pipeline.removeHandler(connect).wait()
-        try client.pipeline.addHandler(TextCollector(sentinel: "loom-connect-test", promise: received)).wait()
+        try await acked.futureResult.get()
+        try await client.pipeline.removeHandler(connect).get()
+        try await client.pipeline.addHandler(TextCollector(sentinel: "loom-connect-test", promise: received)).get()
 
         // Deliberately writes nothing: the banner has to arrive on the strength of the
         // deadline alone.
-        #expect(try received.futureResult.wait().contains("SSH-2.0-loom-connect-test"))
+        #expect(try await received.futureResult.get().contains("SSH-2.0-loom-connect-test"))
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 }
 

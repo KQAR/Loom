@@ -14,16 +14,15 @@ import LoomSharedModels
 /// and answers via a stubbed upstream. Fully hermetic — no network, no origin.
 @Suite("HTTPS interception", .timeLimit(.minutes(1)))
 struct HTTPSInterceptionTests {
-    @Test func interceptsDecryptsAndCapturesHTTPS() throws {
+    @Test func interceptsDecryptsAndCapturesHTTPS() async throws {
         let responseBody = #"{"ok":true,"via":"loom-mitm"}"#
         let forwarder = StubForwarder(status: 200, body: Data(responseBody.utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
 
-        let port = try runBlocking { try await engine.start(port: 0) }
-        runBlockingVoid { await engine.setSSLScope(SSLScope(enabled: true, include: ["*"])) }
-        let caPEM = try runBlocking { try await engine.exportCACertificate() }
+        let port = try await engine.start(port: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
+        let caPEM = try await engine.exportCACertificate()
         let caText = try String(contentsOf: caPEM)
-        defer { runBlockingVoid { await engine.shutdown() } }
 
         // Client that trusts Loom's CA (as a machine would after install).
         var clientConfig = TLSConfiguration.makeClientConfiguration()
@@ -42,19 +41,19 @@ struct HTTPSInterceptionTests {
         )
         let collector = ResponseAccumulator(sentinel: responseBody, promise: responded)
 
-        let client = try ClientBootstrap(group: group)
+        let client = try await ClientBootstrap(group: group)
             .channelInitializer { $0.pipeline.addHandler(connectHandler) }
-            .connect(host: "127.0.0.1", port: port).wait()
-        defer { try? client.close().wait() }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
 
         // 1. Wait for the proxy's CONNECT ack.
-        try connected.futureResult.wait()
+        try await connected.futureResult.get()
 
         // 2. Upgrade the client to TLS (trusting the CA) + a raw response collector.
-        try client.pipeline.removeHandler(connectHandler).wait()
+        try await client.pipeline.removeHandler(connectHandler).get()
         let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
-        try client.pipeline.addHandler(tls, position: .first).wait()
-        try client.pipeline.addHandler(collector).wait()
+        try await client.pipeline.addHandler(tls, position: .first).get()
+        try await client.pipeline.addHandler(collector).get()
 
         // 3. Send the HTTPS request; NIOSSL buffers it until the handshake finishes.
         var request = client.allocator.buffer(capacity: 128)
@@ -62,12 +61,12 @@ struct HTTPSInterceptionTests {
         client.writeAndFlush(request, promise: nil)
 
         // 4. The decrypted response comes back through the MITM.
-        let raw = try responded.futureResult.wait()
+        let raw = try await responded.futureResult.get()
         #expect(raw.contains("200"), "client should receive a 200 status line")
         #expect(raw.contains(responseBody), "client should receive the decrypted body")
 
         // 5. The proxy captured the exchange in cleartext.
-        let flow = try #require(awaitFlowBlocking(from: engine) {
+        let flow = try #require(await awaitFlow(from: engine) {
             $0.request.url.contains("example.test/api/thing")
         })
         #expect(flow.request.method == "GET")
@@ -79,15 +78,18 @@ struct HTTPSInterceptionTests {
         #expect(flow.response?.statusCode == 200)
         #expect(flow.response?.body == Data(responseBody.utf8))
         #expect(forwarder.lastURL?.absoluteString == "https://example.test/api/thing")
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func outOfScopeHostIsNotIntercepted() throws {
+    @Test func outOfScopeHostIsNotIntercepted() async throws {
         // Interception off: a plain-HTTP request is still captured + forwarded
         // (sanity that the refactored forward path is intact).
         let forwarder = StubForwarder(status: 201, body: Data("created".utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
-        let port = try runBlocking { try await engine.start(port: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
+        let port = try await engine.start(port: 0)
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 15
@@ -99,23 +101,26 @@ struct HTTPSInterceptionTests {
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
 
-        let (data, response) = try runBlocking { try await session.data(from: URL(string: "http://plain.test/create")!) }
+        let (data, response) = try await session.data(from: URL(string: "http://plain.test/create")!)
         #expect((response as? HTTPURLResponse)?.statusCode == 201)
         #expect(data == Data("created".utf8))
 
-        let flows = try runBlocking { await engine.recentFlows(limit: 10) }
+        let flows = await engine.recentFlows(limit: 10)
         #expect(flows.contains { $0.request.url.contains("plain.test/create") })
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 
-    @Test func largeRequestBodyStreamsThroughProxyIntactAndIsCaptured() throws {
+    @Test func largeRequestBodyStreamsThroughProxyIntactAndIsCaptured() async throws {
         // A large POST body must reach the upstream byte-for-byte via the streaming
         // request path, and be captured (under the cap) on the flow. Exercises the
         // full chain: handler bridge → RuleApplyingForwarder streaming passthrough →
         // the stub's default forwardStream (which collects the streamed body).
         let forwarder = StubForwarder(status: 200, body: Data("ok".utf8))
         let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
-        let port = try runBlocking { try await engine.start(port: 0) }
-        defer { runBlockingVoid { await engine.shutdown() } }
+        let port = try await engine.start(port: 0)
 
         // ~2 MB with a non-repeating pattern so a truncation/reorder bug can't hide.
         var payload = Data(count: 2_000_000)
@@ -137,17 +142,21 @@ struct HTTPSInterceptionTests {
         // Bound to a `let` before the bridge: the closure is `@Sendable`, and a captured
         // `var` is a shared mutable box regardless of whether anything writes to it.
         let outgoing = request
-        let (data, response) = try runBlocking { try await session.data(for: outgoing) }
+        let (data, response) = try await session.data(for: outgoing)
         #expect((response as? HTTPURLResponse)?.statusCode == 200)
         #expect(data == Data("ok".utf8))
 
         #expect(forwarder.lastBody == payload, "upstream must receive the full body byte-for-byte")
 
-        let flow = try #require(awaitFlowBlocking(from: engine) {
+        let flow = try #require(await awaitFlow(from: engine) {
             $0.request.url.contains("plain.test/upload") && $0.request.body != nil
         })
         #expect(flow.request.method == "POST")
         #expect(flow.request.body == payload, "the captured request body should match (2MB < cap)")
+        // Terminal, at the end of the body rather than in a `defer`, for the
+        // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
+        // blocking bridge that let it try parks a cooperative-pool thread.
+        await engine.stopForTest()
     }
 }
 

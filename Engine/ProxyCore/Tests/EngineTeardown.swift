@@ -43,47 +43,39 @@ extension ProxyEngine {
     }
 }
 
-/// Run an async body from a **synchronous** test and wait for its result.
-///
-/// For the suites whose tests are synchronous (they drive raw NIO clients and block on
-/// futures), where `await` isn't available at all — including inside a `defer`. Blocking
-/// here is safe because the body runs on the cooperative pool, not on this thread.
-///
-/// This is the one copy. There used to be four: this file's `runBlockingVoid` plus three
-/// private pairs in `ConnectTunnelSniffTests`, `SOCKSCaptureTests` and
-/// `HTTPSInterceptionTests`, each with its own near-identical result box. The note here
-/// used to say "a third copy is where a pattern starts to rot" while tolerating exactly
-/// that — and the rot showed up on schedule: the Swift 6 migration had to add `@Sendable`
-/// to the same closure parameter in three separate places, and one of the boxes had
-/// meanwhile grown a private `Result` extension the others didn't have.
-func runBlocking<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) throws -> T {
-    // `Mutex` rather than an `@unchecked Sendable` box: the semaphore does order the
-    // write before the read, but that is an argument a reader has to reconstruct, and
-    // the lock costs nothing on a path that is already parking a thread.
-    let box = Mutex<Result<T, Error>?>(nil)
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        // Resolved outside `withLock` — awaiting while holding it is the one thing
-        // `Mutex` forbids, and rightly.
-        let result: Result<T, Error>
-        do { result = .success(try await body()) } catch { result = .failure(error) }
-        box.withLock { $0 = result }
-        semaphore.signal()
-    }
-    semaphore.wait()
-    // Force-unwrapped deliberately: the semaphore was signalled, so the value is there.
-    // A nil here would be a bug in this function, not in the caller's test.
-    return try box.withLock { $0! }.get()
-}
-
-/// The `Void` case — `runBlocking` with nothing to carry back, which is what a `defer`
-/// wants. Kept separate rather than making callers write `_ = runBlocking { … }`,
-/// because teardown sites read better without the discard.
-func runBlockingVoid(_ body: @escaping @Sendable () async -> Void) {
-    let semaphore = DispatchSemaphore(value: 0)
-    Task { await body(); semaphore.signal() }
-    semaphore.wait()
-}
+// MARK: - Why there is no `runBlocking` here any more
+//
+// This file used to carry `runBlocking` / `runBlockingVoid` / `awaitFlowBlocking`:
+// `Task { await body() }` plus `semaphore.wait()`, so that a *synchronous* test could
+// drive async engine code. Their doc comment said blocking was "safe because the body
+// runs on the cooperative pool, not on this thread". **That reasoning was wrong, and it
+// cost the h2 suite's intermittent CI timeout.**
+//
+// Swift Testing runs every test body — `async` or not — as a task, i.e. *on* the
+// cooperative pool. A sample of the hung process shows it plainly: a
+// `com.apple.root.user-initiated-qos.cooperative` thread parked in `semaphore_wait_trap`
+// inside `runBlocking`, called from a synchronous test body. So the wait blocks a
+// cooperative thread, while the work it waits for needs one — `CapturedExchange.handle`
+// does its forwarding and its capture inside `Task { … }`. Pool exhausted, deadlock.
+//
+// It only ever bit CI because the pool is as wide as the machine has cores: 12 here,
+// 3–4 on `macos-latest`, with suites running in parallel. Reproduce it deterministically
+// on any machine with
+//
+//     TEST_RUNNER_LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 xcodebuild test …
+//
+// which pins the pool to one thread. Before this change the h2 suite hung there for
+// >10 minutes; after it, all of ProxyCoreTests passes in ~5 seconds.
+//
+// So: **a test body may not block waiting on engine work.** Test bodies are `async`,
+// futures are awaited with `get()` (which is what NIO's `@available(*, noasync)` on
+// `wait()` has been saying all along), and the engine is stopped with `stopForTest()`
+// at the end of the body. The bridges are deleted rather than documented, because a
+// function that cannot be called is a stronger rule than a comment.
+//
+// `shutdownBlocking` below is the one exception, and the difference is what it waits
+// *for*: `syncShutdownGracefully()` is completed by the group's own event-loop threads,
+// which never need the cooperative pool, so there is no cycle to close.
 
 /// Wait — bounded — for a captured flow that satisfies `condition`.
 ///
@@ -113,30 +105,6 @@ func awaitFlow(
         try? await Task.sleep(nanoseconds: 10_000_000)
     } while Date() < deadline
     return nil
-}
-
-/// The same wait for the synchronous suites — they drive raw NIO clients and block on
-/// futures, so `await` isn't available at the call site. Blocking here is safe for the
-/// reason `runBlockingVoid` gives: the body runs on the cooperative pool, not here.
-func awaitFlowBlocking(
-    from engine: ProxyEngine,
-    timeout: TimeInterval = 5,
-    where condition: @escaping @Sendable (Flow) -> Bool
-) -> Flow? {
-    let box = FlowBox()
-    let semaphore = DispatchSemaphore(value: 0)
-    Task {
-        box.value = await awaitFlow(from: engine, timeout: timeout, where: condition)
-        semaphore.signal()
-    }
-    semaphore.wait()
-    return box.value
-}
-
-/// Carries one flow across the semaphore. `@unchecked Sendable` because the write and
-/// the read are ordered by that semaphore, which the compiler can't see.
-private final class FlowBox: @unchecked Sendable {
-    var value: Flow?
 }
 
 /// Shut a test-local event-loop group down, blocking until its threads are gone.
