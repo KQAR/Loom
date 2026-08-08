@@ -244,7 +244,7 @@ App → AppFeature → ProxyClient → ProxyCore → SharedModels
 
 Features never depend on each other (M1 keeps a single `AppFeature`; split later). Engine modules never depend on TCA.
 
-[`docs/architecture/`](docs/architecture/) holds an interactive map of this graph — nodes/edges/flows as a self-contained HTML page, plus the same data as JSON for an agent. It is a **hand-authored snapshot, not generated from the code**: useful for orientation, but where it and the code disagree the code is right.
+[`docs/architecture/`](docs/architecture/) holds a map of this graph — nodes/edges/flows as JSON, each node naming its module and file. It is a **hand-authored snapshot, not generated from the code**: useful for orientation, but where it and the code disagree the code is right. It carried a rendered HTML page of the same data too; that copy is gone, because two hand-edited copies of one graph drift in a way no reader can catch (the HTML still claimed macOS 14 after the floor moved to 15, and asserted the privileged helper could never load after that had been measured false). Adding a renderer back means generating it from this file, never a second thing to edit.
 
 ### Library reuse (SPM)
 
