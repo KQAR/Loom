@@ -7,6 +7,16 @@
 (重放、规则),不只是只读查询。Agent 由此闭合调试环(抓包 → 改写 → 重放 → 对比),
 你则从菜单栏面板监督。
 
+## 安装 App
+
+Loom 的工具由运行中的 App 提供,下面的插件只负责把 Agent 指向它。从
+[最新 release](https://github.com/KQAR/Loom/releases/latest) 下载 `Loom.dmg`,
+或按下文自行构建。
+
+> **首次启动需要右键 → 打开。** Release 是 ad-hoc 签名,没有 Developer ID 证书,
+> 所以直接双击会被 Gatekeeper 拦下。这是既定选择而非缺陷:更新的真实性由 Sparkle
+> 的 EdDSA 签名保证。之后启动一切照常。
+
 ## 安装插件(Claude Code)
 
 Loom 以 Claude Code 插件形式分发,连接到运行中的 App 的 MCP 服务。
