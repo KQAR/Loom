@@ -102,11 +102,32 @@ import Testing
         #expect(s.droppedFlowCount == 0)
     }
 
+    /// Filling the window must stay linear.
+    ///
+    /// `flows` is a stored property of an `@ObservableState` value, and writing through
+    /// it costs work proportional to what it holds — measured at this cap, 690 µs per
+    /// insert against 2.6 µs into a plain container. Mutating it once per flow made
+    /// filling the window quadratic: 14 s, where building on a local copy and assigning
+    /// once is 90 ms. The bound here is deliberately loose (a second, against a
+    /// measured 0.09) — this is a guard against the shape coming back, not a benchmark,
+    /// and it must not fail because CI is busy.
+    @Test func fillingTheWindowIsLinear() {
+        let flows = (0 ..< AppFeature.State.displayCap).map { _ in Fixtures.flow() }
+        var state = AppFeature.State()
+        let start = Date()
+        state.recordFlows(flows)
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(state.flows.count == AppFeature.State.displayCap)
+        #expect(elapsed < 1.0, "filling the window took \(elapsed)s — the per-flow write through observed state is back")
+    }
+
     @Test func recordFlow_overCap_dropsOldestAndCounts() {
         var s = AppFeature.State()
         let cap = AppFeature.State.displayCap
         let flows = (0 ..< (cap + 3)).map { _ in Fixtures.flow() }
-        flows.forEach { s.recordFlow($0) }
+        // Batched: per-flow recording trims the cap on every call, which is O(cap) each
+        // and quadratic at this size (see `AppFeature.State.recordFlow`).
+        s.recordFlows(flows)
 
         #expect(s.flows.count == cap, "held to the cap")
         #expect(s.droppedFlowCount == 3, "the 3 oldest were dropped")
@@ -131,7 +152,7 @@ import Testing
         s.recordFlow(first)
         s.selectedFlowID = first.id
         // Push exactly past the cap so `first` (the oldest) is evicted.
-        (0 ..< AppFeature.State.displayCap).forEach { _ in s.recordFlow(Fixtures.flow()) }
+        s.recordFlows((0 ..< AppFeature.State.displayCap).map { _ in Fixtures.flow() })
         #expect(s.flows[id: first.id] == nil)
         #expect(s.selectedFlowID == nil, "a dropped selection must not dangle")
     }

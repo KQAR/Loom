@@ -40,7 +40,26 @@ public struct AppFeature: Sendable {
         /// Most flows the window keeps in memory this session; older ones are
         /// dropped oldest-first (the engine ring is bounded the same way, so the
         /// list would never surface them anyway). Matches `FlowStore.capacity`.
-        public static let displayCap = 2000
+        /// Rows the window addresses.
+        ///
+        /// Raised from 2 000 to match what the store actually retains: the durable store
+        /// keeps 20 000 exchanges and every one of them is searchable, diffable and
+        /// replayable, so a list that stopped at a tenth of them was the surface
+        /// disagreeing with the engine again — a host's traffic could be found by the
+        /// find bar and counted in the sidebar while having no row.
+        ///
+        /// What made this affordable is measured, not assumed. The table draws only the
+        /// rows in the viewport and applies a batch by diffing rather than reloading, so
+        /// an update costs ~46 ms at 20 000 rows against ~42 ms at 2 000 — flat in the
+        /// row count (`RequestTable`). The rows themselves are body-free metadata,
+        /// measured at ~1.3 KB each: ~26 MB at this cap, against the 61 MB the engine's
+        /// body budget already allows itself.
+        ///
+        /// The **engine's** ring is deliberately not raised with it. Restoring 20 000
+        /// rows into it costs 416 ms of decode on the path that binds the listener, for
+        /// 13 MB — so history reaches the window through `flowPage` (which reads the
+        /// store) after launch instead, and the proxy starts immediately.
+        public static let displayCap = 20_000
         /// How many flows the cap has dropped this session — surfaced in the list
         /// footer so a big capture doesn't *look* like it kept everything.
         public var droppedFlowCount = 0
@@ -238,51 +257,73 @@ public struct AppFeature: Sendable {
         /// rebuilds hash buckets (O(count)), so trimming inside a per-flow loop at
         /// steady-state cap paid O(cap) per genuinely new flow, every 100 ms
         /// window, forever.
+        ///
+        /// **That rule got ten times sharper when the cap did.** At 2 000 the wrong
+        /// path was merely wasteful; at 20 000 it is quadratic in a number the app
+        /// reaches routinely — filling the window one flow at a time took 88 s in the
+        /// test suite, which is what surfaced it. The live path is unaffected (the flow
+        /// stream is batched into `recordFlows`), but anything that loops over flows
+        /// must use the batch entry point.
         mutating func recordFlow(_ flow: Flow) {
-            upsertFlow(flow)
-            enforceDisplayCap()
-            refreshVisibleFlows()
+            recordFlows([flow])
         }
 
         /// Upsert a whole stream batch, enforcing the display cap once.
+        ///
+        /// **Every mutation happens on a local copy, and the observed properties are
+        /// assigned exactly once.** That is not tidiness — it is the difference between
+        /// linear and quadratic. `flows` is a stored property of an `@ObservableState`
+        /// value, and writing through it costs work proportional to what it holds:
+        /// measured at a 20 000-row window, one insert *through the state* is **690 µs**
+        /// against **2.6 µs** into a plain `IdentifiedArray`. Per flow. A 50-flow capture
+        /// batch would have spent 34 ms of the 100 ms window on observation bookkeeping,
+        /// and filling the window one flow at a time took 14 s.
+        ///
+        /// It was invisible at the old 2 000-row cap and surfaced the moment the cap
+        /// moved, which is the useful part of the story: the shape was always wrong and
+        /// only the size made it show.
         mutating func recordFlows(_ batch: [Flow]) {
-            for flow in batch { upsertFlow(flow) }
-            enforceDisplayCap()
+            guard !batch.isEmpty else { return }
+            var working = flows
+            var hosts = hostByRow
+            for flow in batch {
+                // Store metadata only — bodies for a full window would be a large RAM
+                // sink; the inspector hydrates the selected flow's body on demand.
+                let stripped = flow.strippingBodies()
+                working[id: flow.id] = stripped
+                // Only the per-row host map is maintained here; the counts come from the
+                // engine, which is the only place that can see everything retained.
+                hosts[flow.id] = stripped.host
+            }
+            enforceDisplayCap(&working, hosts: &hosts)
+            flows = working
+            hostByRow = hosts
+            status.capturedCount = working.count
             refreshVisibleFlows()
-        }
-
-        /// Upsert without cap enforcement. Every caller must trim afterwards —
-        /// go through `recordFlow`/`recordFlows` rather than calling this.
-        private mutating func upsertFlow(_ flow: Flow) {
-            // Store metadata only — bodies for up to 2000 flows would be a large RAM
-            // sink; the inspector hydrates the selected flow's body on demand.
-            let stripped = flow.strippingBodies()
-            flows[id: flow.id] = stripped
-            // Only the per-row host map is maintained here now; the counts come from
-            // the engine, which is the only place that can see everything retained.
-            hostByRow[flow.id] = stripped.host
-            status.capturedCount = flows.count
         }
 
         /// Drop the oldest overflow past the session display cap (oldest-first
         /// storage → `removeFirst`), counting the drops. Clears the selection if
         /// it was dropped.
-        private mutating func enforceDisplayCap() {
-            let overflow = flows.count - Self.displayCap
+        ///
+        /// Takes the working copies `inout` rather than touching `self`'s observed
+        /// properties, for the reason `recordFlows` documents.
+        private mutating func enforceDisplayCap(
+            _ working: inout IdentifiedArrayOf<Flow>, hosts: inout [Flow.ID: String]
+        ) {
+            let overflow = working.count - Self.displayCap
             guard overflow > 0 else { return }
-            let dropped = flows.prefix(overflow)
-            let droppedIDs = Set(dropped.map(\.id))
+            let droppedIDs = Set(working.prefix(overflow).map(\.id))
             // No aggregate retraction: a flow leaving this window has not left the
             // capture, and the engine's counts are over what is retained, not over what
             // is on screen. Retracting here is what made the badges shrink as the
             // window rolled.
-            for id in droppedIDs { hostByRow[id] = nil }
-            flows.removeFirst(overflow)
+            for id in droppedIDs { hosts[id] = nil }
+            working.removeFirst(overflow)
             droppedFlowCount += overflow
             if let selected = selectedFlowID, droppedIDs.contains(selected) {
                 selectedFlowID = nil
             }
-            status.capturedCount = flows.count
         }
 
         /// Count flows that arrived after an engine-scope answer landed — the ones the
@@ -762,8 +803,17 @@ public struct AppFeature: Sendable {
                             await send(.phoneOnboardingPublished(info))
                         }
                         await send(.viewAppeared)
-                        // Seed history as one batch, not 200 separate actions.
-                        await send(.flowsReceived(await proxyClient.recentFlows(200).reversed()))
+                        // Seed from history in one batch, not one action per flow —
+                        // and through `flowPage`, which reads the durable store as well
+                        // as the ring. `recentFlows(200)` only ever saw memory, so a
+                        // relaunch opened on 200 rows with 20 000 exchanges on disk.
+                        //
+                        // Off the launch path deliberately: restoring the full window
+                        // decodes every row it takes (measured at 416 ms for 20 000),
+                        // and the proxy must be listening long before then. This runs
+                        // after the listener is up, and the rows arrive as one insert.
+                        let restored = await proxyClient.flowPage(nil, State.displayCap, .all)
+                        await send(.flowsReceived(restored.flows.reversed()))
                         await Self.streamFlows(
                             into: send,
                             flowStream: { await proxyClient.flowStream() },
