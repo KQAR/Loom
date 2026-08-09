@@ -296,20 +296,28 @@ public struct MainView: View {
     // MARK: Request area (table, or a full-bleed empty state)
 
     @ViewBuilder private var requestArea: some View {
-        // O(1) aggregate probe — `displayFlows.isEmpty` would filter all 2000
-        // flows a second time per render just to pick the empty state.
-        if store.displayFlowsAreEmpty {
-            emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            RequestTableView(store: store, followTail: $followTail)
-                // The clear control floats over the table (bottom-right): a small red
-                // dot at rest, expanding to the full hold-to-clear button on hover, so
-                // it barely covers content until you reach for it. No reserved gap —
-                // the table keeps full height and the row stripes fill it.
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if store.droppedFlowCount > 0 { capBanner }
-                }
-                .overlay(alignment: .bottomTrailing) { clearFAB }
+        Group {
+            // O(1) aggregate probe — `displayFlows.isEmpty` would filter all 2000
+            // flows a second time per render just to pick the empty state.
+            if store.displayFlowsAreEmpty {
+                emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                RequestTableView(store: store, followTail: $followTail)
+                    // The clear control floats over the table (bottom-right): a small red
+                    // dot at rest, expanding to the full hold-to-clear button on hover, so
+                    // it barely covers content until you reach for it. No reserved gap —
+                    // the table keeps full height and the row stripes fill it.
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if store.droppedFlowCount > 0 { capBanner }
+                    }
+                    .overlay(alignment: .bottomTrailing) { clearFAB }
+            }
+        }
+        // The find bar sits above the table and below the toolbar band, insetting both
+        // the table and the empty state — so an empty *result* is stated inside the
+        // same frame that shows why it's empty.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if store.search.isPresented { FlowFilterBar(store: store) }
         }
     }
 
@@ -719,7 +727,32 @@ public struct MainView: View {
     }
 
     @ViewBuilder private var emptyState: some View {
-        if store.status.isRunning {
+        if store.search.isActive {
+            // "No matches" and "no traffic" must not read the same — an empty filtered
+            // list otherwise sends someone to debug their client instead of their
+            // needle. What each scope actually covered differs, so the two are worded
+            // apart rather than sharing one half-true sentence: the engine scopes read
+            // through to stored history, the URL scope filters this window's own rows.
+            ContentUnavailableView {
+                Label("No matching requests", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                if store.search.scope.needsEngine {
+                    Text("""
+                    Nothing in the stored capture matches “\(store.search.text)” in \
+                    \(store.search.scope.label.lowercased()). Exchanges pruned past the \
+                    store's row cap aren't searched.
+                    """)
+                } else {
+                    Text("""
+                    Nothing in the latest \(AppFeature.State.displayCap) captured flows \
+                    matches “\(store.search.text)” in the URL. Older traffic is still \
+                    stored — search its headers or body, or ask an agent.
+                    """)
+                }
+            } actions: {
+                Button("Clear Filter") { store.send(.searchDismissed) }
+            }
+        } else if store.status.isRunning {
             ContentUnavailableView {
                 Label("Waiting for traffic", systemImage: "dot.radiowaves.left.and.right")
             } description: {

@@ -297,11 +297,38 @@ actor FlowStore {
     /// read's "never hydrate" contract (invariant I2) holds and a body search still
     /// sees flows the ring has slimmed. Narrow it with `host`/`url_contains`/`since`
     /// to keep the number of hydrations small.
+    ///
+    /// **It reads through to disk when the ring runs out.** It did not, and that was a
+    /// silent hole rather than a thin answer: the ring holds 2000 flows and the table
+    /// keeps 20 000, so nine of every ten persisted exchanges could not be found by any
+    /// search — while `flow(id:)` and `recentHydrated` resolved them perfectly well. An
+    /// agent could hold an id that worked and search for the same exchange to `[]`, and
+    /// `[]` reads exactly like "that traffic never happened".
     func recent(matching query: FlowQuery, limit: Int) async -> [Flow] {
         guard !query.isEmpty else { return recent(limit: limit) }
         return await Self.scan(
             snapshot: flows, query: query, limit: max(0, limit), persistence: persistence
+        ).flows
+    }
+
+    /// `recent(matching:)` plus what the answer is worth: whether history was reached
+    /// for, whether that scan hit its row budget, and how much history exists.
+    ///
+    /// A separate entry point rather than a wider return type on the plain read: most
+    /// callers want the flows, and the one that reports to an agent wants the bound.
+    func search(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
+        guard !query.isEmpty else {
+            return FlowSearchResult(
+                flows: recent(limit: limit),
+                budgetExhausted: false,
+                storedFlowCount: persistence?.storedRowCount
+            )
+        }
+        var result = await Self.scan(
+            snapshot: flows, query: query, limit: max(0, limit), persistence: persistence
         )
+        result.storedFlowCount = persistence?.storedRowCount
+        return result
     }
 
     /// The whole of `recent(matching:)`'s work, off the actor.
@@ -317,7 +344,7 @@ actor FlowStore {
     /// costs a partial walk and copies only what it returns.
     @concurrent private static func scan(
         snapshot: [Flow], query: FlowQuery, limit: Int, persistence: FlowPersistence?
-    ) async -> [Flow] {
+    ) async -> FlowSearchResult {
         var matches: [Flow] = []
         matches.reserveCapacity(min(limit, 64))
         for flow in snapshot.reversed() {
@@ -330,8 +357,37 @@ actor FlowStore {
             else { continue }
             matches.append(flow)
         }
-        return matches
+        // The ring answered in full — history holds nothing newer than what was just
+        // walked, so there is nothing to read through for.
+        guard matches.count < limit, let persistence, !Task.isCancelled else {
+            return FlowSearchResult(flows: matches, budgetExhausted: false, storedFlowCount: nil)
+        }
+        // Everything in the ring is excluded by id rather than by time: the ring's
+        // oldest flow is not necessarily the newest row on disk (an in-flight exchange
+        // stays in memory while newer ones complete and persist), so a timestamp cut
+        // would either skip rows or repeat them.
+        let older = persistence.scan(
+            matching: query,
+            limit: limit - matches.count,
+            excluding: Set(snapshot.map(\.id)),
+            rowBudget: historyScanRowBudget
+        )
+        return FlowSearchResult(
+            flows: matches + older.flows,
+            budgetExhausted: older.budgetExhausted,
+            storedFlowCount: nil
+        )
     }
+
+    /// How many history rows one search may examine.
+    ///
+    /// Above the table's own cap, so in practice a search reads all of it and the
+    /// budget only ever fires if the cap is raised. It exists because the scan runs on
+    /// `FlowPersistence`'s serial queue — the same queue batched writes flush on — and
+    /// an unbounded walk there would put a long read in front of capture flushes. When
+    /// it does fire, the caller is told (`FlowSearchResult.budgetExhausted`), because a
+    /// truncated search that looks exhaustive is the bug this whole path exists to fix.
+    static let historyScanRowBudget = 25_000
 
     func clear() {
         flows.removeAll()

@@ -180,15 +180,57 @@ import LoomSharedModels
         #expect(reported["legacyBareRequests"] as? Int == 1)
         #expect(reported["legacyHandshakes"] as? Int == 0)
         // A bare request is legacy and is *not* a blocker — stated, so a reader can't
-        // mistake the one count for the other.
-        #expect(reported["legacyEraRetirable"] as? Bool == true)
+        // mistake the one count for the other. Modern traffic was negotiated, so this
+        // is a real verdict rather than an empty counter.
+        #expect(reported["legacyEra"] as? String == "retirable")
 
         log.record(reason: .legacyHandshake, client: MCPClientIdentity(["name": "old-client"]))
         reported = try await traffic()
         #expect(reported["legacyHandshakes"] as? Int == 1)
-        #expect(reported["legacyEraRetirable"] as? Bool == false)
+        #expect(reported["legacyEra"] as? String == "blocked")
         let legacy = try #require(reported["legacyClients"] as? [[String: Any]])
         #expect(legacy.first?["name"] as? String == "old-client")
+    }
+
+    /// The bug this verdict is three-valued for: a counter that has seen no modern
+    /// traffic must not read as "the old era can go".
+    ///
+    /// `MCPEraLog` keeps nothing across launches, so `legacyHandshakes == 0` is the
+    /// value it holds *before it has seen anything* as well as after a clean release.
+    /// The old `legacyEraRetirable: Bool` collapsed those, and answered yes to a freshly
+    /// launched app serving a client — Claude Code — that negotiates by falling back and
+    /// so proves nothing. Measured live at 0.0.19: 0 modern, 0 handshakes, 3 bare.
+    @MainActor
+    @Test func aTallyWithNoModernTrafficIsUnknownRatherThanRetirable() async throws {
+        let log = MCPEraLog()
+        for _ in 0..<3 { log.record(reason: .legacyBareRequest, client: nil) }
+        var executor = MCPToolExecutor(
+            engine: StubEngine(), appVersion: "9.9", protocolVersion: MCPProtocol.latest
+        )
+        executor.eraLog = log
+
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "get_version", arguments: [:]).utf8)
+        ) as? [String: Any])
+        let traffic = try #require(json["protocolTraffic"] as? [String: Any])
+
+        #expect(traffic["modernRequests"] as? Int == 0)
+        #expect(traffic["legacyHandshakes"] as? Int == 0)
+        #expect(traffic["legacyBareRequests"] as? Int == 3)
+        #expect(traffic["legacyEra"] as? String == "unknown")
+        // The verdict alone doesn't say what to do next, so the reason has to.
+        let reason = try #require(traffic["legacyEraReason"] as? String)
+        #expect(reason.contains("per-launch"))
+    }
+
+    /// An empty tally is the same question with none of the noise: nothing has been
+    /// served at all, which is not a clean bill of health either.
+    @MainActor
+    @Test func anUntouchedTallyIsUnknown() {
+        let (era, _) = ProtocolTrafficRender.verdict(
+            modernRequests: 0, legacyHandshakes: 0, legacyBareRequests: 0
+        )
+        #expect(era == .unknown)
     }
 
     // MARK: End to end, through the real server
@@ -239,7 +281,7 @@ import LoomSharedModels
         let traffic = try #require(versionJSON?["protocolTraffic"] as? [String: Any])
 
         #expect(traffic["legacyHandshakes"] as? Int == 1)
-        #expect(traffic["legacyEraRetirable"] as? Bool == false)
+        #expect(traffic["legacyEra"] as? String == "blocked")
         let legacy = try #require(traffic["legacyClients"] as? [[String: Any]])
         #expect(legacy.first?["name"] as? String == "legacy-client")
         #expect(legacy.first?["version"] as? String == "0.1")

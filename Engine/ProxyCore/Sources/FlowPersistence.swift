@@ -225,6 +225,103 @@ final class FlowPersistence: @unchecked Sendable {
         }
     }
 
+    /// Newest-first rows matching `query`, skipping ids the caller already has.
+    ///
+    /// ## Why this exists
+    ///
+    /// `FlowStore.recent(matching:)` scanned the **ring only** — 2000 flows — while
+    /// this table keeps 20 000. Nine of every ten persisted exchanges could not be
+    /// found by any search, and the miss was silent: `get_recent_flows` with a filter
+    /// returned `[]` for "not in the last 2000" and for "never happened" alike, which
+    /// is the failure `TunneledHostLog` exists to prevent one layer up. `flow(id:)`
+    /// and `recentHydrated` already read through; the query path was the one that
+    /// didn't, so an id an agent held resolved while a search for the same exchange
+    /// came back empty.
+    ///
+    /// ## Cost, and the ordering that bounds it
+    ///
+    /// Only `host`/`method`/`status`/`since` map to columns, so those are pushed into
+    /// SQL (the `startedAt` index carries the ordering and the `since` bound); the rest
+    /// of the predicate runs in Swift against the decoded row. `rowBudget` caps how
+    /// many rows are *examined*, so a needle that matches nothing can't turn into an
+    /// unbounded walk on the write queue — and the caller is told it was hit, rather
+    /// than reading a short result as an exhaustive one.
+    ///
+    /// A body predicate reads the blob columns, and only for a row that already passed
+    /// every cheap predicate — the same ordering `FlowStore.scan` uses, for the same
+    /// reason: one blob read per non-match is the cost being avoided.
+    ///
+    /// A host **glob** is not pushed down (SQL `LIKE` and Loom's glob are not the same
+    /// language, and getting that subtly wrong would drop matching rows); it is matched
+    /// in Swift like the rest.
+    func scan(
+        matching query: FlowQuery, limit: Int, excluding seen: Set<UUID>, rowBudget: Int
+    ) -> (flows: [Flow], budgetExhausted: Bool) {
+        guard limit > 0, rowBudget > 0 else { return ([], false) }
+        return queue.sync {
+            writePending() // a batched save must be visible to the very next read
+            var sql = "SELECT json, reqBody, respBody FROM flows"
+            var conditions: [String] = []
+            if let host = query.host, !host.contains("*") { conditions.append("host = ?") }
+            if let methods = query.methods, !methods.isEmpty {
+                let slots = Array(repeating: "?", count: methods.count).joined(separator: ", ")
+                conditions.append("UPPER(method) IN (\(slots))")
+            }
+            if query.statusMin != nil { conditions.append("status >= ?") }
+            if query.statusMax != nil { conditions.append("status <= ?") }
+            if query.since != nil { conditions.append("startedAt >= ?") }
+            if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
+            sql += " ORDER BY startedAt DESC LIMIT ?;"
+
+            var stmt: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                Log.store.error("Scanning flow history failed: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
+                return ([], false)
+            }
+            defer { sqlite3_finalize(stmt) }
+
+            var index: Int32 = 1
+            func bind(_ body: (Int32) -> Void) { body(index); index += 1 }
+            if let host = query.host, !host.contains("*") {
+                bind { sqlite3_bind_text(stmt, $0, host, -1, transient) }
+            }
+            for method in query.methods ?? [] {
+                bind { sqlite3_bind_text(stmt, $0, method.uppercased(), -1, transient) }
+            }
+            if let statusMin = query.statusMin { bind { sqlite3_bind_int(stmt, $0, Int32(statusMin)) } }
+            if let statusMax = query.statusMax { bind { sqlite3_bind_int(stmt, $0, Int32(statusMax)) } }
+            // Unix epoch, matching what `save` binds — a reference-date reading here
+            // would be 31 years off and silently filter everything out.
+            if let since = query.since {
+                bind { sqlite3_bind_double(stmt, $0, since.timeIntervalSince1970) }
+            }
+            bind { sqlite3_bind_int(stmt, $0, Int32(rowBudget)) }
+
+            var matches: [Flow] = []
+            var examined = 0
+            while matches.count < limit, sqlite3_step(stmt) == SQLITE_ROW {
+                examined += 1
+                guard let blob = sqlite3_column_blob(stmt, 0) else { continue }
+                let json = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
+                guard let flow = try? decoder.decode(Flow.self, from: json), !seen.contains(flow.id)
+                else { continue }
+                guard query.matchesMetadata(flow) else { continue }
+                if query.needsBodies {
+                    let hydrated = flow.attachingBodies(
+                        request: Self.blob(stmt, 1), response: Self.blob(stmt, 2)
+                    )
+                    guard query.matchesBodies(hydrated) else { continue }
+                }
+                // The body-free row, like every other list read (invariant I2).
+                matches.append(flow)
+            }
+            return (matches, examined >= rowBudget && matches.count < limit)
+        }
+    }
+
+    /// How many rows the table holds. The denominator behind "searched N of M".
+    var storedRowCount: Int { queue.sync { rowCount } }
+
     /// The stored request/response bodies for one flow, or nil if the row is gone.
     /// Each side is nil when that body was empty. Legacy rows (bodies still inline
     /// in `json`) return nil columns — the caller's in-memory copy already has them.

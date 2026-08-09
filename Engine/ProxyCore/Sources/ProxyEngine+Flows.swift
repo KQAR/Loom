@@ -25,11 +25,18 @@ extension ProxyEngine {
         await store.recent(limit: limit)
     }
 
-    /// Filtered read — the scan runs inside the store actor over everything
-    /// retained, then the limit applies, so a match older than the newest `limit`
-    /// exchanges is still findable.
+    /// Filtered read over everything retained — the in-memory ring first, then the
+    /// durable store, so a match is findable whether or not it is among the newest
+    /// `limit` exchanges *or* still in memory.
     public func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow] {
         await store.recent(matching: query, limit: limit)
+    }
+
+    /// The same read with its bound attached, for callers that report to an agent —
+    /// an empty result must be able to say whether it means "not captured" or "not
+    /// searched".
+    public func searchFlows(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
+        await store.search(matching: query, limit: limit)
     }
 
     /// Recent flows with bodies hydrated from disk — for HAR export and any other

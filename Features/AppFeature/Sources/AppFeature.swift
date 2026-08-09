@@ -46,6 +46,10 @@ public struct AppFeature: Sendable {
         public var droppedFlowCount = 0
         public var selectedCategory: FlowCategory? = .all
         public var selectedFlowID: Flow.ID?
+        /// The filter bar above the request table. Composes with `selectedCategory`
+        /// as AND rather than replacing it — see `FlowSearch` for why the two are
+        /// different questions and why this one leaves the sidebar badges alone.
+        public var search = FlowSearch()
 
         /// The write-action audit trail (sidebar → Audit) — split into its own
         /// feature. Nothing here touches captured traffic or the proxy's lifecycle.
@@ -246,6 +250,21 @@ public struct AppFeature: Sendable {
             status.capturedCount = flows.count
         }
 
+        /// Count flows that arrived after an engine-scope answer landed — the ones the
+        /// visible result provably does not account for.
+        ///
+        /// Must run **before** `recordFlows`, because "new" means an id the window has
+        /// not seen: an exchange emits several times (pending → completed, per
+        /// streaming update, per WebSocket frame) and only the first is a flow the
+        /// search didn't consider.
+        ///
+        /// The URL scope needs none of this — it re-filters every render, so it is
+        /// live by construction.
+        mutating func noteFlowsArrivedDuringSearch(_ batch: [Flow]) {
+            guard search.isActive, search.scope.needsEngine, search.engineMatches != nil else { return }
+            search.staleCount += batch.count(where: { flows[id: $0.id] == nil })
+        }
+
         /// Whether a flow counts as a failure for the Errors category/badge. One
         /// definition, used by both the count and the list filter — it lives on
         /// `FlowAggregates` (which needs it to maintain the count) and is re-exported
@@ -258,6 +277,11 @@ public struct AppFeature: Sendable {
         mutating func forgetCapturedFlows() {
             flows.removeAll()
             aggregates.removeAll()
+            // The bar stays open with its needle — the human didn't close it — but its
+            // engine answer is about flows that no longer exist. Cleared rather than
+            // left behind, so an id can't be re-matched by a later flow reusing it.
+            search.engineMatches = search.engineMatches.map { _ in [] }
+            search.staleCount = 0
             selectedFlowID = nil
             selectedFlowDetail = nil
             selectedOriginalDetail = nil
@@ -269,7 +293,14 @@ public struct AppFeature: Sendable {
         /// aggregates. `requestArea` used to probe `displayFlows.isEmpty`, which
         /// materializes the whole filtered array — a second full O(n) filter per
         /// render, spent entirely on picking the empty state.
+        ///
+        /// An active search is the one case that cannot be answered this way: a needle
+        /// is not an aggregate, so there is nothing to count incrementally. It costs
+        /// the second scan the rest of this property exists to avoid, and only while
+        /// the human is holding a filter open — which is a bounded, deliberate state,
+        /// unlike the steady-state render this was written for.
         public var displayFlowsAreEmpty: Bool {
+            if search.isActive { return displayFlows.isEmpty }
             switch selectedCategory ?? .all {
             case .all: return flows.isEmpty
             case .rules, .audit, .breakpoints: return true // the panel replaces the table
@@ -287,7 +318,8 @@ public struct AppFeature: Sendable {
             case .all:
                 // The whole list, handed over without copying (`elements` is the
                 // backing array) — this is the common case and runs on every render.
-                return flows.elements
+                // A needle is the one thing that makes it cost a scan.
+                return search.isActive ? flows.elements.filter(search.matches) : flows.elements
             case .rules, .audit, .breakpoints:
                 return [] // the rules / audit / breakpoints panel replaces the table
             default:
@@ -311,7 +343,10 @@ public struct AppFeature: Sendable {
             case let .device(ip):
                 result = result.filter { $0.sourceDevice?.groupingKey == ip }
             }
-            return result
+            // The needle applies *after* the category, which is also the order the
+            // engine query is built in (`FlowSearch.engineQuery`) — so the two paths
+            // narrow by the same thing in the same order.
+            return search.isActive ? result.filter(search.matches) : result
         }
 
         /// Distinct devices with counts — LAN devices first (the phone you just
@@ -416,6 +451,28 @@ public struct AppFeature: Sendable {
         case connectedDeviceCountChanged(Int)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
+
+        // MARK: Filter bar (⌘F)
+        //
+        // The human's half of a capability that was agent-only. `FlowQuery` has
+        // carried `urlContains` / `headerContains` / `bodyContains` since M6 and
+        // `ProxyClient.recentFlowsMatching` was wired to it — no view ever called it,
+        // so an agent could search the capture and the person supervising could not.
+        // `ProxyClientParityTests` couldn't catch that: it checks a capability is
+        // *wired*, which this was.
+
+        /// ⌘F. Opens the bar (and re-focuses it when already open).
+        case searchToggled
+        /// Esc, or the bar's ✕. Hides it *and* clears the needle — see `FlowSearch`.
+        case searchDismissed
+        case searchTextChanged(String)
+        case searchScopeChanged(FlowSearchScope)
+        /// The bar's "re-run" affordance, for flows captured since the last answer.
+        case searchRefreshRequested
+        /// An engine-scope answer landed. Carries the needle and scope it was asked
+        /// for: the reducer drops it when either has moved on, so a slow body scan
+        /// can't overwrite the result of the query typed after it.
+        case searchResultsLoaded(ids: Set<Flow.ID>, needle: String, scope: FlowSearchScope)
         /// Hydrated bodies for a selection landed (self + optional replay original);
         /// carries the requested id so a stale load for a past selection is ignored.
         case selectedDetailLoaded(id: Flow.ID, flow: Flow?, original: Flow?)
@@ -462,7 +519,39 @@ public struct AppFeature: Sendable {
 
     private enum CancelID {
         case subscription, updates, devices, cleared, localIP, phoneRepublish, mirrorRefresh
-        case activation
+        case activation, search
+    }
+
+    /// How long typing must settle before an engine-scope search is asked.
+    ///
+    /// Longer than the mirror-refresh window because the work is not comparable: a
+    /// `body` needle makes `FlowStore` hydrate every candidate that passed the cheap
+    /// predicates, i.e. a disk read per flow. The URL scope is answered locally and
+    /// never waits on this.
+    static let searchDebounce: Duration = .milliseconds(250)
+
+    /// Ask the engine for the current needle, or tear the query down when the scope
+    /// no longer needs one. The single entry point for every input that can change
+    /// the answer — needle, scope, and the sidebar category the query is built from.
+    private func runSearch(_ state: inout State) -> Effect<Action> {
+        guard let query = state.search.engineQuery(category: state.selectedCategory) else {
+            // Either the URL scope (answered locally, per keystroke, no hop) or an
+            // empty needle. Both mean any parked answer is now noise.
+            state.search.engineMatches = nil
+            state.search.isSearching = false
+            state.search.staleCount = 0
+            return .cancel(id: CancelID.search)
+        }
+        state.search.isSearching = true
+        let needle = state.search.needle ?? ""
+        let scope = state.search.scope
+        let limit = State.displayCap
+        return .run { send in
+            try await clock.sleep(for: Self.searchDebounce)
+            let flows = await proxyClient.recentFlowsMatching(query, limit)
+            await send(.searchResultsLoaded(ids: Set(flows.map(\.id)), needle: needle, scope: scope))
+        }
+        .cancellable(id: CancelID.search, cancelInFlight: true)
     }
 
     /// Trailing window for re-reading what an agent wrote. Short enough that the
@@ -782,6 +871,7 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .flowsReceived(flows):
+                state.noteFlowsArrivedDuringSearch(flows)
                 state.recordFlows(flows)
                 // The stream copies still carry bodies; if the open selection is in
                 // the batch, keep the inspector's hydrated copy live (same as the
@@ -794,6 +884,7 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .flowReceived(flow):
+                state.noteFlowsArrivedDuringSearch([flow])
                 state.recordFlow(flow)
                 // The stream copy still carries bodies; if it's the open selection,
                 // refresh the inspector's hydrated copy directly (no extra fetch),
@@ -805,6 +896,41 @@ public struct AppFeature: Sendable {
 
             case let .categorySelected(category):
                 state.selectedCategory = category
+                // The category is part of the engine query (it narrows the scan before
+                // any body is hydrated), so switching it invalidates the answer.
+                return runSearch(&state)
+
+            case .searchToggled:
+                state.search.isPresented = true
+                return .none
+
+            case .searchDismissed:
+                state.search.dismiss()
+                return .cancel(id: CancelID.search)
+
+            case let .searchTextChanged(text):
+                state.search.text = text
+                return runSearch(&state)
+
+            case let .searchScopeChanged(scope):
+                state.search.scope = scope
+                return runSearch(&state)
+
+            case .searchRefreshRequested:
+                return runSearch(&state)
+
+            case let .searchResultsLoaded(ids, needle, scope):
+                // Drop an answer to a question no longer being asked: a body scan
+                // hydrates payloads off disk and can easily outlive the keystroke that
+                // started it, and landing late would replace the newer result.
+                guard state.search.needle == needle, state.search.scope == scope else { return .none }
+                state.search.engineMatches = ids
+                state.search.isSearching = false
+                state.search.staleCount = 0
+                // The engine searches memory *and* history; this window holds the
+                // newest 2000. Matches it can't render are counted rather than
+                // silently dropped, or the result count would disagree with the rows.
+                state.search.outOfWindowMatches = ids.count(where: { state.flows[id: $0] == nil })
                 return .none
 
             case let .flowSelected(id):
