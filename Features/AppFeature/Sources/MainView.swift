@@ -906,163 +906,30 @@ struct StatusDot: View {
 private struct RequestTableView: View {
     @Bindable var store: StoreOf<AppFeature>
     /// Tail-follow lives in `MainView`, alongside the empty state and clear button
-    /// that share it; the AppKit scroll bridge below is what consumes it.
+    /// that share it; the table below consumes it.
     @Binding var followTail: Bool
 
     var body: some View {
-        // Evaluated once per render and reused: `displayFlows` filters the capture,
-        // and the auto-scroll modifier below needs its count too.
+        // Both evaluated once per render, not per row. `ordinals` in particular is the
+        // `#` column's input, and reading the store's flow list from inside a cell would
+        // make every realized row depend on the whole capture — so each live batch would
+        // invalidate all of them.
         let rows = store.displayFlows
-        // Read once here, for the `#` column below. The lookup was already O(1) on
-        // `IdentifiedArray` — what it cost was *observation*: a cell body that touches
-        // `store.flows` makes every realized row depend on the whole capture, so each
-        // live batch of flows invalidated all of them. Captured as a local, the
-        // dependency belongs to this one view instead of to N rows.
-        let capture = store.flows
-        return Table(rows, selection: $store.selectedFlowID.sending(\.flowSelected)) {
-            TableColumn("") { flow in
-                StatusDot(flow: flow)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
-            .width(28)
-
-            TableColumn("#") { flow in
-                // 1-based capture order: position in the oldest-first store + 1.
-                Text("\((capture.index(id: flow.id) ?? 0) + 1)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
-            // Sized for five digits, not seven. The old ideal fit a count this
-            // table will not reach — the in-memory ring caps at 2000 and the
-            // persisted store is an order of magnitude above that, so five is
-            // headroom already — and every point it took came off the Path
-            // column, which is the one column that is never wide enough.
-            .width(min: 30, ideal: 38, max: 56)
-
-            TableColumn("App") { flow in
-                AppIconView(app: flow.sourceApp)
-                    .help(flow.sourceApp?.name ?? "Unknown app")
-            }
-            .width(36)
-
-            TableColumn("Protocol") { flow in
-                Text(MainView.protocolLabel(flow))
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-                    // The upstream version is the honest place to state it: it describes
-                    // Loom's own hop, not the client's (see `protocolLabel`).
-                    .help(flow.response?.httpVersion.map { "Upstream: \($0)" } ?? "")
-            }
-            // Sized to the widest token this column can hold — `HTTPS`, 5 mono glyphs —
-            // not to the header word, which is the only thing here that wants more room.
-            .width(min: 46, ideal: 52, max: 64)
-
-            TableColumn("Method") { flow in
-                Text(flow.request.method)
-                    .font(.callout.monospaced())
-                    .foregroundStyle(LoomTheme.methodColor(flow.request.method))
-            }
-            .width(min: 52, ideal: 62, max: 90)
-
-            TableColumn("Host") { flow in
-                // One parse per row, shared by the favicon and the label — they want
-                // different readings of it. The favicon keys on the port-less host,
-                // so two dev-server ports on one machine share an icon and one cache
-                // entry; the label spells a non-default port out, because
-                // `10.0.34.87:3762` and `:3862` are otherwise the same row of text.
-                let reading = MainView.hostReading(flow.request.url)
-                HStack(spacing: 6) {
-                    FaviconView(host: reading.key)
-                    Text(reading.label)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .width(min: 110, ideal: 180, max: 280)
-
-            TableColumn("Path") { flow in
-                HStack(spacing: LoomTheme.Space.xs) {
-                    Text(MainView.path(flow.request.url))
-                        .font(.callout.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if flow.replayedFrom != nil {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.caption2)
-                            .foregroundStyle(LoomTheme.Palette.accent)
-                    }
-                    // Loaded from a file, not seen on this machine's wire. Marked for
-                    // the same reason a replay is: the row would otherwise read as
-                    // something that just happened here.
-                    if let importedFrom = flow.importedFrom {
-                        Image(systemName: "tray.and.arrow.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .help("Imported from \(importedFrom)")
-                    }
-                    if let applied = flow.appliedRules, !applied.isEmpty {
-                        Image(systemName: "wand.and.stars")
-                            .font(.caption2)
-                            .foregroundStyle(LoomTheme.Palette.accent)
-                            .help("Modified by rules: \(applied.map(\.name).joined(separator: ", "))")
-                    }
-                    if flow.isWebSocket {
-                        Image(systemName: "bolt.horizontal.circle")
-                            .font(.caption2)
-                            .foregroundStyle(LoomTheme.Palette.accent)
-                            .help("WebSocket · \(flow.webSocketMessages?.count ?? 0) messages")
-                    }
-                }
-            }
-
-            TableColumn("Time") { flow in
-                Text(flow.durationMS.map { "\($0)ms" } ?? "—")
-                    .font(.callout.monospacedDigit())
-                    .foregroundStyle(LoomTheme.durationStyle(ms: flow.durationMS))
-            }
-            .width(min: 56, ideal: 70, max: 100)
-        }
+        let ordinals = store.captureOrdinals
+        return RequestTable(
+            rows: rows,
+            ordinals: ordinals,
+            selection: $store.selectedFlowID.sending(\.flowSelected),
+            followTail: $followTail,
+            onReplay: { store.send(.replayTapped($0)) },
+            onCopyCurl: { store.send(.copyCurlTapped($0)) },
+            onAddRule: { store.send(.addRuleFromFlow($0, $1)) }
+        )
         // Selection is an interactive signal, so it is the accent's job (DESIGN.md
-        // § Colors) — untinted, `NSTableView` fills the row with the *system* accent,
-        // a hue the user sets and Loom's is not, right next to accent-tinted method
-        // glyphs and toolbar toggles.
+        // § Colors) — untinted, `NSTableView` fills the row with the *system* accent, a
+        // hue the user sets and Loom's is not, right next to accent-tinted method glyphs
+        // and toolbar toggles.
         .tint(LoomTheme.Palette.accent)
-        .background(RequestTableBridge(
-            rowCount: rows.count,
-            // One pass over the rows already built above. The failed set has to be
-            // computed here rather than inside the bridge, which sees NSTableView row
-            // *indices* and has no way back to a flow.
-            failedRows: IndexSet(rows.indices.filter {
-                LoomTheme.isFailure(status: rows[$0].statusCode, isError: rows[$0].error != nil)
-            }),
-            follow: $followTail
-        ))
-        .contextMenu(forSelectionType: Flow.ID.self) { ids in
-            if let id = ids.first, let flow = store.flows[id: id] {
-                // Parsed once for the whole menu, not once per action closure.
-                let host = MainView.host(flow.request.url)
-                Button("Replay", systemImage: "arrow.triangle.2.circlepath") {
-                    store.send(.replayTapped(id))
-                }
-                Divider()
-                Menu("Copy") {
-                    Button("Host") { MainView.copy(host) }
-                    Button("Path") { MainView.copy(MainView.path(flow.request.url)) }
-                    Button("URL") { MainView.copy(flow.request.url) }
-                    Divider()
-                    Button("as cURL") { store.send(.copyCurlTapped(id)) }
-                }
-                Menu("Add Rule") {
-                    Button("Mock This Response") { store.send(.addRuleFromFlow(id, .mockResponse)) }
-                        .disabled(flow.response == nil)
-                    Divider()
-                    Button("Block This URL") { store.send(.addRuleFromFlow(id, .blockURL)) }
-                    Button("Block Host \(host)") {
-                        store.send(.addRuleFromFlow(id, .blockHost))
-                    }
-                }
-            }
-        }
     }
 }
 
