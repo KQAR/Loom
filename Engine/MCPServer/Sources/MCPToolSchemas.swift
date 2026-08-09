@@ -168,8 +168,12 @@ extension MCPToolExecutor {
             `protocolTraffic` reports which MCP revision the requests reaching this endpoint \
             actually spoke this run, and which clients spoke them. Loom serves two revisions at \
             once; the old one is only kept because a legacy client cannot fall forward. \
-            `legacyEraRetirable` is false while any `initialize` handshake has been seen — that \
-            handshake is the old revision's, so it proves an old client exists. \
+            `legacyEra` is three-valued on purpose, with `legacyEraReason` saying why: `blocked` \
+            (an `initialize` handshake was seen — that handshake is the old revision's, so it \
+            proves an old client exists, and `legacyClients` names it), `unknown` (no handshake, \
+            but nothing negotiated the modern revision either — the tally is per-launch, so this \
+            is the absence of evidence, not evidence of absence), `retirable` (no handshake and \
+            modern traffic actually negotiated). Never report `unknown` as good news. \
             `legacyBareRequests` counts requests that declared no revision at all and is \
             deliberately *not* evidence: a stripped header or a hand-typed curl looks the same. \
             Absent entirely when nothing is counting (the engine embedded without a server).

@@ -767,13 +767,43 @@ struct SubstitutionRender: Encodable {
 /// legacy by fallback, and could as easily be a stripped header or a hand-typed curl
 /// as an old client.
 struct ProtocolTrafficRender: Encodable {
+    /// What the tally can honestly say about retiring `2025-06-18`.
+    ///
+    /// Three-valued because a `Bool` here was **wrong on a cold counter**. It read
+    /// `legacyHandshakes == 0`, and `MCPEraLog` keeps no state across launches, so a
+    /// freshly launched app that had served nothing at all answered "retirable" — the
+    /// absence of evidence rendered as evidence of absence. Measured live at 0.0.19:
+    /// `modernRequests: 0`, `legacyHandshakes: 0`, `legacyBareRequests: 3`, and the
+    /// flag said yes, while ROADMAP condition 1 (every client Loom ships a manifest for
+    /// negotiates modern) was not merely unmet but *unobserved*.
+    ///
+    /// It is the same failure `MCPEraLog` splits its counters to avoid, inverted:
+    /// there, one merged count would make the condition never fire; here, one merged
+    /// verdict made it fire immediately.
+    enum LegacyEra: String, Encodable {
+        /// An `initialize` handshake was recorded: an old client exists, named in
+        /// `legacyClients`.
+        case blocked
+        /// No handshake, and nothing negotiated modern either — this run has seen no
+        /// evidence in either direction.
+        case unknown
+        /// No handshake, and modern traffic was actually negotiated. Condition 2 holds
+        /// *for this launch*; condition 1 is a question about names, not counts.
+        case retirable
+    }
+
     var modernRequests: Int
     var legacyHandshakes: Int
     var legacyBareRequests: Int
-    /// True only while `legacyHandshakes` is zero — the whole point of the tally,
-    /// stated rather than left to be derived, so a reader can't mistake a nonzero
-    /// bare-request count for a blocker.
-    var legacyEraRetirable: Bool
+    /// The whole point of the tally, stated rather than left to be derived — so a
+    /// reader can't mistake a nonzero bare-request count for a blocker, nor a counter
+    /// that has seen nothing for one that has seen only modern traffic.
+    var legacyEra: LegacyEra
+    /// Why `legacyEra` is what it is, in the terms of the retirement condition. Carried
+    /// because the verdict alone can't say *what to do next*, and the two non-`blocked`
+    /// answers need different next steps: point a client at the endpoint, or check the
+    /// names in `modernClients`.
+    var legacyEraReason: String
     var modernClients: [ProtocolClientRender]?
     var legacyClients: [ProtocolClientRender]?
     /// Distinct clients dropped by the cap, per era — never silently.
@@ -784,13 +814,51 @@ struct ProtocolTrafficRender: Encodable {
         modernRequests = (snapshot.counts[.modernMeta] ?? 0) + (snapshot.counts[.modernHeader] ?? 0)
         legacyHandshakes = snapshot.legacyHandshakes
         legacyBareRequests = snapshot.counts[.legacyBareRequest] ?? 0
-        legacyEraRetirable = snapshot.legacyHandshakes == 0
+        (legacyEra, legacyEraReason) = Self.verdict(
+            modernRequests: modernRequests,
+            legacyHandshakes: legacyHandshakes,
+            legacyBareRequests: legacyBareRequests
+        )
         modernClients = snapshot.modernClients.isEmpty
             ? nil : snapshot.modernClients.map(ProtocolClientRender.init)
         legacyClients = snapshot.legacyClients.isEmpty
             ? nil : snapshot.legacyClients.map(ProtocolClientRender.init)
         modernClientsOmitted = snapshot.modernClientsOmitted > 0 ? snapshot.modernClientsOmitted : nil
         legacyClientsOmitted = snapshot.legacyClientsOmitted > 0 ? snapshot.legacyClientsOmitted : nil
+    }
+
+    /// The verdict and its reason, in one place so the two can't disagree.
+    ///
+    /// Order matters: a handshake outranks everything (it is the only *proof* in the
+    /// tally), and "nothing negotiated modern" outranks a zero handshake count, because
+    /// that zero is what a counter reads before it has seen anything.
+    static func verdict(
+        modernRequests: Int, legacyHandshakes: Int, legacyBareRequests: Int
+    ) -> (LegacyEra, String) {
+        if legacyHandshakes > 0 {
+            return (.blocked, """
+            \(legacyHandshakes) `initialize` handshake(s) recorded this run — that handshake \
+            belongs to 2025-06-18 only, so an old client demonstrably exists. \
+            `legacyClients` names it.
+            """)
+        }
+        if modernRequests == 0 {
+            return (.unknown, """
+            No `initialize` handshake this run, but nothing negotiated 2026-07-28 either, \
+            so the zero is the absence of evidence rather than evidence of absence — this \
+            tally is per-launch and holds nothing across relaunches, so an app that has \
+            served no client reads identically to one every client has modernised against. \
+            \(legacyBareRequests) bare fallback request(s) recorded, which prove nothing \
+            either way. Exercise the clients you ship a manifest for, then re-read.
+            """)
+        }
+        return (.retirable, """
+        No `initialize` handshake this run and \(modernRequests) request(s) negotiated \
+        2026-07-28, so ROADMAP condition 2 holds for this launch. Condition 1 — every \
+        client Loom ships a manifest for on modern, for a full release — is a question \
+        about names and cannot be answered from counts: check `modernClients` lists each \
+        of them, and that no relaunch since has reported anything else.
+        """)
     }
 }
 
