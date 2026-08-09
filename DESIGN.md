@@ -555,8 +555,16 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
   blurs beneath it — no hairline, no border, no shadow. Everything below the band stays opaque.
 - **Toolbar**: a centered chip — status dot + the listener's `host:port` + three gray/green status toggles (System proxy,
   SSL, Map/rewrite); right-aligned flat buttons `Record` (start/stop) + `Clear` (`xmark.bin`), with the macOS 26
-  shared-glass container hidden. No search, no window title. System-proxy/SSL are M2, Map/rewrite and Record
+  shared-glass container hidden. No window title. System-proxy/SSL are M2, Map/rewrite and Record
   (interception) are M2/M3 — UI wired now, engines later.
+- **Find bar**: hidden by default, ⌘F (Edit ▸ Find ▸ Find in Requests) reveals it directly **above the request table**,
+  `.bar` material, one row: needle · scope menu (URL / Headers / Body) · result count or re-run affordance · ✕.
+  Esc dismisses, and dismissing clears the needle — a filter still applied with its cause off screen is the
+  `isRecording` failure again. **Deliberately not in the toolbar**, which is why the line above no longer says
+  "no search": `.searchable` puts a stretchy field into the band whose macOS 26 glass capsule grows with its
+  `.principal` item (see `MainView.toolbarContent`), and a find bar belongs against the thing it filters.
+  It composes with the sidebar as AND — the category picks *whose* traffic, the needle picks *which exchange* —
+  and it never moves the sidebar badges, so "too narrow a filter" stays distinguishable from "not captured".
 - **Spacing**: base 4pt; console horizontal margin `{metrics.console-margin}` (12pt, narrower than the window's 16). If a value isn't a token, it's probably wrong.
 
 ## Motion
