@@ -39,6 +39,16 @@ extension ProxyEngine {
         await store.search(matching: query, limit: limit)
     }
 
+    /// Per-host / per-app / per-device counts over everything retained.
+    ///
+    /// `coversHistory` is false only in the window between boot and the history
+    /// aggregation landing, when the numbers cover the restored ring alone — a
+    /// distinction the surface reading them needs, because "12" and "12 so far" are
+    /// different claims and only one of them should be shown as final.
+    public func flowAggregates() async -> (aggregates: FlowAggregates, coversHistory: Bool) {
+        await store.flowAggregates()
+    }
+
     /// One page of the capture, newest-first — the read a windowed list surface uses
     /// instead of holding every flow in memory.
     public func flowPage(

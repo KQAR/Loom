@@ -44,12 +44,21 @@ public struct AppFeature: Sendable {
         /// How many flows the cap has dropped this session — surfaced in the list
         /// footer so a big capture doesn't *look* like it kept everything.
         public var droppedFlowCount = 0
-        public var selectedCategory: FlowCategory? = .all
+        /// The two inputs to `displayFlows` that aren't `flows` itself. Both refresh
+        /// the cached projection on assignment rather than relying on the caller to —
+        /// a cached list whose staleness depends on every mutation site remembering is
+        /// a list that renders wrongly and silently. (Mutating a field of `search`
+        /// fires this too: a struct property's `didSet` runs on member mutation.)
+        public var selectedCategory: FlowCategory? = .all {
+            didSet { refreshVisibleFlows() }
+        }
         public var selectedFlowID: Flow.ID?
         /// The filter bar above the request table. Composes with `selectedCategory`
         /// as AND rather than replacing it — see `FlowSearch` for why the two are
         /// different questions and why this one leaves the sidebar badges alone.
-        public var search = FlowSearch()
+        public var search = FlowSearch() {
+            didSet { refreshVisibleFlows() }
+        }
 
         /// The write-action audit trail (sidebar → Audit) — split into its own
         /// feature. Nothing here touches captured traffic or the proxy's lifecycle.
@@ -134,9 +143,30 @@ public struct AppFeature: Sendable {
         /// (fed by `connectedDeviceCountStream`), so a phone counts the moment it
         /// connects — even if its HTTPS is blind-tunneled and never captured.
         public var connectedDeviceCount = 0
-        /// Sidebar counters, folded in as flows arrive rather than recomputed per
-        /// render. See `FlowAggregates` for why the six of them are one type.
+        /// Sidebar counters — **mirrored from the engine, not maintained here.**
+        ///
+        /// They used to be folded in as flows arrived in this window, which meant every
+        /// badge counted the newest 2000 exchanges while the store retained 20 000: a
+        /// host with 300 flows showed 12, and a host whose traffic had all aged out of
+        /// the window vanished from the sidebar entirely while its flows sat on disk,
+        /// searchable and unlisted. This is the same rule the `isRecording` bug taught —
+        /// a fact the engine owns is read from the engine, never kept as a second copy
+        /// and hoped over — and it is the one that windowing the list makes unavoidable
+        /// as well as wrong: at ~120 resident rows, locally derived counts would be off
+        /// by two orders of magnitude.
         var aggregates = FlowAggregates()
+        /// Whether `aggregates` covers stored history yet, or only what the engine has
+        /// restored so far (a brief window after launch). Surfaced rather than smoothed
+        /// over: "12" and "12 so far" are different claims.
+        public var aggregatesCoverHistory = false
+        /// `flow id → host` for the rows this window is holding.
+        ///
+        /// Stays here, and deliberately did not move to the engine with the counters:
+        /// it is the one projection that scales with the number of *flows* rather than
+        /// the number of distinct hosts, so a copy covering 20 000 retained rows would
+        /// reintroduce exactly the per-count memory the windowing exists to remove. A
+        /// per-row map belongs to whoever holds the rows.
+        var hostByRow: [Flow.ID: String] = [:]
         /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge. A
         /// passthrough so the badge and the tests keep reading one name; everything
         /// that *writes* it goes through `FlowAggregates`.
@@ -211,12 +241,14 @@ public struct AppFeature: Sendable {
         mutating func recordFlow(_ flow: Flow) {
             upsertFlow(flow)
             enforceDisplayCap()
+            refreshVisibleFlows()
         }
 
         /// Upsert a whole stream batch, enforcing the display cap once.
         mutating func recordFlows(_ batch: [Flow]) {
             for flow in batch { upsertFlow(flow) }
             enforceDisplayCap()
+            refreshVisibleFlows()
         }
 
         /// Upsert without cap enforcement. Every caller must trim afterwards —
@@ -224,12 +256,11 @@ public struct AppFeature: Sendable {
         private mutating func upsertFlow(_ flow: Flow) {
             // Store metadata only — bodies for up to 2000 flows would be a large RAM
             // sink; the inspector hydrates the selected flow's body on demand.
-            // An upsert replaces: retract the previous version's contribution to the
-            // aggregates first, or a pending→completed update double-counts.
-            if let previous = flows[id: flow.id] { aggregates.retract(previous) }
             let stripped = flow.strippingBodies()
             flows[id: flow.id] = stripped
-            aggregates.contribute(stripped)
+            // Only the per-row host map is maintained here now; the counts come from
+            // the engine, which is the only place that can see everything retained.
+            hostByRow[flow.id] = stripped.host
             status.capturedCount = flows.count
         }
 
@@ -241,7 +272,11 @@ public struct AppFeature: Sendable {
             guard overflow > 0 else { return }
             let dropped = flows.prefix(overflow)
             let droppedIDs = Set(dropped.map(\.id))
-            for flow in dropped { aggregates.retract(flow) }
+            // No aggregate retraction: a flow leaving this window has not left the
+            // capture, and the engine's counts are over what is retained, not over what
+            // is on screen. Retracting here is what made the badges shrink as the
+            // window rolled.
+            for id in droppedIDs { hostByRow[id] = nil }
             flows.removeFirst(overflow)
             droppedFlowCount += overflow
             if let selected = selectedFlowID, droppedIDs.contains(selected) {
@@ -276,7 +311,12 @@ public struct AppFeature: Sendable {
         /// leave exactly the same state.
         mutating func forgetCapturedFlows() {
             flows.removeAll()
+            hostByRow.removeAll()
+            // Cleared locally as well as re-read: the engine's own counts go to zero in
+            // the same operation, and waiting for the round trip would leave a sidebar
+            // full of hosts with no rows behind them for a frame.
             aggregates.removeAll()
+            aggregatesCoverHistory = false
             // The bar stays open with its needle — the human didn't close it — but its
             // engine answer is about flows that no longer exist. Cleared rather than
             // left behind, so an id can't be re-matched by a later flow reusing it.
@@ -287,38 +327,46 @@ public struct AppFeature: Sendable {
             selectedOriginalDetail = nil
             droppedFlowCount = 0
             status.capturedCount = 0
+            refreshVisibleFlows()
         }
 
-        /// O(1) emptiness for the selected category, answered from the incremental
-        /// aggregates. `requestArea` used to probe `displayFlows.isEmpty`, which
-        /// materializes the whole filtered array — a second full O(n) filter per
-        /// render, spent entirely on picking the empty state.
+        /// Whether the table has any rows to draw.
         ///
-        /// An active search is the one case that cannot be answered this way: a needle
-        /// is not an aggregate, so there is nothing to count incrementally. It costs
-        /// the second scan the rest of this property exists to avoid, and only while
-        /// the human is holding a filter open — which is a bounded, deliberate state,
-        /// unlike the steady-state render this was written for.
-        public var displayFlowsAreEmpty: Bool {
-            if search.isActive { return displayFlows.isEmpty }
-            switch selectedCategory ?? .all {
-            case .all: return flows.isEmpty
-            case .rules, .audit, .breakpoints: return true // the panel replaces the table
-            case .errors: return aggregates.errorCount == 0
-            case let .host(host): return aggregates.hostCounts[host, default: 0] == 0
-            case let .app(key): return aggregates.appCounts[key, default: 0] == 0
-            case let .device(ip): return aggregates.deviceCounts[ip, default: 0] == 0
-            }
+        /// Answered from the cached projection, **not** from the sidebar counters any
+        /// more. Those now come from the engine and cover everything retained (20 000
+        /// rows), while this window holds 2 000 — so a host whose flows have all rolled
+        /// out of the window has a non-zero count and no rows, and the old probe would
+        /// have rendered an empty table with headers instead of the empty state.
+        public var displayFlowsAreEmpty: Bool { visibleFlows.isEmpty }
+
+        /// Requests for the selected category and needle, oldest-first (chronological —
+        /// newest at the bottom, like a log/terminal).
+        ///
+        /// **Cached, not computed per read.** It is read on every render (and twice,
+        /// once for the emptiness probe), and it is O(n) in the window whenever a
+        /// category or a needle is involved. The inputs change on a schedule the reducer
+        /// controls — a flow batch, a category tap, a keystroke — so it is recomputed
+        /// there instead, through the one funnel below.
+        public var displayFlows: [Flow] { visibleFlows }
+
+        /// Backing store for `displayFlows`. Private so the funnel is the only writer:
+        /// a second place that assigns it is a stale list nobody notices, because a
+        /// stale list still renders.
+        private var visibleFlows: [Flow] = []
+
+        /// Recompute the projection. Called by every mutation that can change it —
+        /// `recordFlow(s)`, the display-cap trim, a clear, a category change and every
+        /// search action.
+        mutating func refreshVisibleFlows() {
+            visibleFlows = computeVisibleFlows()
         }
 
-        /// Requests for the selected category, filtered by search, oldest-first
-        /// (chronological — newest at the bottom, like a log/terminal).
-        public var displayFlows: [Flow] {
+        private func computeVisibleFlows() -> [Flow] {
             switch selectedCategory ?? .all {
             case .all:
                 // The whole list, handed over without copying (`elements` is the
-                // backing array) — this is the common case and runs on every render.
-                // A needle is the one thing that makes it cost a scan.
+                // backing array) — this is the common case. A needle is the one thing
+                // that makes it cost a scan.
                 return search.isActive ? flows.elements.filter(search.matches) : flows.elements
             case .rules, .audit, .breakpoints:
                 return [] // the rules / audit / breakpoints panel replaces the table
@@ -333,11 +381,11 @@ public struct AppFeature: Sendable {
                 result = result.filter(Self.isError)
 
             case let .host(host):
-                // A dictionary lookup per row, not a parse: the host was already
-                // computed when the flow was folded into the aggregates, and that is
-                // the value the sidebar's categories are keyed by. Scanning the URL
-                // string here instead cost 3.2 ms per render over a full ring.
-                result = result.filter { aggregates.hostByFlow[$0.id] == host }
+                // A dictionary lookup per row, not a parse: the host was computed once
+                // when the flow was recorded, and it is the value the sidebar's
+                // categories are keyed by. Scanning the URL string here instead cost
+                // 3.2 ms per render over a full ring.
+                result = result.filter { hostByRow[$0.id] == host }
             case let .app(key):
                 result = result.filter { $0.sourceApp?.groupingKey == key }
             case let .device(ip):
@@ -441,6 +489,8 @@ public struct AppFeature: Sendable {
         /// because it reads the flow store); forwarded to `RulesFeature`.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
         case flowReceived(Flow)
+        /// The engine's counts landed (boot, and after each capture burst).
+        case flowAggregatesRefreshed(FlowAggregates, coversHistory: Bool)
         /// A coalesced batch of flow updates from the live stream. One action per
         /// window instead of one per emission: an exchange emits 2-3 times (more when
         /// streaming, once per WebSocket frame), and each action drove a full reducer
@@ -519,7 +569,7 @@ public struct AppFeature: Sendable {
 
     private enum CancelID {
         case subscription, updates, devices, cleared, localIP, phoneRepublish, mirrorRefresh
-        case activation, search
+        case activation, search, aggregates
     }
 
     /// How long typing must settle before an engine-scope search is asked.
@@ -529,6 +579,23 @@ public struct AppFeature: Sendable {
     /// predicates, i.e. a disk read per flow. The URL scope is answered locally and
     /// never waits on this.
     static let searchDebounce: Duration = .milliseconds(250)
+
+    /// Re-read the engine's counts, coalesced.
+    ///
+    /// Every capture batch changes them, so this rides the same trailing-window shape
+    /// as the audit fan-out rather than firing per batch: the read is an actor hop plus
+    /// a dictionary copy, cheap but not free, and the sidebar does not need to be exact
+    /// at 10 Hz. Being *behind* is fine here in a way that being *wrong* was not — the
+    /// numbers converge within the window and never drift, because nothing local
+    /// maintains them any more.
+    private func refreshAggregates() -> Effect<Action> {
+        .run { send in
+            try await clock.sleep(for: Self.mirrorRefreshDebounce)
+            let result = await proxyClient.flowAggregates()
+            await send(.flowAggregatesRefreshed(result.aggregates, coversHistory: result.coversHistory))
+        }
+        .cancellable(id: CancelID.aggregates, cancelInFlight: true)
+    }
 
     /// Ask the engine for the current needle, or tear the query down when the scope
     /// no longer needs one. The single entry point for every input that can change
@@ -870,6 +937,11 @@ public struct AppFeature: Sendable {
                 state.status.refusedConnections = status.refusedConnections
                 return .none
 
+            case let .flowAggregatesRefreshed(aggregates, coversHistory):
+                state.aggregates = aggregates
+                state.aggregatesCoverHistory = coversHistory
+                return .none
+
             case let .flowsReceived(flows):
                 state.noteFlowsArrivedDuringSearch(flows)
                 state.recordFlows(flows)
@@ -881,7 +953,7 @@ public struct AppFeature: Sendable {
                    let update = flows.last(where: { $0.id == selected }) {
                     state.selectedFlowDetail = update
                 }
-                return .none
+                return refreshAggregates()
 
             case let .flowReceived(flow):
                 state.noteFlowsArrivedDuringSearch([flow])
@@ -892,7 +964,7 @@ public struct AppFeature: Sendable {
                 if flow.id == state.selectedFlowID {
                     state.selectedFlowDetail = flow
                 }
-                return .none
+                return refreshAggregates()
 
             case let .categorySelected(category):
                 state.selectedCategory = category

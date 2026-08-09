@@ -98,9 +98,15 @@ import Testing
 
     @Test func flowReceived_appendsAndCounts() async {
         let flow = Fixtures.flow()
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        // A capture also schedules the coalesced re-read of the engine's counters. The
+        // clock keeps it from firing inside the assertion, and `exhaustivity = .off`
+        // lets the test end with it still parked — what is under test is the fold.
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+        }
+        store.exhaustivity = .off
         await store.send(.flowReceived(flow)) {
-            $0.recordFlow(flow) // metadata-only in the list, aggregates in sync
+            $0.recordFlow(flow) // metadata-only in the list; the counts come from the engine
         }
     }
 

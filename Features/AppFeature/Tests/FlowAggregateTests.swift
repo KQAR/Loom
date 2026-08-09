@@ -5,12 +5,17 @@ import Testing
 
 @testable import AppFeature
 
-/// The sidebar's host / app / device / error aggregates used to be computed by
-/// scanning every flow on each render — four O(n) passes, one of which parsed
-/// every URL through `URLComponents`. They are now maintained incrementally, which
-/// only works if every mutation path keeps them in step with `flows`. That's the
-/// invariant these tests hold down: an upsert must not double-count, an eviction
-/// must subtract, and an emptied key must disappear rather than linger at zero.
+/// The sidebar's host / app / device / error aggregates and the projections built on
+/// them (ordering, pinning, per-group representatives).
+///
+/// **The counts are the engine's now**, over everything retained rather than over what
+/// this window holds — so these seed `state.aggregates` the way the engine's refresh
+/// does, instead of expecting `recordFlow` to fold them. That is the behaviour change:
+/// folding locally made every badge a count of the newest 2000 exchanges against a
+/// store keeping 20 000, and a host whose flows had aged out of the window vanished
+/// from the sidebar while its rows sat on disk. What these still pin is everything
+/// downstream of the numbers, plus the folding rules themselves (`FlowAggregates`
+/// lives in SharedModels and is exercised directly).
 @Suite struct FlowAggregateTests {
     private func flow(
         id: UUID = UUID(),
@@ -37,73 +42,111 @@ import Testing
         )
     }
 
-    @Test func counts_matchTheFlowsRecorded() {
+    /// Record flows into the window *and* set the counts the engine would report for
+    /// them — the two halves that used to be one call.
+    private func state(_ flows: [Flow]) -> AppFeature.State {
         var state = AppFeature.State()
-        state.recordFlow(flow(url: "https://a.test/1"))
-        state.recordFlow(flow(url: "https://a.test/2"))
-        state.recordFlow(flow(url: "https://b.test/1", status: 500))
+        var aggregates = FlowAggregates()
+        for flow in flows {
+            state.recordFlow(flow)
+            aggregates.contribute(flow)
+        }
+        state.aggregates = aggregates
+        return state
+    }
 
+    @Test func counts_matchTheFlowsRecorded() {
+        let state = state([
+            flow(url: "https://a.test/1"),
+            flow(url: "https://a.test/2"),
+            flow(url: "https://b.test/1", status: 500),
+        ])
         #expect(state.hosts.first(where: { $0.host == "a.test" })?.count == 2)
         #expect(state.hosts.first(where: { $0.host == "b.test" })?.count == 1)
         #expect(state.errorCount == 1)
         #expect(state.allCount == 3)
     }
 
-    /// The bug incremental counting invites: a flow upserts several times per
-    /// exchange (pending → completed, plus streaming updates), and each update must
-    /// replace its predecessor's contribution rather than add to it.
+    /// The folding rules themselves, now exercised on `FlowAggregates` directly — the
+    /// engine is what folds, and it folds with this type.
+    ///
+    /// A flow upserts several times per exchange (pending → completed, plus streaming
+    /// updates), and each update must replace its predecessor's contribution rather
+    /// than add to it.
     @Test func upsertingTheSameFlow_doesNotDoubleCount() {
-        var state = AppFeature.State()
+        var aggregates = FlowAggregates()
         let id = UUID()
-        state.recordFlow(flow(id: id, url: "https://a.test/1", status: nil)) // pending
-        state.recordFlow(flow(id: id, url: "https://a.test/1", status: 200)) // completed
-        state.recordFlow(flow(id: id, url: "https://a.test/1", status: 200)) // a stray re-emit
+        let pending = flow(id: id, url: "https://a.test/1", status: nil)
+        let completed = flow(id: id, url: "https://a.test/1", status: 200)
+        aggregates.contribute(pending)
+        aggregates.retract(pending)
+        aggregates.contribute(completed)
 
-        #expect(state.allCount == 1)
-        #expect(state.hosts.first(where: { $0.host == "a.test" })?.count == 1)
-        #expect(state.errorCount == 0)
+        #expect(aggregates.hostCounts["a.test"] == 1)
+        #expect(aggregates.errorCount == 0)
     }
 
     /// pending → 500 must *become* an error, and 500 → (re-sent as) 200 must stop
     /// being one.
     @Test func errorCount_followsOutcomeTransitions() {
-        var state = AppFeature.State()
+        var aggregates = FlowAggregates()
         let id = UUID()
-        state.recordFlow(flow(id: id, status: nil))
-        #expect(state.errorCount == 0, "pending is not an error")
-        state.recordFlow(flow(id: id, status: 503))
-        #expect(state.errorCount == 1)
-        state.recordFlow(flow(id: id, status: 200))
-        #expect(state.errorCount == 0, "the previous version's contribution was retracted")
-        state.recordFlow(flow(id: id, status: nil, error: "timeout"))
-        #expect(state.errorCount == 1, "a transport failure counts too")
+        var current = flow(id: id, status: nil)
+        aggregates.contribute(current)
+        #expect(aggregates.errorCount == 0, "pending is not an error")
+
+        func replace(with next: Flow) {
+            aggregates.retract(current)
+            aggregates.contribute(next)
+            current = next
+        }
+        replace(with: flow(id: id, status: 503))
+        #expect(aggregates.errorCount == 1)
+        replace(with: flow(id: id, status: 200))
+        #expect(aggregates.errorCount == 0, "the previous version's contribution was retracted")
+        replace(with: flow(id: id, status: nil, error: "timeout"))
+        #expect(aggregates.errorCount == 1, "a transport failure counts too")
     }
 
-    @Test func eviction_subtractsFromTheAggregates() {
+    /// **This asserted the opposite before, and the reversal is the fix.**
+    ///
+    /// It read "evicted flows must be subtracted, not left counted" — true of a counter
+    /// over the window, and wrong for the thing the sidebar claims to show. A flow
+    /// rolling out of the window has not left the capture: it is on disk, it is
+    /// findable by search, `get_recent_flows` returns it. Subtracting it made the badge
+    /// count the newest 2000 exchanges, so a busy host read as a quiet one and a host
+    /// with no *recent* traffic disappeared from the sidebar entirely.
+    ///
+    /// The engine's counts are over what is retained, so the window rolling changes
+    /// nothing about them.
+    @Test func eviction_fromTheWindow_doesNotChangeTheCounts() {
         var state = AppFeature.State()
-        // Fill past the display cap with one host, then push it out with another.
+        var aggregates = FlowAggregates()
         for index in 0 ..< AppFeature.State.displayCap {
-            state.recordFlow(flow(url: "https://old.test/\(index)"))
+            let flow = flow(url: "https://old.test/\(index)")
+            state.recordFlow(flow)
+            aggregates.contribute(flow)
         }
-        #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == AppFeature.State.displayCap)
-
         for index in 0 ..< 10 {
-            state.recordFlow(flow(url: "https://new.test/\(index)"))
+            let flow = flow(url: "https://new.test/\(index)")
+            state.recordFlow(flow)
+            aggregates.contribute(flow)
         }
-        #expect(state.allCount == AppFeature.State.displayCap, "the cap holds")
-        #expect(state.droppedFlowCount == 10)
-        #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == AppFeature.State.displayCap - 10,
-                "evicted flows must be subtracted, not left counted")
+        state.aggregates = aggregates
+
+        #expect(state.allCount == AppFeature.State.displayCap, "the window cap holds")
+        #expect(state.droppedFlowCount == 10, "and it dropped rows to hold it")
+        #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == AppFeature.State.displayCap,
+                "every one of them is still retained, so still counted")
         #expect(state.hosts.first(where: { $0.host == "new.test" })?.count == 10)
     }
 
     /// A host/app/device whose last flow is gone must leave the sidebar, not sit
     /// there at zero.
     @Test func emptiedKeys_disappear() {
-        var state = AppFeature.State()
         let app = SourceApp(name: "Solo", bundleID: "com.solo", pid: 1)
         let device = SourceDevice(ip: "192.168.1.5", kind: .lan, platform: "iOS", client: nil)
-        state.recordFlow(flow(url: "https://solo.test/1", app: app, device: device))
+        var state = state([flow(url: "https://solo.test/1", app: app, device: device)])
         #expect(state.hosts.count == 1)
         #expect(state.apps.count == 1)
         #expect(state.devices.count == 1)
@@ -117,11 +160,9 @@ import Testing
     }
 
     @Test func devices_keepTheRichestTypingAcrossFlows() {
-        var state = AppFeature.State()
         let bare = SourceDevice(ip: "192.168.1.9", kind: .lan, platform: nil, client: nil)
         let typed = SourceDevice(ip: "192.168.1.9", kind: .lan, platform: "iOS", client: "Safari")
-        state.recordFlow(flow(device: bare))
-        state.recordFlow(flow(device: typed))
+        let state = state([flow(device: bare), flow(device: typed)])
         let entry = state.devices.first
         #expect(entry?.count == 2)
         #expect(entry?.device.platform == "iOS", "a later flow's richer typing is kept")
@@ -129,41 +170,43 @@ import Testing
     }
 
     @Test func devices_lanFloatsAboveLocal() {
-        var state = AppFeature.State()
-        state.recordFlow(flow(device: SourceDevice(ip: "127.0.0.1", kind: .local, platform: nil, client: nil)))
-        state.recordFlow(flow(device: SourceDevice(ip: "127.0.0.1", kind: .local, platform: nil, client: nil)))
-        state.recordFlow(flow(device: SourceDevice(ip: "192.168.1.9", kind: .lan, platform: nil, client: nil)))
+        let state = state([
+            flow(device: SourceDevice(ip: "127.0.0.1", kind: .local, platform: nil, client: nil)),
+            flow(device: SourceDevice(ip: "127.0.0.1", kind: .local, platform: nil, client: nil)),
+            flow(device: SourceDevice(ip: "192.168.1.9", kind: .lan, platform: nil, client: nil)),
+        ])
         #expect(state.devices.first?.device.kind == .lan, "the phone you just connected leads")
     }
 
     @Test func hosts_pinnedFloatToTop() {
-        var state = AppFeature.State()
-        for host in ["c.test", "a.test", "b.test"] {
-            state.recordFlow(flow(url: "https://\(host)/1"))
-        }
+        var state = state(["c.test", "a.test", "b.test"].map { flow(url: "https://\($0)/1") })
         state.pinnedHosts = ["c.test"]
         #expect(state.hosts.map(\.host) == ["c.test", "a.test", "b.test"])
     }
 
     @Test func apps_pinnedFloatToTop_thenMostActive() {
-        var state = AppFeature.State()
         let pinned = SourceApp(name: "Pinned", bundleID: "com.pinned", pid: 1)
         let busy = SourceApp(name: "Busy", bundleID: "com.busy", pid: 2)
-        state.recordFlow(flow(app: pinned))
-        for _ in 0 ..< 5 { state.recordFlow(flow(app: busy)) }
+        var state = state([flow(app: pinned)] + (0 ..< 5).map { _ in flow(app: busy) })
         state.pinnedApps = ["com.pinned"]
         #expect(state.apps.map(\.app.groupingKey) == ["com.pinned", "com.busy"])
     }
 
-    /// The empty-state branch reads the O(1) aggregate probe; the table reads the
-    /// filtered array. The two must never disagree about emptiness, for any
-    /// category, or the window shows an empty state over a non-empty table.
+    /// The empty-state branch and the table must never disagree about emptiness, for
+    /// any category, or the window shows an empty state over a non-empty table.
+    ///
+    /// Since the counts moved to the engine this can no longer be answered from them at
+    /// all — they cover 20 000 retained rows while the window holds 2 000, so a host
+    /// whose flows have rolled out has a non-zero count and no rows. Both sides now read
+    /// the cached projection, and `selectedCategory` is set through the funnel so the
+    /// cache is what a real category tap would leave behind.
     @Test func displayFlowsAreEmpty_agreesWithDisplayFlows() {
-        var state = AppFeature.State()
         let device = SourceDevice(ip: "192.168.1.9", kind: .lan, platform: nil, client: nil)
         let app = SourceApp(name: "App", bundleID: "com.app", pid: 1)
-        state.recordFlow(flow(url: "https://a.test/1", status: 500))
-        state.recordFlow(flow(url: "https://b.test/1", app: app, device: device))
+        var state = state([
+            flow(url: "https://a.test/1", status: 500),
+            flow(url: "https://b.test/1", app: app, device: device),
+        ])
 
         let categories: [FlowCategory?] = [
             nil, .all, .errors, .host("a.test"), .host("missing.test"),
@@ -172,6 +215,7 @@ import Testing
         ]
         for category in categories {
             state.selectedCategory = category
+            state.refreshVisibleFlows()
             #expect(
                 state.displayFlowsAreEmpty == state.displayFlows.isEmpty,
                 "disagree under \(String(describing: category))"
@@ -180,6 +224,7 @@ import Testing
 
         state.forgetCapturedFlows()
         state.selectedCategory = .all
+        state.refreshVisibleFlows()
         #expect(state.displayFlowsAreEmpty)
     }
 
@@ -203,8 +248,7 @@ import Testing
         #expect(batched.flows == perFlow.flows)
         #expect(batched.allCount == AppFeature.State.displayCap, "the cap holds")
         #expect(batched.droppedFlowCount == perFlow.droppedFlowCount)
-        #expect(batched.hosts.map(\.host) == perFlow.hosts.map(\.host))
-        #expect(batched.hosts.map(\.count) == perFlow.hosts.map(\.count))
+        #expect(batched.hostByRow == perFlow.hostByRow, "the per-row index matches too")
         #expect(batched.selectedFlowID == nil, "a selection dropped by the trim is cleared")
     }
 
@@ -220,17 +264,16 @@ import Testing
         let seeded = AppFeature.State(flows: flows)
 
         #expect(seeded.flows == incremental.flows)
-        #expect(seeded.errorCount == incremental.errorCount)
-        #expect(seeded.hosts.map(\.host) == incremental.hosts.map(\.host))
-        #expect(seeded.hosts.map(\.count) == incremental.hosts.map(\.count))
+        #expect(seeded.hostByRow == incremental.hostByRow)
+        #expect(seeded.displayFlows.map(\.id) == incremental.displayFlows.map(\.id),
+                "including the cached projection, which a stale cache would fail")
     }
 }
 
-/// `hostByFlow` is the seventh aggregate, and it is the one keyed by *flow* rather
-/// than by host — so the mirror-image rule `contribute`/`retract` live by has a new
-/// way to go wrong: an entry that outlives its flow makes a row match a category it
-/// is no longer in, and one dropped too early makes it vanish from a filtered list
-/// while still being counted in the sidebar.
+/// `AppFeature.State.hostByRow` — the per-row host index. It is keyed by *flow*
+/// rather than by host, so it has a way to go wrong the counters don't: an entry that
+/// outlives its row makes a row match a category it is no longer in, and one dropped
+/// too early makes it vanish from a filtered list while the sidebar still counts it.
 @Suite struct FlowHostIndexTests {
     private func flow(_ url: String) -> Flow {
         Flow(
@@ -239,28 +282,16 @@ import Testing
         )
     }
 
-    @Test func aFlowsHostIsIndexedAndAgreesWithTheSidebarCounts() {
-        var aggregates = FlowAggregates()
+    /// The per-row host map moved to `AppFeature.State` when the counters moved to the
+    /// engine. It is the one projection keyed by *flow* rather than by host, so a copy
+    /// covering everything retained (20 000 rows) would reintroduce exactly the
+    /// per-flow memory the windowed list exists to remove — a per-row map belongs to
+    /// whoever holds the rows.
+    @Test func theWindowIndexesTheHostOfEveryRowItHolds() {
+        var state = AppFeature.State()
         let a = flow("https://api.example.test/v1")
-        aggregates.contribute(a)
-        #expect(aggregates.hostByFlow[a.id] == "api.example.test")
-        #expect(aggregates.hostCounts["api.example.test"] == 1)
-    }
-
-    @Test func retractDropsTheIndexEntryWithTheCount() {
-        var aggregates = FlowAggregates()
-        let a = flow("https://api.example.test/v1")
-        aggregates.contribute(a)
-        aggregates.retract(a)
-        #expect(aggregates.hostByFlow[a.id] == nil)
-        #expect(aggregates.hostCounts["api.example.test"] == nil)
-    }
-
-    @Test func removeAllClearsTheIndexToo() {
-        var aggregates = FlowAggregates()
-        aggregates.contribute(flow("https://api.example.test/v1"))
-        aggregates.removeAll()
-        #expect(aggregates.hostByFlow.isEmpty)
+        state.recordFlow(a)
+        #expect(state.hostByRow[a.id] == "api.example.test")
     }
 
     /// The eviction path: a flow dropped past the display cap must leave no index
@@ -273,8 +304,8 @@ import Testing
             state.recordFlow(flow("https://bulk.example.test/\(i)"))
         }
         #expect(state.flows[id: first.id] == nil)
-        #expect(state.aggregates.hostByFlow[first.id] == nil)
-        #expect(state.aggregates.hostByFlow.count == state.flows.count)
+        #expect(state.hostByRow[first.id] == nil)
+        #expect(state.hostByRow.count == state.flows.count)
     }
 
     /// An upsert (pending → completed) replaces rather than duplicates, and the index
@@ -285,7 +316,14 @@ import Testing
         state.recordFlow(moved)
         moved.request.url = "https://after.example.test/v1"
         state.recordFlow(moved)
-        #expect(state.aggregates.hostByFlow[moved.id] == "after.example.test")
-        #expect(state.aggregates.hostCounts["before.example.test"] == nil)
+        #expect(state.hostByRow[moved.id] == "after.example.test")
+    }
+
+    /// Clearing the capture drops the row index with the rows.
+    @Test func clearingDropsTheIndex() {
+        var state = AppFeature.State()
+        state.recordFlow(flow("https://api.example.test/v1"))
+        state.forgetCapturedFlows()
+        #expect(state.hostByRow.isEmpty)
     }
 }

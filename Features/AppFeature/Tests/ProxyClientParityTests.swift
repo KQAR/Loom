@@ -44,6 +44,7 @@ import Testing
             endpoint lands with that surface. Until then nothing in the window calls \
             it, and wiring it now would be an endpoint with no caller.
             """)
+        case .flowAggregates: return .wired(client.flowAggregates)
         case .searchFlows:
             return .deliberatelyAbsent("""
             The bound this carries — was the history scan cut short, how much is \

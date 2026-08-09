@@ -270,6 +270,13 @@ public protocol FlowProviding: Sendable {
     /// Defaulted so an embedder answering from one in-memory list keeps conforming; the
     /// default pages that list rather than claiming it can't.
     func flowPage(after cursor: FlowCursor?, limit: Int, matching query: FlowQuery) async -> FlowPage
+    /// Per-host / per-app / per-device counts over everything retained — memory and
+    /// durable store together, which is the only place they can be counted correctly.
+    ///
+    /// `coversHistory` is false only between boot and the history aggregation landing,
+    /// when the numbers cover what has been restored so far. Reported rather than
+    /// smoothed over: "12" and "12 so far" are different claims.
+    func flowAggregates() async -> (aggregates: FlowAggregates, coversHistory: Bool)
     /// Like `recentFlows`, but with request/response bodies hydrated — for
     /// exports (HAR) that need the full payload, not just summaries. Kept
     /// separate so the common list/summary path stays body-free (cheap).
@@ -338,6 +345,14 @@ public extension FlowProviding {
     /// `nil` states honestly, rather than a `0` that would read as "nothing stored".
     func searchFlows(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
         FlowSearchResult(flows: await recentFlows(matching: query, limit: limit))
+    }
+
+    /// Count the one list a store-less conformer has — which for it genuinely is
+    /// everything retained, so the counts do cover its whole history.
+    func flowAggregates() async -> (aggregates: FlowAggregates, coversHistory: Bool) {
+        var aggregates = FlowAggregates()
+        for flow in await recentFlows(limit: Int.max) { aggregates.contribute(flow) }
+        return (aggregates, true)
     }
 
     /// Page the one list a store-less conformer has. Correct rather than fast: it pulls
@@ -499,6 +514,7 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     case recentFlowsMatching
     case searchFlows
     case flowPage
+    case flowAggregates
     case recentFlowsForExport
     case flowByID
     case flowStream
