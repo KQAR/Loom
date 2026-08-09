@@ -27,6 +27,14 @@ import Synchronization
 ///   an old client, or a proxy that stripped the metadata, or a `curl` someone typed.
 ///   It proves nothing.
 ///
+/// The asymmetry has a practical consequence that is easy to walk into: the handshake
+/// happens **once per client connection**, and over stateless HTTP everything after it
+/// is a bare request. So a legacy client that connected before this app launched sends
+/// traffic all day and never appears as evidence — measured on Claude Code, which
+/// re-used its connection across several restarts of this app and showed up only in
+/// `legacyBareRequests`. Reading the tally therefore means restarting the *client*, not
+/// merely exercising it; `ProtocolTrafficRender`'s `unknown` reason says so.
+///
 /// A single count would almost never reach zero (bare requests keep arriving), the
 /// condition would never fire, and the tax would stay — with telemetry that made it look
 /// measured. So the reasons are counted apart and the condition reads only the first.

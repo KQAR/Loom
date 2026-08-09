@@ -223,6 +223,34 @@ import LoomSharedModels
         #expect(reason.contains("per-launch"))
     }
 
+    /// The trap the `unknown` reason exists to warn about: a legacy client that
+    /// connected before this launch keeps sending traffic, and every request of it is a
+    /// bare one — because the handshake happens once per connection and stateless HTTP
+    /// carries nothing after it. Measured on Claude Code, which held one connection
+    /// across several restarts of the app.
+    ///
+    /// So a busy endpoint serving an old client is indistinguishable here from an idle
+    /// one, and the reason has to say what would actually produce evidence.
+    @MainActor
+    @Test func aLegacyClientOnAnOlderConnectionLooksLikeSilence() async throws {
+        let log = MCPEraLog()
+        for _ in 0 ..< 50 { log.record(reason: .legacyBareRequest, client: nil) }
+        var executor = MCPToolExecutor(
+            engine: StubEngine(), appVersion: "9.9", protocolVersion: MCPProtocol.latest
+        )
+        executor.eraLog = log
+
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "get_version", arguments: [:]).utf8)
+        ) as? [String: Any])
+        let traffic = try #require(json["protocolTraffic"] as? [String: Any])
+
+        #expect(traffic["legacyBareRequests"] as? Int == 50)
+        #expect(traffic["legacyEra"] as? String == "unknown", "fifty requests are still not evidence")
+        let reason = try #require(traffic["legacyEraReason"] as? String)
+        #expect(reason.contains("restart"), "and the reason has to say what would be")
+    }
+
     /// An empty tally is the same question with none of the noise: nothing has been
     /// served at all, which is not a clean bill of health either.
     @MainActor
