@@ -334,8 +334,13 @@ extension MCPToolExecutor {
             List captured HTTP flows, newest first, with method, url, status, timing and startedAt. \
             Filters (all optional, ANDed) are applied across every retained flow BEFORE `limit`, \
             so a match that isn't among the newest exchanges is still found — prefer filtering here \
-            over pulling a big list and scanning it yourself. `captureTruncated: true` on a summary \
-            means the recorded body/frame log is only a prefix of what actually flowed.
+            over pulling a big list and scanning it yourself. "Retained" means memory **and** the \
+            durable store on disk, which holds an order of magnitude more, so a filter reaches \
+            exchanges captured long before this session. Exchanges older than that store's row cap \
+            are pruned and no filter will find them; `get_stats` reports `flowsRetained` if you need \
+            the denominator. `captureTruncated: true` on a summary means the recorded body/frame \
+            log is only a prefix of what actually flowed, so a `body_contains` miss on one of those \
+            isn't proof.
             """,
             inputSchema: [
                 "type": "object",
@@ -402,10 +407,14 @@ extension MCPToolExecutor {
             summaries isn't a percentile.
 
             Takes the same filters as `get_recent_flows` (`since_seconds` + `host` scopes it), \
-            aggregates every retained flow that matches, and reports `flowsConsidered` as the \
-            sample size behind the numbers. `sizeUnknownFlows` on a bucket means its byte totals \
-            are a floor: those flows' bodies were evicted from memory, so their size is no longer \
-            known.
+            aggregates every retained flow that matches — memory and the durable store both — and \
+            reports `flowsConsidered` as the sample size behind the numbers, with `flowsRetained` \
+            as the denominator it came out of. `historyScanTruncated: true` (present only when it \
+            happened) means the history walk stopped at its row budget, so the numbers are over a \
+            partial sample: narrow with `host` / `since_seconds` and ask again rather than \
+            reporting them as the whole picture. `sizeUnknownFlows` on a bucket means its byte \
+            totals are a floor: those flows' bodies were evicted from memory, so their size is no \
+            longer known.
             """,
             inputSchema: [
                 "type": "object",

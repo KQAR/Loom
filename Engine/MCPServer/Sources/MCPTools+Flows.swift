@@ -30,9 +30,9 @@ extension MCPToolExecutor {
     }
 
     /// Upper bound on the flows one `get_stats` call aggregates. Set above the engine's
-    /// in-memory ring capacity so it means "everything retained in memory" rather than
-    /// a page — like `get_recent_flows`, the scan is over the ring, not the whole
-    /// SQLite history.
+    /// in-memory ring capacity so it means "everything retained" rather than a page —
+    /// and since the filtered read now falls through to the durable store, that phrase
+    /// finally covers history too, not just the ring.
     static let statsScanCap = 5_000
 
     func handleGetStats(_ arguments: [String: Any]) async throws -> String {
@@ -41,8 +41,8 @@ extension MCPToolExecutor {
         let limit = (arguments["limit"] as? Int) ?? 10
         let slowest = (arguments["slowest"] as? Int) ?? 3
 
-        let flows = await engine.recentFlows(matching: query, limit: Self.statsScanCap)
-        let stats = FlowStats.compute(flows: flows, grouping: grouping, limit: limit, slowest: slowest)
+        let result = await engine.searchFlows(matching: query, limit: Self.statsScanCap)
+        let stats = FlowStats.compute(flows: result.flows, grouping: grouping, limit: limit, slowest: slowest)
 
         var payload: [String: Any] = [
             "groupBy": grouping.rawValue,
@@ -52,6 +52,14 @@ extension MCPToolExecutor {
             "bucketsOmitted": stats.bucketsOmitted,
             "slowest": MCPRender.array(stats.slowest.map(SlowestFlowRender.init)),
         ]
+        // What the sample is drawn from, so `flowsConsidered` can be read against a
+        // denominator rather than guessed at. Percentiles over a fraction of the
+        // matching traffic are still percentiles of *something*, which is exactly how
+        // a partial answer gets mistaken for the answer.
+        if let retained = result.storedFlowCount { payload["flowsRetained"] = retained }
+        // Only ever present when true — a `false` here would add a key that was never
+        // there and imply the question is usually worth asking.
+        if result.budgetExhausted { payload["historyScanTruncated"] = true }
         if let earliest = stats.earliest { payload["from"] = Self.iso8601.string(from: earliest) }
         if let latest = stats.latest { payload["to"] = Self.iso8601.string(from: latest) }
         return prettyJSON(payload)

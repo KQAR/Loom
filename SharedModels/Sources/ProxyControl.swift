@@ -255,6 +255,14 @@ public protocol FlowProviding: Sendable {
     /// implementation filters `recentFlows`; an implementor holding a store should
     /// override it so the scan happens next to the data.
     func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow]
+    /// The same read, plus what the answer is worth — whether the scan was cut short,
+    /// and how much history exists at all.
+    ///
+    /// Separate from `recentFlows(matching:)` because an empty result has two meanings
+    /// that must not be conflated when reporting to an agent: *not captured* and
+    /// *outside what was searched*. Defaulted, so an embedder that answers from one
+    /// in-memory list keeps conforming without pretending to know a bound it doesn't.
+    func searchFlows(matching query: FlowQuery, limit: Int) async -> FlowSearchResult
     /// Like `recentFlows`, but with request/response bodies hydrated — for
     /// exports (HAR) that need the full payload, not just summaries. Kept
     /// separate so the common list/summary path stays body-free (cheap).
@@ -316,6 +324,13 @@ public extension FlowProviding {
         guard !query.isEmpty else { return await recentFlows(limit: limit) }
         let candidates = await recentFlows(limit: max(limit, 2_000))
         return Array(candidates.lazy.filter(query.matches).prefix(max(0, limit)))
+    }
+
+    /// A conformer with no history to reach for answers with the flows alone: no
+    /// budget was hit, and it cannot say how many exchanges are retained — which
+    /// `nil` states honestly, rather than a `0` that would read as "nothing stored".
+    func searchFlows(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
+        FlowSearchResult(flows: await recentFlows(matching: query, limit: limit))
     }
 }
 
@@ -460,6 +475,7 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     case status
     case recentFlows
     case recentFlowsMatching
+    case searchFlows
     case recentFlowsForExport
     case flowByID
     case flowStream

@@ -35,6 +35,15 @@ import Testing
         case .status: return .wired(client.status)
         case .recentFlows: return .wired(client.recentFlows)
         case .recentFlowsMatching: return .wired(client.recentFlowsMatching)
+        case .searchFlows:
+            return .deliberatelyAbsent("""
+            The bound this carries — was the history scan cut short, how much is \
+            retained — answers a question the agent has and the window doesn't. The \
+            window's own limit is different and it can already measure it: the table \
+            holds the newest 2000, so matches outside that are the ids in \
+            `recentFlowsMatching`'s result that aren't in the list, which the find bar \
+            counts and states. Revisit if the table ever shows flows it doesn't hold.
+            """)
         case .recentFlowsForExport:
             return .deliberatelyAbsent("""
             HAR export stays an agent action (export_har), by decision rather than \
