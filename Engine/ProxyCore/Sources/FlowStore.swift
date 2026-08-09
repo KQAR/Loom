@@ -223,21 +223,31 @@ actor FlowStore {
         broadcast(flow)
     }
 
-    /// Drop in-memory bodies from the oldest persisted flows until the ring is
-    /// under its byte budget. Slimmed flows keep all metadata; their bodies stay
-    /// on disk and `hydrated` re-attaches them on a detail/replay/export read.
-    /// No-op without a store (nothing to hydrate back from) or when in budget.
+    /// Drop in-memory bodies from the oldest flows until the ring is under its byte
+    /// budget. Slimmed flows keep all metadata; with a store behind them their bodies
+    /// stay on disk and `hydrated` re-attaches them on a detail/replay/export read.
+    ///
+    /// **It runs without a store too**, and that is a fix rather than a widening. The
+    /// guard used to be `persistence != nil`, on sound reasoning — with nothing to
+    /// hydrate from, dropping a body loses it — but the consequence was that an
+    /// embedder (`ProxyEngine(persistFlows: false)`) had *no* body bound at all: the
+    /// budget was a no-op and the ring held every byte it was ever handed. Measured at
+    /// a 20 000-flow ring with 32 KB bodies: **625 MB live**, against 61 MB for the
+    /// same traffic with a store. The bound has to exist; what the missing store
+    /// changes is that the drop is a loss, so it is *recorded* as one
+    /// (`Flow.evictingBodies`) instead of leaving a flow claiming it had no body.
     private func enforceBodyBudget() {
-        guard persistence != nil, bodyBytes > bodyBudget else { return }
+        guard bodyBytes > bodyBudget else { return }
+        let recoverable = persistence != nil
         var idx = slimCursor
         while idx < flows.count, bodyBytes > bodyBudget {
             let existing = flows[idx]
-            // Only slim completed flows (an in-flight body isn't on disk yet) that
-            // still carry bytes.
+            // Only slim completed flows (an in-flight body isn't on disk yet, and
+            // isn't finished being recorded either) that still carry bytes.
             if existing.completedAt != nil {
                 let size = bodySize(of: existing)
                 if size > 0 {
-                    flows[idx] = existing.strippingBodies()
+                    flows[idx] = recoverable ? existing.strippingBodies() : existing.evictingBodies()
                     bodyBytes -= size
                 }
             }

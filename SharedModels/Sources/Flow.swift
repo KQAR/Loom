@@ -206,6 +206,19 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// replayed the same way — so it has to be labelled, or a reader would take
     /// someone else's capture for something that just happened on this machine.
     public var importedFrom: String?
+    /// Set when the in-memory ring dropped this flow's bodies to stay inside its byte
+    /// budget **with nowhere to hydrate them back from** — an embedder running the
+    /// engine without persistence (`ProxyEngine(persistFlows: false)`).
+    ///
+    /// Only ever `true`; absent is the normal case. It exists because the two ways a
+    /// body goes missing need different next moves and are otherwise identical on the
+    /// wire-format: a body capped *at capture* is a `fullBodyBytes` prefix and the fix
+    /// is a bigger capture cap, while this one was captured whole and then discarded,
+    /// and the fix is turning persistence on. Loom itself always persists, so this is
+    /// the embedding path's flag; each side's `fullBodyBytes` carries the size either
+    /// way, so `isBodyTruncated` and every reader of it stay correct without knowing
+    /// which happened.
+    public var bodiesEvicted: Bool?
 
     public init(
         id: UUID = UUID(),
@@ -220,7 +233,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         webSocketMessages: [WebSocketMessage]? = nil,
         webSocketDroppedMessages: Int? = nil,
         webSocketCaptureError: String? = nil,
-        importedFrom: String? = nil
+        importedFrom: String? = nil,
+        bodiesEvicted: Bool? = nil
     ) {
         self.id = id
         self.request = request
@@ -235,6 +249,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.webSocketDroppedMessages = webSocketDroppedMessages
         self.webSocketCaptureError = webSocketCaptureError
         self.importedFrom = importedFrom
+        self.bodiesEvicted = bodiesEvicted
     }
 
     // MARK: Read accessors derived from `outcome` (keep call sites terse)

@@ -110,13 +110,28 @@ import LoomSharedModels
         #expect(kept?.request.body?.count == 600)
     }
 
-    @Test func noPersistence_neverSlims() async {
-        // Without a store there's nothing to hydrate back from, so bodies stay put
-        // even over budget (memory pressure is preferable to data loss).
+    /// **This test used to assert the opposite**, and the reversal is the point.
+    ///
+    /// It read: "without a store there's nothing to hydrate back from, so bodies stay
+    /// put even over budget (memory pressure is preferable to data loss)." The premise
+    /// is right and the conclusion doesn't follow — *unbounded* memory pressure is not
+    /// preferable to anything, and that is what it bought: an embedder running
+    /// `ProxyEngine(persistFlows: false)` had no body bound at all. Measured on a
+    /// 20 000-flow ring with 32 KB bodies, **625 MB live**, against 61 MB for the same
+    /// traffic with a store. "Bound what's in memory" has no exception clause.
+    ///
+    /// So the drop happens, and the data loss the old comment feared is answered by
+    /// *recording* it (`bodiesEvicted` + `fullBodyBytes`) rather than by not bounding
+    /// anything. `RingBodyBudgetWithoutStoreTests` covers the recording; this pins the
+    /// bound.
+    @Test func noPersistence_stillHonoursTheBudget_andSaysWhatItDropped() async {
         let store = FlowStore(capacity: 100, bodyBudget: 100)
-        let a = completed(1, bodySize: 600)
-        await store.upsert(a)
-        let kept = await store.recent(limit: 1).first
-        #expect(kept?.response?.body?.count == 600)
+        await store.upsert(completed(1, bodySize: 600))
+        await store.upsert(completed(2, bodySize: 600)) // the cursor only slims behind it
+
+        let oldest = await store.recent(limit: 2).last
+        #expect(oldest?.response?.body == nil, "over budget with no store: dropped, not kept")
+        #expect(oldest?.bodiesEvicted == true, "and dropped irrecoverably, which is a different fact")
+        #expect(oldest?.response?.fullBodyBytes == 600, "with the size that flowed, so no reader thinks it was empty")
     }
 }

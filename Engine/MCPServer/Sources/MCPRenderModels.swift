@@ -47,6 +47,12 @@ struct FlowSummaryRender: Encodable {
     /// A partially-captured exchange, flagged in the *summary* too, so an agent
     /// knows a body is a prefix before it fetches (or diffs) the detail.
     var captureTruncated: Bool?
+    /// The bodies were captured whole and then discarded to keep the in-memory ring
+    /// inside its byte budget, with no store to read them back from. Distinct from
+    /// `captureTruncated` (which it also sets) because the next move differs: this one
+    /// is not fixed by fetching the detail or raising a capture cap — the bytes are
+    /// gone, and only running the engine with persistence prevents it.
+    var bodiesEvicted: Bool?
     var sourceApp: SourceAppRender?
     var sourceDevice: SourceDeviceRender?
 
@@ -71,6 +77,7 @@ struct FlowSummaryRender: Encodable {
             || flow.webSocketDroppedMessages != nil || flow.webSocketCaptureError != nil {
             captureTruncated = true
         }
+        bodiesEvicted = flow.bodiesEvicted
         sourceApp = flow.sourceApp.map(SourceAppRender.init)
         sourceDevice = flow.sourceDevice.map(SourceDeviceRender.init)
     }
