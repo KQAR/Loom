@@ -79,12 +79,29 @@ let project = Project(
                     "NSAllowsArbitraryLoads": true,
                 ]),
             ]),
-            entitlements: .dictionary([
-                // Unsandboxed: the proxy binds listening sockets, writes the CA and the
-                // flow/audit databases outside a container, and shells out to
-                // `networksetup` / `pfctl` for the system-proxy toggle.
-                "com.apple.security.app-sandbox": false,
-            ]),
+            // **No entitlements file, deliberately.** Loom must not be sandboxed —
+            // it binds a listening socket on 0.0.0.0 for device capture, shells out to
+            // `networksetup`/`pfctl` for the system-proxy toggle, reads other processes
+            // through libproc to attribute a flow to an app, registers a root
+            // LaunchDaemon via SMAppService, installs CA trust through Authorization
+            // Services, and writes the CA and both SQLite stores to
+            // `~/Library/Application Support/com.loom` rather than a container. A
+            // sandbox breaks every one of those.
+            //
+            // But **unsandboxed is the default**, so the `com.apple.security.app-sandbox:
+            // false` this used to declare was an assertion of a default — and asserting
+            // it cost something real. As `.dictionary` it was materialized into
+            // `Derived/Entitlements/` and **rewritten on every `tuist generate`**:
+            // byte-identical content, fresh mtime. Xcode's entitlements check is
+            // mtime-based, so the next incremental build failed with "Entitlements file
+            // was modified during the build" and kept failing until DerivedData was
+            // deleted. Verified with a bare `touch` of that file and nothing else, and
+            // verified gone here: `codesign -d --entitlements` on the built app shows no
+            // `app-sandbox` key at all, which is the same unsandboxed state.
+            //
+            // So: if a real entitlement is ever needed, add it as `.file(path:)` with a
+            // tracked file — never `.dictionary`. See AGENTS.md § Known Issues.
+            entitlements: nil,
             scripts: [
                 // Runs before the final CodeSign step, so the app's seal covers both
                 // copied files — see the script's own header for why that ordering is
