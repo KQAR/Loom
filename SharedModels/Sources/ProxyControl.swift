@@ -263,6 +263,13 @@ public protocol FlowProviding: Sendable {
     /// *outside what was searched*. Defaulted, so an embedder that answers from one
     /// in-memory list keeps conforming without pretending to know a bound it doesn't.
     func searchFlows(matching query: FlowQuery, limit: Int) async -> FlowSearchResult
+    /// One page of the capture, newest-first, resuming after `cursor` (nil starts at
+    /// the newest). The read a windowed list uses instead of holding every flow — see
+    /// `FlowCursor` for why the resume point is a key and not an offset.
+    ///
+    /// Defaulted so an embedder answering from one in-memory list keeps conforming; the
+    /// default pages that list rather than claiming it can't.
+    func flowPage(after cursor: FlowCursor?, limit: Int, matching query: FlowQuery) async -> FlowPage
     /// Like `recentFlows`, but with request/response bodies hydrated — for
     /// exports (HAR) that need the full payload, not just summaries. Kept
     /// separate so the common list/summary path stays body-free (cheap).
@@ -331,6 +338,21 @@ public extension FlowProviding {
     /// `nil` states honestly, rather than a `0` that would read as "nothing stored".
     func searchFlows(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
         FlowSearchResult(flows: await recentFlows(matching: query, limit: limit))
+    }
+
+    /// Page the one list a store-less conformer has. Correct rather than fast: it pulls
+    /// a generous window and seeks within it, which is what `recentFlows(matching:)`
+    /// already does for filtering here.
+    func flowPage(after cursor: FlowCursor?, limit: Int, matching query: FlowQuery) async -> FlowPage {
+        let candidates = await recentFlows(matching: query, limit: max(limit, 2_000))
+            .sorted(by: FlowCursor.isOrderedBefore)
+        let remaining = cursor.map { cursor in candidates.filter(cursor.precedes) } ?? candidates
+        let page = Array(remaining.prefix(max(0, limit)))
+        return FlowPage(
+            flows: page,
+            nextCursor: page.count < limit ? nil : page.last.map(FlowCursor.init),
+            totalCount: nil
+        )
     }
 }
 
@@ -476,6 +498,7 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     case recentFlows
     case recentFlowsMatching
     case searchFlows
+    case flowPage
     case recentFlowsForExport
     case flowByID
     case flowStream

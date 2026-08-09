@@ -389,6 +389,97 @@ actor FlowStore {
         )
     }
 
+    /// One page of the capture, newest-first, resuming after `cursor`.
+    ///
+    /// The read a windowed list surface uses instead of holding every flow: the window
+    /// keeps the rows it can draw plus a prefetch margin, and asks for more as it
+    /// scrolls. What makes that safe is the *keyset* — see `FlowCursor` for why an
+    /// offset into a list the capture keeps prepending to silently skips and repeats
+    /// rows.
+    ///
+    /// Ring first, then history, merged. Two things make the merge non-obvious and
+    /// both are load-bearing:
+    ///
+    /// - **The ring is scanned in full rather than walked until the cursor.** Insertion
+    ///   order is *almost* `startedAt` order and not quite: a long-running exchange is
+    ///   appended when it starts and can still be in flight while hundreds of newer
+    ///   ones complete around it. Stopping early on position would skip it.
+    /// - **The two halves are merged by the ordering, not concatenated.** A ring flow
+    ///   older than a persisted one is possible for the same reason, so appending
+    ///   "ring, then disk" would emit rows out of order at the seam.
+    func page(
+        after cursor: FlowCursor?, limit: Int, matching query: FlowQuery = .all
+    ) async -> FlowPage {
+        let limit = max(0, limit)
+        guard limit > 0 else { return FlowPage(flows: [], nextCursor: cursor, totalCount: totalRetained()) }
+        let page = await Self.assemblePage(
+            snapshot: flows, cursor: cursor, query: query, limit: limit, persistence: persistence
+        )
+        return FlowPage(flows: page.flows, nextCursor: page.nextCursor, totalCount: totalRetained())
+    }
+
+    /// Everything retained and reachable, in memory and on disk, counted once.
+    ///
+    /// `upsert` persists a flow only once it has completed, so the two sets overlap
+    /// exactly on completed flows: the stored count plus the ring's *in-flight* flows
+    /// is the total, with nothing double-counted. Nil without a store — the ring is
+    /// then the whole truth and the caller already has its count.
+    private func totalRetained() -> Int? {
+        guard let persistence else { return nil }
+        return persistence.storedRowCount + flows.count(where: { $0.completedAt == nil })
+    }
+
+    @concurrent private static func assemblePage(
+        snapshot: [Flow],
+        cursor: FlowCursor?,
+        query: FlowQuery,
+        limit: Int,
+        persistence: FlowPersistence?
+    ) async -> (flows: [Flow], nextCursor: FlowCursor?) {
+        var fromRing: [Flow] = []
+        for flow in snapshot {
+            if Task.isCancelled { break }
+            if let cursor, !cursor.precedes(flow) { continue }
+            guard query.matchesMetadata(flow) else { continue }
+            if query.needsBodies, !query.matchesBodies(Self.hydrated(flow, from: persistence)) { continue }
+            fromRing.append(flow)
+        }
+        fromRing.sort(by: FlowCursor.isOrderedBefore)
+        var page = Array(fromRing.prefix(limit))
+
+        // History is asked **on every page, from the caller's cursor** — not only when
+        // the ring came up short, and not from the ring's oldest row.
+        //
+        // The tempting version fills from the ring, then asks disk to continue after
+        // the last ring row. It assumes the ring is a *prefix* of the global ordering,
+        // and it isn't: the ring is the most recently *inserted* flows, while the order
+        // here is `startedAt` with the id as tiebreak. When a burst shares a timestamp —
+        // a page load firing a dozen requests inside one millisecond, h2 multiplexing
+        // more — the ring's rows are an arbitrary subset of that instant's ids, not its
+        // highest ones, so continuing after the ring's minimum skips every disk row
+        // sorting above it. Caught by `aPageBoundaryInsideOneInstantIsStable`, which
+        // returned 11 of 20 flows.
+        //
+        // Asking both halves for the same range and merging needs no such assumption.
+        // The cost is one indexed, limited query per page even when the ring could have
+        // answered — which is the right trade for a read that must not silently skip.
+        if let persistence, !Task.isCancelled {
+            let older = persistence.scan(
+                matching: query,
+                after: cursor,
+                limit: limit,
+                excluding: Set(snapshot.map(\.id)),   // the ring's copy is the fresher one
+                rowBudget: historyScanRowBudget
+            )
+            page.append(contentsOf: older.flows)
+            page.sort(by: FlowCursor.isOrderedBefore)
+            page = Array(page.prefix(limit))
+        }
+        // A short page means the end: neither half had anything left to fill it with.
+        let next = page.count < limit ? nil : page.last.map(FlowCursor.init)
+        return (page, next)
+    }
+
     /// How many history rows one search may examine.
     ///
     /// Above the table's own cap, so in practice a search reads all of it and the

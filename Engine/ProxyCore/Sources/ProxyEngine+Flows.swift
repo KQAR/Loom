@@ -39,6 +39,14 @@ extension ProxyEngine {
         await store.search(matching: query, limit: limit)
     }
 
+    /// One page of the capture, newest-first — the read a windowed list surface uses
+    /// instead of holding every flow in memory.
+    public func flowPage(
+        after cursor: FlowCursor?, limit: Int, matching query: FlowQuery
+    ) async -> FlowPage {
+        await store.page(after: cursor, limit: limit, matching: query)
+    }
+
     /// Recent flows with bodies hydrated from disk — for HAR export and any other
     /// consumer that needs the full payload, not just summaries. `recentFlows`
     /// stays body-free so list/summary reads don't pay to load bodies.

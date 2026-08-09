@@ -35,6 +35,15 @@ import Testing
         case .status: return .wired(client.status)
         case .recentFlows: return .wired(client.recentFlows)
         case .recentFlowsMatching: return .wired(client.recentFlowsMatching)
+        case .flowPage:
+            return .deliberatelyAbsent("""
+            The windowed list surface is not wired yet — this is the engine half, \
+            landing first so the paging can be tested without the AppKit table rework \
+            it needs (measured: SwiftUI's `Table` walks its whole collection ~5 times \
+            per update, so a paged source can't sit behind it). The `ProxyClient` \
+            endpoint lands with that surface. Until then nothing in the window calls \
+            it, and wiring it now would be an endpoint with no caller.
+            """)
         case .searchFlows:
             return .deliberatelyAbsent("""
             The bound this carries — was the history scan cut short, how much is \
