@@ -354,23 +354,11 @@ public struct AppFeature: Sendable {
         /// stale list still renders.
         private var visibleFlows: [Flow] = []
 
-        /// 1-based capture order per flow, for the table's `#` column.
-        ///
-        /// Maintained here rather than derived in a cell: `IdentifiedArray.index(id:)`
-        /// is O(1), but *reading the flow list from a cell body* is what costs — it
-        /// makes every realized row observe the whole capture, so one live batch
-        /// invalidates every visible row. Rebuilt with the projection, which is the same
-        /// schedule the rows themselves change on.
-        public private(set) var captureOrdinals: [Flow.ID: Int] = [:]
-
         /// Recompute the projection. Called by every mutation that can change it —
         /// `recordFlow(s)`, the display-cap trim, a clear, a category change and every
         /// search action.
         mutating func refreshVisibleFlows() {
             visibleFlows = computeVisibleFlows()
-            captureOrdinals = Dictionary(
-                uniqueKeysWithValues: flows.elements.enumerated().map { ($0.element.id, $0.offset + 1) }
-            )
         }
 
         private func computeVisibleFlows() -> [Flow] {

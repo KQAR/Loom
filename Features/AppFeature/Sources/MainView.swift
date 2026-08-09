@@ -910,15 +910,15 @@ private struct RequestTableView: View {
     @Binding var followTail: Bool
 
     var body: some View {
-        // Both evaluated once per render, not per row. `ordinals` in particular is the
-        // `#` column's input, and reading the store's flow list from inside a cell would
-        // make every realized row depend on the whole capture — so each live batch would
-        // invalidate all of them.
+        // Both read once here, not per row: a cell body that touches `store.flows`
+        // makes every realized row *observe* the whole capture, so one live batch
+        // invalidates all of them. Handed down as plain values, the dependency belongs
+        // to this view.
         let rows = store.displayFlows
-        let ordinals = store.captureOrdinals
+        let capture = store.flows
         return RequestTable(
             rows: rows,
-            ordinals: ordinals,
+            capture: capture,
             selection: $store.selectedFlowID.sending(\.flowSelected),
             followTail: $followTail,
             onReplay: { store.send(.replayTapped($0)) },
