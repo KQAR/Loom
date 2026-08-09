@@ -856,7 +856,13 @@ struct ProtocolTrafficRender: Encodable {
             tally is per-launch and holds nothing across relaunches, so an app that has \
             served no client reads identically to one every client has modernised against. \
             \(legacyBareRequests) bare fallback request(s) recorded, which prove nothing \
-            either way. Exercise the clients you ship a manifest for, then re-read.
+            either way. \
+            **Making a client call a tool is not enough to move this.** The handshake \
+            happens once, when the client first connects; over stateless HTTP every later \
+            request is a bare one. A client that connected before this launch — or before \
+            the app last restarted — therefore shows up only in `legacyBareRequests`, \
+            however much traffic it sends. To get an answer, restart the *client* (or its \
+            MCP connection) while this app is running, then re-read.
             """)
         }
         return (.retirable, """
