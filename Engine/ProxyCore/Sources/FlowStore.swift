@@ -54,11 +54,37 @@ actor FlowStore {
     /// every insert/update. See `FlowObserving`.
     private let observer: FlowObserving?
 
+    /// Per-host / per-app / per-device counts over everything **retained** — the ring
+    /// and the durable store together — not over what happens to be in memory.
+    ///
+    /// Three rules keep it exact, and each is a case where the obvious version drifts:
+    ///
+    /// - **A flow leaving the ring is not a flow leaving the capture.** Eviction at
+    ///   `capacity` moves a completed flow to disk-only; it is still retained and must
+    ///   still be counted. An *in-flight* flow evicted before it completed was never
+    ///   persisted, so that one is a real removal.
+    /// - **An upsert re-counts.** A flow is counted at `.pending` and again at every
+    ///   state change, and its error-ness changes underneath: pending isn't an error,
+    ///   the 500 it becomes is. Retract-then-contribute on replacement.
+    /// - **The pruner removes rows nobody upserted.** `FlowPersistence` drops the
+    ///   oldest rows past its cap on its own schedule, and those flows never come back
+    ///   through here — so the prune reports what it deleted and the counts retract.
+    private var aggregates = FlowAggregates()
+    /// Whether the boot aggregation has run. Counts are only claimed to cover history
+    /// once it has; before that they cover the ring, which is what they were seeded
+    /// with. Reported so a surface can tell "no traffic" from "not counted yet".
+    private var aggregatesCoverHistory = false
+
     init(capacity: Int = 2000, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil, observer: FlowObserving? = nil) {
         self.capacity = capacity
         self.bodyBudget = bodyBudget
         self.persistence = persistence
         self.observer = observer
+        // The pruner deletes retained rows on its own schedule with nobody asking, so
+        // it has to tell us or the counts drift upward forever.
+        persistence?.onPrune = { [weak self] pruned in
+            Task { await self?.forgetPruned(pruned) }
+        }
     }
 
     /// Fan a flow out to every live `flowStream()` consumer and the push
@@ -127,6 +153,49 @@ actor FlowStore {
         didLoadPersisted = true
         flows = persistence.recent(limit: limit).reversed() // ring is oldest-first
         reindex()
+        // Seeded from the ring so the sidebar has something immediately; the history
+        // pass replaces it (see `seedAggregatesFromHistory`), because these counts are
+        // claimed to be over everything retained and the ring is a tenth of it.
+        aggregates = FlowAggregates()
+        for flow in flows { aggregates.contribute(flow) }
+    }
+
+    /// Replace the ring-seeded counts with counts over every retained row.
+    ///
+    /// Separate from `loadPersisted` and `await`-ed off the actor because it decodes
+    /// the whole table (bounded by its row cap) and the boot path must not sit behind
+    /// it. Until it lands, `flowAggregates()` reports `coversHistory == false` rather
+    /// than letting a partial count pass for the total.
+    func seedAggregatesFromHistory() async {
+        guard let persistence, !aggregatesCoverHistory else { return }
+        let fromHistory = await Self.aggregateHistory(persistence: persistence)
+        // Re-fold the flows that are *not* on disk. Only completed flows are persisted,
+        // so anything still in flight would otherwise be dropped from the counts by
+        // this replacement — including, on a busy boot, every exchange started since.
+        var merged = fromHistory
+        for flow in flows where flow.completedAt == nil { merged.contribute(flow) }
+        aggregates = merged
+        aggregatesCoverHistory = true
+    }
+
+    @concurrent private static func aggregateHistory(persistence: FlowPersistence) async -> FlowAggregates {
+        persistence.aggregate()
+    }
+
+    /// The sidebar's counts, and whether they cover history yet.
+    func flowAggregates() -> (aggregates: FlowAggregates, coversHistory: Bool) {
+        (aggregates, aggregatesCoverHistory)
+    }
+
+    /// Retract flows the durable store pruned on its own schedule. Called from the
+    /// persistence queue, so it hops back onto the actor.
+    func forgetPruned(_ flows: [Flow]) {
+        for flow in flows {
+            // A pruned row that is still in the ring has not left the capture — the
+            // ring copy is reachable and `recent`/`page` still return it.
+            guard positions[flow.id] == nil else { continue }
+            aggregates.retract(flow)
+        }
     }
 
     /// Rebuild `positions` from scratch — only for wholesale replacements of the
@@ -193,6 +262,11 @@ actor FlowStore {
             // start — a nil there must not erase an answer that already landed.
             if flow.sourceApp == nil { flow.sourceApp = flows[idx].sourceApp }
             bodyBytes += bodySize(of: flow) - bodySize(of: flows[idx])
+            // Same flow, new state: its error-ness and its attribution can both have
+            // changed since it was counted (pending isn't an error; the 500 it becomes
+            // is), so the old contribution comes out before the new one goes in.
+            aggregates.retract(flows[idx])
+            aggregates.contribute(flow)
             flows[idx] = flow
             // A replacement can re-attach bodies behind the slim cursor (e.g. a
             // WebSocket frame landing on an old flow) — pull the cursor back so
@@ -202,12 +276,17 @@ actor FlowStore {
             guard recording || force else { return }
             positions[flow.id] = droppedFromFront + flows.count
             flows.append(flow)
+            aggregates.contribute(flow)
             bodyBytes += bodySize(of: flow)
             if flows.count > capacity {
                 let overflow = flows.count - capacity
                 for evicted in flows.prefix(overflow) {
                     bodyBytes -= bodySize(of: evicted)
                     positions[evicted.id] = nil
+                    // Leaving the ring is not leaving the capture: a completed flow is
+                    // on disk and still retained. One that never completed was never
+                    // saved, so this is where it actually disappears.
+                    if evicted.completedAt == nil { aggregates.retract(evicted) }
                 }
                 flows.removeFirst(overflow)
                 droppedFromFront += overflow
@@ -493,6 +572,7 @@ actor FlowStore {
     func clear() {
         flows.removeAll()
         positions.removeAll()
+        aggregates.removeAll()
         droppedFromFront = 0
         bodyBytes = 0
         slimCursor = 0

@@ -18,6 +18,12 @@ public struct ProxyClient: Sendable {
     /// findable. The agent has had this since M6 (`get_recent_flows` filters);
     /// without it the human surface could only ever look at the newest N.
     public var recentFlowsMatching: @Sendable (_ query: FlowQuery, _ limit: Int) async -> [Flow] = { _, _ in [] }
+    /// Sidebar counts over everything the engine retains, not over what this window
+    /// holds. The window used to fold them itself, which made every badge a count of
+    /// the newest 2000 exchanges against a store keeping 20 000.
+    public var flowAggregates: @Sendable () async -> (aggregates: FlowAggregates, coversHistory: Bool) = {
+        (FlowAggregates(), false)
+    }
     public var flow: @Sendable (_ id: UUID) async -> Flow? = { _ in nil }
     /// Devices that have sent traffic through the proxy, with per-device counts.
     /// Flow-derived (unlike `connectedDeviceCountStream`, which is connection-derived).
@@ -124,6 +130,7 @@ extension ProxyClient: DependencyKey {
             status: { await engine.status() },
             recentFlows: { await engine.recentFlows(limit: $0) },
             recentFlowsMatching: { await engine.recentFlows(matching: $0, limit: $1) },
+            flowAggregates: { await engine.flowAggregates() },
             flow: { await engine.flow(id: $0) },
             connectedDevices: { await engine.connectedDevices() },
             flowStream: { await engine.flowStream() },

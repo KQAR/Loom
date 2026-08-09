@@ -100,12 +100,18 @@ import Testing
         var oneAtATime = AppFeature.State()
         for flow in flows { oneAtATime.recordFlow(flow) }
 
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        // A capture batch also schedules the coalesced re-read of the engine's
+        // counters. The clock keeps it from firing inside the assertion, and
+        // `exhaustivity = .off` lets the test end with it still parked — what is under
+        // test here is the fold, not the refresh.
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+        }
+        store.exhaustivity = .off
         await store.send(.flowsReceived(flows)) { state in
             for flow in flows { state.recordFlow(flow) }
         }
         #expect(store.state.flows == oneAtATime.flows)
-        #expect(store.state.errorCount == oneAtATime.errorCount)
         #expect(store.state.status.capturedCount == oneAtATime.status.capturedCount)
     }
 
@@ -115,7 +121,10 @@ import Testing
         let selected = flow(7)
         var initial = AppFeature.State(flows: [selected])
         initial.selectedFlowID = selected.id
-        let store = TestStore(initialState: initial) { AppFeature() }
+        let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
+        }
+        store.exhaustivity = .off
 
         var completed = selected
         completed.outcome = .completed(

@@ -217,6 +217,12 @@ public actor ProxyEngine: ProxyControlling {
         running = true
         do {
             await store.loadPersisted(limit: flowCapacity) // restore at most a ring's worth
+            // Counts over *everything* retained, not just the restored ring. Detached
+            // from the boot path on purpose: it decodes the whole table, and a listener
+            // that waits for a sidebar number to be exact is a proxy that starts late.
+            // Until it lands the counts are honest about covering only the ring
+            // (`flowAggregates().coversHistory`).
+            Task { [store] in await store.seedAggregatesFromHistory() }
             let ca = ensureCA()
             boundPort = try await server.start(
                 host: host,

@@ -8,8 +8,15 @@ import Testing
 /// The `AppFeature.State` computed projections that drive the sidebar + table.
 /// Pure functions of `flows` + selection — no store needed.
 @Suite struct StateProjectionTests {
+    /// Seed both halves: the rows this window holds, and the counts the engine would
+    /// report for them. They used to be one call — `recordFlow` folded the counters —
+    /// which is exactly what made every sidebar badge a count of the window rather than
+    /// of the capture.
     private func state(_ flows: [Flow], category: FlowCategory? = .all) -> AppFeature.State {
         var s = AppFeature.State(flows: flows)
+        var aggregates = FlowAggregates()
+        for flow in flows { aggregates.contribute(flow) }
+        s.aggregates = aggregates
         s.selectedCategory = category
         return s
     }

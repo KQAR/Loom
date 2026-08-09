@@ -1,8 +1,16 @@
 import Foundation
-import LoomSharedModels
 
-/// The sidebar's per-host / per-app / per-device counters and the error badge,
-/// maintained incrementally as flows arrive.
+/// Per-host / per-app / per-device counters and the error count, maintained
+/// incrementally as flows arrive.
+///
+/// **Owned by the engine, over everything retained.** It used to be the window's, over
+/// the flows the window happened to hold — which made every sidebar badge a count of
+/// the newest 2 000 exchanges while the store kept 20 000. `api.example.com  12` next
+/// to a store holding 300 of them is not a smaller truth, it is a wrong number, and it
+/// was wrong in the direction that hides work: a host with no recent traffic vanished
+/// from the sidebar entirely while its flows sat on disk, searchable and unlisted. The
+/// windowed list makes it unavoidable as well as wrong — once the window holds ~120
+/// rows, counts derived from it would be off by two orders of magnitude.
 ///
 /// **Why incremental at all** (the constraint, unchanged from when these lived on
 /// `AppFeature.State` directly): recomputing them by scanning the flow list on each
@@ -21,26 +29,24 @@ import LoomSharedModels
 /// look adjacent but are the opposite kind of thing — user preferences persisted to
 /// disk, which must **survive** `forgetCapturedFlows()`. Folding them in here would
 /// make clearing the capture silently unpin everything.
-struct FlowAggregates: Equatable {
+public struct FlowAggregates: Equatable, Sendable {
     /// Read-only from outside; every mutation goes through the three operations below,
     /// which is what keeps them in step.
-    private(set) var hostCounts: [String: Int] = [:]
-    private(set) var appCounts: [String: Int] = [:]
-    private(set) var appReps: [String: SourceApp] = [:]
-    private(set) var deviceCounts: [String: Int] = [:]
-    private(set) var deviceReps: [String: SourceDevice] = [:]
+    public private(set) var hostCounts: [String: Int] = [:]
+    public private(set) var appCounts: [String: Int] = [:]
+    public private(set) var appReps: [String: SourceApp] = [:]
+    public private(set) var deviceCounts: [String: Int] = [:]
+    public private(set) var deviceReps: [String: SourceDevice] = [:]
     /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge.
-    private(set) var errorCount = 0
-    /// `flow id → host`, so the host-filtered list is a dictionary lookup per row
-    /// instead of a scan of the URL string.
-    ///
-    /// This is the same host `hostCounts` is keyed by, computed in the same place —
-    /// which is why it is nearly free to keep, and why matching on it is *more*
-    /// correct than re-deriving the host per row: the sidebar's categories are these
-    /// values, so a row belongs to a category exactly when its cached host equals it.
-    /// Measured on a full 2000-flow ring, host-filtered: 3.2 ms per render before,
-    /// 0.1 ms after — and `displayFlows` is read on every render while scrolling.
-    private(set) var hostByFlow: [Flow.ID: String] = [:]
+    public private(set) var errorCount = 0
+    /// Deliberately **not** here: a `flow id → host` map. It used to live alongside
+    /// these counters and it is the one field that scales with the number of flows
+    /// rather than the number of distinct hosts — which is precisely what an aggregate
+    /// held over everything retained (20 000 rows, not 2 000) must not do. A per-flow
+    /// projection belongs to whoever is holding those flows; see
+    /// `AppFeature.State.hostByRow`, which keeps it for the rows the window has.
+
+    public init() {}
 
     /// Whether a flow counts as a failure for the Errors category/badge. One
     /// definition, used by both the count and the list filter.
@@ -48,7 +54,7 @@ struct FlowAggregates: Equatable {
     /// `flowError != nil` rather than `error != nil`: the latter reaches through to
     /// `FlowError.message`, and this runs once per row on every render of the Errors
     /// list. Same answer, no string.
-    static func isError(_ flow: Flow) -> Bool {
+    public static func isError(_ flow: Flow) -> Bool {
         switch flow.outcome {
         case .failed: true
         case let .completed(response, _): response.statusCode >= 400
@@ -58,11 +64,10 @@ struct FlowAggregates: Equatable {
     }
 
     /// Fold one flow in.
-    mutating func contribute(_ flow: Flow) {
+    public mutating func contribute(_ flow: Flow) {
         if Self.isError(flow) { errorCount += 1 }
         if let host = flow.host {
             hostCounts[host, default: 0] += 1
-            hostByFlow[flow.id] = host
         }
         if let app = flow.sourceApp {
             appCounts[app.groupingKey, default: 0] += 1
@@ -85,11 +90,10 @@ struct FlowAggregates: Equatable {
     /// Undo `contribute` — for a replaced or evicted flow. A key that reaches zero is
     /// removed along with its representative, so an emptied host/app/device disappears
     /// from the sidebar instead of lingering at 0.
-    mutating func retract(_ flow: Flow) {
+    public mutating func retract(_ flow: Flow) {
         if Self.isError(flow) { errorCount = max(0, errorCount - 1) }
         if let host = flow.host {
             _ = Self.decrement(&hostCounts, key: host)
-            hostByFlow[flow.id] = nil
         }
         if let app = flow.sourceApp, Self.decrement(&appCounts, key: app.groupingKey) {
             appReps[app.groupingKey] = nil
@@ -102,7 +106,7 @@ struct FlowAggregates: Equatable {
     /// Drop everything. Assigning a fresh value rather than clearing six containers by
     /// hand: a new aggregate added above is then reset for free, which is the failure
     /// mode a hand-written reset has.
-    mutating func removeAll() {
+    public mutating func removeAll() {
         self = FlowAggregates()
     }
 

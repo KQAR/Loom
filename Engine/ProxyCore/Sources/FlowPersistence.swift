@@ -37,6 +37,13 @@ final class FlowPersistence: @unchecked Sendable {
     private let maxBatch = 256
     /// Reused across writes instead of re-prepared per row.
     private var insertStatement: OpaquePointer?
+    /// Called with the flows a prune deleted, on this store's queue.
+    ///
+    /// The pruner is the only place a *retained* flow disappears without anyone having
+    /// asked, so it is the only place an aggregate maintained upstream can silently
+    /// drift. A callback rather than a return value because pruning happens inside a
+    /// write, not in answer to a caller.
+    var onPrune: (@Sendable ([Flow]) -> Void)?
 
     /// One row's worth of already-encoded values, captured off the queue.
     private struct Row {
@@ -483,12 +490,53 @@ final class FlowPersistence: @unchecked Sendable {
     /// `ORDER BY startedAt` index scan plus a delete attempt per captured flow.
     private func pruneIfNeeded() {
         guard rowCount > maxRows + pruneSlack else { return }
+        // Read what is about to go before deleting it. These flows never pass back
+        // through `FlowStore.upsert` — the pruner is the one place a retained flow
+        // disappears without anyone asking — so the aggregate counts would keep
+        // counting them forever, and a host whose every row had been pruned would sit
+        // in the sidebar with rows no read can find.
+        let doomed = decodeRows(sql: """
+        SELECT json FROM flows ORDER BY startedAt DESC LIMIT -1 OFFSET \(maxRows);
+        """)
         exec("""
         DELETE FROM flows WHERE id IN (
             SELECT id FROM flows ORDER BY startedAt DESC LIMIT -1 OFFSET \(maxRows)
         );
         """)
         rowCount = countRows() // the estimate was an upper bound; re-anchor it
+        if !doomed.isEmpty { onPrune?(doomed) }
+    }
+
+    /// Decode the `json` column of every row a statement returns. Shared by the boot
+    /// aggregation and the prune notification, which want the same thing.
+    private func decodeRows(sql: String) -> [Flow] {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        var flows: [Flow] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            guard let blob = sqlite3_column_blob(stmt, 0) else { continue }
+            let data = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
+            if let flow = try? decoder.decode(Flow.self, from: data) { flows.append(flow) }
+        }
+        return flows
+    }
+
+    /// Every retained row, folded into counts. Run once at boot, off the actor.
+    ///
+    /// A decode per row rather than `GROUP BY`, because only `host` is a column —
+    /// the originating app and device live inside the JSON, and so do the display
+    /// representatives the sidebar needs (an app's name, a device's platform). Adding
+    /// columns for them would make this a `GROUP BY` and is the obvious next move if
+    /// this ever shows up in a launch profile; it is bounded by the table's row cap and
+    /// happens once.
+    func aggregate() -> FlowAggregates {
+        queue.sync {
+            writePending()
+            var aggregates = FlowAggregates()
+            for flow in decodeRows(sql: "SELECT json FROM flows;") { aggregates.contribute(flow) }
+            return aggregates
+        }
     }
 
     private func countRows() -> Int {
