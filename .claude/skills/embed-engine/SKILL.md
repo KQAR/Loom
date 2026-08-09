@@ -52,7 +52,18 @@ typical NIO consumer already resolves, so both graphs share one solution. Consum
 
 Construct `ProxyEngine(persistFlows: false)` when the host keeps captured flows in its own store —
 flows then live only in the in-memory ring and the live `flowStream()`, with no second copy in
-Loom's SQLite (`ProxyEngine()` keeps the durable store). Then:
+Loom's SQLite (`ProxyEngine()` keeps the durable store).
+
+**Take the bodies off the stream, not out of the ring.** Without a store, the ring's byte budget
+(64 MB by default) has nowhere to hydrate a body back from, so once it is exceeded the oldest
+completed flows have their bodies **dropped** — flagged `Flow.bodiesEvicted` with each side's
+`fullBodyBytes` recording what flowed, so a later read can tell a discarded body from an absent one.
+It used to keep them instead, which meant a store-less embedder had no body bound at all: measured at
+a 20 000-flow ring with 32 KB bodies, 625 MB live. A host that needs every body should take it from
+`flowStream()` / `FlowObserving` as it arrives (that copy is always whole) and, if it wants the ring
+to hold nothing, run `capacity: 0`. Raising `bodyBudget` trades the same problem back for RAM.
+
+Then:
 
 ```swift
 try await engine.start(port: 9090)
