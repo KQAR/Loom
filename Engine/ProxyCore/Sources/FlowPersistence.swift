@@ -255,13 +255,22 @@ final class FlowPersistence: @unchecked Sendable {
     /// language, and getting that subtly wrong would drop matching rows); it is matched
     /// in Swift like the rest.
     func scan(
-        matching query: FlowQuery, limit: Int, excluding seen: Set<UUID>, rowBudget: Int
+        matching query: FlowQuery,
+        after cursor: FlowCursor? = nil,
+        limit: Int,
+        excluding seen: Set<UUID>,
+        rowBudget: Int
     ) -> (flows: [Flow], budgetExhausted: Bool) {
         guard limit > 0, rowBudget > 0 else { return ([], false) }
         return queue.sync {
             writePending() // a batched save must be visible to the very next read
             var sql = "SELECT json, reqBody, respBody FROM flows"
             var conditions: [String] = []
+            // Keyset seek, in the same order the `ORDER BY` below sorts: strictly older,
+            // or the same instant with a lower id. `id` is the uuidString, which is the
+            // order `FlowCursor` compares in, so a page boundary means the same thing
+            // here as it does in the ring.
+            if cursor != nil { conditions.append("(startedAt < ? OR (startedAt = ? AND id < ?))") }
             if let host = query.host, !host.contains("*") { conditions.append("host = ?") }
             if let methods = query.methods, !methods.isEmpty {
                 let slots = Array(repeating: "?", count: methods.count).joined(separator: ", ")
@@ -271,7 +280,9 @@ final class FlowPersistence: @unchecked Sendable {
             if query.statusMax != nil { conditions.append("status <= ?") }
             if query.since != nil { conditions.append("startedAt >= ?") }
             if !conditions.isEmpty { sql += " WHERE " + conditions.joined(separator: " AND ") }
-            sql += " ORDER BY startedAt DESC LIMIT ?;"
+            // `id` breaks the tie, or a page boundary landing between two rows captured
+            // in the same millisecond would drop one and repeat the other.
+            sql += " ORDER BY startedAt DESC, id DESC LIMIT ?;"
 
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
@@ -282,6 +293,11 @@ final class FlowPersistence: @unchecked Sendable {
 
             var index: Int32 = 1
             func bind(_ body: (Int32) -> Void) { body(index); index += 1 }
+            if let cursor {
+                bind { sqlite3_bind_double(stmt, $0, cursor.startedAt.timeIntervalSince1970) }
+                bind { sqlite3_bind_double(stmt, $0, cursor.startedAt.timeIntervalSince1970) }
+                bind { sqlite3_bind_text(stmt, $0, cursor.id.uuidString, -1, transient) }
+            }
             if let host = query.host, !host.contains("*") {
                 bind { sqlite3_bind_text(stmt, $0, host, -1, transient) }
             }
@@ -319,8 +335,18 @@ final class FlowPersistence: @unchecked Sendable {
         }
     }
 
-    /// How many rows the table holds. The denominator behind "searched N of M".
-    var storedRowCount: Int { queue.sync { rowCount } }
+    /// How many rows the table holds. The denominator behind "searched N of M", and
+    /// half of a paged list's row count.
+    ///
+    /// Drains the pending batch first, like every other read: a flow that completed a
+    /// few milliseconds ago is saved but not yet written, and a count that excluded it
+    /// would put the list one row short of the page that contains it.
+    var storedRowCount: Int {
+        queue.sync {
+            writePending()
+            return rowCount
+        }
+    }
 
     /// The stored request/response bodies for one flow, or nil if the row is gone.
     /// Each side is nil when that body was empty. Legacy rows (bodies still inline
