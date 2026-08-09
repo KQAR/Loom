@@ -35,22 +35,14 @@ import Testing
         case .status: return .wired(client.status)
         case .recentFlows: return .wired(client.recentFlows)
         case .recentFlowsMatching: return .wired(client.recentFlowsMatching)
-        case .flowPage:
-            return .deliberatelyAbsent("""
-            The windowed list surface is not wired yet — this is the engine half, \
-            landing first so the paging can be tested without the AppKit table rework \
-            it needs (measured: SwiftUI's `Table` walks its whole collection ~5 times \
-            per update, so a paged source can't sit behind it). The `ProxyClient` \
-            endpoint lands with that surface. Until then nothing in the window calls \
-            it, and wiring it now would be an endpoint with no caller.
-            """)
+        case .flowPage: return .wired(client.flowPage)
         case .flowAggregates: return .wired(client.flowAggregates)
         case .searchFlows:
             return .deliberatelyAbsent("""
             The bound this carries — was the history scan cut short, how much is \
             retained — answers a question the agent has and the window doesn't. The \
             window's own limit is different and it can already measure it: the table \
-            holds the newest 2000, so matches outside that are the ids in \
+            holds `displayCap` rows, so matches outside that are the ids in \
             `recentFlowsMatching`'s result that aren't in the list, which the find bar \
             counts and states. Revisit if the table ever shows flows it doesn't hold.
             """)

@@ -24,6 +24,13 @@ public struct ProxyClient: Sendable {
     public var flowAggregates: @Sendable () async -> (aggregates: FlowAggregates, coversHistory: Bool) = {
         (FlowAggregates(), false)
     }
+    /// One page of the capture, newest-first, resuming after a cursor — the read that
+    /// reaches the durable store as well as the ring. The window seeds from this at
+    /// launch: `recentFlows` sees only memory, so a relaunch used to open on whatever
+    /// the ring had restored while the store held an order of magnitude more.
+    public var flowPage: @Sendable (
+        _ after: FlowCursor?, _ limit: Int, _ matching: FlowQuery
+    ) async -> FlowPage = { _, _, _ in FlowPage(flows: []) }
     public var flow: @Sendable (_ id: UUID) async -> Flow? = { _ in nil }
     /// Devices that have sent traffic through the proxy, with per-device counts.
     /// Flow-derived (unlike `connectedDeviceCountStream`, which is connection-derived).
@@ -131,6 +138,7 @@ extension ProxyClient: DependencyKey {
             recentFlows: { await engine.recentFlows(limit: $0) },
             recentFlowsMatching: { await engine.recentFlows(matching: $0, limit: $1) },
             flowAggregates: { await engine.flowAggregates() },
+            flowPage: { await engine.flowPage(after: $0, limit: $1, matching: $2) },
             flow: { await engine.flow(id: $0) },
             connectedDevices: { await engine.connectedDevices() },
             flowStream: { await engine.flowStream() },

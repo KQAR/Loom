@@ -120,18 +120,15 @@ import Testing
     /// The engine's counts are over what is retained, so the window rolling changes
     /// nothing about them.
     @Test func eviction_fromTheWindow_doesNotChangeTheCounts() {
+        // Batched, not one at a time: `recordFlow` trims the cap per call, which is
+        // O(cap) each and quadratic at this size (see `recordFlow`).
+        let old = (0 ..< AppFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
+        let new = (0 ..< 10).map { flow(url: "https://new.test/\($0)") }
         var state = AppFeature.State()
+        state.recordFlows(old)
+        state.recordFlows(new)
         var aggregates = FlowAggregates()
-        for index in 0 ..< AppFeature.State.displayCap {
-            let flow = flow(url: "https://old.test/\(index)")
-            state.recordFlow(flow)
-            aggregates.contribute(flow)
-        }
-        for index in 0 ..< 10 {
-            let flow = flow(url: "https://new.test/\(index)")
-            state.recordFlow(flow)
-            aggregates.contribute(flow)
-        }
+        for flow in old + new { aggregates.contribute(flow) }
         state.aggregates = aggregates
 
         #expect(state.allCount == AppFeature.State.displayCap, "the window cap holds")
@@ -242,6 +239,8 @@ import Testing
         perFlow.selectedFlowID = evicted
         batched.selectedFlowID = evicted
 
+        // The equivalence under test is per-flow vs batched recording, so this one has
+        // to keep the per-flow loop — it is bounded at ten flows, not the cap.
         for flow in batch { perFlow.recordFlow(flow) }
         batched.recordFlows(batch)
 
@@ -300,9 +299,7 @@ import Testing
         var state = AppFeature.State()
         let first = flow("https://first.example.test/v1")
         state.recordFlow(first)
-        for i in 0 ..< AppFeature.State.displayCap {
-            state.recordFlow(flow("https://bulk.example.test/\(i)"))
-        }
+        state.recordFlows((0 ..< AppFeature.State.displayCap).map { flow("https://bulk.example.test/\($0)") })
         #expect(state.flows[id: first.id] == nil)
         #expect(state.hostByRow[first.id] == nil)
         #expect(state.hostByRow.count == state.flows.count)
