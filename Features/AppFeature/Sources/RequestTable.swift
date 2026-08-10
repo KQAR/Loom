@@ -203,6 +203,8 @@ struct RequestTable: NSViewRepresentable {
             self.scrollView = scrollView
             self.table = table
             let nc = NotificationCenter.default
+            nc.addObserver(self, selector: #selector(userWillScroll),
+                           name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
             nc.addObserver(self, selector: #selector(userScrolling),
                            name: NSScrollView.didLiveScrollNotification, object: scrollView)
             nc.addObserver(self, selector: #selector(userScrolling),
@@ -217,7 +219,10 @@ struct RequestTable: NSViewRepresentable {
                            name: NSView.boundsDidChangeNotification, object: clipView)
         }
 
-        func detach() { NotificationCenter.default.removeObserver(self) }
+        func detach() {
+            stopGliding()
+            NotificationCenter.default.removeObserver(self)
+        }
 
         // MARK: Data
 
@@ -236,7 +241,12 @@ struct RequestTable: NSViewRepresentable {
             // nobody was told about and the list yanked itself back down while the operator
             // was reading something further up. There is no bookkeeping to get wrong if
             // nothing is booked: at the bottom, follow; anywhere else, hold still.
-            let wasAtBottom = isAtBottom()
+            //
+            // A glide in flight counts as being at the bottom, and has to: it is *behind*
+            // the bottom by construction, so measuring geometry alone would read the list's
+            // own catch-up as the operator having scrolled away and stop following in the
+            // middle of the movement.
+            let wasAtBottom = isAtBottom() || displayLink != nil
             isApplyingUpdate = true
             defer { isApplyingUpdate = false }
             let diff = RowDiff(from: previous, to: newRows)
@@ -269,60 +279,19 @@ struct RequestTable: NSViewRepresentable {
                 return // reload rebuilds every visible cell already
 
             case let .edit(removedFromFront, appended):
-                let animation: NSTableView.AnimationOptions =
-                    shouldAnimate(rowsAffected: removedFromFront + appended) ? [.effectFade, .slideUp] : []
                 // One group: two separate edits would each trigger their own layout pass,
                 // and the second would be computed against a row count the first moved.
                 table.beginUpdates()
                 if removedFromFront > 0 {
-                    table.removeRows(at: IndexSet(integersIn: 0 ..< removedFromFront), withAnimation: animation)
+                    table.removeRows(at: IndexSet(integersIn: 0 ..< removedFromFront), withAnimation: [])
                 }
                 if appended > 0 {
                     let start = rows.count - appended
-                    table.insertRows(at: IndexSet(integersIn: start ..< rows.count), withAnimation: animation)
+                    table.insertRows(at: IndexSet(integersIn: start ..< rows.count), withAnimation: [])
                 }
                 table.endUpdates()
             }
             refreshVisibleRows(in: table)
-        }
-
-        /// Beyond this many inserted/removed rows in one update, the edit is applied
-        /// without animation. `@MainActor var` rather than `let` so a measurement can
-        /// vary it — the table is main-actor code, so this is not shared mutable state
-        /// in any sense the compiler needs to guard.
-        @MainActor static var maxAnimatedRowEdit = 24
-
-        /// An edit animates only if the previous one was at least this long ago.
-        static let minAnimationGap: TimeInterval = 0.3
-        private var lastEditAt: Date?
-
-        /// Whether this edit is worth animating.
-        ///
-        /// Two gates, and the second came out of measuring rather than taste. Per batch,
-        /// applying a 10-row edit to a 2000-row table (Debug, 800pt viewport):
-        ///
-        /// | | update | layout | total |
-        /// |---|---|---|---|
-        /// | diff + animation | 79.5 ms | 10.9 ms | **90 ms** |
-        /// | diff, no animation | 48.3 ms | 14.5 ms | **63 ms** |
-        /// | `reloadData()` (what this replaced) | 104 ms | 276 ms | **380 ms** |
-        ///
-        /// So animation is ~30 ms a batch — and under live capture the batches arrive
-        /// every 100 ms, which means it is 30 % of the budget spent on a transition
-        /// nobody can perceive: at 10 Hz the fades overlap into a shimmer. Sparse
-        /// traffic is the opposite case, where a row appearing is exactly what the
-        /// operator is waiting for and sliding it in reads as an event.
-        ///
-        /// Hence the rate gate rather than a size gate alone: animate when the list is
-        /// *quiet enough for the animation to be seen*, and stay out of the way when it
-        /// is a stream. The size gate still exists for the other direction — a burst of
-        /// hundreds of rows has nothing to communicate either.
-        private func shouldAnimate(rowsAffected: Int) -> Bool {
-            let now = Date()
-            defer { lastEditAt = now }
-            guard rowsAffected <= Self.maxAnimatedRowEdit else { return false }
-            guard let lastEditAt else { return false } // the first edit is the list appearing
-            return now.timeIntervalSince(lastEditAt) >= Self.minAnimationGap
         }
 
         /// Push current content into every row that is actually on screen.
@@ -534,11 +503,18 @@ struct RequestTable: NSViewRepresentable {
         /// never fed back in as if the operator had scrolled.
         private var isApplyingUpdate = false
 
+        /// The operator taking hold of the list wins over the glide, immediately —
+        /// otherwise scrolling up under live capture is a fight for the offset that the
+        /// display link wins every frame.
+        @objc private func userWillScroll() {
+            stopGliding()
+        }
+
         /// Keeps `followTail` reporting where the viewport actually is. It is a readout,
         /// not a latch: nothing decides anything from it here (`update` measures for
         /// itself), so there is no state to get stuck armed.
         @objc private func userScrolling() {
-            guard !isApplyingUpdate else { return }
+            guard !isApplyingUpdate, !isGliding else { return }
             let atBottom = isAtBottom()
             if followTail != atBottom { followTail = atBottom }
         }
@@ -556,9 +532,104 @@ struct RequestTable: NSViewRepresentable {
             return visible.maxY >= document.frame.height - RequestTable.rowHeight / 2
         }
 
+        // MARK: The tail-follow scroll
+
+        /// The follow is a *glide*, driven frame by frame, rather than a jump per batch.
+        ///
+        /// `scrollRowToVisible` is what this replaces and it is what made a busy list
+        /// blink: a capture batch inserted its rows and then moved the viewport by the
+        /// whole batch in one step, ten times a second, so the content never appeared to
+        /// travel — it teleported, and the row-insert fade layered over the top of that
+        /// turned into a shimmer (the fade is gone too, for the same reason: the motion
+        /// belongs to the scroll, and asking a row to animate as well is two answers to
+        /// one question).
+        ///
+        /// So nothing here scrolls *by* an amount. The link runs while there is distance
+        /// left to the bottom and closes a fixed fraction of it per frame — which means a
+        /// batch landing mid-glide simply moves the target, and the motion carries through
+        /// it instead of restarting.
+        private var displayLink: CADisplayLink?
+
+        /// Set while the link is writing the offset, so the bounds-change notification it
+        /// causes is not read back as the operator scrolling.
+        private var isGliding = false
+
+        /// Time constant of the glide: the distance remaining decays by `1/e` this often.
+        /// Small enough that the list stays visibly pinned to the tail under load, long
+        /// enough that a single row arriving reads as movement.
+        static let glideTimeConstant: TimeInterval = 0.08
+
+        /// Beyond this much distance the glide is not worth watching — the list is being
+        /// filled or the operator jumped a long way — so the offset is simply set. Two
+        /// viewports is about where travelling stops reading as travelling and starts
+        /// reading as a smear.
+        static let maximumGlideDistance: CGFloat = 2
+
         private func scrollToBottom() {
-            guard let table, table.numberOfRows > 0 else { return }
-            table.scrollRowToVisible(table.numberOfRows - 1)
+            guard let scrollView, let table, table.numberOfRows > 0 else { return }
+            let clipView = scrollView.contentView
+            let remaining = maximumOffsetY - clipView.bounds.origin.y
+            guard remaining > 0 else { return }
+            guard remaining <= Self.maximumGlideDistance * clipView.bounds.height else {
+                setOffsetY(maximumOffsetY)
+                stopGliding()
+                return
+            }
+            startGliding()
+        }
+
+        /// The largest vertical offset the clip view can hold — recomputed every frame
+        /// rather than captured when the glide starts, because the content is still
+        /// growing underneath it and a target fixed at the start would land short.
+        private var maximumOffsetY: CGFloat {
+            guard let scrollView, let document = scrollView.documentView else { return 0 }
+            return max(0, document.frame.height - scrollView.contentView.bounds.height)
+        }
+
+        private func startGliding() {
+            guard displayLink == nil, let scrollView else { return }
+            // A view-owned link, so it runs on the display the window is actually on and
+            // stops with it — a `Timer` would keep firing at a rate unrelated to the
+            // screen and tear against it.
+            let link = scrollView.displayLink(target: self, selector: #selector(glide))
+            link.add(to: .main, forMode: .common)
+            displayLink = link
+        }
+
+        func stopGliding() {
+            displayLink?.invalidate()
+            displayLink = nil
+        }
+
+        @objc private func glide(_ link: CADisplayLink) {
+            guard let scrollView else { stopGliding(); return }
+            let clipView = scrollView.contentView
+            let current = clipView.bounds.origin.y
+            let remaining = maximumOffsetY - current
+            // Half a point is under a pixel on every display this runs on, so there is
+            // nothing left to show; anything negative means the content shrank under the
+            // glide and the offset is already past the end.
+            guard remaining > 0.5 else {
+                setOffsetY(maximumOffsetY)
+                stopGliding()
+                return
+            }
+            // Frame-rate independent: the same fraction of distance per unit *time*, not
+            // per frame, so a 120 Hz display and a 60 Hz one glide at the same speed.
+            let frameDuration = max(link.targetTimestamp - link.timestamp, 1.0 / 120)
+            let closed = 1 - exp(-frameDuration / Self.glideTimeConstant)
+            setOffsetY(current + remaining * closed)
+        }
+
+        private func setOffsetY(_ y: CGFloat) {
+            guard let scrollView else { return }
+            isGliding = true
+            defer { isGliding = false }
+            let clipView = scrollView.contentView
+            clipView.setBoundsOrigin(CGPoint(x: clipView.bounds.origin.x, y: y))
+            // Without this the scroller thumb and the clip view disagree: the rows move
+            // and the scrollbar stays where it was.
+            scrollView.reflectScrolledClipView(clipView)
         }
 
         // MARK: Context menu
