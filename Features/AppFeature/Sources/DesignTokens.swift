@@ -165,7 +165,7 @@ public enum LoomTheme {
 
     /// Full-row fill for a request whose exchange failed — 4xx/5xx or a transport
     /// error. An `NSColor` because the only row-sized rectangle in a SwiftUI `Table`
-    /// belongs to `NSTableRowView` (see `RequestTableBridge`).
+    /// belongs to `NSTableRowView` (see `RequestTable.Coordinator.RowView`).
     ///
     /// Nothing else in the table is ever filled. The wash exists so a failure is
     /// findable while scrolling, and a table where several rows are tinted for several

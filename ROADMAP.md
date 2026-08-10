@@ -546,6 +546,57 @@ makes an intermittent race appear inside a single job), and the habit that produ
 answer: **when a failure is attributed to your new code, the cheapest decisive
 experiment is to run everything without it.**
 
+### The window catches up with the store (0.0.21)
+
+The list showed 2 000 exchanges while the store retained 20 000, and everything built on
+that number was wrong in the same direction: the sidebar counted the window rather than
+the capture, and a *filtered* read stopped at the ring, so nine of every ten persisted
+flows could not be found by any search — while `flow(id:)` resolved them perfectly well.
+An agent could hold an id that worked and search for the same exchange to `[]`, which
+reads exactly like "that traffic never happened".
+
+Closing it took four steps, and each one was gated on a measurement rather than a
+preference:
+
+1. **`FlowPage`** — keyset paging over ring + history. Not an offset: an offset is a
+   position in a list the capture keeps prepending to, so by page 3 the rows have moved.
+   The `(startedAt, id)` tiebreak is not decoration either — timestamps collide by the
+   dozen inside one page load.
+2. **The counters moved to the engine**, over everything retained. Three rules hold them
+   exact and each is a place the obvious version drifts: leaving the ring is not leaving
+   the capture, an upsert re-counts, and the pruner deletes rows nobody upserted.
+3. **The table became an `NSTableView` this app owns.** SwiftUI's `Table` evaluates only
+   visible row bodies — 32 of them whether the data is 2 000 rows or 100 000 — but walks
+   its whole collection about five times per data change (100 006 subscripts for 20 001
+   rows, 70–120 ms). At a capture batch every 100 ms that is the main thread, and it
+   makes a paged source impossible by construction.
+4. **The cap went to 20 000**, seeded from the durable store after launch rather than in
+   the ring — restoring 20 000 rows into the ring costs 416 ms of decode on the path
+   that binds the listener, for 13 MB.
+
+What the work found on the way is worth more than the feature:
+
+- **The ring's body budget was a no-op without a store.** `enforceBodyBudget` opened
+  with `guard persistence != nil`, so an embedder had no bound at all: 625 MB of live
+  bodies against 61 MB for the same traffic with a store. Unbounded memory is not the
+  safe side of that trade; the loss is *recorded* (`Flow.bodiesEvicted`) instead.
+- **Writing through `@ObservableState` costs work proportional to what it holds** —
+  690 µs per insert at 20 000 rows against 2.6 µs into a plain container. Filling the
+  window one flow at a time took 14.6 s. It was invisible at the old cap and appeared
+  the moment the cap moved: the shape was always wrong and only the size showed it.
+- **A footprint figure is not a memory figure.** ~400 MB of phys_footprint against a
+  flat ~100 MB in use, plateauing — allocator fragmentation, not a leak
+  ([`docs/decisions/write-path-memory.md`](docs/decisions/write-path-memory.md)).
+- **Two bugs were only findable by looking.** The failed-row tint never drew (a
+  `CALayer` inserted while `layer` was still nil), and ⌘F focused the scope picker
+  instead of the field (`@FocusState` assigned before the field entered the responder
+  chain). 1 112 tests were green throughout; neither is reachable from a test.
+
+The human also got the search the agent has had since M6: `FlowQuery` had carried
+`urlContains` / `headerContains` / `bodyContains` all along and `ProxyClient` was wired
+to it, with no view calling it. `ProxyClientParityTests` could not catch that — it
+checks a capability is *wired*, which this one was.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
