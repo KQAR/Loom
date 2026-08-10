@@ -15,11 +15,20 @@ on:
 permissions:
   contents: write
 
+# Same pin as CI (see .github/workflows/ci.yml) — a shipped build must come out
+# of the toolchain the gate was green on, not out of whatever `macos-latest`
+# defaults to on the day of the tag.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
 
       - uses: jdx/mise-action@v2
 

@@ -38,6 +38,23 @@ has() { grep -q "$1" "$2"; }
 echo "AGENTS.md § Known Issues — mechanical checks"
 
 check "Tuist is pinned to 4.202.5 or later"        has 'tuist = "4\.20[2-9]\|tuist = "4\.[3-9]' mise.toml
+
+# Every workflow that builds must pin DEVELOPER_DIR rather than inherit whatever
+# `macos-latest` defaults to, and every macOS job must verify the pin before it
+# builds. A workflow added without either reads green until the image rolls.
+every_workflow_pins_xcode() {
+  local f
+  for f in .github/workflows/*.yml; do
+    grep -q 'runs-on: macos-latest' "$f" || continue
+    grep -q 'DEVELOPER_DIR: /Applications/Xcode_' "$f" || return 1
+    # One verify step per macOS job.
+    local jobs steps
+    jobs=$(grep -c 'runs-on: macos-latest' "$f")
+    steps=$(grep -c 'run: scripts/assert-xcode.sh' "$f")
+    [ "$steps" -ge "$jobs" ] || return 1
+  done
+}
+check "every workflow pins Xcode and verifies it"  every_workflow_pins_xcode
 check "Swift 6 language mode is the project default" has '"SWIFT_VERSION": "6.0"' Project.swift
 check "strict concurrency is complete"             has '"SWIFT_STRICT_CONCURRENCY": "complete"' Project.swift
 check "deployment floor is macOS 15 (Project)"     has '"MACOSX_DEPLOYMENT_TARGET": "15.0"' Project.swift

@@ -1,5 +1,13 @@
 [tools]
-tuist = "4.202.5"
+# 4.202.5 is the floor (see CLAUDE.md § Known Issues — package traits). 4.202.8
+# is the top of that maintenance line and is what's pinned: its one fix,
+# "make module map cache hashes checkout-independent" (tuist#12243), lands
+# directly on this repo's worst class of build failure — a module map resolved
+# against another checkout's products, which reads exactly like a source bug
+# (`Cycle inside CNIOFreeBSD … Copy Module Map`, `module map file … not found`).
+# TUIST_USE_SWIFTERPM below makes that store shared across worktrees, so the
+# checkout-dependent hash was live here rather than theoretical.
+tuist = "4.202.8"
 # DMG packaging uses macOS's built-in hdiutil (scripts/create-dmg.sh) — no extra tool.
 
 [env]
