@@ -58,7 +58,7 @@ struct RequestTable: NSViewRepresentable {
                     onReplay: onReplay, onCopyCurl: onCopyCurl, onAddRule: onAddRule)
     }
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> RequestScrollView {
         let table = NSTableView()
         table.style = .inset
         table.rowHeight = Self.rowHeight
@@ -71,7 +71,9 @@ struct RequestTable: NSViewRepresentable {
         table.delegate = context.coordinator
         table.target = context.coordinator
         table.menu = context.coordinator.makeRowMenu()
+        table.headerView?.menu = context.coordinator.makeHeaderMenu()
 
+        let hidden = Column.hiddenColumns()
         for spec in Column.allCases {
             let column = NSTableColumn(identifier: spec.identifier)
             column.title = spec.title
@@ -79,22 +81,29 @@ struct RequestTable: NSViewRepresentable {
             column.width = spec.idealWidth
             column.maxWidth = spec.maxWidth
             column.resizingMask = spec.maxWidth > spec.minWidth ? .userResizingMask : []
+            column.isHidden = hidden.contains(spec)
             table.addTableColumn(column)
         }
 
-        let scrollView = NSScrollView()
+        // A scroll view that says when it laid out, which is the only moment the initial
+        // tail scroll can work: the first batch of rows arrives before this view has a
+        // size, so the bottom is 0 and scrolling to it does nothing.
+        let scrollView = RequestScrollView()
         scrollView.documentView = table
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
+        scrollView.onLayout = { [weak coordinator = context.coordinator] in
+            coordinator?.scrollViewDidLayout()
+        }
         context.coordinator.attach(scrollView: scrollView, table: table)
         return scrollView
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    func updateNSView(_ scrollView: RequestScrollView, context: Context) {
         context.coordinator.update(rows: rows, capture: capture, selection: selection)
     }
 
-    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+    static func dismantleNSView(_ scrollView: RequestScrollView, coordinator: Coordinator) {
         coordinator.detach()
     }
 
@@ -164,7 +173,83 @@ struct RequestTable: NSViewRepresentable {
             case .time: 100
             }
         }
+
+        /// The name shown in the header's column menu. Two columns draw a glyph and have
+        /// no header text, so the menu is the one place they have to be nameable.
+        var menuTitle: String {
+            switch self {
+            case .status: "Status"
+            case .ordinal: "Number"
+            default: title
+            }
+        }
+
+        /// Which columns are hidden, remembered across launches.
+        ///
+        /// A hidden column is invisible by definition, so an operator who hid one and
+        /// relaunched would have no way to tell why the list looks wrong — the state has
+        /// to survive with the window that shows it, and the header menu is the only place
+        /// it can be read back.
+        static let hiddenColumnsDefaultsKey = "com.loom.table.hiddenColumns"
+
+        static func hiddenColumns(_ defaults: UserDefaults = .standard) -> Set<Column> {
+            let stored = defaults.stringArray(forKey: hiddenColumnsDefaultsKey) ?? []
+            let hidden = Set(stored.compactMap(Column.init(rawValue:)))
+            // A table with no columns is a blank rectangle with no way back — the menu
+            // that would unhide one is on a header that has nothing left to draw. Whatever
+            // is on disk, at least one column is shown.
+            return hidden.count >= allCases.count ? [] : hidden
+        }
+
+        static func setHiddenColumns(_ hidden: Set<Column>, _ defaults: UserDefaults = .standard) {
+            defaults.set(hidden.map(\.rawValue).sorted(), forKey: hiddenColumnsDefaultsKey)
+        }
     }
+
+    /// The width this column needs to show its widest content, for the double-click on a
+    /// divider that `NSTableView` routes to `tableView(_:sizeToFitWidthOfColumn:)`.
+    ///
+    /// Text is measured against the same font the cell draws in — `.callout`, monospaced
+    /// for every column that uses one — rather than SwiftUI's rendered result, which is
+    /// not reachable from here. The difference is sub-point at these sizes; the padding
+    /// added below is what actually decides whether the last glyph clips.
+    static func fittingWidth(for column: Column, rows: [Flow], capture: IdentifiedArrayOf<Flow>) -> CGFloat {
+        // Glyph columns have nothing to measure and a fixed width to begin with.
+        guard column != .status, column != .app else { return column.idealWidth }
+
+        let font = NSFont.monospacedSystemFont(
+            ofSize: NSFont.preferredFont(forTextStyle: .callout).pointSize, weight: .regular
+        )
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        var widest: CGFloat = 0
+        // Bounded: this is a one-off gesture, but the window holds thousands of rows and
+        // measuring every string in the widest column is not free. The newest rows are
+        // the ones the operator is looking at.
+        for flow in rows.suffix(sizeToFitRowBudget) {
+            let text = switch column {
+            case .ordinal: String((capture.index(id: flow.id) ?? 0) + 1)
+            case .proto: MainView.protocolLabel(flow)
+            case .method: flow.request.method
+            case .host: MainView.hostReading(flow.request.url).label
+            case .path: MainView.path(flow.request.url)
+            case .time: flow.durationMS.map { "\($0)ms" } ?? "—"
+            case .status, .app: ""
+            }
+            widest = max(widest, (text as NSString).size(withAttributes: attributes).width)
+        }
+        // The header's own title has to fit too, or fitting a column to its content can
+        // make it narrower than the word naming it.
+        let header = (column.title as NSString)
+            .size(withAttributes: [.font: NSFont.preferredFont(forTextStyle: .caption1)]).width
+        // Cell inset (4pt a side, per `HostingCell`) plus the favicon and its gap for the
+        // one column that draws one, plus a point of slack so the last glyph never sits on
+        // the boundary.
+        let decoration: CGFloat = column == .host ? 16 + 6 : 0
+        return max(widest, header) + decoration + 9
+    }
+
+    /// How many of the newest rows a fit-to-content measurement reads.
+    static let sizeToFitRowBudget = 2000
 
     // MARK: Coordinator
 
@@ -207,7 +292,7 @@ struct RequestTable: NSViewRepresentable {
                            name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
             nc.addObserver(self, selector: #selector(userScrolling),
                            name: NSScrollView.didLiveScrollNotification, object: scrollView)
-            nc.addObserver(self, selector: #selector(userScrolling),
+            nc.addObserver(self, selector: #selector(userDidEndScroll),
                            name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
             // Every viewport move, whoever caused it — a gesture, its momentum, a scroller
             // drag, a keyboard scroll. These only keep `followTail` reporting the truth to
@@ -345,6 +430,18 @@ struct RequestTable: NSViewRepresentable {
         }
 
         func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+        /// Double-clicking a column divider. `NSTableView` asks for the width and applies
+        /// it — including clamping to the column's own min/max, so a fit that would make
+        /// Path 4 000 points wide stops where the column says it stops.
+        func tableView(_ tableView: NSTableView, sizeToFitWidthOfColumn column: Int) -> CGFloat {
+            guard tableView.tableColumns.indices.contains(column) else { return 0 }
+            let tableColumn = tableView.tableColumns[column]
+            guard let spec = Column(rawValue: tableColumn.identifier.rawValue) else {
+                return tableColumn.width
+            }
+            return RequestTable.fittingWidth(for: spec, rows: rows, capture: capture)
+        }
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard let tableColumn, let column = Column(rawValue: tableColumn.identifier.rawValue),
@@ -507,7 +604,17 @@ struct RequestTable: NSViewRepresentable {
         /// otherwise scrolling up under live capture is a fight for the offset that the
         /// display link wins every frame.
         @objc private func userWillScroll() {
+            isLiveScrolling = true
+            lastLiveScrollAt = Date()
             stopGliding()
+            // An operator who scrolled before the first layout settled has said where they
+            // want to be, and it outranks opening at the tail.
+            wantsInitialTailScroll = false
+        }
+
+        @objc private func userDidEndScroll() {
+            isLiveScrolling = false
+            userScrolling()
         }
 
         /// Keeps `followTail` reporting where the viewport actually is. It is a readout,
@@ -515,8 +622,37 @@ struct RequestTable: NSViewRepresentable {
         /// itself), so there is no state to get stuck armed.
         @objc private func userScrolling() {
             guard !isApplyingUpdate, !isGliding else { return }
+            lastLiveScrollAt = Date()
             let atBottom = isAtBottom()
             if followTail != atBottom { followTail = atBottom }
+        }
+
+        /// Whether a scroll gesture is in progress, and when the viewport last moved for a
+        /// reason that was not this table's own doing.
+        ///
+        /// Both exist because **the glide and a live scroll write the same clip view**, and
+        /// a column dragged wide enough to scroll horizontally is where that shows: the
+        /// gesture moves x, a capture batch lands mid-gesture and the display link starts
+        /// writing y, and the two settings of `boundsOrigin` interleave every frame — the
+        /// list shakes. Scrolling vertically hid it, because there the glide was pushing
+        /// the same axis in the same direction the reader was already going.
+        private var isLiveScrolling = false
+        private var lastLiveScrollAt: Date?
+
+        /// How long after the last viewport move the follow stays out of the way.
+        ///
+        /// `didEndLiveScroll` fires when the fingers lift and momentum keeps going after
+        /// it, so ending the suppression there would put the fight back for the length of
+        /// the deceleration. The cost of the window is at most a few skipped batches, and
+        /// the follow catches up in one glide when it resumes — the list is never left
+        /// somewhere it did not choose to be.
+        static let scrollQuietWindow: TimeInterval = 0.5
+
+        /// Whether the follow may take the offset right now.
+        private var mayScrollProgrammatically: Bool {
+            guard !isLiveScrolling else { return false }
+            guard let lastLiveScrollAt else { return true }
+            return Date().timeIntervalSince(lastLiveScrollAt) >= Self.scrollQuietWindow
         }
 
         /// A row scrolled halfway off the bottom means the operator is not at the bottom.
@@ -554,6 +690,26 @@ struct RequestTable: NSViewRepresentable {
         /// causes is not read back as the operator scrolling.
         private var isGliding = false
 
+        /// The list opens **at the newest row**, and getting there is not one call.
+        ///
+        /// The window's first rows arrive before this view has a size — `documentView` is
+        /// zero-height, so the bottom is offset 0 and scrolling to it succeeds at doing
+        /// nothing. Every later batch then finds the viewport at the top, which is not the
+        /// bottom, and correctly declines to follow: the list opens on the *oldest*
+        /// exchange in the capture and stays there.
+        ///
+        /// So the intent outlives the failed attempt. It is satisfied on the first layout
+        /// that has somewhere to scroll to, and unlike the follow itself it is set rather
+        /// than glided — a list arriving already scrolled is where it belongs, not
+        /// something that travelled.
+        private var wantsInitialTailScroll = true
+
+        func scrollViewDidLayout() {
+            guard wantsInitialTailScroll, !rows.isEmpty, maximumOffsetY > 0 else { return }
+            wantsInitialTailScroll = false
+            setOffsetY(maximumOffsetY)
+        }
+
         /// Time constant of the glide: the distance remaining decays by `1/e` this often.
         /// Small enough that the list stays visibly pinned to the tail under load, long
         /// enough that a single row arriving reads as movement.
@@ -567,6 +723,9 @@ struct RequestTable: NSViewRepresentable {
 
         private func scrollToBottom() {
             guard let scrollView, let table, table.numberOfRows > 0 else { return }
+            // The reader owns the offset while they are moving it. Anything written here
+            // during a gesture interleaves with theirs frame by frame.
+            guard mayScrollProgrammatically else { stopGliding(); return }
             let clipView = scrollView.contentView
             let remaining = maximumOffsetY - clipView.bounds.origin.y
             guard remaining > 0 else { return }
@@ -603,6 +762,9 @@ struct RequestTable: NSViewRepresentable {
 
         @objc private func glide(_ link: CADisplayLink) {
             guard let scrollView else { stopGliding(); return }
+            // Checked per frame, not only when the glide starts: a gesture can begin
+            // mid-glide, and the frame after it does is already a fight for the offset.
+            guard mayScrollProgrammatically else { stopGliding(); return }
             let clipView = scrollView.contentView
             let current = clipView.bounds.origin.y
             let remaining = maximumOffsetY - current
@@ -643,12 +805,55 @@ struct RequestTable: NSViewRepresentable {
             return menu
         }
 
+        /// The header's column chooser. Rebuilt on open rather than kept in sync, because
+        /// a column can also be hidden from the previous launch's defaults and the menu is
+        /// the only surface that reads that back.
+        func makeHeaderMenu() -> NSMenu {
+            let menu = NSMenu()
+            menu.delegate = self
+            menu.identifier = Self.headerMenuIdentifier
+            return menu
+        }
+
+        private static let headerMenuIdentifier = NSUserInterfaceItemIdentifier("loom.table.headerMenu")
+
+        private func buildHeaderMenu(_ menu: NSMenu) {
+            menu.removeAllItems()
+            guard let table else { return }
+            let visibleCount = table.tableColumns.count(where: { !$0.isHidden })
+            for tableColumn in table.tableColumns {
+                guard let spec = Column(rawValue: tableColumn.identifier.rawValue) else { continue }
+                let entry = item(spec.menuTitle) { [weak self] in
+                    self?.toggleColumn(spec)
+                }
+                entry.state = tableColumn.isHidden ? .off : .on
+                // Hiding the last visible column leaves a blank rectangle whose only way
+                // back is a header that no longer draws anything.
+                entry.isEnabled = tableColumn.isHidden || visibleCount > 1
+                menu.addItem(entry)
+            }
+        }
+
+        private func toggleColumn(_ spec: Column) {
+            guard let table,
+                  let tableColumn = table.tableColumns.first(where: { $0.identifier == spec.identifier })
+            else { return }
+            tableColumn.isHidden.toggle()
+            var hidden = Column.hiddenColumns()
+            if tableColumn.isHidden { hidden.insert(spec) } else { hidden.remove(spec) }
+            Column.setHiddenColumns(hidden)
+        }
+
         private var clickedFlow: Flow? {
             guard let table, rows.indices.contains(table.clickedRow) else { return nil }
             return rows[table.clickedRow]
         }
 
         func menuNeedsUpdate(_ menu: NSMenu) {
+            guard menu.identifier != Self.headerMenuIdentifier else {
+                buildHeaderMenu(menu)
+                return
+            }
             menu.removeAllItems()
             guard let flow = clickedFlow else { return }
             let id = flow.id
@@ -936,5 +1141,21 @@ private final class HostingCell: NSTableCellView {
     func host(_ content: CellContent) {
         guard content != hosting.rootView else { return }
         hosting.rootView = content
+    }
+}
+
+/// An `NSScrollView` that reports its layout passes.
+///
+/// One job: the initial tail scroll needs a moment when the view has a size, and there
+/// isn't one in `NSViewRepresentable`'s vocabulary. `updateNSView` runs when the data
+/// changes, which under live capture is *before* the first layout — scrolling to the
+/// bottom there scrolls to 0, because that is where the bottom of a zero-height document
+/// is. `layout()` is the callback AppKit already has for "this view now has geometry".
+final class RequestScrollView: NSScrollView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 }
