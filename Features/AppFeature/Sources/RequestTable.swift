@@ -203,14 +203,18 @@ struct RequestTable: NSViewRepresentable {
             self.scrollView = scrollView
             self.table = table
             let nc = NotificationCenter.default
-            nc.addObserver(self, selector: #selector(userWillScroll),
-                           name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
-            // Track during the gesture AND its momentum so re-follow triggers the instant
-            // the bottom is reached, not just when the finger lifts.
             nc.addObserver(self, selector: #selector(userScrolling),
                            name: NSScrollView.didLiveScrollNotification, object: scrollView)
             nc.addObserver(self, selector: #selector(userScrolling),
                            name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
+            // Every viewport move, whoever caused it — a gesture, its momentum, a scroller
+            // drag, a keyboard scroll. These only keep `followTail` reporting the truth to
+            // the rest of the window; the decision to follow is not taken from them (see
+            // `update`), because a bounds change cannot say who moved the viewport.
+            let clipView = scrollView.contentView
+            clipView.postsBoundsChangedNotifications = true
+            nc.addObserver(self, selector: #selector(userScrolling),
+                           name: NSView.boundsDidChangeNotification, object: clipView)
         }
 
         func detach() { NotificationCenter.default.removeObserver(self) }
@@ -222,9 +226,28 @@ struct RequestTable: NSViewRepresentable {
             rows = newRows
             capture = newCapture
             guard let table else { return }
-            apply(RowDiff(from: previous, to: newRows), in: table)
+            // Measured here, before the table is touched: whether to follow is a question
+            // about *where the operator is standing right now*, and the only honest answer
+            // is the viewport's own geometry a moment before the edit lands.
+            //
+            // The flag this used to gate on was the wrong shape for it. `followTail` could
+            // only be turned off by a scroll notification, and the notifications do not
+            // cover every way a viewport moves — so it stayed armed through movements
+            // nobody was told about and the list yanked itself back down while the operator
+            // was reading something further up. There is no bookkeeping to get wrong if
+            // nothing is booked: at the bottom, follow; anywhere else, hold still.
+            let wasAtBottom = isAtBottom()
+            isApplyingUpdate = true
+            defer { isApplyingUpdate = false }
+            let diff = RowDiff(from: previous, to: newRows)
+            apply(diff, in: table)
             applySelection(newSelection, in: table)
-            if followTail, newRows.count != previous.count { scrollToBottom() }
+            // On the *diff*, not on a row-count change: once the window is at its cap the
+            // head is trimmed by exactly what the tail gained, so the count is constant
+            // while the list keeps moving — and a count gate silently stops following at
+            // the one point where there is the most to follow.
+            if wasAtBottom, diff != .none { scrollToBottom() }
+            if followTail != wasAtBottom { followTail = wasAtBottom }
         }
 
         /// Turn a diff into the smallest set of table operations that expresses it, then
@@ -506,19 +529,31 @@ struct RequestTable: NSViewRepresentable {
 
         // MARK: Tail-follow
 
-        @objc private func userWillScroll() {
-            if followTail { followTail = false } // the user took control
-        }
+        /// Set while a data update is being applied, so the viewport movement that update
+        /// causes — a head trim, an insert animation, the tail-follow scroll itself — is
+        /// never fed back in as if the operator had scrolled.
+        private var isApplyingUpdate = false
 
+        /// Keeps `followTail` reporting where the viewport actually is. It is a readout,
+        /// not a latch: nothing decides anything from it here (`update` measures for
+        /// itself), so there is no state to get stuck armed.
         @objc private func userScrolling() {
+            guard !isApplyingUpdate else { return }
             let atBottom = isAtBottom()
             if followTail != atBottom { followTail = atBottom }
         }
 
+        /// A row scrolled halfway off the bottom means the operator is not at the bottom.
+        ///
+        /// Measured against the scroll geometry rather than `rows(in:)`, which counts a
+        /// row as visible when *any* of it is — so the last row peeking in by a pixel read
+        /// as "at the bottom" and the list followed while the operator was reading the row
+        /// above it.
         private func isAtBottom() -> Bool {
-            guard let table, table.numberOfRows > 0 else { return true }
-            let visible = table.rows(in: table.visibleRect)
-            return NSMaxRange(visible) >= table.numberOfRows
+            guard let scrollView, let document = scrollView.documentView else { return true }
+            let visible = scrollView.contentView.documentVisibleRect
+            guard document.frame.height > visible.height else { return true } // content fits
+            return visible.maxY >= document.frame.height - RequestTable.rowHeight / 2
         }
 
         private func scrollToBottom() {
