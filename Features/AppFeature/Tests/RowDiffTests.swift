@@ -175,6 +175,30 @@ import Testing
     }
 }
 
+/// The tail-follow's one decision, taken away from AppKit so the occluded case can be
+/// stated rather than measured off geometry that is deliberately no longer maintained.
+@Suite @MainActor struct TailFollowDecisionTests {
+    private typealias Decide = RequestTable.Coordinator
+
+    @Test func onScreen_theGeometryDecides() {
+        #expect(Decide.shouldFollowTail(windowVisible: true, atBottom: true, gliding: false, current: false))
+        #expect(!Decide.shouldFollowTail(windowVisible: true, atBottom: false, gliding: false, current: true))
+    }
+
+    /// A glide is behind the bottom by construction, so it counts as being there.
+    @Test func aGlideInFlightCountsAsAtBottom() {
+        #expect(Decide.shouldFollowTail(windowVisible: true, atBottom: false, gliding: true, current: false))
+    }
+
+    /// Occluded, the offset is not kept at the bottom — that is the saving — so the
+    /// viewport falls behind and geometry would answer "not at the bottom" for a reader
+    /// who never scrolled. The answer is frozen instead, in both directions.
+    @Test func occluded_theAnswerIsFrozen() {
+        #expect(Decide.shouldFollowTail(windowVisible: false, atBottom: false, gliding: false, current: true))
+        #expect(!Decide.shouldFollowTail(windowVisible: false, atBottom: true, gliding: true, current: false))
+    }
+}
+
 private extension RowDiff {
     var isNone: Bool { if case .none = self { true } else { false } }
     var isReload: Bool { if case .reload = self { true } else { false } }
