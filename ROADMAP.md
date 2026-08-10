@@ -597,6 +597,55 @@ The human also got the search the agent has had since M6: `FlowQuery` had carrie
 to it, with no view calling it. `ProxyClientParityTests` could not catch that — it
 checks a capability is *wired*, which this one was.
 
+### The list moves instead of blinking (0.0.22)
+
+Three PRs, all in `RequestTable`, all about the same thing: a list under live capture is
+something a human *watches*, and every defect here was one where the list disagreed with
+where its reader was standing.
+
+**Tail-follow stopped being a latch.** It was a flag cleared only by a scroll
+notification — and the notifications are not a complete account of how a viewport moves.
+Momentum, a scroller drag, a keyboard scroll and the shift the table itself causes when
+the window's head is trimmed all left it armed, so the list yanked itself back down while
+the operator was reading rows further up; the same gap in the other direction stopped the
+follow when a flick coasted to the bottom after the fingers lifted. There is no
+bookkeeping to get wrong if nothing is booked: the update measures the viewport's own
+geometry a moment before the edit lands. Two details that were each a bug first — the
+measurement reads the scroll geometry rather than `rows(in:)`, which calls a row visible
+when a pixel of it is; and the decision hangs off the *diff*, not a row-count change,
+because at the window's cap the head is trimmed by exactly what the tail gained.
+
+**Then the follow itself was the problem.** A batch arrived as two discontinuous events —
+rows fading in at the tail, and the viewport jumping by the whole batch — ten times a
+second, so the list blinked forward rather than moving, and each batch's fades overlapped
+the next into a shimmer. They were two answers to one question. The insert animation is
+gone and the scroll is driven frame by frame: a display link closes a fixed fraction of
+the *remaining* distance per unit time, so a batch landing mid-glide moves the target and
+the motion carries through it instead of restarting.
+
+**A `ListViewKit` port was built for that and thrown away.** It gave the motion, and cost
+`NSTableView`'s header, column resizing, selection and key-view loop — all hand-rolled
+back, plus a `Hashable` projection of `Flow` to keep the library's diff off every captured
+body. The animation turned out to be fixable in place for a fraction of that. Recorded
+because the shape recurs: *a rendering defect is not automatically a rendering-stack
+defect*, and the honest comparison is against fixing what you have.
+
+Then the reverse of the first bug, from the fix to the second: drag a column wide enough
+to scroll horizontally and the list **shakes**. The glide and a live scroll write the same
+clip view — the gesture moves x, a batch starts the link writing y, and the two settings
+of `boundsOrigin` interleave every frame. Scrolling vertically hid it, because there the
+glide pushed the same axis the reader was already going. The reader owns the offset while
+they are moving it, for the gesture and half a second past it (momentum outlives
+`didEndLiveScroll`).
+
+Three column jobs came with it: the list **opens at the newest row** — which is not one
+call, because the first rows arrive before the view has a size, so the bottom *is* offset
+0 and scrolling to it succeeds at doing nothing; **double-clicking a divider fits a column
+to its content** (measured in the cell's own font, over the newest 2 000 rows, with the
+header title as a floor); and **right-clicking the header chooses columns**, remembered
+across launches, with hiding the last one refused on both sides — the menu that would undo
+it lives on a header that by then has nothing left to draw.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
