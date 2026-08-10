@@ -63,8 +63,17 @@ struct FlowFilterBar: View {
         .background(.bar)
         // ⌘F with the bar already open means "put me back in the field", which is
         // what every other find bar on this platform does.
-        .onChange(of: store.search.isPresented, initial: true) { _, presented in
-            fieldFocused = presented
+        //
+        // Deferred by a main-actor hop, and that is load-bearing rather than
+        // superstition: assigning `@FocusState` while the bar is still being inserted
+        // lands before the field is in the responder chain, so the assignment is lost
+        // and AppKit gives key focus to the first focusable control instead — the scope
+        // picker. Observed exactly that: ⌘F opened the bar, the picker took the focus
+        // ring, and everything typed went into it.
+        .task(id: store.search.isPresented) {
+            guard store.search.isPresented else { return }
+            await Task.yield()
+            fieldFocused = true
         }
         .onExitCommand { store.send(.searchDismissed) }
     }

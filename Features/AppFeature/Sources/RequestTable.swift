@@ -411,28 +411,41 @@ struct RequestTable: NSViewRepresentable {
         /// the eye should be able to catch. Popping in between two frames reads as a
         /// glitch; a 200 ms fade reads as the answer landing.
         final class RowView: NSTableRowView {
-            private let failureFill = CALayer()
+            /// A subview, not a `CALayer` on this view's own backing layer.
+            ///
+            /// The layer version compiled, ran, and drew nothing: `wantsLayer = true` in
+            /// `init` does not guarantee `layer` is non-nil on the next line, so
+            /// `layer?.insertSublayer` silently did nothing and every failed row looked
+            /// exactly like a healthy one. A subview has no such window — it is attached
+            /// when it is added, and it sits under the cell views because it was added
+            /// before them.
+            private let failureFill = NSView()
             private var isFailure = false
 
             override init(frame: NSRect) {
                 super.init(frame: frame)
-                wantsLayer = true
-                failureFill.backgroundColor = LoomTheme.rowFillError.cgColor
-                failureFill.opacity = 0
-                layer?.insertSublayer(failureFill, at: 0)
+                failureFill.wantsLayer = true
+                failureFill.layer?.backgroundColor = LoomTheme.rowFillError.cgColor
+                failureFill.alphaValue = 0
+                failureFill.autoresizingMask = [.width, .height]
+                failureFill.frame = bounds
+                addSubview(failureFill)
             }
 
             @available(*, unavailable)
             required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-            override func layout() {
-                super.layout()
-                // No implicit animation on the frame: the fill must track a resize and a
-                // scroll exactly, and an animated frame lags behind its row.
-                CATransaction.begin()
-                CATransaction.setDisableActions(true)
-                failureFill.frame = bounds
-                CATransaction.commit()
+            /// Re-assert the colour whenever the appearance changes: a `cgColor` is
+            /// resolved once, so a dynamic asset colour captured under one appearance
+            /// keeps that appearance until something re-reads it.
+            override func updateLayer() {
+                super.updateLayer()
+                failureFill.layer?.backgroundColor = LoomTheme.rowFillError.cgColor
+            }
+
+            override func viewDidChangeEffectiveAppearance() {
+                super.viewDidChangeEffectiveAppearance()
+                failureFill.layer?.backgroundColor = LoomTheme.rowFillError.cgColor
             }
 
             /// `animated: false` on first configuration — a row scrolling into view
@@ -441,11 +454,14 @@ struct RequestTable: NSViewRepresentable {
             func setFailure(_ failure: Bool, animated: Bool) {
                 guard failure != isFailure else { return }
                 isFailure = failure
-                CATransaction.begin()
-                CATransaction.setDisableActions(!animated)
-                if animated { CATransaction.setAnimationDuration(0.2) }
-                failureFill.opacity = failure ? 1 : 0
-                CATransaction.commit()
+                if animated {
+                    NSAnimationContext.runAnimationGroup { context in
+                        context.duration = 0.2
+                        failureFill.animator().alphaValue = failure ? 1 : 0
+                    }
+                } else {
+                    failureFill.alphaValue = failure ? 1 : 0
+                }
             }
 
             /// Recycling hygiene: a reused row must not inherit its predecessor's state,
