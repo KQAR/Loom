@@ -302,6 +302,10 @@ struct RequestTable: NSViewRepresentable {
             clipView.postsBoundsChangedNotifications = true
             nc.addObserver(self, selector: #selector(userScrolling),
                            name: NSView.boundsDidChangeNotification, object: clipView)
+            // Object is nil rather than the window: this view has no window yet at attach
+            // time, and it can move between windows afterwards. The handler filters.
+            nc.addObserver(self, selector: #selector(windowOcclusionChanged),
+                           name: NSWindow.didChangeOcclusionStateNotification, object: nil)
         }
 
         func detach() {
@@ -331,18 +335,81 @@ struct RequestTable: NSViewRepresentable {
             // the bottom by construction, so measuring geometry alone would read the list's
             // own catch-up as the operator having scrolled away and stop following in the
             // middle of the movement.
-            let wasAtBottom = isAtBottom() || displayLink != nil
+            let visible = isWindowVisible
+            let wasAtBottom = Self.shouldFollowTail(
+                windowVisible: visible, atBottom: isAtBottom(), gliding: displayLink != nil,
+                current: followTail
+            )
             isApplyingUpdate = true
             defer { isApplyingUpdate = false }
             let diff = RowDiff(from: previous, to: newRows)
+            // The structural edit is applied whether or not anyone can see it: the table's
+            // own row count has to keep matching `rows`, or the next insert is computed
+            // against a count that moved. What is skipped while occluded is everything
+            // *visual* — see `apply` and the follow below.
             apply(diff, in: table)
             applySelection(newSelection, in: table)
+            guard visible else {
+                // Nothing is being shown, so there is nothing to follow and no geometry
+                // worth reading. `followTail` is left frozen at its last on-screen value,
+                // which is what `windowOcclusionChanged` restores from.
+                stopGliding()
+                return
+            }
             // On the *diff*, not on a row-count change: once the window is at its cap the
             // head is trimmed by exactly what the tail gained, so the count is constant
             // while the list keeps moving — and a count gate silently stops following at
             // the one point where there is the most to follow.
             if wasAtBottom, diff != .none { scrollToBottom() }
             if followTail != wasAtBottom { followTail = wasAtBottom }
+        }
+
+        /// Whether the list should be following the tail after an edit.
+        ///
+        /// Pure, so the one case that has no geometry to read can be stated rather than
+        /// inferred: **while the window is occluded the answer is frozen**. The offset is
+        /// deliberately not kept at the bottom then (that is the whole saving), so the
+        /// viewport falls behind the growing document and `isAtBottom()` would answer
+        /// "no" — flipping the follow off for a reader who never scrolled anywhere, and
+        /// leaving the list stuck mid-capture when the window came back.
+        static func shouldFollowTail(
+            windowVisible: Bool, atBottom: Bool, gliding: Bool, current: Bool
+        ) -> Bool {
+            guard windowVisible else { return current }
+            // A glide in flight counts as being at the bottom, and has to: it is *behind*
+            // the bottom by construction, so measuring geometry alone would read the
+            // list's own catch-up as the operator having scrolled away.
+            return atBottom || gliding
+        }
+
+        /// Whether this table is on a window someone can currently see.
+        ///
+        /// Not a nicety. Everything the follow does per frame — `setBoundsOrigin` on the
+        /// clip view — costs an AppKit KVO walk that reaches **every realized cell**, and
+        /// each cell is an `NSHostingView` that answers by invalidating its SwiftUI
+        /// layout. Measured on a build capturing ~3 flows/s with the screen locked: the
+        /// display link ran continuously and the app held **~70 % of a core** drawing
+        /// something no one could see. Occlusion is the honest gate for that — a
+        /// minimised, fully covered or locked-screen window reports not-visible, and a
+        /// window that is merely in the background does not.
+        private var isWindowVisible: Bool {
+            guard let window = scrollView?.window else { return false }
+            return window.occlusionState.contains(.visible)
+        }
+
+        @objc private func windowOcclusionChanged(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow, window === scrollView?.window,
+                  let table
+            else { return }
+            guard isWindowVisible else { stopGliding(); return }
+            // Coming back. The rows are current — cells are built from `rows` on demand —
+            // but nothing on screen was refreshed while away, and the offset was left
+            // where the last visible frame put it.
+            refreshVisibleRows(in: table)
+            // Set rather than glided, for the same reason the initial tail scroll is: a
+            // list arriving already at the tail is where it belongs, not something that
+            // travelled while the window was being revealed.
+            if followTail, mayScrollProgrammatically { setOffsetY(maximumOffsetY) }
         }
 
         /// Turn a diff into the smallest set of table operations that expresses it, then
@@ -376,7 +443,9 @@ struct RequestTable: NSViewRepresentable {
                 }
                 table.endUpdates()
             }
-            refreshVisibleRows(in: table)
+            // Pushing content into cells nobody is looking at is the other half of the
+            // occluded cost; `windowOcclusionChanged` does one refresh on the way back in.
+            if isWindowVisible { refreshVisibleRows(in: table) }
         }
 
         /// Push current content into every row that is actually on screen.
@@ -1121,6 +1190,13 @@ private final class HostingCell: NSTableCellView {
         // unconstrained hosting view will happily ask for the width its text wants and
         // drag the column with it.
         hosting.translatesAutoresizingMaskIntoConstraints = false
+        // A cell four points inside a table row has no safe area to respect, and opting
+        // out of the tracking is worth a line here: every scroll frame moves the clip
+        // view's bounds, AppKit walks its KVO dependents, and each hosting view answers
+        // `invalidateSafeAreaInsets()` → a SwiftUI layout invalidation. At ~264 realized
+        // cells (33 rows × 8 columns) that fan-out was the bulk of a glide frame in a
+        // sample of the tail-follow.
+        hosting.safeAreaRegions = []
         addSubview(hosting)
         NSLayoutConstraint.activate([
             hosting.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
