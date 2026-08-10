@@ -292,7 +292,7 @@ struct RequestTable: NSViewRepresentable {
                            name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
             nc.addObserver(self, selector: #selector(userScrolling),
                            name: NSScrollView.didLiveScrollNotification, object: scrollView)
-            nc.addObserver(self, selector: #selector(userScrolling),
+            nc.addObserver(self, selector: #selector(userDidEndScroll),
                            name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
             // Every viewport move, whoever caused it — a gesture, its momentum, a scroller
             // drag, a keyboard scroll. These only keep `followTail` reporting the truth to
@@ -604,10 +604,17 @@ struct RequestTable: NSViewRepresentable {
         /// otherwise scrolling up under live capture is a fight for the offset that the
         /// display link wins every frame.
         @objc private func userWillScroll() {
+            isLiveScrolling = true
+            lastLiveScrollAt = Date()
             stopGliding()
             // An operator who scrolled before the first layout settled has said where they
             // want to be, and it outranks opening at the tail.
             wantsInitialTailScroll = false
+        }
+
+        @objc private func userDidEndScroll() {
+            isLiveScrolling = false
+            userScrolling()
         }
 
         /// Keeps `followTail` reporting where the viewport actually is. It is a readout,
@@ -615,8 +622,37 @@ struct RequestTable: NSViewRepresentable {
         /// itself), so there is no state to get stuck armed.
         @objc private func userScrolling() {
             guard !isApplyingUpdate, !isGliding else { return }
+            lastLiveScrollAt = Date()
             let atBottom = isAtBottom()
             if followTail != atBottom { followTail = atBottom }
+        }
+
+        /// Whether a scroll gesture is in progress, and when the viewport last moved for a
+        /// reason that was not this table's own doing.
+        ///
+        /// Both exist because **the glide and a live scroll write the same clip view**, and
+        /// a column dragged wide enough to scroll horizontally is where that shows: the
+        /// gesture moves x, a capture batch lands mid-gesture and the display link starts
+        /// writing y, and the two settings of `boundsOrigin` interleave every frame — the
+        /// list shakes. Scrolling vertically hid it, because there the glide was pushing
+        /// the same axis in the same direction the reader was already going.
+        private var isLiveScrolling = false
+        private var lastLiveScrollAt: Date?
+
+        /// How long after the last viewport move the follow stays out of the way.
+        ///
+        /// `didEndLiveScroll` fires when the fingers lift and momentum keeps going after
+        /// it, so ending the suppression there would put the fight back for the length of
+        /// the deceleration. The cost of the window is at most a few skipped batches, and
+        /// the follow catches up in one glide when it resumes — the list is never left
+        /// somewhere it did not choose to be.
+        static let scrollQuietWindow: TimeInterval = 0.5
+
+        /// Whether the follow may take the offset right now.
+        private var mayScrollProgrammatically: Bool {
+            guard !isLiveScrolling else { return false }
+            guard let lastLiveScrollAt else { return true }
+            return Date().timeIntervalSince(lastLiveScrollAt) >= Self.scrollQuietWindow
         }
 
         /// A row scrolled halfway off the bottom means the operator is not at the bottom.
@@ -687,6 +723,9 @@ struct RequestTable: NSViewRepresentable {
 
         private func scrollToBottom() {
             guard let scrollView, let table, table.numberOfRows > 0 else { return }
+            // The reader owns the offset while they are moving it. Anything written here
+            // during a gesture interleaves with theirs frame by frame.
+            guard mayScrollProgrammatically else { stopGliding(); return }
             let clipView = scrollView.contentView
             let remaining = maximumOffsetY - clipView.bounds.origin.y
             guard remaining > 0 else { return }
@@ -723,6 +762,9 @@ struct RequestTable: NSViewRepresentable {
 
         @objc private func glide(_ link: CADisplayLink) {
             guard let scrollView else { stopGliding(); return }
+            // Checked per frame, not only when the glide starts: a gesture can begin
+            // mid-glide, and the frame after it does is already a fight for the offset.
+            guard mayScrollProgrammatically else { stopGliding(); return }
             let clipView = scrollView.contentView
             let current = clipView.bounds.origin.y
             let remaining = maximumOffsetY - current
