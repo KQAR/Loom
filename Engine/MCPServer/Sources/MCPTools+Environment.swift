@@ -38,6 +38,7 @@ extension MCPToolExecutor {
             listenHost: status.listenHost,
             lanReachable: status.isLANReachable,
             capturedCount: status.capturedCount,
+            flowsRetained: status.retainedCount,
             isRecording: status.isRecording,
             socksPort: status.socksPort,
             // No routing implementation wired (the engine embedded without the app):

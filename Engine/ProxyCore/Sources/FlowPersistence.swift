@@ -60,7 +60,7 @@ final class FlowPersistence: @unchecked Sendable {
     // SQLite wants to copy bound bytes, not borrow them.
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init?(fileURL: URL, maxRows: Int = 20_000, pruneSlack: Int = 500) {
+    init?(fileURL: URL, maxRows: Int = FlowLimits.persistedRows, pruneSlack: Int = 500) {
         self.maxRows = maxRows
         self.pruneSlack = max(0, pruneSlack)
         // Owner-only, like the CA store: these rows hold whole request and response

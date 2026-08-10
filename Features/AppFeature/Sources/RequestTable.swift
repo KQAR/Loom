@@ -160,8 +160,8 @@ struct RequestTable: NSViewRepresentable {
 
         var maxWidth: CGFloat {
             switch self {
-            // Sized for five digits, not seven: the ring caps at 2000 and the persisted
-            // store an order of magnitude above, so five is headroom already — and every
+            // Sized for five digits, not seven: the caps are in `FlowLimits` and the
+            // largest is five digits, so this is headroom already — and every
             // point it took came off Path, the one column never wide enough.
             case .status: 28
             case .ordinal: 56

@@ -114,8 +114,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     box.set(channel)
                     try await Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
                 } catch {
-                    continuation.finish(throwing: UpstreamTLSError.wrapping(
+                    // Two wrappers, one hop each, and neither touches what the other
+                    // claims: the TLS one only wraps NIOSSL's own errors, the
+                    // connection one only wraps a failure to reach the address at all.
+                    // Anything else — a mid-exchange close, an invalid URL — passes
+                    // through both untouched.
+                    let contextualized = UpstreamTLSError.wrapping(
                         error, host: host, isTLS: isTLS, identity: identity
+                    )
+                    continuation.finish(throwing: UpstreamConnectionError.wrapping(
+                        contextualized, host: host, port: port
                     ))
                 }
             }

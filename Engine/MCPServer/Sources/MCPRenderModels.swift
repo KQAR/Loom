@@ -365,6 +365,9 @@ struct ProxyStatusRender: Encodable {
     var listenHost: String
     var lanReachable: Bool
     var capturedCount: Int
+    /// Everything retained, which is what every other read is scoped by. Absent when
+    /// the engine persists nothing, where `capturedCount` is already the whole answer.
+    var flowsRetained: Int?
     var isRecording: Bool
     /// Reported only when there is one to point at, so its absence is an answer
     /// rather than a zero to interpret.
