@@ -24,7 +24,7 @@ struct EngineConfiguration {
     }
 
     /// Size of the in-memory flow ring. `0` retains nothing between captures.
-    var flowCapacity: Int = 2000
+    var flowCapacity: Int = FlowLimits.memoryRing
     var persistence: Persistence = .durable
     /// Push sink for flow inserts/updates (see `FlowObserving`).
     var flowObserver: FlowObserving?

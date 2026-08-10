@@ -37,10 +37,12 @@ public struct AppFeature: Sendable {
         public var status = ProxyStatus(isRunning: false, port: 9090, capturedCount: 0)
         /// Stored oldest-first (insertion order); lists display newest-first.
         public var flows: IdentifiedArrayOf<Flow> = []
-        /// Most flows the window keeps in memory this session; older ones are
-        /// dropped oldest-first (the engine ring is bounded the same way, so the
-        /// list would never surface them anyway). Matches `FlowStore.capacity`.
-        /// Rows the window addresses.
+        /// Rows the window addresses; older ones are dropped oldest-first.
+        ///
+        /// The stale half of this comment is worth naming, because it is what the move
+        /// to `FlowLimits` is for: it used to say "matches `FlowStore.capacity`", and
+        /// that stopped being true the moment this number was raised and the ring's was
+        /// not.
         ///
         /// Raised from 2 000 to match what the store actually retains: the durable store
         /// keeps 20 000 exchanges and every one of them is searchable, diffable and
@@ -59,7 +61,7 @@ public struct AppFeature: Sendable {
         /// rows into it costs 416 ms of decode on the path that binds the listener, for
         /// 13 MB — so history reaches the window through `flowPage` (which reads the
         /// store) after launch instead, and the proxy starts immediately.
-        public static let displayCap = 20_000
+        public static let displayCap = FlowLimits.windowRows
         /// How many flows the cap has dropped this session — surfaced in the list
         /// footer so a big capture doesn't *look* like it kept everything.
         public var droppedFlowCount = 0
@@ -1058,7 +1060,7 @@ public struct AppFeature: Sendable {
                 state.search.isSearching = false
                 state.search.staleCount = 0
                 // The engine searches memory *and* history; this window holds the
-                // newest 2000. Matches it can't render are counted rather than
+                // newest `FlowLimits.windowRows`. Matches it can't render are counted rather than
                 // silently dropped, or the result count would disagree with the rows.
                 state.search.outOfWindowMatches = ids.count(where: { state.flows[id: $0] == nil })
                 return .none

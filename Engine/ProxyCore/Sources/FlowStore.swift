@@ -75,7 +75,7 @@ actor FlowStore {
     /// with. Reported so a surface can tell "no traffic" from "not counted yet".
     private var aggregatesCoverHistory = false
 
-    init(capacity: Int = 2000, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil, observer: FlowObserving? = nil) {
+    init(capacity: Int = FlowLimits.memoryRing, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil, observer: FlowObserving? = nil) {
         self.capacity = capacity
         self.bodyBudget = bodyBudget
         self.persistence = persistence
@@ -388,8 +388,9 @@ actor FlowStore {
     /// to keep the number of hydrations small.
     ///
     /// **It reads through to disk when the ring runs out.** It did not, and that was a
-    /// silent hole rather than a thin answer: the ring holds 2000 flows and the table
-    /// keeps 20 000, so nine of every ten persisted exchanges could not be found by any
+    /// silent hole rather than a thin answer: the ring holds `FlowLimits.memoryRing`
+    /// flows and the store an order of magnitude more, so nine of every ten persisted
+    /// exchanges could not be found by any
     /// search — while `flow(id:)` and `recentHydrated` resolved them perfectly well. An
     /// agent could hold an id that worked and search for the same exchange to `[]`, and
     /// `[]` reads exactly like "that traffic never happened".
@@ -719,6 +720,15 @@ actor FlowStore {
     }
 
     var count: Int { flows.count }
+
+    /// Everything retained, ring **and** store, or nil when nothing is persisted.
+    ///
+    /// The ring's `count` plateaus at its capacity, so as a "how much have I captured"
+    /// answer it stops moving after the first 2 000 exchanges and reads as a capture
+    /// that stalled. This is the number that keeps going up, and the one every read
+    /// path can still resolve an id from (`flow(id:)`, `recent(matching:)` and the HAR
+    /// export all fall through to the store).
+    var retainedCount: Int? { persistence?.storedRowCount }
 
     /// A new live subscription. Every `broadcast(_:)` (from `upsert` /
     /// `finalizeInFlight`) yields here; see `FlowProviding.flowStream()` for the

@@ -43,7 +43,22 @@ public struct ReplayOverrides: Equatable, Codable, Sendable {
 public struct ProxyStatus: Equatable, Codable, Sendable {
     public var isRunning: Bool
     public var port: Int
+    /// Flows in the engine's in-memory ring — capped at `FlowLimits.memoryRing`.
+    ///
+    /// **It plateaus, and that is why `retainedCount` sits next to it.** A capture that
+    /// has run past the cap reports the cap for the rest of the session, so read on its
+    /// own this number says "2000" whether 2 000 exchanges happened or 200 000, and an
+    /// agent watching it grow concludes capture stopped. Same shape as the search hole
+    /// closed in 0.0.21: a figure that silently tops out at a ring bound.
     public var capturedCount: Int
+    /// Everything retained — ring plus durable store — or nil when the engine persists
+    /// nothing (an embedder with `persistFlows: false`, where the ring *is* the whole
+    /// capture and `capturedCount` is already the honest answer).
+    ///
+    /// This is the number the other read paths are scoped by: `get_flow_detail`,
+    /// `diff_flows`, `replay_flow`, `get_recent_flows` and the find bar all resolve
+    /// against the store, so it is what "how much can I still ask about" means.
+    public var retainedCount: Int?
     /// Whether observed traffic is being stored as flows. When false the proxy
     /// keeps forwarding (and MITM-decrypting) traffic but records nothing new.
     public var isRecording: Bool
@@ -84,7 +99,8 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     public var reverseProxies: [ReverseProxyStatus]
 
     public init(
-        isRunning: Bool, port: Int, capturedCount: Int, isRecording: Bool = true,
+        isRunning: Bool, port: Int, capturedCount: Int, retainedCount: Int? = nil,
+        isRecording: Bool = true,
         listenHost: String = "127.0.0.1", socksPort: Int? = nil,
         recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
         reverseProxies: [ReverseProxyStatus] = []
@@ -92,6 +108,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.isRunning = isRunning
         self.port = port
         self.capturedCount = capturedCount
+        self.retainedCount = retainedCount
         self.isRecording = isRecording
         self.listenHost = listenHost
         self.socksPort = socksPort

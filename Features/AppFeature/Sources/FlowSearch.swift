@@ -68,7 +68,9 @@ public struct FlowSearch: Equatable, Sendable {
     /// Matches the engine found that this window cannot show.
     ///
     /// The engine searches everything retained — memory *and* the durable store, an
-    /// order of magnitude more — while the table holds the newest 2000. So a headers
+    /// order of magnitude more — while the table holds the newest `FlowLimits.windowRows`
+    /// of them (the store's cap is the same today, but an in-flight capture is not yet
+    /// stored, and an embedder can set either). So a headers
     /// or body search can legitimately match an exchange there is no row for, and
     /// showing "3" next to a list of 1 would be a lie by arithmetic. Stated instead.
     var outOfWindowMatches = 0

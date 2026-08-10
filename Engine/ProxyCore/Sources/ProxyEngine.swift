@@ -106,7 +106,7 @@ public actor ProxyEngine: ProxyControlling {
     ///     replay via `replay(flow:)`).
     ///   - observer: an optional push sink delivered every flow insert/update,
     ///     the same payload as `flowStream()` but pushed. See `FlowObserving`.
-    public init(persistFlows: Bool, capacity: Int = 2000, observer: FlowObserving? = nil) {
+    public init(persistFlows: Bool, capacity: Int = FlowLimits.memoryRing, observer: FlowObserving? = nil) {
         self.init(configuration: EngineConfiguration(
             flowCapacity: capacity,
             // The audit trail follows the flow store: persist only when the

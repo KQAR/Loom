@@ -189,6 +189,14 @@ extension MCPToolExecutor {
             through Loom (`systemProxy`). Check this first when a capture comes back empty — \
             "nothing happened" and "nothing was pointed at the proxy" look identical otherwise.
 
+            Two counts, and reading the wrong one is how a busy capture looks stalled. \
+            `capturedCount` is the in-memory ring, which is small and **plateaus at its cap** — \
+            once it is full it reports the same number forever, however much traffic arrives. \
+            `flowsRetained` is everything still on disk, an order of magnitude more, and it is \
+            what every other read is scoped by: `get_recent_flows`, `get_flow_detail`, \
+            `diff_flows` and `replay_flow` all resolve against it. Use `flowsRetained` to answer \
+            "how much has been captured"; it is absent only when this build persists nothing.
+
             `systemProxy` is one of: `"on"` (routed through Loom), `"off"` (no system proxy set), \
             `"other"` (another proxy app — Charles, Proxyman, whistle — owns the setting; \
             `systemProxyPointsAt` gives its host:port), or `"unavailable"` (this build can't \

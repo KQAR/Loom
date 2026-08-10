@@ -353,9 +353,13 @@ import Testing
             render: ProxyStatusRender(
                 isRunning: status.isRunning, port: status.port, listenHost: status.listenHost,
                 lanReachable: status.isLANReachable, capturedCount: status.capturedCount,
+                flowsRetained: status.retainedCount,
                 isRecording: status.isRecording, socksPort: status.socksPort,
                 systemProxy: "unavailable"
-            )
+            ),
+            accountedFor: [
+                "retainedCount": "renamed to `flowsRetained`, matching what `get_stats` already calls the same number — one name for one quantity beats a second one an agent has to learn",
+            ]
         ))
     }
 
