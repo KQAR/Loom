@@ -233,4 +233,63 @@ import Testing
         state.search.text = "a.com"
         #expect(state.displayFlowsAreEmpty == state.displayFlows.isEmpty)
     }
+
+    // MARK: Typing into the bar must not cost the capture
+
+    /// The needle is prepared once per rebuild, not once per row.
+    ///
+    /// The version this replaces recomputed `needle` twice per flow (a
+    /// `trimmingCharacters` allocation each) and matched with
+    /// `range(of:options:.caseInsensitive)`: 84 ms over a full window, more than once
+    /// per keystroke, which is what made the find bar stutter while it had focus. The
+    /// bound is loose on purpose — this fails on a return to the per-row shape, not on
+    /// a slow machine.
+    @Test func filteringAFullWindowIsCheapPerKeystroke() {
+        let flows = (0 ..< AppFeature.State.displayCap).map {
+            Fixtures.flow(url: "https://api.example.com/v1/resource/\($0)/items?page=\($0 % 13)")
+        }
+        var state = state(flows)
+        state.search.isPresented = true
+        let start = Date()
+        for needle in ["it", "ite", "item", "items", "items?"] { state.search.text = needle }
+        let elapsed = Date().timeIntervalSince(start)
+        #expect(state.displayFlows.count == AppFeature.State.displayCap)
+        #expect(elapsed < 1.0, "5 keystrokes over a full window took \(elapsed)s — per-row needle work is back")
+    }
+
+    /// A field no row is filtered by must not trigger a rescan. One keystroke writes
+    /// `isSearching` as well as `text`, so an unconditional `didSet` scanned twice.
+    @Test func nonFilteringFieldsDoNotAffectTheProjection() {
+        var search = FlowSearch()
+        search.isPresented = true
+        search.text = "orders"
+        var other = search
+        other.isSearching = true
+        other.staleCount = 7
+        other.outOfWindowMatches = 3
+        #expect(!other.affectsProjection(comparedTo: search))
+
+        other.text = "orders " // trims to the same needle: same rows
+        #expect(!other.affectsProjection(comparedTo: search))
+        other.text = "order"
+        #expect(other.affectsProjection(comparedTo: search))
+    }
+
+    /// The byte scan is only taken for an ASCII needle; anything else falls back to
+    /// Foundation, because case folding outside ASCII is not a bit flip.
+    @Test func needleMatcherFoldsASCIIAndDefersOnTheRest() {
+        #expect(NeedleMatcher("Orders").contains("https://a.com/ORDERS/1"))
+        #expect(NeedleMatcher("orders").contains("https://a.com/Orders/1"))
+        #expect(!NeedleMatcher("orders").contains("https://a.com/order/1"))
+        #expect(NeedleMatcher("").contains("anything"))
+        // Needle longer than the haystack, and an almost-match that must restart.
+        #expect(!NeedleMatcher("https://a.com/orders/1/x").contains("https://a.com"))
+        #expect(NeedleMatcher("aab").contains("xaaab"))
+        // Non-ASCII on both sides.
+        #expect(NeedleMatcher("café").contains("https://a.com/CAFÉ"))
+        #expect(NeedleMatcher("订单").contains("https://a.com/订单/1"))
+        #expect(!NeedleMatcher("订单").contains("https://a.com/orders/1"))
+        // An ASCII needle against a non-ASCII haystack still scans bytes correctly.
+        #expect(NeedleMatcher("com/").contains("https://a.com/订单"))
+    }
 }
