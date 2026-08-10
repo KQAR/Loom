@@ -41,6 +41,12 @@ on:
         required: false
         default: true
 
+# Same pin as CI (see .github/workflows/ci.yml). Same reason as the h2 hunt, and
+# doubly so for TSan: the sanitizer runtime ships with the toolchain, so an
+# unpinned image change moves the instrument as well as the code under it.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
 jobs:
   # Proof that the suppression file did not turn the CI job into a rubber stamp.
   #
@@ -56,6 +62,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
 
       - name: Build the canary under TSan
         run: |
@@ -94,6 +103,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
 
       - uses: jdx/mise-action@v2
 

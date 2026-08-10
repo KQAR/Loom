@@ -20,6 +20,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The compiler is pinned, not inherited. `macos-latest` resolves to whatever
+# Xcode the current image defaults to, and GitHub rolls that forward — which
+# changes the Swift compiler and the SDK on a commit that touched neither.
+# Every job here verifies the pin before building (scripts/assert-xcode.sh),
+# because a stale pin's own failure is otherwise illegible. Moving it is a
+# deliberate edit with a green run behind it.
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
 jobs:
   # Docs-only changes (*.md, docs/, LICENSE) skip the three build jobs. This is
   # a conditional-job skip, NOT a workflow-level paths-ignore: the three jobs
@@ -90,6 +99,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
 
       - uses: jdx/mise-action@v2
 
@@ -172,6 +184,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
+
       - name: Cache SPM
         uses: actions/cache@v4
         with:
@@ -204,6 +219,9 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
 
       - uses: jdx/mise-action@v2
 

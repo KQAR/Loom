@@ -32,6 +32,12 @@ on:
         required: false
         default: "0"
 
+# Same pin as CI (see .github/workflows/ci.yml). It matters more here than
+# anywhere: a flake hunt whose toolchain can move between runs cannot tell
+# "the stall is gone" from "the compiler changed".
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
 jobs:
   hunt:
     name: Hunt (shard ${{ matrix.shard }})
@@ -45,6 +51,9 @@ jobs:
         shard: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify pinned Xcode
+        run: scripts/assert-xcode.sh
 
       - uses: jdx/mise-action@v2
 
