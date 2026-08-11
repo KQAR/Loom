@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Reads HAR 1.2 (HTTP Archive) back into `Flow`s — the other half of `HARExport`.
 ///
@@ -173,11 +174,26 @@ public enum HARImport {
         return value >= 0 ? value : nil
     }
 
-    /// ISO-8601 with or without fractional seconds — both appear in real HARs.
-    private static func date(_ raw: Any?) -> Date? {
-        guard let text = raw as? String else { return nil }
+    /// ISO-8601 with or without fractional seconds — both appear in real HARs, and
+    /// `ISO8601DateFormatter` only accepts the one shape its `formatOptions` names, so
+    /// parsing needs both.
+    ///
+    /// Held rather than constructed per call, for the reason `HARExport.iso8601`
+    /// already records on the other side of the same file pair: the initializer sets up
+    /// a locale, a calendar and a time zone, and an import runs this **once per entry**
+    /// — a 10 000-entry HAR was allocating 20 000 formatters to parse 10 000
+    /// timestamps. `formatOptions` is set once here and never varies per call, so the
+    /// instances are reusable; the `Mutex` is what makes sharing them sound, since
+    /// `ISO8601DateFormatter` is not `Sendable` and this type is confined to no queue
+    /// or actor.
+    private static let iso8601 = Mutex<(fractional: ISO8601DateFormatter, plain: ISO8601DateFormatter)>({
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+        return (fractional, ISO8601DateFormatter())
+    }())
+
+    private static func date(_ raw: Any?) -> Date? {
+        guard let text = raw as? String else { return nil }
+        return iso8601.withLock { $0.fractional.date(from: text) ?? $0.plain.date(from: text) }
     }
 }
