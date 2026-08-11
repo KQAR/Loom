@@ -174,11 +174,15 @@ public struct AppFeature: Sendable {
         /// badge counted the newest 2000 exchanges while the store retained 20 000: a
         /// host with 300 flows showed 12, and a host whose traffic had all aged out of
         /// the window vanished from the sidebar entirely while its flows sat on disk,
-        /// searchable and unlisted. This is the same rule the `isRecording` bug taught —
+        /// searchable and unlisted. This is the same rule the `isRecording` bug taught:
         /// a fact the engine owns is read from the engine, never kept as a second copy
-        /// and hoped over — and it is the one that windowing the list makes unavoidable
-        /// as well as wrong: at ~120 resident rows, locally derived counts would be off
-        /// by two orders of magnitude.
+        /// and hoped over.
+        ///
+        /// It used to add "and windowing the list makes this unavoidable as well as
+        /// wrong — at ~120 resident rows the local counts would be off by two orders of
+        /// magnitude". **The window is not paged and holds the whole capture** (see
+        /// `displayCap`), so that sentence described a surface that does not exist. The
+        /// reason above stands on its own and did not need it.
         ///
         /// One of the three inputs to the sidebar's grouping lists; assigning it
         /// re-sorts them (see `refreshSidebarRows`).
@@ -193,9 +197,8 @@ public struct AppFeature: Sendable {
         ///
         /// Stays here, and deliberately did not move to the engine with the counters:
         /// it is the one projection that scales with the number of *flows* rather than
-        /// the number of distinct hosts, so a copy covering 20 000 retained rows would
-        /// reintroduce exactly the per-count memory the windowing exists to remove. A
-        /// per-row map belongs to whoever holds the rows.
+        /// the number of distinct hosts, and a per-row map belongs to whoever holds the
+        /// rows. The engine holds every retained flow; this window holds what it draws.
         var hostByRow: [Flow.ID: String] = [:]
         /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge. A
         /// passthrough so the badge and the tests keep reading one name; everything
@@ -751,8 +754,7 @@ public struct AppFeature: Sendable {
         /// streaming, once per WebSocket frame), and each action drove a full reducer
         /// run plus a SwiftUI invalidation of the table and sidebar.
         case flowsReceived([Flow])
-        /// A write action was recorded (seed at boot + live stream).
-        /// The human cleared the audit trail from the panel.
+        /// A LAN device connected to (or was first seen by) the proxy.
         case connectedDeviceCountChanged(Int)
         case categorySelected(FlowCategory?)
         case flowSelected(Flow.ID?)
@@ -803,18 +805,13 @@ public struct AppFeature: Sendable {
         /// A new availability learned from the updater (silent probe or a check).
         case updateAvailabilityChanged(UpdateAvailability)
 
-        // MARK: Reverse-proxy endpoints
-        //
-        // The human's half of a capability that was agent-only: an endpoint is a
-        // listening port on this machine that keeps a dev server's config pointed at
-        // Loom, so the console has to be able to open and close one — not just report
-        // what an agent opened.
-
-        /// Console section header tapped — expands/collapses, and re-reads on open
-        /// (the other writer is an agent).
-        /// Create an endpoint from the console form. `port` 0 asks the OS for a free
-        /// one; a real setup pins the port its dev server config names.
-        /// A create/delete settled. `message` is non-nil only on failure.
+        // The reverse-proxy and audit cases that used to sit here moved to
+        // `ReverseProxyFeature` and `AuditFeature`; the parent reaches them through
+        // `.reverseProxy` / `.audit` above. Their prose stayed behind for two releases,
+        // attached to whatever case happened to follow, which is why
+        // `ActionDocumentationTests` now fails on a doc comment with no case under it —
+        // a stale comment on the wrong declaration is worse than none, because it reads
+        // as documentation of the thing it is touching.
     }
 
     @Dependency(\.proxyClient) var proxyClient

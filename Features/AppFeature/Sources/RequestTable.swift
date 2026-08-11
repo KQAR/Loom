@@ -16,8 +16,12 @@ import SwiftUI
 /// construction — every walk would become 20 000 SQLite reads.
 ///
 /// `NSTableView` asks `tableView(_:viewFor:row:)` only for rows it is about to draw.
-/// That is the whole reason for this file: the window can hold a page instead of the
-/// capture.
+/// That is the whole reason for this file: the cost of an update is the viewport's, not
+/// the capture's, so the window can hold 20 000 rows and still apply a batch in ~1.7 ms.
+/// (It said "the window can hold a page instead of the capture" — it holds the capture;
+/// `FlowStore.page` exists but nothing pages it. What `Table` made impossible was a
+/// paged data source, which is a reason this file *could* be extended, not a description
+/// of what it does.)
 ///
 /// ## What did not change
 ///
@@ -1003,7 +1007,7 @@ struct RequestTable: NSViewRepresentable {
 
 /// What changed between two row sets, in the vocabulary `NSTableView` speaks.
 ///
-/// Not a general diff, deliberately. A general LCS over 2 000 rows on every capture
+/// Not a general diff, deliberately. A general LCS over 20 000 rows on every capture
 /// batch would cost more than the reload it replaces, and it would be solving a problem
 /// this list doesn't have: the capture is a **log**. It grows at the tail, it is trimmed
 /// at the head when the window cap bites, and individual rows change in place as

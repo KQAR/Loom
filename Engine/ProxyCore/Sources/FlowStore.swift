@@ -471,11 +471,23 @@ actor FlowStore {
 
     /// One page of the capture, newest-first, resuming after `cursor`.
     ///
-    /// The read a windowed list surface uses instead of holding every flow: the window
-    /// keeps the rows it can draw plus a prefetch margin, and asks for more as it
-    /// scrolls. What makes that safe is the *keyset* — see `FlowCursor` for why an
-    /// offset into a list the capture keeps prepending to silently skips and repeats
-    /// rows.
+    /// **Nothing in Loom pages it today, and that is worth stating rather than implying.**
+    /// This used to open "the read a windowed list surface uses instead of holding every
+    /// flow — it keeps the rows it can draw plus a prefetch margin and asks for more as
+    /// it scrolls", which describes a main window that does not exist: `AppFeature`
+    /// restores history with a single `flowPage(nil, displayCap, .all)` at boot and then
+    /// holds the whole capture, and `FlowPage.nextCursor` / `totalCount` are read only by
+    /// `FlowPageTests`.
+    ///
+    /// It is kept, and not because the window might page one day. That one boot call is
+    /// the only read that has to merge the ring and the store *in order*, which is the
+    /// hard half below; `recent(matching:)` can concatenate because it stops at a limit,
+    /// and this cannot. The cursor is what makes the merge expressible at all — see
+    /// `FlowCursor` for why an offset into a list the capture keeps prepending to
+    /// silently skips and repeats rows — so the resumable shape comes almost free with
+    /// the correct one. If the window is ever paged, this is what it will call; until
+    /// then, treat the cursor half as tested-but-unexercised rather than as evidence
+    /// that a paged surface exists somewhere.
     ///
     /// Ring first, then history, merged. Two things make the merge non-obvious and
     /// both are load-bearing:
