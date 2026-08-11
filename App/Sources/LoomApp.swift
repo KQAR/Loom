@@ -68,7 +68,7 @@ struct LoomApp: App {
         // Edit ▸ Find ▸ Find in Requests (⌘F) — the main window's find bar. A menu
         // command rather than a hidden button in the view tree, so the shortcut is
         // discoverable and keeps working while focus is in the table.
-        .commands { FlowSearchCommands(store: store) }
+        .commands { FlowSearchCommands(store: store.scope(state: \.capture, action: \.capture)) }
     }
 }
 

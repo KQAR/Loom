@@ -39,7 +39,7 @@ import Testing
         }
         store.exhaustivity = .off // the stamped rule carries a fresh UUID/date
 
-        await store.send(.addRuleFromFlow(flow.id, .mockResponse))
+        await store.send(.capture(.addRuleFromFlow(flow.id, .mockResponse)))
         await store.receive(\.rules.presentEditor)
         #expect(store.state.rules.editor?.isNew ?? false)
         guard case .mock = store.state.rules.editor?.rule.actions.route else {
@@ -52,7 +52,7 @@ import Testing
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
             $0.proxyClient.flow = { _ in nil } // hydrate finds nothing → no editor
         }
-        await store.send(.addRuleFromFlow(UUID(), .blockURL)) // no flow → nothing happens
+        await store.send(.capture(.addRuleFromFlow(UUID(), .blockURL))) // no flow → nothing happens
     }
 
     // MARK: Replay failure routes into the shared rules message
@@ -63,7 +63,10 @@ import Testing
         } withDependencies: {
             $0.proxyClient.replay = { _, _ in throw StubError() }
         }
-        await store.send(.replayTapped(UUID()))
+        await store.send(.capture(.replayTapped(UUID())))
+        // Via the delegate rather than written across: the message line belongs to the
+        // rules panel, and only the parent can see both of its writers.
+        await store.receive(\.capture.delegate.replayFailed)
         await store.receive(\.rules.ruleWriteFailed) {
             $0.rules.rulesMessage = "Replay failed: replay failed"
         }
@@ -78,20 +81,20 @@ import Testing
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
             $0.proxyClient.flow = { id in id == original ? originalFlow : nil }
         }
-        await store.send(.replayFinished(replayed)) {
-            $0.recordFlow(replayed) // body-free in the list, counts + aggregates updated
-            $0.selectedFlowID = replayed.id // jump to the replayed result
-            $0.selectedFlowDetail = replayed // result still carries bodies
+        await store.send(.capture(.replayFinished(replayed))) {
+            $0.capture.recordFlow(replayed) // body-free in the list, counts + aggregates updated
+            $0.capture.selectedFlowID = replayed.id // jump to the replayed result
+            $0.capture.selectedFlowDetail = replayed // result still carries bodies
         }
         // Effect fetches the replay's original for the inspector diff.
-        await store.receive(\.selectedDetailLoaded) {
-            $0.selectedOriginalDetail = originalFlow
+        await store.receive(\.capture.selectedDetailLoaded) {
+            $0.capture.selectedOriginalDetail = originalFlow
         }
     }
 
     @Test func replayFinished_nil_isNoOp() async {
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
-        await store.send(.replayFinished(nil))
+        await store.send(.capture(.replayFinished(nil)))
     }
 
     // MARK: Capture stream + clear
@@ -105,23 +108,23 @@ import Testing
             $0.continuousClock = TestClock()
         }
         store.exhaustivity = .off
-        await store.send(.flowReceived(flow)) {
-            $0.recordFlow(flow) // metadata-only in the list; the counts come from the engine
+        await store.send(.capture(.flowReceived(flow))) {
+            $0.capture.recordFlow(flow) // metadata-only in the list; the counts come from the engine
         }
     }
 
     @Test func clearTapped_emptiesStore() async {
         let flow = Fixtures.flow()
         var initial = AppFeature.State(flows: [flow])
-        initial.selectedFlowID = flow.id
+        initial.capture.selectedFlowID = flow.id
         initial.status.capturedCount = 1
         let store = TestStore(initialState: initial) {
             AppFeature()
         } withDependencies: {
             $0.proxyClient.clearFlows = { }
         }
-        await store.send(.clearTapped) {
-            $0.forgetCapturedFlows()
+        await store.send(.capture(.clearTapped)) {
+            $0.capture.forgetCapturedFlows()
         }
     }
 
@@ -130,17 +133,17 @@ import Testing
     @Test func flowsClearedExternally_emptiesTheWindow() async {
         let flow = Fixtures.flow()
         var initial = AppFeature.State(flows: [flow])
-        initial.selectedFlowID = flow.id
-        initial.selectedFlowDetail = flow
+        initial.capture.selectedFlowID = flow.id
+        initial.capture.selectedFlowDetail = flow
         initial.status.capturedCount = 1
-        initial.droppedFlowCount = 7
+        initial.capture.droppedFlowCount = 7
         let store = TestStore(initialState: initial) { AppFeature() }
 
-        await store.send(.flowsClearedExternally) {
-            $0.forgetCapturedFlows()
+        await store.send(.capture(.flowsClearedExternally)) {
+            $0.capture.forgetCapturedFlows()
         }
         // Idempotent: the echo of our own Clear must not be a second state change.
-        await store.send(.flowsClearedExternally)
+        await store.send(.capture(.flowsClearedExternally))
     }
 
     // MARK: The setup child's view of the proxy is projected, never mirrored

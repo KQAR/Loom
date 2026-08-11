@@ -46,14 +46,14 @@ import Testing
     }
 
     /// What the projection *should* be: the definition, recomputed from scratch.
-    private func rebuilt(_ state: AppFeature.State) -> [Flow.ID] {
+    private func rebuilt(_ state: CaptureFeature.State) -> [Flow.ID] {
         var fresh = state
         fresh.refreshVisibleFlows()
         return fresh.displayFlows.map(\.id)
     }
 
     private func check(
-        _ state: AppFeature.State, _ label: String, sourceLocation: SourceLocation = #_sourceLocation
+        _ state: CaptureFeature.State, _ label: String, sourceLocation: SourceLocation = #_sourceLocation
     ) {
         #expect(
             state.displayFlows.map(\.id) == rebuilt(state),
@@ -65,7 +65,7 @@ import Testing
     // MARK: Each transition, against the definition
 
     @Test func aPlainAppendUnderAHostCategory() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         let seed = (0 ..< 30).map { flow($0, host: $0.isMultiple(of: 2) ? "a.test" : "b.test") }
         state.recordFlows(seed)
         state.selectedCategory = .host("a.test")
@@ -75,7 +75,7 @@ import Testing
     }
 
     @Test func anExchangeCompletingIsUpdatedInPlace() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         let pending = (0 ..< 10).map { flow($0, status: nil) }
         state.recordFlows(pending)
         state.selectedCategory = .host("a.test")
@@ -92,7 +92,7 @@ import Testing
     /// The case the fold must decline: a row that was not shown becomes shown, and it
     /// belongs where the capture has it, not at the end.
     @Test func anExchangeFailingUnderTheErrorsCategory() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         let seed = (0 ..< 20).map { flow($0, status: nil) }
         state.recordFlows(seed)
         state.selectedCategory = .errors
@@ -110,7 +110,7 @@ import Testing
     }
 
     @Test func attributionBackfilledUnderAnAppCategory() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         let seed = (0 ..< 20).map { flow($0, app: $0 < 10 ? "com.known" : nil) }
         state.recordFlows(seed)
         state.selectedCategory = .app("com.known")
@@ -134,7 +134,7 @@ import Testing
     /// The batch's own order and the capture's order differ whenever a slow exchange
     /// completes after a faster one started. Appending "as seen" would invert them.
     @Test func aSlowExchangeCompletingAfterAFasterOneStarted() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlows([flow(0)])
         state.selectedCategory = .host("a.test")
 
@@ -153,7 +153,7 @@ import Testing
     }
 
     @Test func aNeedleNarrowsAndKeepsNarrowing() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlows((0 ..< 50).map { flow($0, host: "a.test") })
         state.search.isPresented = true
         state.search.text = "/v1/1"
@@ -165,7 +165,7 @@ import Testing
     }
 
     @Test func aPanelCategoryStaysEmpty() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlows((0 ..< 10).map { flow($0) })
         state.selectedCategory = .rules
         state.recordFlows((10 ..< 20).map { flow($0) })
@@ -174,7 +174,7 @@ import Testing
     }
 
     @Test func switchingCategoryRebuilds() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlows((0 ..< 40).map { flow($0, host: $0 < 20 ? "a.test" : "b.test") })
         state.selectedCategory = .host("a.test")
         #expect(state.displayFlows.count == 20)
@@ -186,7 +186,7 @@ import Testing
     }
 
     @Test func clearingResetsTheProjection() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlows((0 ..< 20).map { flow($0) })
         state.selectedCategory = .host("a.test")
         state.forgetCapturedFlows()
@@ -198,8 +198,8 @@ import Testing
 
     /// A trim rewrites the head, so the fold has to stand aside for it.
     @Test func theDisplayCapTrimRebuilds() {
-        var state = AppFeature.State()
-        let cap = AppFeature.State.displayCap
+        var state = CaptureFeature.State()
+        let cap = CaptureFeature.State.displayCap
         state.recordFlows((0 ..< cap).map { flow($0, host: $0.isMultiple(of: 2) ? "a.test" : "b.test") })
         state.selectedCategory = .host("a.test")
         let before = state.displayFlows.count
@@ -212,8 +212,8 @@ import Testing
     // MARK: The cap's trim hysteresis
 
     @Test func theTrimCutsBelowTheCapAndSaysSo() {
-        var state = AppFeature.State()
-        let cap = AppFeature.State.displayCap
+        var state = CaptureFeature.State()
+        let cap = CaptureFeature.State.displayCap
         state.recordFlows((0 ..< cap).map { flow($0) })
         #expect(state.flows.count == cap)
         #expect(state.droppedFlowCount == 0, "at the cap exactly, nothing has been dropped")
@@ -221,11 +221,11 @@ import Testing
         state.recordFlows([flow(cap)])
         #expect(state.flows.count <= cap, "never above the cap: a row the store cannot resolve is worse")
         #expect(
-            state.flows.count == cap - AppFeature.State.trimSlack,
+            state.flows.count == cap - CaptureFeature.State.trimSlack,
             "one trim cuts to a slack below the cap, so the next few hundred batches cost nothing"
         )
         #expect(
-            state.droppedFlowCount == AppFeature.State.trimSlack + 1,
+            state.droppedFlowCount == CaptureFeature.State.trimSlack + 1,
             "and it reports every row it dropped"
         )
 
@@ -236,8 +236,8 @@ import Testing
     }
 
     @Test func aTrimmedSelectionIsCleared() {
-        var state = AppFeature.State()
-        let cap = AppFeature.State.displayCap
+        var state = CaptureFeature.State()
+        let cap = CaptureFeature.State.displayCap
         let first = flow(0)
         state.recordFlow(first)
         state.recordFlows((1 ..< cap).map { flow($0) })
@@ -245,5 +245,56 @@ import Testing
         state.recordFlows([flow(cap)])
         #expect(state.flows[id: first.id] == nil)
         #expect(state.selectedFlowID == nil, "a dropped selection must not dangle")
+    }
+
+    /// The fold must stay a fold: filtering a batch costs the batch, not the window.
+    ///
+    /// A ratio rather than a millisecond bound, for the reason
+    /// `RequestTableSelectionTests` gives — a threshold measures how busy the machine is,
+    /// a ratio measures the shape. With a category selected, the incremental path applies
+    /// the thirty rows a batch carried; the full rebuild it replaced filters all 20 000.
+    /// Measured on this harness the two are 1.5× apart, and a regression to
+    /// rebuild-per-batch is 4–5×, so the bound sits between them.
+    ///
+    /// It is the guard that survives the split: the projection's storage now lives behind
+    /// `private` in `CaptureFeature.State`, but nothing stops a future handler from
+    /// calling `refreshVisibleFlows` per batch, which compiles and is correct and costs
+    /// ten times as much.
+    @Test func aFilteredBatchCostsTheBatchRatherThanTheWindow() {
+        func fill() -> CaptureFeature.State {
+            var state = CaptureFeature.State()
+            var next = 0
+            while next < CaptureFeature.State.displayCap {
+                state.recordFlows((0 ..< 500).map { flow(next + $0, host: "h\((next + $0) % 200).test") })
+                next += 500
+            }
+            return state
+        }
+        func batches(_ state: inout CaptureFeature.State, from start: Int) -> TimeInterval {
+            let began = Date()
+            for round in 0 ..< 10 {
+                state.recordFlows((0 ..< 30).map { flow(start + round * 30 + $0, host: "h\($0).test") })
+            }
+            return Date().timeIntervalSince(began)
+        }
+
+        var unfiltered = fill()
+        var filtered = fill()
+        filtered.selectedCategory = .host("h7.test")
+        let cap = CaptureFeature.State.displayCap
+        // Warm both past the first trim, so neither measurement pays for it.
+        _ = batches(&unfiltered, from: cap)
+        _ = batches(&filtered, from: cap)
+
+        let plain = batches(&unfiltered, from: cap + 1_000)
+        let withCategory = batches(&filtered, from: cap + 1_000)
+        #expect(
+            withCategory < plain * 4,
+            """
+            a filtered batch cost \(withCategory)s against \(plain)s unfiltered — the \
+            incremental fold is declining every batch, so the whole window is being \
+            re-filtered ten times a second
+            """
+        )
     }
 }

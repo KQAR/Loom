@@ -21,22 +21,29 @@ import Testing
 /// Read from source through `#filePath`, the same way `VersionFieldParityTests` reads
 /// the plugin manifests: there is no reflection that can see a comment.
 @Suite struct ActionDocumentationTests {
-    private var reducerSource: String {
-        get throws {
-            let url = URL(fileURLWithPath: #filePath)
-                .deletingLastPathComponent()      // Tests
-                .deletingLastPathComponent()      // AppFeature
-                .appending(path: "Sources/AppFeature.swift")
-            return try String(contentsOf: url, encoding: .utf8)
-        }
+    /// Every reducer whose `Action` this lint covers.
+    ///
+    /// `AppFeature.swift` alone was not enough the moment the capture surface moved out:
+    /// this lint exists because a split leaves prose behind on whatever declaration it
+    /// was touching, and the split itself is what carries that risk — so the file the
+    /// cases moved *to* has to be read as well. Named rather than globbed, so adding a
+    /// feature is a deliberate line here instead of a silent gap.
+    private static let sources = ["AppFeature.swift", "CaptureFeature.swift"]
+
+    private func reducerSource(_ name: String) throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // Tests
+            .deletingLastPathComponent()      // AppFeature
+            .appending(path: "Sources/\(name)")
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
     /// Every `///` block in the file is followed by something it can be documenting.
     ///
     /// Deliberately whole-file rather than only the `Action` enum: the same split
     /// produced the same orphan in `State` twice, and the rule is not about actions.
-    @Test func noDocCommentIsLeftWithoutADeclaration() throws {
-        let lines = try reducerSource.split(separator: "\n", omittingEmptySubsequences: false)
+    @Test(arguments: Self.sources) func noDocCommentIsLeftWithoutADeclaration(_ source: String) throws {
+        let lines = try reducerSource(source).split(separator: "\n", omittingEmptySubsequences: false)
         var orphans: [(line: Int, text: String)] = []
         var blockStart: Int?
 
@@ -57,7 +64,7 @@ import Testing
         #expect(
             orphans.isEmpty,
             """
-            Doc comments with no declaration under them, at AppFeature.swift \
+            Doc comments with no declaration under them, at \(source) \
             \(orphans.map { "line \($0.line): \($0.text)" }.joined(separator: " · ")). \
             A case that moved to a child feature has to take its prose with it — left \
             behind, it reads as documentation of whichever declaration follows it.

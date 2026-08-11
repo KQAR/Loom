@@ -14,8 +14,8 @@ import Testing
 /// `ProxyClientParityTests` passes on a capability that is *wired*, which that one
 /// was, so nothing failed.
 @Suite struct FlowSearchTests {
-    private func state(_ flows: [Flow], category: FlowCategory? = .all) -> AppFeature.State {
-        var state = AppFeature.State(flows: flows)
+    private func state(_ flows: [Flow], category: FlowCategory? = .all) -> CaptureFeature.State {
+        var state = CaptureFeature.State(flows: flows)
         state.selectedCategory = category
         return state
     }
@@ -182,7 +182,7 @@ import Testing
 
     @MainActor
     @Test func commandOpensTheBarAndDismissClearsIt() async {
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+        let store = TestStore(initialState: CaptureFeature.State()) { CaptureFeature() } withDependencies: {
             $0.continuousClock = TestClock()
         }
         await store.send(.searchToggled) { $0.search.isPresented = true }
@@ -195,7 +195,7 @@ import Testing
     @MainActor
     @Test func aResultForAStaleNeedleIsDropped() async {
         let clock = TestClock()
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+        let store = TestStore(initialState: CaptureFeature.State()) { CaptureFeature() } withDependencies: {
             $0.continuousClock = clock
             // The engine's answer is irrelevant here — what's under test is which
             // answers the reducer keeps.
@@ -205,7 +205,7 @@ import Testing
         await store.send(.searchToggled)
         await store.send(.searchScopeChanged(.body))
         await store.send(.searchTextChanged("new-needle"))
-        await clock.advance(by: AppFeature.searchDebounce)
+        await clock.advance(by: CaptureFeature.searchDebounce)
         await store.skipReceivedActions()   // the real answer for "new-needle" lands
         let settled = store.state.search.engineMatches
 
@@ -245,7 +245,7 @@ import Testing
     /// bound is loose on purpose — this fails on a return to the per-row shape, not on
     /// a slow machine.
     @Test func filteringAFullWindowIsCheapPerKeystroke() {
-        let flows = (0 ..< AppFeature.State.displayCap).map {
+        let flows = (0 ..< CaptureFeature.State.displayCap).map {
             Fixtures.flow(url: "https://api.example.com/v1/resource/\($0)/items?page=\($0 % 13)")
         }
         var state = state(flows)
@@ -253,7 +253,7 @@ import Testing
         let start = Date()
         for needle in ["it", "ite", "item", "items", "items?"] { state.search.text = needle }
         let elapsed = Date().timeIntervalSince(start)
-        #expect(state.displayFlows.count == AppFeature.State.displayCap)
+        #expect(state.displayFlows.count == CaptureFeature.State.displayCap)
         #expect(elapsed < 1.0, "5 keystrokes over a full window took \(elapsed)s — per-row needle work is back")
     }
 

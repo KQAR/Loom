@@ -30,7 +30,7 @@ import Testing
     /// Collect the actions `streamFlows` sends for a finite stream.
     private func batches(from flows: [Flow]) async -> [[Flow]] {
         let collected = Collected()
-        await AppFeature.streamFlows(
+        await CaptureFeature.streamFlows(
             into: Send { action in
                 if case let .flowsReceived(batch) = action { collected.append(batch) }
             },
@@ -69,7 +69,7 @@ import Testing
     @Test func theBufferedTailSurvivesWhenTheWindowNeverElapses() async {
         let collected = Collected()
         let flows = (0 ..< 5).map(flow)
-        await AppFeature.streamFlows(
+        await CaptureFeature.streamFlows(
             into: Send { action in
                 if case let .flowsReceived(batch) = action { collected.append(batch) }
             },
@@ -97,14 +97,14 @@ import Testing
     /// A batch must fold into state exactly as the same flows would one at a time.
     @Test func batchedAction_matchesOneAtATime() async {
         let flows = (0 ..< 5).map(flow)
-        var oneAtATime = AppFeature.State()
+        var oneAtATime = CaptureFeature.State()
         for flow in flows { oneAtATime.recordFlow(flow) }
 
         // A capture batch also schedules the coalesced re-read of the engine's
         // counters. The clock keeps it from firing inside the assertion, and
         // `exhaustivity = .off` lets the test end with it still parked — what is under
         // test here is the fold, not the refresh.
-        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+        let store = TestStore(initialState: CaptureFeature.State()) { CaptureFeature() } withDependencies: {
             $0.continuousClock = TestClock()
         }
         store.exhaustivity = .off
@@ -112,16 +112,18 @@ import Testing
             for flow in flows { state.recordFlow(flow) }
         }
         #expect(store.state.flows == oneAtATime.flows)
-        #expect(store.state.status.capturedCount == oneAtATime.status.capturedCount)
+        // The window's own size, not `status.capturedCount`: that field is the engine's
+        // ring count again (see `engineStatusRefreshed`), and this test is about the fold.
+        #expect(store.state.allCount == oneAtATime.allCount)
     }
 
     /// A batch containing the open selection still refreshes the inspector's
     /// hydrated copy, as the per-flow path did.
     @Test func batchRefreshesTheOpenSelection() async {
         let selected = flow(7)
-        var initial = AppFeature.State(flows: [selected])
+        var initial = CaptureFeature.State(flows: [selected])
         initial.selectedFlowID = selected.id
-        let store = TestStore(initialState: initial) { AppFeature() } withDependencies: {
+        let store = TestStore(initialState: initial) { CaptureFeature() } withDependencies: {
             $0.continuousClock = TestClock()
         }
         store.exhaustivity = .off
