@@ -66,8 +66,12 @@ struct HTTPSInterceptionTests {
         #expect(raw.contains(responseBody), "client should receive the decrypted body")
 
         // 5. The proxy captured the exchange in cleartext.
+        // The condition has to cover what the assertions below read: a flow is
+        // upserted at `.pending` first, so waiting on the URL alone can hand back
+        // the exchange before its response has landed — which is what CI caught,
+        // and is the same race the sibling suites already wait out this way.
         let flow = try #require(await awaitFlow(from: engine) {
-            $0.request.url.contains("example.test/api/thing")
+            $0.request.url.contains("example.test/api/thing") && $0.response?.body != nil
         })
         #expect(flow.request.method == "GET")
         #expect(flow.request.url.hasPrefix("https://"))
