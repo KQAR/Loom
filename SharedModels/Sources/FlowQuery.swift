@@ -140,7 +140,7 @@ public struct FlowQuery: Equatable, Sendable {
             guard methods.contains(where: { $0.caseInsensitiveCompare(method) == .orderedSame }) else { return false }
         }
         if let host {
-            guard let flowHost = flow.host, SSLScope.matches(pattern: host, host: flowHost) else { return false }
+            guard let flowHost = flow.host, Glob.matches(host, flowHost) else { return false }
         }
         if let urlContains, !urlContains.isEmpty {
             guard flow.request.url.range(of: urlContains, options: .caseInsensitive) != nil else { return false }

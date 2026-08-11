@@ -126,7 +126,7 @@ final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
     /// depending on the order they happen to be stored in.
     func identity(forHost host: String) -> ClientCertificate? {
         all()
-            .filter { $0.isEnabled && SSLScope.matches(pattern: $0.hostPattern, host: host) }
+            .filter { $0.isEnabled && Glob.matches($0.hostPattern, host) }
             .max { $0.hostPattern.count < $1.hostPattern.count }
     }
 

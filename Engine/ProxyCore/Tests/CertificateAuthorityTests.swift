@@ -188,27 +188,9 @@ import LoomSharedModels
 }
 
 @Suite struct SSLScopeTests {
-    @Test func wildcardMatching() {
-        #expect(SSLScope.matches(pattern: "*", host: "anything.com"))
-        #expect(SSLScope.matches(pattern: "example.com", host: "example.com"))
-        #expect(SSLScope.matches(pattern: "EXAMPLE.com", host: "example.COM"))
-        #expect(SSLScope.matches(pattern: "*.example.com", host: "api.example.com"))
-        #expect(!SSLScope.matches(pattern: "*.example.com", host: "example.com"))
-        #expect(SSLScope.matches(pattern: "api.*", host: "api.test"))
-        #expect(SSLScope.matches(pattern: "*.foo.*", host: "a.foo.bar"))
-        #expect(!SSLScope.matches(pattern: "api.example.com", host: "other.com"))
-    }
-
-    @Test func wildcardMatching_prefixAndSuffixDoNotOverlap() {
-        // Regression: prefix "ab" + suffix "b" reused the same 'b', so a bare "ab"
-        // wrongly matched "ab*b".
-        #expect(!SSLScope.matches(pattern: "ab*b", host: "ab"))
-        #expect(SSLScope.matches(pattern: "ab*b", host: "abb"))
-        #expect(SSLScope.matches(pattern: "ab*b", host: "abXb"))
-        // The empty-wildcard cases stay correct.
-        #expect(SSLScope.matches(pattern: "a*c", host: "ac"))
-        #expect(!SSLScope.matches(pattern: "a*c", host: "ab"))
-    }
+    // The glob semantics themselves live in `GlobTests` (SharedModelsTests) with the
+    // matcher — they were never about the SSL scope, which is exactly why the matcher
+    // moved. What stays here is the scope's own decision.
 
     @Test func shouldIntercept_respectsEnableIncludeExclude() {
         #expect(!SSLScope(enabled: false, include: ["*"]).shouldIntercept(host: "x.com"))
