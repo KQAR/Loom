@@ -296,29 +296,44 @@ public struct MainView: View {
     // MARK: Request area (table, or a full-bleed empty state)
 
     @ViewBuilder private var requestArea: some View {
-        Group {
-            // O(1) aggregate probe — `displayFlows.isEmpty` would filter the whole
-            // window a second time per render just to pick the empty state.
-            if store.displayFlowsAreEmpty {
-                emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                RequestTableView(store: store, followTail: $followTail)
-                    // The clear control floats over the table (bottom-right): a small red
-                    // dot at rest, expanding to the full hold-to-clear button on hover, so
-                    // it barely covers content until you reach for it. No reserved gap —
-                    // the table keeps full height and the row stripes fill it.
-                    .safeAreaInset(edge: .bottom, spacing: 0) {
-                        if store.droppedFlowCount > 0 { capBanner }
-                    }
-                    .overlay(alignment: .bottomTrailing) { clearFAB }
+        // The find bar is a **row in this stack**, not a `safeAreaInset`.
+        //
+        // As an inset it changed the table's safe area, which AppKit turns into a
+        // scroll-view content inset outside SwiftUI's animation transaction: the
+        // bar slid while `NSTableHeaderView` jumped to its new position, so the two
+        // read as unrelated. In the stack, the table's *frame* is what changes, and
+        // a representable's frame is set by SwiftUI on every tick of the animation
+        // — header, rows and bar move as one.
+        VStack(spacing: 0) {
+            if store.search.isPresented {
+                FlowFilterBar(store: store)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            Group {
+                // O(1) aggregate probe — `displayFlows.isEmpty` would filter the whole
+                // window a second time per render just to pick the empty state.
+                if store.displayFlowsAreEmpty {
+                    emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    RequestTableView(store: store, followTail: $followTail)
+                        // The clear control floats over the table (bottom-right): a small red
+                        // dot at rest, expanding to the full hold-to-clear button on hover, so
+                        // it barely covers content until you reach for it. No reserved gap —
+                        // the table keeps full height and the row stripes fill it.
+                        .safeAreaInset(edge: .bottom, spacing: 0) {
+                            if store.droppedFlowCount > 0 { capBanner }
+                        }
+                        .overlay(alignment: .bottomTrailing) { clearFAB }
+                }
             }
         }
-        // The find bar sits above the table and below the toolbar band, insetting both
-        // the table and the empty state — so an empty *result* is stated inside the
-        // same frame that shows why it's empty.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if store.search.isPresented { FlowFilterBar(store: store) }
-        }
+        // Scoped to the bar's presence: a blanket `.animation` here would also
+        // animate the table's own updates, which arrive ten times a second under
+        // capture.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: store.search.isPresented)
+        // The bar slides out of the toolbar band it hangs from; without this it
+        // paints over the band on the way in.
+        .clipped()
     }
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped

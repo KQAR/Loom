@@ -49,13 +49,19 @@ struct AuditPanelView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button(role: .destructive) {
+            // Same glyph-only treatment as the Rules panel's `plus`, tinted for
+            // what it is. Disabled it stays *visible* rather than vanishing — a
+            // control that disappears when there is nothing to clear reads as a
+            // missing feature — and the confirmation is what guards the act.
+            GlyphButton(
+                systemImage: "trash",
+                help: "Clear the audit trail",
+                tint: LoomTheme.Palette.error,
+                isEnabled: !store.entries.isEmpty,
+                size: GlyphButton.compact
+            ) {
                 confirmingClear = true
-            } label: {
-                Label("Clear", systemImage: "trash")
             }
-            .controlSize(.small)
-            .disabled(store.entries.isEmpty)
             .confirmationDialog("Clear the audit trail?", isPresented: $confirmingClear, titleVisibility: .visible) {
                 Button("Clear \(store.entries.count) actions", role: .destructive) {
                     store.send(.clearTapped)
