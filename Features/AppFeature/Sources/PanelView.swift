@@ -631,7 +631,7 @@ public struct PanelView: View {
     /// popover. The key window is captured at click time because `dismiss()` alone
     /// is unreliable for a `MenuBarExtra` window; closing that exact window isn't.
     private func openMainWindow(at category: FlowCategory?) {
-        if let category { store.send(.categorySelected(category)) }
+        if let category { store.send(.capture(.categorySelected(category))) }
         let panel = NSApp.keyWindow
         openWindow(id: "main")
         NSApplication.shared.activate(ignoringOtherApps: true)

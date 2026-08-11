@@ -44,8 +44,8 @@ import Testing
 
     /// Record flows into the window *and* set the counts the engine would report for
     /// them — the two halves that used to be one call.
-    private func state(_ flows: [Flow]) -> AppFeature.State {
-        var state = AppFeature.State()
+    private func state(_ flows: [Flow]) -> CaptureFeature.State {
+        var state = CaptureFeature.State()
         var aggregates = FlowAggregates()
         for flow in flows {
             state.recordFlow(flow)
@@ -122,9 +122,9 @@ import Testing
     @Test func eviction_fromTheWindow_doesNotChangeTheCounts() {
         // Batched, not one at a time: `recordFlow` trims the cap per call, which is
         // O(cap) each and quadratic at this size (see `recordFlow`).
-        let old = (0 ..< AppFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
+        let old = (0 ..< CaptureFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
         let new = (0 ..< 10).map { flow(url: "https://new.test/\($0)") }
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlows(old)
         state.recordFlows(new)
         var aggregates = FlowAggregates()
@@ -134,10 +134,10 @@ import Testing
         // The trim cuts below the cap rather than to it (`State.trimSlack`), so the
         // window holds somewhere in that band — the point of this test is the counts,
         // which do not move either way.
-        #expect(state.allCount <= AppFeature.State.displayCap, "the window cap holds")
-        #expect(state.allCount >= AppFeature.State.displayCap - AppFeature.State.trimSlack)
+        #expect(state.allCount <= CaptureFeature.State.displayCap, "the window cap holds")
+        #expect(state.allCount >= CaptureFeature.State.displayCap - CaptureFeature.State.trimSlack)
         #expect(state.droppedFlowCount > 0, "and it dropped rows to hold it")
-        #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == AppFeature.State.displayCap,
+        #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == CaptureFeature.State.displayCap,
                 "every one of them is still retained, so still counted")
         #expect(state.hosts.first(where: { $0.host == "new.test" })?.count == 10)
     }
@@ -247,11 +247,11 @@ import Testing
     /// tail and the sidebar counts come from the engine — and it is checkable without
     /// pretending the counts match.
     @Test func batchRecording_matchesPerFlowRecording_atTheCap() {
-        let seed = (0 ..< AppFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
+        let seed = (0 ..< CaptureFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
         let batch = (0 ..< 10).map { flow(url: "https://new.test/\($0)") }
 
-        var perFlow = AppFeature.State(flows: seed)
-        var batched = AppFeature.State(flows: seed)
+        var perFlow = CaptureFeature.State(flows: seed)
+        var batched = CaptureFeature.State(flows: seed)
         let evicted = perFlow.flows.first!.id
         perFlow.selectedFlowID = evicted
         batched.selectedFlowID = evicted
@@ -267,11 +267,11 @@ import Testing
             "the two agree on every row they both hold, in order"
         )
         #expect(
-            abs(batched.flows.count - perFlow.flows.count) <= AppFeature.State.trimSlack,
+            abs(batched.flows.count - perFlow.flows.count) <= CaptureFeature.State.trimSlack,
             "and they differ by at most the trim slack"
         )
-        #expect(batched.allCount <= AppFeature.State.displayCap, "the cap holds")
-        #expect(perFlow.allCount <= AppFeature.State.displayCap)
+        #expect(batched.allCount <= CaptureFeature.State.displayCap, "the cap holds")
+        #expect(perFlow.allCount <= CaptureFeature.State.displayCap)
         #expect(
             batched.hostByRow.filter { batched.flows[id: $0.key] != nil }
                 == perFlow.hostByRow.filter { batched.flows[id: $0.key] != nil },
@@ -288,9 +288,9 @@ import Testing
             flow(url: "https://a.test/2"),
             flow(url: "https://b.test/1"),
         ]
-        var incremental = AppFeature.State()
+        var incremental = CaptureFeature.State()
         for flow in flows { incremental.recordFlow(flow) }
-        let seeded = AppFeature.State(flows: flows)
+        let seeded = CaptureFeature.State(flows: flows)
 
         #expect(seeded.flows == incremental.flows)
         #expect(seeded.hostByRow == incremental.hostByRow)
@@ -299,7 +299,7 @@ import Testing
     }
 }
 
-/// `AppFeature.State.hostByRow` — the per-row host index. It is keyed by *flow*
+/// `CaptureFeature.State.hostByRow` — the per-row host index. It is keyed by *flow*
 /// rather than by host, so it has a way to go wrong the counters don't: an entry that
 /// outlives its row makes a row match a category it is no longer in, and one dropped
 /// too early makes it vanish from a filtered list while the sidebar still counts it.
@@ -311,13 +311,13 @@ import Testing
         )
     }
 
-    /// The per-row host map moved to `AppFeature.State` when the counters moved to the
+    /// The per-row host map moved to `CaptureFeature.State` when the counters moved to the
     /// engine. It is the one projection keyed by *flow* rather than by host, so a copy
     /// covering everything retained (20 000 rows) would reintroduce exactly the
     /// per-flow memory the windowed list exists to remove — a per-row map belongs to
     /// whoever holds the rows.
     @Test func theWindowIndexesTheHostOfEveryRowItHolds() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         let a = flow("https://api.example.test/v1")
         state.recordFlow(a)
         #expect(state.hostByRow[a.id] == "api.example.test")
@@ -326,10 +326,10 @@ import Testing
     /// The eviction path: a flow dropped past the display cap must leave no index
     /// entry behind, or the map grows for the life of the session.
     @Test func aFlowEvictedByTheDisplayCapLeavesNoEntry() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         let first = flow("https://first.example.test/v1")
         state.recordFlow(first)
-        state.recordFlows((0 ..< AppFeature.State.displayCap).map { flow("https://bulk.example.test/\($0)") })
+        state.recordFlows((0 ..< CaptureFeature.State.displayCap).map { flow("https://bulk.example.test/\($0)") })
         #expect(state.flows[id: first.id] == nil)
         #expect(state.hostByRow[first.id] == nil)
         #expect(state.hostByRow.count == state.flows.count)
@@ -338,7 +338,7 @@ import Testing
     /// An upsert (pending → completed) replaces rather than duplicates, and the index
     /// must not be left pointing at the old copy's host if the URL changed.
     @Test func replacingAFlowRepointsTheIndex() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         var moved = flow("https://before.example.test/v1")
         state.recordFlow(moved)
         moved.request.url = "https://after.example.test/v1"
@@ -348,7 +348,7 @@ import Testing
 
     /// Clearing the capture drops the row index with the rows.
     @Test func clearingDropsTheIndex() {
-        var state = AppFeature.State()
+        var state = CaptureFeature.State()
         state.recordFlow(flow("https://api.example.test/v1"))
         state.forgetCapturedFlows()
         #expect(state.hostByRow.isEmpty)

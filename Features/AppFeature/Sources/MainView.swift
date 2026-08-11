@@ -8,6 +8,12 @@ import SwiftUI
 /// on top, a tabbed inspector below.
 public struct MainView: View {
     @Bindable var store: StoreOf<AppFeature>
+    /// The capture surface, scoped once. Views that are *only* about captured traffic
+    /// (the table, the find bar) take this rather than the whole app store, so a
+    /// change to, say, the helper's install state cannot invalidate the table.
+    private var captureStore: StoreOf<CaptureFeature> {
+        store.scope(state: \.capture, action: \.capture)
+    }
     /// Tail-follow the newest row until the user scrolls away.
     @State private var followTail = true
     /// Fill of the clear button's charging ring (0…1) while it's held.
@@ -153,14 +159,14 @@ public struct MainView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $store.selectedCategory.sending(\.categorySelected)) {
-            countedRow(count: store.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
+        List(selection: $store.capture.selectedCategory.sending(\.capture.categorySelected)) {
+            countedRow(count: store.capture.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
                 .tag(FlowCategory.all)
             // The only tinted count in the sidebar: a non-zero Errors bucket is the one
             // number here that is a fault rather than a size, and it is the number a
             // human opens this window to check.
-            countedRow(count: store.errorCount,
-                       countTint: store.errorCount > 0 ? LoomTheme.Palette.error : nil) { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
+            countedRow(count: store.capture.errorCount,
+                       countTint: store.capture.errorCount > 0 ? LoomTheme.Palette.error : nil) { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
                 .tag(FlowCategory.errors)
             countedRow(count: store.rules.rulesState.rules.count) { Text("Rules") } icon: { categoryIcon("wand.and.stars") }
                 .tag(FlowCategory.rules)
@@ -168,11 +174,11 @@ public struct MainView: View {
                 .tag(FlowCategory.audit)
             breakpointsSidebarRow
 
-            if !store.devices.isEmpty {
+            if !store.capture.devices.isEmpty {
                 Section {
-                    ForEach(devicesExpanded ? store.devices : [], id: \.device.groupingKey) { entry in
+                    ForEach(devicesExpanded ? store.capture.devices : [], id: \.device.groupingKey) { entry in
                         let ip = entry.device.groupingKey
-                        let alias = store.deviceAliases[ip]
+                        let alias = store.capture.deviceAliases[ip]
                         countedRow(count: entry.count) {
                             Text(alias ?? entry.device.displayName)
                         } icon: {
@@ -186,23 +192,23 @@ public struct MainView: View {
                             }
                             if alias != nil {
                                 Button("Clear Alias", systemImage: "xmark.circle") {
-                                    store.send(.setDeviceAlias(ip: ip, alias: nil))
+                                    store.send(.capture(.setDeviceAlias(ip: ip, alias: nil)))
                                 }
                             }
                         }
                     }
                 } header: {
                     SidebarSectionHeader(
-                        title: "Devices", count: store.devices.count, expanded: $devicesExpanded
+                        title: "Devices", count: store.capture.devices.count, expanded: $devicesExpanded
                     )
                 }
             }
 
-            if !store.apps.isEmpty {
+            if !store.capture.apps.isEmpty {
                 Section {
-                    ForEach(appsExpanded ? store.apps : [], id: \.app.groupingKey) { entry in
+                    ForEach(appsExpanded ? store.capture.apps : [], id: \.app.groupingKey) { entry in
                         let key = entry.app.groupingKey
-                        let pinned = store.pinnedApps.contains(key)
+                        let pinned = store.capture.pinnedApps.contains(key)
                         countedRow(count: entry.count) {
                             rowTitle(entry.app.name, pinned: pinned)
                         } icon: {
@@ -211,20 +217,20 @@ public struct MainView: View {
                         .tag(FlowCategory.app(key))
                         .contextMenu {
                             Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
-                                store.send(.pinAppToggled(key))
+                                store.send(.capture(.pinAppToggled(key)))
                             }
                         }
                     }
                 } header: {
                     SidebarSectionHeader(
-                        title: "Apps", count: store.apps.count, expanded: $appsExpanded
+                        title: "Apps", count: store.capture.apps.count, expanded: $appsExpanded
                     )
                 }
             }
 
             Section {
-                ForEach(hostsExpanded ? store.hosts : [], id: \.host) { entry in
-                    let pinned = store.pinnedHosts.contains(entry.host)
+                ForEach(hostsExpanded ? store.capture.hosts : [], id: \.host) { entry in
+                    let pinned = store.capture.pinnedHosts.contains(entry.host)
                     countedRow(count: entry.count) {
                         rowTitle(entry.host, pinned: pinned)
                     } icon: {
@@ -233,13 +239,13 @@ public struct MainView: View {
                     .tag(FlowCategory.host(entry.host))
                     .contextMenu {
                         Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
-                            store.send(.pinHostToggled(entry.host))
+                            store.send(.capture(.pinHostToggled(entry.host)))
                         }
                     }
                 }
             } header: {
                 SidebarSectionHeader(
-                    title: "Hosts", count: store.hosts.count, expanded: $hostsExpanded
+                    title: "Hosts", count: store.capture.hosts.count, expanded: $hostsExpanded
                 )
             }
         }
@@ -305,23 +311,23 @@ public struct MainView: View {
         // a representable's frame is set by SwiftUI on every tick of the animation
         // — header, rows and bar move as one.
         VStack(spacing: 0) {
-            if store.search.isPresented {
-                FlowFilterBar(store: store)
+            if store.capture.search.isPresented {
+                FlowFilterBar(store: captureStore)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
             Group {
                 // O(1) aggregate probe — `displayFlows.isEmpty` would filter the whole
                 // window a second time per render just to pick the empty state.
-                if store.displayFlowsAreEmpty {
+                if store.capture.displayFlowsAreEmpty {
                     emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    RequestTableView(store: store, followTail: $followTail)
+                    RequestTableView(store: captureStore, followTail: $followTail)
                         // The clear control floats over the table (bottom-right): a small red
                         // dot at rest, expanding to the full hold-to-clear button on hover, so
                         // it barely covers content until you reach for it. No reserved gap —
                         // the table keeps full height and the row stripes fill it.
                         .safeAreaInset(edge: .bottom, spacing: 0) {
-                            if store.droppedFlowCount > 0 { capBanner }
+                            if store.capture.droppedFlowCount > 0 { capBanner }
                         }
                         .overlay(alignment: .bottomTrailing) { clearFAB }
                 }
@@ -330,7 +336,7 @@ public struct MainView: View {
         // Scoped to the bar's presence: a blanket `.animation` here would also
         // animate the table's own updates, which arrive ten times a second under
         // capture.
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: store.search.isPresented)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: store.capture.search.isPresented)
         // The bar slides out of the toolbar band it hangs from; without this it
         // paints over the band on the way in.
         .clipped()
@@ -341,7 +347,7 @@ public struct MainView: View {
     private var capBanner: some View {
         HStack(spacing: LoomTheme.Space.xs) {
             Image(systemName: "clock.arrow.circlepath").font(.caption2)
-            Text("Showing the latest \(AppFeature.State.displayCap) · \(store.droppedFlowCount) older cleared")
+            Text("Showing the latest \(CaptureFeature.State.displayCap) · \(store.capture.droppedFlowCount) older cleared")
                 .font(.caption)
         }
         .foregroundStyle(.secondary)
@@ -395,7 +401,7 @@ public struct MainView: View {
             clearHovering = hovering
         }
         .onLongPressGesture(minimumDuration: Self.clearHoldDuration, maximumDistance: 60) {
-            store.send(.clearTapped)
+            store.send(.capture(.clearTapped))
             clearProgress = 0
         } onPressingChanged: { pressing in
             // Pressing implies the cursor is on it — keep it expanded while held.
@@ -417,11 +423,11 @@ public struct MainView: View {
     // MARK: Content — table only, or table + inspector when a flow is selected
 
     @ViewBuilder private var content: some View {
-        if store.selectedCategory == .rules {
+        if store.capture.selectedCategory == .rules {
             RulesPanelView(store: store.scope(state: \.rules, action: \.rules))
-        } else if store.selectedCategory == .audit {
+        } else if store.capture.selectedCategory == .audit {
             AuditPanelView(store: store.scope(state: \.audit, action: \.audit))
-        } else if store.selectedCategory == .breakpoints {
+        } else if store.capture.selectedCategory == .breakpoints {
             BreakpointsPanelView(store: store.scope(state: \.breakpoints, action: \.breakpoints))
         } else {
             flowArea
@@ -444,16 +450,16 @@ public struct MainView: View {
             VStack(spacing: 0) {
                 requestArea
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if let flow = store.selectedFlow {
+                if let flow = store.capture.selectedFlow {
                     VStack(spacing: 0) {
                         inspectorDivider(maxHeight: maxInspector)
                         InspectorPanel(
                             // The hydrated detail (with bodies) once it lands; the
                             // metadata-only list row until then, so the panel appears
                             // immediately and its body fills in.
-                            flow: store.selectedFlowDetail ?? flow,
-                            original: store.selectedOriginalDetail,
-                            onClose: { store.send(.flowSelected(nil)) }
+                            flow: store.capture.selectedFlowDetail ?? flow,
+                            original: store.capture.selectedOriginalDetail,
+                            onClose: { store.send(.capture(.flowSelected(nil))) }
                         )
                         .frame(height: min(
                             max(dragHeight ?? CGFloat(inspectorHeight), Self.minPaneHeight),
@@ -468,7 +474,7 @@ public struct MainView: View {
             .clipped()
             // Keyed on *whether* a flow is selected, never on which one: switching rows
             // must not re-run the slide, and a divider drag must not be animated at all.
-            .animation(.snappy(duration: 0.22), value: store.selectedFlowID == nil)
+            .animation(.snappy(duration: 0.22), value: store.capture.selectedFlowID == nil)
         }
     }
 
@@ -525,7 +531,7 @@ public struct MainView: View {
         alert.window.initialFirstResponder = field
         if alert.runModal() == .alertFirstButtonReturn {
             let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            store.send(.setDeviceAlias(ip: ip, alias: value.isEmpty ? nil : value))
+            store.send(.capture(.setDeviceAlias(ip: ip, alias: value.isEmpty ? nil : value)))
         }
     }
 
@@ -742,7 +748,7 @@ public struct MainView: View {
     }
 
     @ViewBuilder private var emptyState: some View {
-        if store.search.isActive {
+        if store.capture.search.isActive {
             // "No matches" and "no traffic" must not read the same — an empty filtered
             // list otherwise sends someone to debug their client instead of their
             // needle. What each scope actually covered differs, so the two are worded
@@ -751,21 +757,21 @@ public struct MainView: View {
             ContentUnavailableView {
                 Label("No matching requests", systemImage: "line.3.horizontal.decrease")
             } description: {
-                if store.search.scope.needsEngine {
+                if store.capture.search.scope.needsEngine {
                     Text("""
-                    Nothing in the stored capture matches “\(store.search.text)” in \
-                    \(store.search.scope.label.lowercased()). Exchanges pruned past the \
+                    Nothing in the stored capture matches “\(store.capture.search.text)” in \
+                    \(store.capture.search.scope.label.lowercased()). Exchanges pruned past the \
                     store's row cap aren't searched.
                     """)
                 } else {
                     Text("""
-                    Nothing in the latest \(AppFeature.State.displayCap) captured flows \
-                    matches “\(store.search.text)” in the URL. Older traffic is still \
+                    Nothing in the latest \(CaptureFeature.State.displayCap) captured flows \
+                    matches “\(store.capture.search.text)” in the URL. Older traffic is still \
                     stored — search its headers or body, or ask an agent.
                     """)
                 }
             } actions: {
-                Button("Clear Filter") { store.send(.searchDismissed) }
+                Button("Clear Filter") { store.send(.capture(.searchDismissed)) }
             }
         } else if store.status.isRunning {
             ContentUnavailableView {
@@ -919,7 +925,7 @@ struct StatusDot: View {
 /// tick, proxy status, update availability — invalidated the table too, and re-running
 /// the table body makes SwiftUI re-diff every row. Here it reads only what it draws.
 private struct RequestTableView: View {
-    @Bindable var store: StoreOf<AppFeature>
+    @Bindable var store: StoreOf<CaptureFeature>
     /// Tail-follow lives in `MainView`, alongside the empty state and clear button
     /// that share it; the table below consumes it.
     @Binding var followTail: Bool

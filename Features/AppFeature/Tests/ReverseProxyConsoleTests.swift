@@ -142,9 +142,9 @@ import Testing
 
     // MARK: The plumbing that makes the list reachable at all
 
-    /// `state.status` is maintained locally (the toggle owns `isRunning`, the flow list
-    /// owns `capturedCount`), and nothing used to read the engine's own copy — so
-    /// `socksPort` and `reverseProxies` were always empty. Opening the panel re-reads them.
+    /// `state.status` is still partly the parent's (the toggle owns `isRunning`), and
+    /// nothing used to read the engine's own copy — so `socksPort` and `reverseProxies`
+    /// were always empty. Opening the panel re-reads them.
     @MainActor
     @Test func openingThePanelReadsTheEnginesListenerFacts() async {
         let listening = endpoint()
@@ -180,9 +180,12 @@ import Testing
             $0.status.socksPort = 9091
             $0.status.reverseProxies = [listening]
         }
-        // Merged, not assigned: the engine's flow count must not overwrite the window's
-        // own bounded list count, which is what "N flows" means.
-        #expect(store.state.status.capturedCount == 0)
+        // `capturedCount` is the engine's ring count, and only the engine's: it used to
+        // be overwritten locally with the window's row count, so one name meant two
+        // different numbers an order of magnitude apart. What the window holds is
+        // `capture.allCount`, which is what the sidebar's "All Flows" row reads.
+        #expect(store.state.status.capturedCount == 77)
+        #expect(store.state.capture.allCount == 0)
     }
 
     /// An agent opening a port has to appear in the card without the human reopening the

@@ -12,7 +12,7 @@ import SwiftUI
 /// traffic inspector, and rides `requestArea`'s existing safe-area insets rather than
 /// the titlebar's hand-rolled backdrop.
 struct FlowFilterBar: View {
-    @Bindable var store: StoreOf<AppFeature>
+    @Bindable var store: StoreOf<CaptureFeature>
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -114,7 +114,7 @@ struct FlowFilterBar: View {
                 .help(elsewhere > 0
                     ? """
                     \(shown) shown · \(elsewhere) more matched in stored history, \
-                    past the \(AppFeature.State.displayCap) this window keeps. \
+                    past the \(CaptureFeature.State.displayCap) this window keeps. \
                     Ask an agent for those, or narrow the filter.
                     """
                     : "Matching flows")
@@ -128,9 +128,9 @@ struct FlowFilterBar: View {
 /// own place for this is Edit ▸ Find — which also makes the shortcut discoverable
 /// instead of folklore, and keeps it working while focus sits in the table.
 public struct FlowSearchCommands: Commands {
-    let store: StoreOf<AppFeature>
+    let store: StoreOf<CaptureFeature>
 
-    public init(store: StoreOf<AppFeature>) {
+    public init(store: StoreOf<CaptureFeature>) {
         self.store = store
     }
 

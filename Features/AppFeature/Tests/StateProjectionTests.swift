@@ -5,15 +5,20 @@ import Testing
 
 @testable import AppFeature
 
-/// The `AppFeature.State` computed projections that drive the sidebar + table.
-/// Pure functions of `flows` + selection — no store needed.
+/// The computed projections that drive the sidebar + table, and the parent's own
+/// projections of engine state.
+///
+/// Two halves on purpose: the capture window's projections are pure functions of
+/// `flows` + selection on `CaptureFeature.State` (no store needed), and the second half
+/// covers what `AppFeature.State` *projects* rather than stores — the setup and
+/// reverse-proxy fields filled in from `status`.
 @Suite struct StateProjectionTests {
     /// Seed both halves: the rows this window holds, and the counts the engine would
     /// report for them. They used to be one call — `recordFlow` folded the counters —
     /// which is exactly what made every sidebar badge a count of the window rather than
     /// of the capture.
-    private func state(_ flows: [Flow], category: FlowCategory? = .all) -> AppFeature.State {
-        var s = AppFeature.State(flows: flows)
+    private func state(_ flows: [Flow], category: FlowCategory? = .all) -> CaptureFeature.State {
+        var s = CaptureFeature.State(flows: flows)
         var aggregates = FlowAggregates()
         for flow in flows { aggregates.contribute(flow) }
         s.aggregates = aggregates
@@ -95,7 +100,7 @@ import Testing
     // MARK: Session display cap (② capacity visibility)
 
     @Test func recordFlow_underCap_dropsNothing() {
-        var s = AppFeature.State()
+        var s = CaptureFeature.State()
         let flows = (0 ..< 5).map { _ in Fixtures.flow() }
         flows.forEach { s.recordFlow($0) }
         #expect(s.flows.count == 5)
@@ -112,28 +117,28 @@ import Testing
     /// measured 0.09) — this is a guard against the shape coming back, not a benchmark,
     /// and it must not fail because CI is busy.
     @Test func fillingTheWindowIsLinear() {
-        let flows = (0 ..< AppFeature.State.displayCap).map { _ in Fixtures.flow() }
-        var state = AppFeature.State()
+        let flows = (0 ..< CaptureFeature.State.displayCap).map { _ in Fixtures.flow() }
+        var state = CaptureFeature.State()
         let start = Date()
         state.recordFlows(flows)
         let elapsed = Date().timeIntervalSince(start)
-        #expect(state.flows.count == AppFeature.State.displayCap)
+        #expect(state.flows.count == CaptureFeature.State.displayCap)
         #expect(elapsed < 1.0, "filling the window took \(elapsed)s — the per-flow write through observed state is back")
     }
 
     @Test func recordFlow_overCap_dropsOldestAndCounts() {
-        var s = AppFeature.State()
-        let cap = AppFeature.State.displayCap
+        var s = CaptureFeature.State()
+        let cap = CaptureFeature.State.displayCap
         let flows = (0 ..< (cap + 3)).map { _ in Fixtures.flow() }
         // Batched: per-flow recording trims the cap on every call, which is O(cap) each
-        // and quadratic at this size (see `AppFeature.State.recordFlow`).
+        // and quadratic at this size (see `CaptureFeature.State.recordFlow`).
         s.recordFlows(flows)
 
         // The trim cuts to `displayCap - trimSlack`, not to the cap, so that the next few
         // hundred batches cost nothing — see `State.trimSlack`. The cap is still a
         // ceiling the window may never exceed.
-        let dropped = AppFeature.State.trimSlack + 3
-        #expect(s.flows.count == cap - AppFeature.State.trimSlack, "trimmed a slack's worth below the cap")
+        let dropped = CaptureFeature.State.trimSlack + 3
+        #expect(s.flows.count == cap - CaptureFeature.State.trimSlack, "trimmed a slack's worth below the cap")
         #expect(s.flows.count <= cap, "and never above it")
         #expect(s.droppedFlowCount == dropped, "every dropped row is counted")
         #expect(s.flows.last?.id == flows.last?.id, "newest is retained")
@@ -142,7 +147,7 @@ import Testing
     }
 
     @Test func recordFlow_upsertExistingID_doesNotCountAsNew() {
-        var s = AppFeature.State()
+        var s = CaptureFeature.State()
         let flow = Fixtures.flow(status: nil, responseBody: nil) // in-flight
         s.recordFlow(flow)
         s.recordFlow(Fixtures.flow(id: flow.id, status: 200)) // completion re-arrives
@@ -152,12 +157,12 @@ import Testing
     }
 
     @Test func recordFlow_droppingSelectedClearsSelection() {
-        var s = AppFeature.State()
+        var s = CaptureFeature.State()
         let first = Fixtures.flow()
         s.recordFlow(first)
         s.selectedFlowID = first.id
         // Push exactly past the cap so `first` (the oldest) is evicted.
-        s.recordFlows((0 ..< AppFeature.State.displayCap).map { _ in Fixtures.flow() })
+        s.recordFlows((0 ..< CaptureFeature.State.displayCap).map { _ in Fixtures.flow() })
         #expect(s.flows[id: first.id] == nil)
         #expect(s.selectedFlowID == nil, "a dropped selection must not dangle")
     }
