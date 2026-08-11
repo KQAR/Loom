@@ -179,7 +179,12 @@ public struct AppFeature: Sendable {
         /// and hoped over — and it is the one that windowing the list makes unavoidable
         /// as well as wrong: at ~120 resident rows, locally derived counts would be off
         /// by two orders of magnitude.
-        var aggregates = FlowAggregates()
+        ///
+        /// One of the three inputs to the sidebar's grouping lists; assigning it
+        /// re-sorts them (see `refreshSidebarRows`).
+        var aggregates = FlowAggregates() {
+            didSet { refreshSidebarRows() }
+        }
         /// Whether `aggregates` covers stored history yet, or only what the engine has
         /// restored so far (a brief window after launch). Surfaced rather than smoothed
         /// over: "12" and "12 so far" are different claims.
@@ -196,8 +201,14 @@ public struct AppFeature: Sendable {
         /// passthrough so the badge and the tests keep reading one name; everything
         /// that *writes* it goes through `FlowAggregates`.
         public var errorCount: Int { aggregates.errorCount }
-        public var pinnedHosts: Set<String> = [] // sidebar hosts pinned to the top
-        public var pinnedApps: Set<String> = []  // sidebar apps pinned to the top (by grouping key)
+        // The other two inputs to the sidebar's grouping lists — a pin only changes the
+        // order, but the order is what is cached.
+        public var pinnedHosts: Set<String> = [] { // sidebar hosts pinned to the top
+            didSet { refreshSidebarRows() }
+        }
+        public var pinnedApps: Set<String> = [] {  // sidebar apps pinned to the top (by grouping key)
+            didSet { refreshSidebarRows() }
+        }
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
         /// Auto-update state (Sparkle). `.available` flips the footer button to
         /// its prominent "Update" style; a silent daily probe keeps it fresh.
@@ -292,33 +303,83 @@ public struct AppFeature: Sendable {
             guard !batch.isEmpty else { return }
             var working = flows
             var hosts = hostByRow
+            // Ids this batch inserted, in insertion order — i.e. exactly the tail
+            // `flows` grew by. The incremental projection below needs the order, not
+            // just the membership: a batch can contain a *new* flow's first emission and
+            // an *older* new flow's completion in either sequence, so "append as they
+            // are seen" and "append in capture order" are not the same list.
+            var insertedIDs: [Flow.ID] = []
             for flow in batch {
                 // Store metadata only — bodies for a full window would be a large RAM
                 // sink; the inspector hydrates the selected flow's body on demand.
                 let stripped = flow.strippingBodies()
+                if working[id: flow.id] == nil { insertedIDs.append(flow.id) }
                 working[id: flow.id] = stripped
                 // Only the per-row host map is maintained here; the counts come from the
                 // engine, which is the only place that can see everything retained.
                 hosts[flow.id] = stripped.host
             }
-            enforceDisplayCap(&working, hosts: &hosts)
+            let trimmed = enforceDisplayCap(&working, hosts: &hosts)
             flows = working
             hostByRow = hosts
             status.capturedCount = working.count
-            refreshVisibleFlows()
+            // A trim rewrites the head of the list, so there is nothing incremental left
+            // to do; every other batch touches only what it carried.
+            if trimmed || !recordVisibleFlows(batch, insertedIDs: insertedIDs) {
+                refreshVisibleFlows()
+            }
         }
+
+        /// How far *below* the cap a trim cuts, so the next one is a batch away.
+        ///
+        /// `IdentifiedArray.removeFirst` shifts the whole backing storage and rebuilds
+        /// the id index, i.e. it costs the window however few rows it drops — measured
+        /// at the 20 000-row cap, a steady-state batch cost **1.79 ms against 0.25 ms
+        /// below the cap**, and the difference is entirely this call. Trimming exactly
+        /// to the cap pays that on *every* batch, ten times a second, forever, because
+        /// the very next batch is over again.
+        ///
+        /// Cutting deeper makes it once per `trimSlack` flows instead — the same trade
+        /// `FlowPersistence.pruneSlack` makes one layer down, and for the same reason.
+        ///
+        /// It cuts **below** the cap rather than letting the window drift above it,
+        /// which is the one direction available here: the window may not exceed
+        /// `FlowLimits.windowRows`, because that is pinned at the store's own cap and a
+        /// row past it is a row on screen whose flow no read can resolve any more
+        /// (`FlowLimits.isOrdered`). So the cost is paid in history — up to `trimSlack`
+        /// of the oldest rows leave the list earlier than they had to. They have not
+        /// left the *capture*: they are on disk, searchable and openable, and
+        /// `droppedFlowCount` says so in the list footer.
+        ///
+        /// 500, the same figure and the same 2.5 %-of-cap trade `FlowPersistence.pruneSlack`
+        /// already takes. Past a few hundred the amortization has nothing left to buy (a
+        /// trim every ~17 batches is already 0.09 ms per batch) while the history given up
+        /// keeps growing linearly.
+        ///
+        /// **It costs one stated invariant**, and the cost is real rather than
+        /// bookkeeping: recording a set of flows one at a time and recording it as one
+        /// batch no longer leave the same number of rows, because they cross the cap at
+        /// different moments. What survives — and what `batchRecording_matchesPerFlowRecording_atTheCap`
+        /// now pins — is that both are suffixes of the same capture, agreeing on every row
+        /// the shorter one holds. Batching still cannot change *which* flows are retained,
+        /// only how far back the oldest one goes, and by at most this much.
+        static let trimSlack = 500
 
         /// Drop the oldest overflow past the session display cap (oldest-first
         /// storage → `removeFirst`), counting the drops. Clears the selection if
-        /// it was dropped.
+        /// it was dropped. Returns whether anything was trimmed.
         ///
         /// Takes the working copies `inout` rather than touching `self`'s observed
         /// properties, for the reason `recordFlows` documents.
+        @discardableResult
         private mutating func enforceDisplayCap(
             _ working: inout IdentifiedArrayOf<Flow>, hosts: inout [Flow.ID: String]
-        ) {
-            let overflow = working.count - Self.displayCap
-            guard overflow > 0 else { return }
+        ) -> Bool {
+            guard working.count > Self.displayCap else { return false }
+            // `max(1, …)` so a test-sized cap below the slack still makes progress
+            // rather than asking for a negative target.
+            let target = max(1, Self.displayCap - Self.trimSlack)
+            let overflow = working.count - target
             let droppedIDs = Set(working.prefix(overflow).map(\.id))
             // No aggregate retraction: a flow leaving this window has not left the
             // capture, and the engine's counts are over what is retained, not over what
@@ -330,6 +391,7 @@ public struct AppFeature: Sendable {
             if let selected = selectedFlowID, droppedIDs.contains(selected) {
                 selectedFlowID = nil
             }
+            return true
         }
 
         /// Count flows that arrived after an engine-scope answer landed — the ones the
@@ -401,11 +463,126 @@ public struct AppFeature: Sendable {
         /// stale list still renders.
         private var visibleFlows: [Flow] = []
 
+        /// `flow id → index into visibleFlows`, so a batch can update the rows it
+        /// carried instead of rebuilding the list.
+        ///
+        /// Maintained **only while something is actually filtering** — see
+        /// `projectionIsCheapToRebuild`. With no category and no needle the projection
+        /// *is* the capture (`flows.elements`, a COW reference), so a second 20 000-entry
+        /// map would be a megabyte and a hash per flow to accelerate work that costs
+        /// nothing.
+        private var visiblePositions: [Flow.ID: Int] = [:]
+
+        /// Whether recomputing the whole projection is free.
+        ///
+        /// True in the two cases that dominate: no filter at all (the projection is the
+        /// backing array, handed over without copying) and a panel category (the table is
+        /// replaced, so the projection is empty). False exactly when a rebuild is a scan
+        /// of the window — which is the case the incremental path exists for.
+        private var projectionIsCheapToRebuild: Bool {
+            switch selectedCategory ?? .all {
+            case .rules, .audit, .breakpoints: true
+            case .all: !search.isActive
+            case .errors, .host, .app, .device: false
+            }
+        }
+
         /// Recompute the projection. Called by every mutation that can change it —
-        /// `recordFlow(s)`, the display-cap trim, a clear, a category change and every
-        /// search action.
+        /// a display-cap trim, a clear, a category change and every search action — and
+        /// by `recordFlows` whenever the incremental path declines the batch.
         mutating func refreshVisibleFlows() {
             visibleFlows = computeVisibleFlows()
+            visiblePositions = projectionIsCheapToRebuild
+                ? [:]
+                : Dictionary(
+                    uniqueKeysWithValues: visibleFlows.enumerated().map { ($0.element.id, $0.offset) }
+                )
+        }
+
+        /// Fold one capture batch into the projection without rescanning the window.
+        ///
+        /// Returns **false when it will not do so correctly**, and the caller falls back
+        /// to the full rebuild. That shape is the whole safety argument: this is a second
+        /// writer of a cached list, which `refreshVisibleFlows` names as the thing that
+        /// renders wrongly and silently, so it is allowed to handle only the cases it can
+        /// prove and must hand back the rest rather than approximate them.
+        ///
+        /// What it is for: with a category or a needle, a rebuild filters the whole window
+        /// — measured at 20 000 rows, **7.9 ms per batch for a host category and 8.9 ms
+        /// for a needle, against 1.8 ms with no filter**, ten times a second, to re-derive
+        /// a list that changed by the thirty rows the batch carried. A category selected
+        /// under live capture was costing ~8 % of a core in the reducer.
+        ///
+        /// Three cases are declined, all of them about **order**, because the projection
+        /// follows `flows`' insertion order and appending is only correct at the end:
+        ///
+        /// - a row already shown that stops matching (it leaves a hole mid-list),
+        /// - a row *not* shown that starts matching (`.errors` when a pending exchange
+        ///   fails, `.app` when attribution is backfilled — it belongs at its own position
+        ///   in the capture, not at the end),
+        /// - anything at all when the cap trimmed, handled by the caller.
+        ///
+        /// The flows this batch *inserted* are the one thing that can be appended, and
+        /// they are appended in `insertedIDs` order rather than in the order they were
+        /// seen — those differ whenever a slow exchange completes after a faster one
+        /// started, which is ordinary traffic, not an edge case.
+        /// **Every mutation happens on a local copy and the observed properties are
+        /// assigned once**, for the reason `recordFlows` spells out and this method
+        /// re-learned the hard way: `visibleFlows` is a stored property of an
+        /// `@ObservableState` value, so writing *through* it costs work proportional to
+        /// what it holds. The first version appended and subscripted through `self` and
+        /// made the needle case **worse than the rebuild it replaced** — 44 ms per batch
+        /// against 8.9 ms — because thirty appends through observed state at a 20 000-row
+        /// window is thirty times that overhead. Nothing about the algorithm changed to
+        /// fix it.
+        private mutating func recordVisibleFlows(_ batch: [Flow], insertedIDs: [Flow.ID]) -> Bool {
+            guard !projectionIsCheapToRebuild else { return false }
+            let matches = search.predicate()
+            let inserted = Set(insertedIDs)
+            var working = visibleFlows
+            var positions = visiblePositions
+
+            // Rows the capture already held: update in place, or decline.
+            for flow in batch where !inserted.contains(flow.id) {
+                guard let updated = flows[id: flow.id] else { return false }
+                let shouldShow = categoryMatches(updated) && matches(updated)
+                if let index = positions[flow.id] {
+                    guard shouldShow else { return false }
+                    working[index] = updated
+                } else if shouldShow {
+                    return false
+                }
+            }
+
+            // Rows this batch created: the tail, in capture order. Read back from `flows`
+            // rather than from `batch`, so a flow that emitted twice in one batch is
+            // appended once and carries its final state.
+            for id in insertedIDs {
+                guard let flow = flows[id: id] else { continue }
+                guard categoryMatches(flow) && matches(flow) else { continue }
+                positions[id] = working.count
+                working.append(flow)
+            }
+            visibleFlows = working
+            visiblePositions = positions
+            return true
+        }
+
+        /// Whether the sidebar's selected category admits this flow. One definition,
+        /// shared by the full rebuild and the incremental fold — two copies of a
+        /// membership rule is two lists that disagree.
+        private func categoryMatches(_ flow: Flow) -> Bool {
+            switch selectedCategory ?? .all {
+            case .all: true
+            case .rules, .audit, .breakpoints: false // the panel replaces the table
+            case .errors: Self.isError(flow)
+            // A dictionary lookup, not a parse: the host was computed once when the flow
+            // was recorded, and it is the value the sidebar's categories are keyed by.
+            // Scanning the URL string here instead cost 3.2 ms per render over a full ring.
+            case let .host(host): hostByRow[flow.id] == host
+            case let .app(key): flow.sourceApp?.groupingKey == key
+            case let .device(ip): flow.sourceDevice?.groupingKey == ip
+            }
         }
 
         private func computeVisibleFlows() -> [Flow] {
@@ -424,66 +601,93 @@ public struct AppFeature: Sendable {
             default:
                 break
             }
-            var result = flows.elements
-            switch selectedCategory ?? .all {
-            case .all, .rules, .audit, .breakpoints:
-                break
-            case .errors:
-                result = result.filter(Self.isError)
-
-            case let .host(host):
-                // A dictionary lookup per row, not a parse: the host was computed once
-                // when the flow was recorded, and it is the value the sidebar's
-                // categories are keyed by. Scanning the URL string here instead cost
-                // 3.2 ms per render over a full ring.
-                result = result.filter { hostByRow[$0.id] == host }
-            case let .app(key):
-                result = result.filter { $0.sourceApp?.groupingKey == key }
-            case let .device(ip):
-                result = result.filter { $0.sourceDevice?.groupingKey == ip }
-            }
             // The needle applies *after* the category, which is also the order the
             // engine query is built in (`FlowSearch.engineQuery`) — so the two paths
-            // narrow by the same thing in the same order.
-            return search.isActive ? result.filter(matches) : result
+            // narrow by the same thing in the same order. One pass rather than two:
+            // `categoryMatches` is the same predicate the incremental fold applies, so
+            // the two writers of this list cannot disagree about membership.
+            let filtering = search.isActive
+            return flows.elements.filter { categoryMatches($0) && (!filtering || matches($0)) }
+        }
+
+        /// One sidebar grouping row. A named type rather than the tuple these used to
+        /// be, for one reason: a tuple cannot be stored in `Equatable` state, and these
+        /// are stored now (see `refreshSidebarRows`). Field names are unchanged, so
+        /// every reader — `entry.host`, `map(\.app.groupingKey)`, `ForEach(id:
+        /// \.device.groupingKey)` — reads exactly as before.
+        public struct HostRow: Equatable, Sendable {
+            public let host: String
+            public let count: Int
+        }
+
+        public struct AppRow: Equatable, Sendable {
+            public let app: SourceApp
+            public let count: Int
+        }
+
+        public struct DeviceRow: Equatable, Sendable {
+            public let device: SourceDevice
+            public let count: Int
         }
 
         /// Distinct devices with counts — LAN devices first (the phone you just
-        /// connected), then by most flows. Reads the incremental aggregates, so this
-        /// sorts a handful of devices instead of scanning every flow.
-        public var devices: [(device: SourceDevice, count: Int)] {
-            aggregates.deviceCounts.sorted { a, b in
-                let da = aggregates.deviceReps[a.key], db = aggregates.deviceReps[b.key]
-                let la = da?.kind == .lan, lb = db?.kind == .lan
-                if la != lb { return la }        // LAN devices float to the top
-                return a.value != b.value ? a.value > b.value : a.key < b.key
-            }.compactMap { key, count in
-                aggregates.deviceReps[key].map { (device: $0, count: count) }
-            }
-        }
+        /// connected), then by most flows.
+        public var devices: [DeviceRow] { sidebarDevices }
 
         /// Distinct hosts with counts — pinned first, then alphabetical.
-        public var hosts: [(host: String, count: Int)] {
-            aggregates.hostCounts.sorted { a, b in
-                let pa = pinnedHosts.contains(a.key), pb = pinnedHosts.contains(b.key)
-                if pa != pb { return pa }        // pinned rows float to the top
-                return a.key < b.key
-            }.map { (host: $0.key, count: $0.value) }
-        }
+        public var hosts: [HostRow] { sidebarHosts }
 
         /// Distinct source apps with counts — pinned first, then most-active.
         /// Keyed by `groupingKey` (bundle id or name); the representative carries the
         /// display name + icon path.
-        public var apps: [(app: SourceApp, count: Int)] {
-            aggregates.appCounts
+        public var apps: [AppRow] { sidebarApps }
+
+        private var sidebarHosts: [HostRow] = []
+        private var sidebarApps: [AppRow] = []
+        private var sidebarDevices: [DeviceRow] = []
+
+        /// Re-sort the three grouping lists.
+        ///
+        /// **Cached rather than computed on read**, for the reason `displayFlows`
+        /// already is: the sidebar body reads all three, and it re-runs on every capture
+        /// batch. Each was a dictionary sort plus a `compactMap` — measured over a
+        /// 20 000-flow capture across 200 hosts, **0.60 ms for the three of them, per
+        /// render**, to produce a list that changes only when a host is first seen, a
+        /// count moves, or something is pinned.
+        ///
+        /// They were never scans of the capture (`FlowAggregates` maintains the counts
+        /// incrementally, which is what moved them off the flow list in the first
+        /// place), so this is the second half of that same fix rather than a new idea:
+        /// the counts stopped being recomputed, and now their *ordering* has too.
+        ///
+        /// Driven by `didSet` on all three inputs — the aggregates and the two pin sets
+        /// — not by call sites remembering, which is the rule `refreshVisibleFlows`
+        /// states and the failure mode it names: a stale list still renders.
+        mutating func refreshSidebarRows() {
+            sidebarHosts = aggregates.hostCounts.sorted { a, b in
+                let pa = pinnedHosts.contains(a.key), pb = pinnedHosts.contains(b.key)
+                if pa != pb { return pa }        // pinned rows float to the top
+                return a.key < b.key
+            }.map { HostRow(host: $0.key, count: $0.value) }
+
+            sidebarApps = aggregates.appCounts
                 .sorted { a, b in
                     let pa = pinnedApps.contains(a.key), pb = pinnedApps.contains(b.key)
                     if pa != pb { return pa }    // pinned rows float to the top
                     return a.value != b.value ? a.value > b.value : (a.key < b.key)
                 }
                 .compactMap { key, count in
-                    aggregates.appReps[key].map { (app: $0, count: count) }
+                    aggregates.appReps[key].map { AppRow(app: $0, count: count) }
                 }
+
+            sidebarDevices = aggregates.deviceCounts.sorted { a, b in
+                let da = aggregates.deviceReps[a.key], db = aggregates.deviceReps[b.key]
+                let la = da?.kind == .lan, lb = db?.kind == .lan
+                if la != lb { return la }        // LAN devices float to the top
+                return a.value != b.value ? a.value > b.value : a.key < b.key
+            }.compactMap { key, count in
+                aggregates.deviceReps[key].map { DeviceRow(device: $0, count: count) }
+            }
         }
 
         public var allCount: Int { flows.count }

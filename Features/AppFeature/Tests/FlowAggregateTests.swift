@@ -131,8 +131,12 @@ import Testing
         for flow in old + new { aggregates.contribute(flow) }
         state.aggregates = aggregates
 
-        #expect(state.allCount == AppFeature.State.displayCap, "the window cap holds")
-        #expect(state.droppedFlowCount == 10, "and it dropped rows to hold it")
+        // The trim cuts below the cap rather than to it (`State.trimSlack`), so the
+        // window holds somewhere in that band — the point of this test is the counts,
+        // which do not move either way.
+        #expect(state.allCount <= AppFeature.State.displayCap, "the window cap holds")
+        #expect(state.allCount >= AppFeature.State.displayCap - AppFeature.State.trimSlack)
+        #expect(state.droppedFlowCount > 0, "and it dropped rows to hold it")
         #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == AppFeature.State.displayCap,
                 "every one of them is still retained, so still counted")
         #expect(state.hosts.first(where: { $0.host == "new.test" })?.count == 10)
@@ -225,10 +229,23 @@ import Testing
         #expect(state.displayFlowsAreEmpty)
     }
 
-    /// A whole stream batch lands through `recordFlows`, which trims the cap once
-    /// at the end instead of per flow — the state it leaves must be exactly what
-    /// per-flow recording produced, including the drop count, the aggregates, and
-    /// a selection that fell off the front.
+    /// Recording a set of flows one at a time and recording it as one batch must leave
+    /// the same *capture* — the same rows, in the same order, with the same per-row
+    /// index and the same selection.
+    ///
+    /// **Not the same row count, and that is a deliberate weakening.** The cap's trim
+    /// cuts to `displayCap - trimSlack` rather than to the cap, so it fires once per
+    /// slack's worth of flows instead of on every batch (`State.trimSlack` has the
+    /// measurement). Which side of that threshold a given flow lands on depends on how
+    /// the flows were grouped, so the two paths hold different amounts of *history*: here
+    /// the per-flow run crosses the cap on its first call and then has headroom for the
+    /// other nine, while the batch crosses it once with all ten.
+    ///
+    /// What batching still cannot do is change which flows are retained or their order,
+    /// so the invariant is a suffix relation: the shorter list is the tail of the longer
+    /// one, exactly. That is the property every reader depends on — the table renders the
+    /// tail and the sidebar counts come from the engine — and it is checkable without
+    /// pretending the counts match.
     @Test func batchRecording_matchesPerFlowRecording_atTheCap() {
         let seed = (0 ..< AppFeature.State.displayCap).map { flow(url: "https://old.test/\($0)") }
         let batch = (0 ..< 10).map { flow(url: "https://new.test/\($0)") }
@@ -244,11 +261,24 @@ import Testing
         for flow in batch { perFlow.recordFlow(flow) }
         batched.recordFlows(batch)
 
-        #expect(batched.flows == perFlow.flows)
-        #expect(batched.allCount == AppFeature.State.displayCap, "the cap holds")
-        #expect(batched.droppedFlowCount == perFlow.droppedFlowCount)
-        #expect(batched.hostByRow == perFlow.hostByRow, "the per-row index matches too")
+        let shorter = min(batched.flows.count, perFlow.flows.count)
+        #expect(
+            Array(batched.flows.suffix(shorter)) == Array(perFlow.flows.suffix(shorter)),
+            "the two agree on every row they both hold, in order"
+        )
+        #expect(
+            abs(batched.flows.count - perFlow.flows.count) <= AppFeature.State.trimSlack,
+            "and they differ by at most the trim slack"
+        )
+        #expect(batched.allCount <= AppFeature.State.displayCap, "the cap holds")
+        #expect(perFlow.allCount <= AppFeature.State.displayCap)
+        #expect(
+            batched.hostByRow.filter { batched.flows[id: $0.key] != nil }
+                == perFlow.hostByRow.filter { batched.flows[id: $0.key] != nil },
+            "the per-row index matches for every row the batch still holds"
+        )
         #expect(batched.selectedFlowID == nil, "a selection dropped by the trim is cleared")
+        #expect(perFlow.selectedFlowID == nil)
     }
 
     /// The seeding initializer must produce exactly the state live capture would.
