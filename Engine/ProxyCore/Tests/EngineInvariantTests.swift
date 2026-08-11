@@ -58,7 +58,7 @@ struct OneWritePathInvariantTests {
         try await engine.addRule(TrafficRule(
             name: "teapot",
             match: RuleMatch(urlPattern: "*"),
-            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 418, bodyText: "teapot")))
+            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 418, body: .text("teapot"))))
         ))
 
         let replayed = try await engine.replay(flow: sourceFlow(url: url), overrides: .none)

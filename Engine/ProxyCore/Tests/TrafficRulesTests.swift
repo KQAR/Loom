@@ -23,14 +23,14 @@ import Foundation
     }
 
     @Test func regex_unanchoredSearch() {
-        let match = RuleMatch(urlPattern: #"/api/cashloan/\w+/home(\?.*)?$"#, isRegex: true)
+        let match = RuleMatch(urlPattern: #"/api/cashloan/\w+/home(\?.*)?$"#, style: .regex)
         #expect(match.matches(method: "GET", url: "https://x.test/api/cashloan/phi/home"))
         #expect(match.matches(method: "GET", url: "https://x.test/api/cashloan/phi/home?a=1"))
         #expect(!match.matches(method: "GET", url: "https://x.test/api/cashloan/phi/homeV2"))
     }
 
     @Test func invalidRegex_neverMatches() {
-        let match = RuleMatch(urlPattern: "([", isRegex: true)
+        let match = RuleMatch(urlPattern: "([", style: .regex)
         #expect(!match.matches(method: "GET", url: "https://x.test/(["))
     }
 
@@ -46,7 +46,7 @@ import Foundation
 
 @Suite struct TrafficRuleValidationTests {
     private func rule(_ actions: RuleActions, name: String = "r", pattern: String = "https://x.test*", isRegex: Bool = false) -> TrafficRule {
-        TrafficRule(name: name, match: RuleMatch(urlPattern: pattern, isRegex: isRegex), actions: actions)
+        TrafficRule(name: name, match: RuleMatch(urlPattern: pattern, style: isRegex ? .regex : nil), actions: actions)
     }
 
     @Test func valid() {
@@ -152,7 +152,7 @@ import Foundation
                 method: "post",
                 setHeaders: [HeaderPair(name: "authorization", value: "Bearer b")],
                 removeHeaders: ["Cookie"],
-                bodyText: "{}"
+                body: .text("{}")
             ))
         )
         let plan = plan(state(first, second), headers: [HeaderPair(name: "Cookie", value: "session=1")])
@@ -199,6 +199,59 @@ import Foundation
         )
         #expect(plan.url.absoluteString == "https://api.example.test/v1/home?x=2")
         #expect(plan.body == Data("bar baz".utf8))
+    }
+
+    /// An untargeted header substitution runs over *every* header value, which is
+    /// the blunt behaviour that was the only one available.
+    @Test func headerSubstitution_withoutATarget_hitsEveryHeader() {
+        let rule = TrafficRule(
+            name: "sub", match: RuleMatch(urlPattern: "*"),
+            actions: RuleActions(requestSubstitutions: [
+                SubstitutionRule(field: .header(), match: "secret", replacement: "REDACTED"),
+            ])
+        )
+        let headers = [
+            HeaderPair(name: "Authorization", value: "Bearer secret"),
+            HeaderPair(name: "X-Trace", value: "secret-trace"),
+        ]
+        let plan = RuleEngine.planRequest(state: state(rule), method: "GET", url: url, headers: headers, body: nil)
+        #expect(plan.headers.map(\.value) == ["Bearer REDACTED", "REDACTED-trace"])
+    }
+
+    /// Naming the header is what makes "rewrite this one token" expressible: the
+    /// other header carrying the same text is left alone.
+    @Test func headerSubstitution_withATarget_hitsOnlyThatHeader() {
+        let rule = TrafficRule(
+            name: "sub", match: RuleMatch(urlPattern: "*"),
+            actions: RuleActions(requestSubstitutions: [
+                SubstitutionRule(field: .header(name: "authorization"), match: "secret", replacement: "REDACTED"),
+            ])
+        )
+        let headers = [
+            HeaderPair(name: "Authorization", value: "Bearer secret"), // matched case-insensitively
+            HeaderPair(name: "X-Trace", value: "secret-trace"),
+        ]
+        let plan = RuleEngine.planRequest(state: state(rule), method: "GET", url: url, headers: headers, body: nil)
+        #expect(plan.headers.map(\.value) == ["Bearer REDACTED", "secret-trace"])
+    }
+
+    @Test func targetedHeaderSubstitution_appliesToResponsesToo() {
+        let rule = TrafficRule(
+            name: "sub", match: RuleMatch(urlPattern: "*"),
+            actions: RuleActions(responseSubstitutions: [
+                SubstitutionRule(field: .header(name: "Set-Cookie"), match: "Secure; ", replacement: ""),
+            ])
+        )
+        let base = ForwardResult(
+            statusCode: 200,
+            headers: [
+                HeaderPair(name: "Set-Cookie", value: "Secure; id=1"),
+                HeaderPair(name: "X-Note", value: "Secure; keep"),
+            ],
+            body: Data()
+        )
+        let result = RuleEngine.applyResponseRewrites(plan(state(rule)).matched, to: base)
+        #expect(result.headers.map(\.value) == ["id=1", "Secure; keep"])
     }
 
     @Test func responseSubstitutions_regexReplacement() {
@@ -320,7 +373,7 @@ private actor StubUpstream: UpstreamForwarding {
         let rule = TrafficRule(
             name: "home mock", match: RuleMatch(urlPattern: "*"),
             actions: RuleActions(route: .mock(MockResponseAction(
-                statusCode: 200, bodyText: #"{"body":"MOCK"}"#, contentType: "application/json"
+                statusCode: 200, body: .text(#"{"body":"MOCK"}"#), contentType: "application/json"
             )))
         )
         let (forwarder, upstream) = makeForwarder([rule])
@@ -436,22 +489,70 @@ private actor StubUpstream: UpstreamForwarding {
         #expect(config.snapshot().rules.isEmpty)
     }
 
-    @Test func setGroupEnabled_togglesOnlyMembers() {
+    /// Three rules, one of them deliberately switched off by hand inside the group.
+    private func groupedConfig() -> RulesConfig {
         let config = RulesConfig(fileURL: nil)
-        let scenarioA = TrafficRule(name: "a", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
-        let scenarioA2 = TrafficRule(name: "a2", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
-        let ungrouped = TrafficRule(name: "solo", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
-        config.add(scenarioA)
-        config.add(scenarioA2)
-        config.add(ungrouped)
+        config.add(TrafficRule(name: "a", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block)))
+        config.add(TrafficRule(name: "a2", group: "scenario A", isEnabled: false, match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block)))
+        config.add(TrafficRule(name: "solo", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block)))
+        return config
+    }
+
+    @Test func setGroupEnabled_switchesTheGroup_withoutTouchingMemberFlags() {
+        let config = groupedConfig()
 
         config.setGroupEnabled(group: "scenario A", enabled: false)
-        var rules = config.snapshot().rules
-        #expect(rules.map(\.isEnabled) == [false, false, true], "only group members flip")
+        var state = config.snapshot()
+        #expect(state.rules.map(\.isEnabled) == [true, false, true], "a group switch must not write member flags")
+        #expect(state.disabledGroups == ["scenario A"])
+        #expect(state.activeRules.map(\.name) == ["solo"], "only the ungrouped rule still applies")
 
         config.setGroupEnabled(group: nil, enabled: false)
-        rules = config.snapshot().rules
-        #expect(rules.map(\.isEnabled) == [false, false, false], "nil batch-toggles the ungrouped rules")
+        state = config.snapshot()
+        #expect(state.disabledGroups == ["scenario A", nil], "nil is the ungrouped bucket")
+        #expect(state.activeRules.isEmpty)
+    }
+
+    /// The defect the group switch was moved for: disabling a scenario and turning
+    /// it back on used to enable a rule the human had turned off inside it, with no
+    /// way to know what had been on.
+    @Test func groupRoundTrip_restoresExactlyWhatWasOn() {
+        let config = groupedConfig()
+        let before = config.snapshot().rules.map(\.isEnabled)
+
+        config.setGroupEnabled(group: "scenario A", enabled: false)
+        config.setGroupEnabled(group: "scenario A", enabled: true)
+
+        let state = config.snapshot()
+        #expect(state.rules.map(\.isEnabled) == before)
+        #expect(state.activeRules.map(\.name) == ["a", "solo"], "the hand-disabled member stays off")
+        #expect(state.disabledGroups.isEmpty)
+    }
+
+    /// A switched-off group whose members all go away must not linger: a rule
+    /// written into that group name later would be silently inert.
+    @Test func aGroupSwitchIsPrunedWhenItsLastMemberGoes() {
+        let config = groupedConfig()
+        config.setGroupEnabled(group: "scenario A", enabled: false)
+        for rule in config.snapshot().rules where rule.group == "scenario A" {
+            _ = config.delete(id: rule.id)
+        }
+        #expect(config.snapshot().disabledGroups.isEmpty)
+
+        let reused = TrafficRule(name: "new", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
+        config.add(reused)
+        #expect(config.snapshot().activeRules.map(\.name).contains("new"), "a reused group name starts live")
+    }
+
+    @Test func groupSwitch_survivesRelaunch() throws {
+        let config = RulesConfig(fileURL: fileURL)
+        config.add(TrafficRule(name: "a", group: "scenario A", match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block)))
+        config.setGroupEnabled(group: "scenario A", enabled: false)
+        config.flush()
+
+        let second = RulesConfig(fileURL: fileURL)
+        #expect(second.snapshot().disabledGroups == ["scenario A"])
+        #expect(second.snapshot().activeRules.isEmpty)
     }
 
     @Test func updateAndDelete_reportMisses() {

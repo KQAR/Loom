@@ -1,18 +1,15 @@
 import SwiftUI
 
+/// Headers as `Name: Value` lines. The format hint sits in the label rather than
+/// as a second line of copy under the box — it is part of what the field *is*,
+/// not an explanation of it.
 struct HeaderEditor: View {
     let title: String
     @Binding var text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(title) — Name: Value per line").font(.caption).foregroundStyle(.secondary)
-            TextEditor(text: $text)
-                .font(.callout.monospaced())
-                .frame(minHeight: 44)
-                .scrollContentBackground(.hidden)
-                .padding(4)
-                .loomField()
+        LabeledField("\(title) — one Name: Value per line") {
+            LoomTextArea(text: $text, minHeight: 52)
         }
     }
 }

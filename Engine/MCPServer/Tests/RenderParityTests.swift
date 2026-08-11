@@ -311,7 +311,14 @@ import Testing
 
     @Test func ruleMatch_carriesEveryModelField() {
         let match = RuleMatch(urlPattern: "*")
-        check(Census("RuleMatch → the `match` block", model: match, render: RuleMatchRender(match)))
+        check(Census(
+            "RuleMatch → the `match` block",
+            model: match,
+            render: RuleMatchRender(match),
+            accountedFor: [
+                "style": "renamed to `matchStyle` — one always-present key instead of the two optional booleans it replaced",
+            ]
+        ))
     }
 
     @Test func pendingBreakpoint_carriesEveryModelField() {
@@ -525,7 +532,7 @@ import Testing
             model: mock,
             render: MockResponseRender(mock, truncateBodies: true),
             accountedFor: [
-                "bodyText": "renamed to `body`, alongside `bodyLength` + `bodyTruncated` when a list render cuts it",
+                "body": "split by kind: `MockBody.text` renders as `body` (+ `bodyLength`/`bodyTruncated` when a list render cuts it), `.bytes` as `bodyBase64`",
             ]
         ))
 
@@ -545,7 +552,9 @@ import Testing
             "RequestRewriteAction → actions.rewriteRequest",
             model: request,
             render: RequestRewriteRender(request, truncateBodies: true),
-            accountedFor: ["bodyText": "renamed to `body` (+ `bodyLength` / `bodyTruncated`)"]
+            accountedFor: [
+                "body": "split by kind: `RewriteBody.text` renders as `body` (+ `bodyLength` / `bodyTruncated`), `.file` as `bodyFile`",
+            ]
         ))
 
         let response = ResponseRewriteAction()

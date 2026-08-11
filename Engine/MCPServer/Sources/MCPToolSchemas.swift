@@ -956,7 +956,15 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "set_group_enabled",
-            description: "Enable or disable every rule in a group at once (e.g. switch debugging scenarios). This is a write action.",
+            description: """
+            Switch a whole rule group on or off — scenario switching. Non-destructive: it sets the \
+            group's own switch and leaves each rule's `enabled` flag alone, so switching a group \
+            off and back on restores exactly the rules that were on before. A rule in a \
+            switched-off group therefore reads `enabled: true` and still does nothing; `list_rules` \
+            reports `disabledGroups` (with `null` for the ungrouped bucket) and `set_rule` says so \
+            in `ineffectiveReason`. The reply's `members` counts the group, `active` counts how \
+            many of them now apply. This is a write action.
+            """,
             inputSchema: [
                 "type": "object",
                 "properties": [
@@ -978,12 +986,20 @@ extension MCPToolExecutor {
             "properties": [
                 "url_pattern": [
                     "type": "string",
-                    "description": "Matched against the full URL. Glob by default: `*` matches any characters and the pattern must cover the whole URL; without any `*` it is a prefix match (query strings still match). With is_regex it is an unanchored, case-insensitive regular expression.",
+                    "description": "Matched against the full URL, the way match_style says. Omit match_style and the pattern speaks for itself: a `*` in it means glob, otherwise prefix.",
                 ],
-                "is_regex": ["type": "boolean", "description": "Treat url_pattern as a regular expression (default false)."],
-                "is_exact": ["type": "boolean", "description": "Require url_pattern to equal the full URL exactly, instead of the default prefix/glob match (ignored when is_regex). Default false."],
+                "match_style": [
+                    "type": "string",
+                    "enum": ["prefix", "glob", "exact", "regex"],
+                    "description": "How url_pattern is compared. prefix: the pattern must be a case-insensitive prefix of the URL, so a pattern with no query string still matches every query string. glob: `*` matches any run of characters and the pattern must cover the whole URL. exact: the URL must equal the pattern. regex: unanchored, case-insensitive. Defaults to glob when the pattern contains `*`, else prefix — pass it explicitly to match a literal `*`. Read back as `matchStyle`.",
+                ],
+                "is_regex": ["type": "boolean", "description": "Older spelling of match_style: \"regex\". Ignored when match_style is set."],
+                "is_exact": ["type": "boolean", "description": "Older spelling of match_style: \"exact\". Ignored when match_style is set; is_regex wins over it."],
                 "host_pattern": ["type": "string", "description": "Optional host glob (e.g. *.example.com) matched against the URL host; combines with url_pattern."],
-                "query": ["type": "object", "description": "Optional query predicates: each key must be present and equal its value, or \"*\" to require the key with any value. Order-independent."],
+                "query": [
+                    "type": "object",
+                    "description": "Optional query predicates, order-independent: each key must be present and equal its value, or \"*\" to require the key with any value. To require a value that is literally `*`, use the explicit form {\"key\": {\"equals\": \"*\"}} — {\"key\": {\"present\": true}} is the long spelling of \"*\". Read back in the same spelling.",
+                ],
                 "source_app": [
                     "type": "string",
                     "description": "Optional originating-app predicate: bundle id or display name (see list_devices / a flow's sourceApp), case-insensitive. This is how you scope a rule to one client — mock it for the app under test and leave the browser alone. Traffic Loom can't attribute to a local process (a LAN device has no local pid) never matches an app-scoped rule.",
@@ -1032,7 +1048,7 @@ extension MCPToolExecutor {
                 ],
                 "map_local": [
                     "type": "object",
-                    "description": "Serve a local file as the response; the upstream is never contacted.",
+                    "description": "Serve a local file as the response; the upstream is never contacted. It carries no headers of its own beyond content_type — add any others with rewrite_response.set_headers, which runs over whatever the route produced.",
                     "properties": [
                         "path": ["type": "string", "description": "Absolute file path."],
                         "status_code": ["type": "integer", "description": "Default 200."],
@@ -1045,9 +1061,11 @@ extension MCPToolExecutor {
                     "description": "Mutate the outgoing request before forwarding.",
                     "properties": [
                         "method": ["type": "string"],
+                        "url": ["type": "string", "description": "Replacement request URL, whole (scheme + host + path + query). Unlike map_remote, which swaps the origin and keeps the path, this sets the lot; the Host header follows it."],
                         "set_headers": ["type": "object", "description": "Header name/value pairs to add or overwrite."],
                         "remove_headers": ["type": "array", "items": ["type": "string"]],
-                        "body": ["type": "string", "description": "Replacement UTF-8 request body. Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."],
+                        "body": ["type": "string", "description": "Replacement UTF-8 request body. \"\" replaces it with an empty body, which is different from omitting this key (leave the client's body alone). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."],
+                        "body_file": ["type": "string", "description": "Absolute path to a file whose contents replace the request body, read at request time so editing the file needs no rule change. Takes precedence over `body`. If it can't be read the client's own body is forwarded and the failure is logged (a request has no response to report it on)."],
                     ],
                 ],
                 "rewrite_response": [
@@ -1077,6 +1095,10 @@ extension MCPToolExecutor {
                 "type": "object",
                 "properties": [
                     "field": ["type": "string", "enum": ["url", "header", "body"], "description": "Which part to substitute in (url is request-side only)."],
+                    "header_name": [
+                        "type": "string",
+                        "description": "With field \"header\": the one header to substitute in, case-insensitive (e.g. Authorization). Omit to run over every header's value, which is blunt — it also hits any other header containing the same text. Rejected with any other field.",
+                    ],
                     "match": ["type": "string", "description": "Text or regex to find."],
                     "replacement": ["type": "string", "description": "Replacement text (regex $1 backrefs allowed)."],
                     "is_regex": ["type": "boolean", "description": "Treat match as a regular expression (default false)."],

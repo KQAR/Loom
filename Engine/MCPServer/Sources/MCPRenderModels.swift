@@ -279,24 +279,54 @@ struct SlowestFlowRender: Encodable {
 /// rendering it as `[]` reads like a constraint that matches nothing.
 struct RuleMatchRender: Encodable {
     var urlPattern: String
-    var isRegex: Bool?
-    var isExact: Bool?
+    /// Always emitted, and one key instead of two optional flags. `prefix` vs
+    /// `glob` was previously not rendered at all — both were "no flag", so an
+    /// agent reading a pattern back could not tell whether the `*` in it was a
+    /// wildcard or a literal.
+    var matchStyle: String
     var hostPattern: String?
-    var query: [String: String]?
+    var query: [String: QueryPredicateRender]?
     var sourceApp: String?
     var deviceIP: String?
     var methods: [String]?
 
     init(_ match: RuleMatch) {
         urlPattern = match.urlPattern
-        isRegex = match.isRegex ? true : nil
-        isExact = match.isExact ? true : nil
+        matchStyle = match.style.rawValue
         hostPattern = match.hostPattern.flatMap { $0.isEmpty ? nil : $0 }
-        query = match.query.flatMap { $0.isEmpty ? nil : $0 }
+        // Rendered in the spelling an agent sends: `*` for "any value", the
+        // explicit object only for the predicate that spelling can't say.
+        query = match.query.flatMap { predicates in
+            predicates.isEmpty ? nil : predicates.mapValues(QueryPredicateRender.init)
+        }
         sourceApp = match.sourceApp.flatMap { $0.isEmpty ? nil : $0 }
         deviceIP = match.deviceIP.flatMap { $0.isEmpty ? nil : $0 }
         methods = match.methods.isEmpty ? nil : match.methods
     }
+}
+
+/// One query predicate, in the wire spelling: a bare string (`"2"`, or `"*"` for
+/// "any value") unless the value is literally `*`, which needs the explicit form.
+struct QueryPredicateRender: Encodable {
+    private let predicate: QueryPredicate
+
+    init(_ predicate: QueryPredicate) { self.predicate = predicate }
+
+    func encode(to encoder: Encoder) throws {
+        switch predicate {
+        case .present:
+            var c = encoder.singleValueContainer()
+            try c.encode("*")
+        case let .equals(value) where value != "*":
+            var c = encoder.singleValueContainer()
+            try c.encode(value)
+        case let .equals(value):
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(value, forKey: .equals)
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey { case equals }
 }
 
 struct BreakpointRender: Encodable {
@@ -709,14 +739,19 @@ struct MapLocalRender: Encodable {
 
 struct RequestRewriteRender: Encodable {
     var method: String?
+    var url: String?
     var setHeaders: [String: String]?
     var removeHeaders: [String]?
     var body: String?
     var bodyLength: Int?
     var bodyTruncated: Bool?
+    /// The other body source. Never both — one `RewriteBody`, one key.
+    var bodyFile: String?
 
     init(_ rewrite: RequestRewriteAction, truncateBodies: Bool) {
         method = rewrite.method
+        url = rewrite.url
+        bodyFile = rewrite.bodyFile
         setHeaders = rewrite.setHeaders.isEmpty ? nil : MCPToolExecutor.headerDict(rewrite.setHeaders)
         removeHeaders = rewrite.removeHeaders.isEmpty ? nil : rewrite.removeHeaders
         let text = TruncatedBodyRender(rewrite.bodyText, truncate: truncateBodies)
@@ -747,13 +782,18 @@ struct ResponseRewriteRender: Encodable {
 
 struct SubstitutionRender: Encodable {
     var field: String
+    /// Present only when the substitution targets one header — its absence is
+    /// the "every header value" form, which is what `field: "header"` alone
+    /// always meant.
+    var headerName: String?
     var match: String
     var replacement: String
     var isRegex: Bool?
     var caseSensitive: Bool?
 
     init(_ sub: SubstitutionRule) {
-        field = sub.field.rawValue
+        field = sub.field.kind.rawValue
+        headerName = sub.field.headerName
         match = sub.match
         replacement = sub.replacement
         isRegex = sub.isRegex ? true : nil

@@ -211,7 +211,9 @@ final class StubEngine: ProxyControlling {
         return SetRulesReport(applied: applied, rejected: rejected)
     }
     func setGroupEnabled(group: String?, enabled: Bool) async {
-        for i in rules.rules.indices where rules.rules[i].group == group { rules.rules[i].isEnabled = enabled }
+        // Mirrors `RulesConfig`: the group's own switch, never a batch write over
+        // each member's flag.
+        if enabled { rules.disabledGroups.remove(group) } else { rules.disabledGroups.insert(group) }
     }
 
     // BreakpointControlling

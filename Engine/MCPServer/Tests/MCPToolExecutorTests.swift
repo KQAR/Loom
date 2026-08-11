@@ -717,6 +717,55 @@ import LoomSharedModels
         #expect((out["ineffectiveReason"] as? String)?.contains("set_rules_enabled") == true)
     }
 
+    /// The third switch. A rule can be `enabled: true` and still inert because its
+    /// group is switched off — invisible on the rule itself, so `effective` has to
+    /// name it or the agent reports a mock that never fires.
+    @Test func setRule_saysWhenItsGroupIsSwitchedOff() async throws {
+        let engine = StubEngine()
+        engine.rules.disabledGroups = ["scenario-a"]
+        let out = try json(try await makeExecutor(engine).call(name: "set_rule", arguments: [
+            "name": "in a parked group", "group": "scenario-a",
+            "match": ["url_pattern": "https://a/*"], "actions": ["block": true],
+        ]))
+        #expect(out["enabled"] as? Bool == true, "the rule's own switch really is on")
+        #expect(out["effective"] as? Bool == false)
+        #expect((out["ineffectiveReason"] as? String)?.contains("set_group_enabled") == true)
+    }
+
+    /// `list_rules` is where the human-invisible fact has to show up too: a group
+    /// switch lives on the state, not on any rule in it.
+    @Test func listRules_reportsSwitchedOffGroups() async throws {
+        let engine = StubEngine()
+        engine.rules.rules = [TrafficRule(
+            name: "member", group: "scenario-a",
+            match: RuleMatch(urlPattern: "https://a/*"), actions: RuleActions(route: .block)
+        )]
+        let executor = makeExecutor(engine)
+        let quiet = try json(try await executor.call(name: "list_rules", arguments: [:]))
+        #expect(quiet["disabledGroups"] == nil, "nothing switched off, nothing to say")
+
+        _ = try await executor.call(name: "set_group_enabled", arguments: ["group": "scenario-a", "enabled": false])
+        let out = try json(try await executor.call(name: "list_rules", arguments: [:]))
+        #expect(out["disabledGroups"] as? [String] == ["scenario-a"])
+    }
+
+    /// A group switch is not a batch write, so "how many rules did this affect" and
+    /// "how many now apply" are different numbers, and the reply carries both.
+    @Test func setGroupEnabled_reportsMembersAndHowManyApply() async throws {
+        let engine = StubEngine()
+        engine.rules.rules = [
+            TrafficRule(name: "on", group: "g", match: RuleMatch(urlPattern: "https://a/*"), actions: RuleActions(route: .block)),
+            TrafficRule(name: "off by hand", group: "g", isEnabled: false,
+                        match: RuleMatch(urlPattern: "https://b/*"), actions: RuleActions(route: .block)),
+        ]
+        let executor = makeExecutor(engine)
+        _ = try await executor.call(name: "set_group_enabled", arguments: ["group": "g", "enabled": false])
+        let out = try json(try await executor.call(name: "set_group_enabled", arguments: ["group": "g", "enabled": true]))
+        #expect(out["members"] as? Int == 2)
+        #expect(out["active"] as? Int == 1, "the hand-disabled member is not switched back on")
+        #expect(out["effective"] as? Bool == true)
+    }
+
     @Test func setRule_withUnknownID_isToolFailure() async {
         do {
             _ = try await makeExecutor().call(name: "set_rule", arguments: [

@@ -3,30 +3,85 @@ import Synchronization
 
 // MARK: - Matching
 
+/// How `RuleMatch.urlPattern` is compared against the request URL.
+///
+/// One enum rather than the `isRegex` + `isExact` pair it replaces. Two booleans
+/// have four combinations for three states, so `isRegex && isExact` was
+/// representable and had to be resolved by a precedence rule written in prose
+/// (the matcher checked regex first; the editor cleared one when the other was
+/// set). Same defect the `Route` sum type was introduced to fix, one level down.
+///
+/// It also makes the fourth state sayable. Glob vs prefix used to be inferred
+/// from *whether the pattern contained a `*`*, so a URL with a literal `*` in it
+/// could not be prefix-matched at all. `inferred(for:)` still does that inference
+/// — but only where it belongs, at the authoring boundary, and once.
+public enum MatchStyle: String, Codable, Sendable, CaseIterable {
+    /// `urlPattern` must be a case-insensitive prefix of the URL, so a pattern
+    /// without a query string still matches every query string. The default a
+    /// human means when they paste a URL.
+    case prefix
+    /// `*` matches any run of characters and the pattern must cover the whole URL.
+    case glob
+    /// The URL must equal `urlPattern` exactly.
+    case exact
+    /// Unanchored, case-insensitive regular expression.
+    case regex
+
+    /// What a caller means by a bare pattern: `*` in it reads as a glob, anything
+    /// else as a prefix. The one implementation of an inference the model no
+    /// longer performs implicitly.
+    public static func inferred(for pattern: String) -> MatchStyle {
+        pattern.utf8.contains(UInt8(ascii: "*")) ? .glob : .prefix
+    }
+}
+
+/// What one query parameter must look like for a rule to match.
+///
+/// Two cases rather than a `String` with `*` meaning "any value". The sentinel
+/// read fine until you needed the thing it stood for: a parameter whose value is
+/// literally `*` could not be required, because the value space and the
+/// "any value" marker shared it. Same class of defect as `MatchStyle`'s boolean
+/// pair — one field carrying two kinds of fact.
+public enum QueryPredicate: Equatable, Hashable, Sendable {
+    /// The parameter must be present and equal this value.
+    case equals(String)
+    /// The parameter must be present, with any value.
+    case present
+
+    /// The legacy wire/file spelling, where `*` means `present` — `nil` when the
+    /// predicate cannot be said that way (`equals("*")`, the state the sentinel
+    /// made unreachable).
+    var legacyWireValue: String? {
+        switch self {
+        case .present: return "*"
+        case let .equals(value): return value == "*" ? nil : value
+        }
+    }
+
+    /// Parse the legacy spelling.
+    public init(legacyWireValue value: String) {
+        self = value == "*" ? .present : .equals(value)
+    }
+}
+
 /// What traffic a rule applies to. Matching runs against the *original* client
 /// request (before any other rule has rewritten it), so rule order never changes
 /// which rules match — only the order their actions apply in.
 public struct RuleMatch: Equatable, Codable, Sendable {
-    /// Matched against the full request URL (e.g. `https://api.example.com/v1/home?x=1`).
-    /// - As a glob (`isRegex == false`): `*` matches any run of characters and the
-    ///   pattern must cover the whole URL. A pattern without any `*` is treated as
-    ///   a prefix (so `https://api.example.com/v1/home` matches regardless of query).
-    /// - As a regex (`isRegex == true`): standard unanchored, case-insensitive search.
+    /// Matched against the full request URL (e.g. `https://api.example.com/v1/home?x=1`),
+    /// the way `style` says.
     public var urlPattern: String
-    public var isRegex: Bool
+    /// How `urlPattern` is compared. See `MatchStyle`.
+    public var style: MatchStyle
     /// HTTP methods to match (case-insensitive); empty means all methods.
     public var methods: [String]
-    /// When true (and not a regex), `urlPattern` must equal the URL exactly rather
-    /// than prefix/glob-match — lets a consumer express exact-URL semantics without
-    /// hand-anchoring a regex.
-    public var isExact: Bool
     /// Optional host predicate as a glob (`*.example.com`), matched against the
     /// URL's host. nil/empty = any host.
     public var hostPattern: String?
-    /// Optional query predicates: each key must be present in the URL query and
-    /// equal its value, unless the value is `*` (presence-only). nil/empty = no
-    /// query constraint. Order-independent, unlike encoding query into `urlPattern`.
-    public var query: [String: String]?
+    /// Optional query predicates: each key must satisfy its `QueryPredicate`.
+    /// nil/empty = no query constraint. Order-independent, unlike encoding the
+    /// query into `urlPattern`.
+    public var query: [String: QueryPredicate]?
     /// Optional originating-app predicate: bundle id or display name, compared
     /// case-insensitively (same vocabulary as `FlowQuery.sourceApp`). This is what
     /// makes "mock it for my app only, leave the browser alone" expressible.
@@ -39,25 +94,32 @@ public struct RuleMatch: Equatable, Codable, Sendable {
     /// (`SourceDevice.groupingKey`, from `list_devices`). Also fails closed.
     public var deviceIP: String?
 
+    /// - Parameter style: omit to let the pattern speak for itself
+    ///   (`MatchStyle.inferred(for:)` — `*` means glob, otherwise prefix), which is
+    ///   what a caller pasting a URL means.
     public init(
         urlPattern: String,
-        isRegex: Bool = false,
+        style: MatchStyle? = nil,
         methods: [String] = [],
-        isExact: Bool = false,
         hostPattern: String? = nil,
-        query: [String: String]? = nil,
+        query: [String: QueryPredicate]? = nil,
         sourceApp: String? = nil,
         deviceIP: String? = nil
     ) {
         self.urlPattern = urlPattern
-        self.isRegex = isRegex
+        self.style = style ?? .inferred(for: urlPattern)
         self.methods = methods
-        self.isExact = isExact
         self.hostPattern = hostPattern
         self.query = query
         self.sourceApp = sourceApp
         self.deviceIP = deviceIP
     }
+
+    /// True when the pattern is a regular expression / an exact URL. Read-only
+    /// projections of `style`, kept because "is this a regex" is a question three
+    /// surfaces ask and none of them should re-derive it.
+    public var isRegex: Bool { style == .regex }
+    public var isExact: Bool { style == .exact }
 
     /// True when this match constrains *who* made the request, so a caller with no
     /// origin information knows it cannot evaluate the rule faithfully.
@@ -65,17 +127,47 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         !(sourceApp ?? "").isEmpty || !(deviceIP ?? "").isEmpty
     }
 
-    // Tolerant decode: rules saved before these fields existed still load.
+    private enum CodingKeys: String, CodingKey {
+        case urlPattern, style, methods, hostPattern, query, sourceApp, deviceIP
+        // Read-only: the shape rules were saved in before `style` existed.
+        case isRegex, isExact
+    }
+
+    // Tolerant decode: rules saved before these fields existed still load, and a
+    // rules file written by an older build carries the two booleans instead of a
+    // style — mapped here, once, with the same precedence the old matcher used
+    // (regex beat exact) and the same `*` inference it applied to the rest.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         urlPattern = try c.decode(String.self, forKey: .urlPattern)
-        isRegex = try c.decodeIfPresent(Bool.self, forKey: .isRegex) ?? false
+        if let style = try c.decodeIfPresent(MatchStyle.self, forKey: .style) {
+            self.style = style
+        } else if try c.decodeIfPresent(Bool.self, forKey: .isRegex) == true {
+            style = .regex
+        } else if try c.decodeIfPresent(Bool.self, forKey: .isExact) == true {
+            style = .exact
+        } else {
+            style = .inferred(for: urlPattern)
+        }
         methods = try c.decodeIfPresent([String].self, forKey: .methods) ?? []
-        isExact = try c.decodeIfPresent(Bool.self, forKey: .isExact) ?? false
         hostPattern = try c.decodeIfPresent(String.self, forKey: .hostPattern)
-        query = try c.decodeIfPresent([String: String].self, forKey: .query)
+        query = try Self.decodeQuery(from: c)
         sourceApp = try c.decodeIfPresent(String.self, forKey: .sourceApp)
         deviceIP = try c.decodeIfPresent(String.self, forKey: .deviceIP)
+    }
+
+    /// Writes `style`, never the two legacy booleans — they are decode-only, so a
+    /// file that has been through this build says which of the four styles it means
+    /// rather than leaving `glob` vs `prefix` to be re-inferred on every load.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(urlPattern, forKey: .urlPattern)
+        try c.encode(style, forKey: .style)
+        try c.encode(methods, forKey: .methods)
+        try c.encodeIfPresent(hostPattern, forKey: .hostPattern)
+        try Self.encodeQuery(query, to: &c)
+        try c.encodeIfPresent(sourceApp, forKey: .sourceApp)
+        try c.encodeIfPresent(deviceIP, forKey: .deviceIP)
     }
 
     /// Does this request match?
@@ -100,32 +192,82 @@ public struct RuleMatch: Equatable, Codable, Sendable {
             }
             if let query, !query.isEmpty {
                 let actual = Self.queryItems(components)
-                for (key, value) in query {
-                    if value == "*" {
+                for (key, predicate) in query {
+                    switch predicate {
+                    case .present:
                         if actual[key] == nil { return false }
-                    } else if actual[key] != value {
-                        return false
+                    case let .equals(value):
+                        if actual[key] != value { return false }
                     }
                 }
             }
         }
-        if isRegex {
+        // One switch, no precedence: the style says which comparison runs, and the
+        // "does it contain a `*`" test that used to decide two of these at match
+        // time now happens once, when the pattern is authored.
+        switch style {
+        case .regex:
             guard let regex = RegexCache.regex(urlPattern, caseInsensitive: true) else {
                 return false
             }
             return regex.firstMatch(in: url, range: NSRange(url.startIndex..., in: url)) != nil
-        }
-        if isExact {
+        case .exact:
             return url.caseInsensitiveCompare(urlPattern) == .orderedSame
-        }
-        // `.utf8.contains` rather than `urlPattern.contains("*")`: the String overload
-        // goes through Foundation's `range(of:)`, and this runs once per rule per
-        // exchange. It was ~1 µs of the ~1 µs each predicate cost.
-        if urlPattern.utf8.contains(UInt8(ascii: "*")) {
+        case .glob:
             // Same whole-string glob the SSL scope uses; it globs any string, not just hosts.
             return SSLScope.matches(pattern: urlPattern, host: url)
+        case .prefix:
+            return Self.hasCaseInsensitivePrefix(url, urlPattern)
         }
-        return Self.hasCaseInsensitivePrefix(url, urlPattern)
+    }
+
+    /// The query map's file/wire shape.
+    ///
+    /// Legacy (and still what gets written whenever it can be): a plain
+    /// `{"key": "value"}` object with `*` meaning "any value". A predicate that
+    /// spelling cannot express — `equals("*")`, the one the sentinel used to
+    /// swallow — forces the whole map into the explicit form
+    /// `{"key": {"equals": "*"}}`. Grow the format only where it has to grow, so
+    /// every rules file written before this still round-trips byte-identically.
+    private struct QueryPredicateWire: Codable {
+        var equals: String?
+        var present: Bool?
+    }
+
+    private static func decodeQuery(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> [String: QueryPredicate]? {
+        if let legacy = try? container.decode([String: String].self, forKey: .query) {
+            return legacy.mapValues { QueryPredicate(legacyWireValue: $0) }
+        }
+        guard let explicit = try container.decodeIfPresent([String: QueryPredicateWire].self, forKey: .query)
+        else { return nil }
+        return explicit.mapValues { wire in
+            if let equals = wire.equals { return .equals(equals) }
+            return .present
+        }
+    }
+
+    private static func encodeQuery(
+        _ query: [String: QueryPredicate]?,
+        to container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        guard let query, !query.isEmpty else { return }
+        var legacy: [String: String] = [:]
+        for (key, predicate) in query {
+            guard let value = predicate.legacyWireValue else { legacy = [:]; break }
+            legacy[key] = value
+        }
+        if legacy.count == query.count {
+            try container.encode(legacy, forKey: .query)
+            return
+        }
+        try container.encode(query.mapValues { predicate -> QueryPredicateWire in
+            switch predicate {
+            case let .equals(value): return QueryPredicateWire(equals: value, present: nil)
+            case .present: return QueryPredicateWire(equals: nil, present: true)
+            }
+        }, forKey: .query)
     }
 
     /// Prefix match, case-insensitive, without lowercasing either side.
@@ -175,49 +317,114 @@ public struct RuleMatch: Equatable, Codable, Sendable {
 
 // MARK: - Actions
 
+/// A mocked response body: text, or bytes that aren't text.
+///
+/// One value rather than the `bodyText` + `bodyBase64` pair it replaces, for the
+/// same reason as `MatchStyle`: both could be set at once, and which one won was
+/// a sentence in a doc comment (`resolvedBody`) plus a `Bool` in the editor
+/// keeping them apart. A mock has one body.
+public enum MockBody: Equatable, Sendable {
+    case text(String)
+    /// For binary payloads that aren't valid UTF-8 (images, protobuf, gzip).
+    case bytes(Data)
+
+    public var data: Data {
+        switch self {
+        case let .text(text): return Data(text.utf8)
+        case let .bytes(data): return data
+        }
+    }
+}
+
 /// Short-circuit the exchange with a synthesized response; the upstream is never contacted.
 public struct MockResponseAction: Equatable, Codable, Sendable {
     public var statusCode: Int
     public var headers: [HeaderPair]
-    /// UTF-8 response body. Used when `bodyBase64` is nil.
-    public var bodyText: String?
-    /// Base64-encoded response body, for binary payloads that aren't valid UTF-8
-    /// (images, protobuf, gzip). Takes precedence over `bodyText` when both are set.
-    public var bodyBase64: String?
-    /// Convenience Content-Type (e.g. `application/json`); merged into `headers`.
+    public var body: MockBody?
+    /// Convenience Content-Type (e.g. `application/json`); merged into `headers`,
+    /// which **win** — an explicit `Content-Type` in `headers` is never overwritten
+    /// by this (see `RuleApplyingForwarder.synthesize`).
     public var contentType: String?
 
     public init(
         statusCode: Int = 200,
         headers: [HeaderPair] = [],
-        bodyText: String? = nil,
-        bodyBase64: String? = nil,
+        body: MockBody? = nil,
         contentType: String? = nil
     ) {
         self.statusCode = statusCode
         self.headers = headers
-        self.bodyText = bodyText
-        self.bodyBase64 = bodyBase64
+        self.body = body
         self.contentType = contentType
     }
 
-    // Tolerant decode: rules saved before `bodyBase64` existed still load.
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        statusCode = try c.decodeIfPresent(Int.self, forKey: .statusCode) ?? 200
-        headers = try c.decodeIfPresent([HeaderPair].self, forKey: .headers) ?? []
-        bodyText = try c.decodeIfPresent(String.self, forKey: .bodyText)
-        bodyBase64 = try c.decodeIfPresent(String.self, forKey: .bodyBase64)
-        contentType = try c.decodeIfPresent(String.self, forKey: .contentType)
+    /// The wire shape, where both a text body and a base64 body can arrive in one
+    /// object (`set_rule`'s `body` / `body_base64`). The precedence — base64 wins —
+    /// lives here, at the one boundary that can receive both, instead of in the
+    /// model where it was an illegal state waiting to be resolved.
+    public static func fromWire(
+        statusCode: Int = 200,
+        headers: [HeaderPair] = [],
+        bodyText: String? = nil,
+        bodyBase64: String? = nil,
+        contentType: String? = nil
+    ) -> MockResponseAction {
+        let body: MockBody?
+        if let bodyBase64 {
+            // An unparseable base64 body stays *declared* rather than silently
+            // becoming text: `resolvedBody()` sends empty, and `validationError()`
+            // is what refuses it at the door.
+            body = .bytes(Data(base64Encoded: bodyBase64) ?? Data())
+        } else if let bodyText {
+            body = .text(bodyText)
+        } else {
+            body = nil
+        }
+        return MockResponseAction(statusCode: statusCode, headers: headers, body: body, contentType: contentType)
     }
 
-    /// The response body bytes: `bodyBase64` when present (invalid base64 decodes
-    /// to empty), otherwise UTF-8 `bodyText`, otherwise empty.
-    public func resolvedBody() -> Data {
-        if let bodyBase64 { return Data(base64Encoded: bodyBase64) ?? Data() }
-        if let bodyText { return Data(bodyText.utf8) }
-        return Data()
+    /// The body as text, or nil when it is binary — for a surface that shows text.
+    public var bodyText: String? {
+        if case let .text(text) = body { return text }
+        return nil
     }
+
+    /// The body as base64, or nil when it is text — for the wire and for surfaces
+    /// that offer a binary editor.
+    public var bodyBase64: String? {
+        if case let .bytes(data) = body { return data.base64EncodedString() }
+        return nil
+    }
+
+    /// The file/wire encoding is deliberately **unchanged** — still `bodyText` /
+    /// `bodyBase64` keys — so a rules file written by any version still loads in
+    /// any other. The sum type is what the code holds, not what the JSON says.
+    private enum CodingKeys: String, CodingKey {
+        case statusCode, headers, bodyText, bodyBase64, contentType
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self = MockResponseAction.fromWire(
+            statusCode: try c.decodeIfPresent(Int.self, forKey: .statusCode) ?? 200,
+            headers: try c.decodeIfPresent([HeaderPair].self, forKey: .headers) ?? [],
+            bodyText: try c.decodeIfPresent(String.self, forKey: .bodyText),
+            bodyBase64: try c.decodeIfPresent(String.self, forKey: .bodyBase64),
+            contentType: try c.decodeIfPresent(String.self, forKey: .contentType)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(statusCode, forKey: .statusCode)
+        try c.encode(headers, forKey: .headers)
+        try c.encodeIfPresent(bodyText, forKey: .bodyText)
+        try c.encodeIfPresent(bodyBase64, forKey: .bodyBase64)
+        try c.encodeIfPresent(contentType, forKey: .contentType)
+    }
+
+    /// The response body bytes; empty when the mock has no body.
+    public func resolvedBody() -> Data { body?.data ?? Data() }
 }
 
 /// Re-target the request at a different origin, keeping path + query. `destination`
@@ -250,10 +457,51 @@ public struct MapRemoteAction: Equatable, Codable, Sendable {
 /// building block of the "modify request"/"modify response" editor segments.
 public struct SubstitutionRule: Equatable, Codable, Sendable, Identifiable {
     /// Which part of the message the substitution runs over.
-    public enum Field: String, Codable, Sendable, CaseIterable {
-        case url      // request line / query params (request side only)
-        case header   // header values
-        case body     // body text
+    ///
+    /// `header` carries its target because the untargeted version — replace this
+    /// text in *every* header value — was the only header substitution available,
+    /// and it is the wrong tool for the common case. "Rewrite `X-Token`'s value"
+    /// had to be expressed either as a blunt search across every header (which
+    /// hits any other header containing the same text) or as a whole-header
+    /// overwrite via `rewriteRequest.setHeaders` (which needs the new value in
+    /// full). The middle — address one header, edit its value — had no
+    /// representation at all.
+    public enum Field: Equatable, Hashable, Sendable {
+        /// Request line / query params (request side only).
+        case url
+        /// Header values. `name == nil` keeps the original behaviour: every
+        /// header's value. A name (matched case-insensitively) narrows it to one.
+        case header(name: String? = nil)
+        /// Body text.
+        case body
+
+        /// Which of the three it is, ignoring the target — the vocabulary the
+        /// wire, the render and the editor's picker all speak.
+        public enum Kind: String, Codable, Sendable, CaseIterable {
+            case url, header, body
+        }
+
+        public var kind: Kind {
+            switch self {
+            case .url: return .url
+            case .header: return .header
+            case .body: return .body
+            }
+        }
+
+        /// The header this targets, or nil for "every header" / a non-header field.
+        public var headerName: String? {
+            if case let .header(name) = self { return name }
+            return nil
+        }
+
+        public init(kind: Kind, headerName: String? = nil) {
+            switch kind {
+            case .url: self = .url
+            case .header: self = .header(name: headerName.flatMap { $0.isEmpty ? nil : $0 })
+            case .body: self = .body
+            }
+        }
     }
 
     public var id: UUID
@@ -264,6 +512,13 @@ public struct SubstitutionRule: Equatable, Codable, Sendable, Identifiable {
     public var replacement: String
     public var isRegex: Bool
     public var caseSensitive: Bool
+
+    /// A `field` that is a bare string ("url"/"header"/"body") is how every
+    /// substitution was written before headers could be targeted, so it decodes
+    /// as the untargeted form; a targeted one is an object. Encoding keeps the
+    /// string whenever there is no target, so an existing rules file round-trips
+    /// byte-identically.
+    private enum FieldCodingKeys: String, CodingKey { case kind, headerName }
 
     public init(
         id: UUID = UUID(),
@@ -281,7 +536,53 @@ public struct SubstitutionRule: Equatable, Codable, Sendable, Identifiable {
         self.caseSensitive = caseSensitive
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case id, field, match, replacement, isRegex, caseSensitive
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        if let bare = try? c.decode(Field.Kind.self, forKey: .field) {
+            field = Field(kind: bare)
+        } else {
+            let f = try c.nestedContainer(keyedBy: FieldCodingKeys.self, forKey: .field)
+            field = Field(
+                kind: try f.decode(Field.Kind.self, forKey: .kind),
+                headerName: try f.decodeIfPresent(String.self, forKey: .headerName)
+            )
+        }
+        match = try c.decode(String.self, forKey: .match)
+        replacement = try c.decodeIfPresent(String.self, forKey: .replacement) ?? ""
+        isRegex = try c.decodeIfPresent(Bool.self, forKey: .isRegex) ?? false
+        caseSensitive = try c.decodeIfPresent(Bool.self, forKey: .caseSensitive) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        if let name = field.headerName {
+            var f = c.nestedContainer(keyedBy: FieldCodingKeys.self, forKey: .field)
+            try f.encode(field.kind, forKey: .kind)
+            try f.encode(name, forKey: .headerName)
+        } else {
+            try c.encode(field.kind, forKey: .field)
+        }
+        try c.encode(match, forKey: .match)
+        try c.encode(replacement, forKey: .replacement)
+        try c.encode(isRegex, forKey: .isRegex)
+        try c.encode(caseSensitive, forKey: .caseSensitive)
+    }
+
     public var isEmpty: Bool { match.isEmpty }
+
+    /// Whether this substitution applies to a header called `name`. One
+    /// definition, because the request side and the response side both ask.
+    public func targets(header name: String) -> Bool {
+        guard case let .header(target) = field else { return false }
+        guard let target, !target.isEmpty else { return true }
+        return target.caseInsensitiveCompare(name) == .orderedSame
+    }
 
     /// Apply this substitution to a string, returning the result unchanged on a
     /// bad regex so a typo never silently drops the whole body.
@@ -312,25 +613,102 @@ public struct MapLocalAction: Equatable, Codable, Sendable {
     }
 }
 
+/// Where a replacement request body comes from.
+///
+/// A sum type for the same reason `MockBody` is one: "inline text" and "this
+/// file" are alternatives, and two optional fields would let a rule declare both
+/// and need a precedence rule to settle it. `.text("")` is how "replace the body
+/// with nothing" is said — distinct from no body rewrite at all, which is the
+/// enclosing optional being nil.
+public enum RewriteBody: Equatable, Sendable {
+    case text(String)
+    /// An absolute path, read **at request time** (same as `MapLocalAction`), so
+    /// editing the fixture doesn't mean re-writing the rule.
+    ///
+    /// If the file can't be read the body is left **unchanged** and the failure is
+    /// logged at error level (`Log.rules`) — stated here because it is the one
+    /// place this type is quiet: a request has no response object to carry the
+    /// fault back on, the way `mapLocal` answers an unreadable file with a 404.
+    case file(path: String)
+}
+
 /// Mutate the outgoing request before it is forwarded upstream.
 public struct RequestRewriteAction: Equatable, Codable, Sendable {
     public var method: String?
+    /// Replacement request URL, whole. `nil` keeps the client's.
+    ///
+    /// Distinct from `MapRemoteAction`, which swaps the origin and keeps the path
+    /// + query: this sets the lot. Before it existed the request line was only
+    /// half-editable from a rule — the method could be set, the URL could only be
+    /// text-substituted or origin-mapped.
+    public var url: String?
     /// Headers to add or overwrite (matched case-insensitively by name).
     public var setHeaders: [HeaderPair]
     /// Header names to remove (matched case-insensitively).
     public var removeHeaders: [String]
-    /// Replacement UTF-8 request body.
-    public var bodyText: String?
+    /// Replacement request body; `nil` leaves the client's body alone.
+    public var body: RewriteBody?
 
-    public init(method: String? = nil, setHeaders: [HeaderPair] = [], removeHeaders: [String] = [], bodyText: String? = nil) {
+    public init(
+        method: String? = nil,
+        url: String? = nil,
+        setHeaders: [HeaderPair] = [],
+        removeHeaders: [String] = [],
+        body: RewriteBody? = nil
+    ) {
         self.method = method
+        self.url = url
         self.setHeaders = setHeaders
         self.removeHeaders = removeHeaders
-        self.bodyText = bodyText
+        self.body = body
+    }
+
+    /// The inline body text, or nil when the body comes from a file / isn't set.
+    public var bodyText: String? {
+        if case let .text(text) = body { return text }
+        return nil
+    }
+
+    /// The body file's path, or nil when the body is inline / isn't set.
+    public var bodyFile: String? {
+        if case let .file(path) = body { return path }
+        return nil
     }
 
     public var isEmpty: Bool {
-        method == nil && setHeaders.isEmpty && removeHeaders.isEmpty && bodyText == nil
+        method == nil && url == nil && setHeaders.isEmpty && removeHeaders.isEmpty && body == nil
+    }
+
+    /// The file shape keeps the flat keys (`bodyText`, plus `bodyFile`), so a
+    /// rules file written before this still loads and one written after it stays
+    /// readable as plain JSON.
+    private enum CodingKeys: String, CodingKey {
+        case method, url, setHeaders, removeHeaders, bodyText, bodyFile
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        method = try c.decodeIfPresent(String.self, forKey: .method)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        setHeaders = try c.decodeIfPresent([HeaderPair].self, forKey: .setHeaders) ?? []
+        removeHeaders = try c.decodeIfPresent([String].self, forKey: .removeHeaders) ?? []
+        if let path = try c.decodeIfPresent(String.self, forKey: .bodyFile) {
+            body = .file(path: path)
+        } else if let text = try c.decodeIfPresent(String.self, forKey: .bodyText) {
+            body = .text(text)
+        } else {
+            body = nil
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(method, forKey: .method)
+        try c.encodeIfPresent(url, forKey: .url)
+        try c.encode(setHeaders, forKey: .setHeaders)
+        try c.encode(removeHeaders, forKey: .removeHeaders)
+        try c.encodeIfPresent(bodyText, forKey: .bodyText)
+        try c.encodeIfPresent(bodyFile, forKey: .bodyFile)
     }
 }
 
@@ -506,6 +884,14 @@ public struct TrafficRule: Equatable, Codable, Sendable, Identifiable {
         if actions.isEmpty {
             return "rule has no actions — set a route (block/mock/mapRemote/mapLocal) or a rewrite/substitution/delay"
         }
+        if let rewrite = actions.rewriteRequest {
+            if let url = rewrite.url, URL(string: url) == nil || URL(string: url)?.scheme == nil {
+                return "rewriteRequest.url must be an absolute URL like https://api.example.com/v1/home"
+            }
+            if case let .file(path) = rewrite.body, !path.hasPrefix("/") {
+                return "rewriteRequest.bodyFile must be an absolute file path"
+            }
+        }
         switch actions.route {
         case .passthrough:
             break
@@ -519,9 +905,10 @@ public struct TrafficRule: Equatable, Codable, Sendable, Identifiable {
             if !local.path.hasPrefix("/") { return "mapLocal.path must be an absolute file path" }
         case let .mock(mock):
             if !(100...599).contains(mock.statusCode) { return "mockResponse.statusCode must be a valid HTTP status" }
-            if let base64 = mock.bodyBase64, Data(base64Encoded: base64) == nil {
-                return "mockResponse.bodyBase64 is not valid base64"
-            }
+            // No base64 check any more: `MockBody` holds decoded bytes, so an
+            // undecodable payload cannot reach the model. It is refused at the two
+            // boundaries that can receive one — the MCP codec and the editor —
+            // where the offending string still exists to name.
         }
         if let delay = actions.delayMilliseconds, delay < 0 {
             return "delayMilliseconds must be >= 0"
@@ -535,20 +922,75 @@ public struct TrafficRule: Equatable, Codable, Sendable, Identifiable {
     }
 }
 
-/// The whole rules configuration: a master switch plus the ordered rule list.
+/// The whole rules configuration: a master switch, the groups switched off as a
+/// unit, and the ordered rule list.
 public struct RulesState: Equatable, Codable, Sendable {
     /// Master switch; when false no rule is applied regardless of per-rule flags.
     public var enabled: Bool
     public var rules: [TrafficRule]
+    /// Groups currently switched off as a unit — `nil` is the ungrouped bucket,
+    /// which the UI toggles like any other group.
+    ///
+    /// **A third switch rather than a batch write, and that is the point.** Group
+    /// disable used to write `isEnabled = false` onto every member, so a group
+    /// with one deliberately-off rule came back with that rule *on* after a
+    /// disable→enable round trip: the human's "not this one" was overwritten by a
+    /// scenario switch, unrecoverably, and scenario switching is the whole reason
+    /// groups exist. Kept as its own axis, the two facts compose instead
+    /// (`activeRules`) and neither can destroy the other.
+    public var disabledGroups: Set<String?>
 
-    public init(enabled: Bool = true, rules: [TrafficRule] = []) {
+    public init(enabled: Bool = true, rules: [TrafficRule] = [], disabledGroups: Set<String?> = []) {
         self.enabled = enabled
         self.rules = rules
+        self.disabledGroups = disabledGroups
     }
 
-    /// Rules that would currently apply to traffic, in evaluation order.
+    // Tolerant decode: a rules file written before groups had a state of their own
+    // still loads (as "no group is switched off").
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        rules = try c.decodeIfPresent([TrafficRule].self, forKey: .rules) ?? []
+        disabledGroups = try c.decodeIfPresent(Set<String?>.self, forKey: .disabledGroups) ?? []
+    }
+
+    /// Rules that would currently apply to traffic, in evaluation order — the
+    /// three switches ANDed: master, group, rule.
     public var activeRules: [TrafficRule] {
-        enabled ? rules.filter(\.isEnabled) : []
+        guard enabled else { return [] }
+        return rules.filter { $0.isEnabled && !disabledGroups.contains($0.group) }
+    }
+
+    /// Whether a group's switch is on. `nil` = the ungrouped bucket.
+    public func isGroupEnabled(_ group: String?) -> Bool {
+        !disabledGroups.contains(group)
+    }
+
+    /// Why `rule` is not applying, or nil when it is. One definition, so the
+    /// agent's `effective` reason and any human surface can't disagree about
+    /// which of the three switches is the one in the way.
+    public func ineffectiveReason(for rule: TrafficRule) -> String? {
+        if !enabled {
+            return """
+            The rules master switch is off, so no rule applies to traffic — including \
+            this one. Turn it on with set_rules_enabled(enabled: true).
+            """
+        }
+        if !isGroupEnabled(rule.group) {
+            let group = rule.group ?? ""
+            return """
+            The group "\(group)" is switched off, so none of its rules apply. Turn it \
+            back on with set_group_enabled(group: "\(group)", enabled: true).
+            """
+        }
+        if !rule.isEnabled {
+            return """
+            This rule is disabled, so it will not apply to traffic. Enable it with \
+            set_rule(id: …, enabled: true).
+            """
+        }
+        return nil
     }
 }
 
@@ -604,7 +1046,10 @@ public protocol RulesControlling: Sendable {
     /// rejected (with reasons), so one malformed rule can't reject the whole set.
     @discardableResult
     func setRules(_ rules: [TrafficRule]) async -> SetRulesReport
-    /// Enable/disable every rule in a group at once (`nil` = the ungrouped rules).
+    /// Switch a whole group on or off (`nil` = the ungrouped rules). Non-destructive:
+    /// it sets the group's own switch (`RulesState.disabledGroups`) and leaves every
+    /// member's `isEnabled` untouched, so switching a scenario off and back on
+    /// restores exactly the rules that were on before.
     func setGroupEnabled(group: String?, enabled: Bool) async
 }
 
