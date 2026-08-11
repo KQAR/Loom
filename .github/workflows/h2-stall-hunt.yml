@@ -50,24 +50,24 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       # Shares the CI job's cache key so a hunt starts from its warm SPM +
       # DerivedData state instead of paying a cold resolve per shard.
       - name: Cache SPM & DerivedData
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Tuist/.build
             ${{ runner.temp }}/DerivedData
-          key: ${{ runner.os }}-loom-ci-${{ hashFiles('Tuist/Package.resolved') }}
+          key: ${{ runner.os }}-loom-ci-v2-${{ hashFiles('Tuist/Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-loom-ci-
+            ${{ runner.os }}-loom-ci-v2-
 
       - name: Install dependencies
         run: tuist install
@@ -142,7 +142,7 @@ jobs:
 
       - name: Upload the stall log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: h2-stall-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/hunt-logs

@@ -25,26 +25,26 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       # Reuse resolved SPM checkouts/artifacts (Sparkle binary, NIO, …) and the
       # compiled dependency frameworks (BoringSSL/NIO/certs are the slow ones)
       # across runs. Keyed on the resolved graph, so it only misses when a
       # dependency version actually changes.
       - name: Cache SPM & DerivedData
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Tuist/.build
             ${{ runner.temp }}/DerivedData
-          key: ${{ runner.os }}-loom-build-${{ hashFiles('Tuist/Package.resolved') }}
+          key: ${{ runner.os }}-loom-build-v2-${{ hashFiles('Tuist/Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-loom-build-
+            ${{ runner.os }}-loom-build-v2-
 
       - name: Install dependencies
         run: tuist install

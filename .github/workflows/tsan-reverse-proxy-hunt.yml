@@ -61,7 +61,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
@@ -102,12 +102,12 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       - name: Install dependencies
         run: tuist install
@@ -195,7 +195,7 @@ jobs:
 
       - name: Upload the log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tsan-hunt-log
           path: ${{ runner.temp }}/tsan-hunt.log
