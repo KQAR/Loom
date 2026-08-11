@@ -213,7 +213,7 @@ public struct SSLScope: Equatable, Codable, Sendable {
     /// click away from being captured, the second was asked for.
     public func passthroughReason(host: String) -> TunnelReason? {
         guard enabled else { return .interceptionDisabled }
-        guard include.contains(where: { Self.matches(pattern: $0, host: host) }) else { return .notInScope }
+        guard include.contains(where: { Glob.matches($0, host) }) else { return .notInScope }
         return excludeGlob(matching: host) == nil ? nil : .excluded
     }
 
@@ -221,7 +221,7 @@ public struct SSLScope: Equatable, Codable, Sendable {
     /// `passthroughReason` because a caller trying to *undo* an exclusion needs the
     /// pattern, not just the verdict.
     public func excludeGlob(matching host: String) -> String? {
-        exclude.first { Self.matches(pattern: $0, host: host) }
+        exclude.first { Glob.matches($0, host) }
     }
 
     /// Bring `host` into the intercepted set, and say honestly what that took.
@@ -246,7 +246,7 @@ public struct SSLScope: Equatable, Codable, Sendable {
             exclude.removeAll { $0.lowercased() == host.lowercased() }
             outcome.removedExcludes = exact
         }
-        if include.contains(where: { Self.matches(pattern: $0, host: host) }) {
+        if include.contains(where: { Glob.matches($0, host) }) {
             outcome.alreadyIncluded = true
         } else {
             include.append(host)
@@ -258,37 +258,13 @@ public struct SSLScope: Equatable, Codable, Sendable {
         return outcome
     }
 
-    /// Case-insensitive glob match where `*` stands for any run of characters.
-    /// `*.example.com` matches `api.example.com` but not the bare `example.com`;
-    /// a bare `*` matches everything.
-    public static func matches(pattern rawPattern: String, host rawHost: String) -> Bool {
-        let pattern = rawPattern.lowercased()
-        let host = rawHost.lowercased()
-        if pattern == host { return true }
-        guard pattern.contains("*") else { return false }
-
-        let segments = pattern.components(separatedBy: "*")
-        var index = host.startIndex
-
-        // A leading non-"*" segment must anchor at the start.
-        if let first = segments.first, !first.isEmpty {
-            guard host.hasPrefix(first) else { return false }
-            index = host.index(index, offsetBy: first.count)
-        }
-        // Interior segments must appear in order, after the prefix.
-        for segment in segments.dropFirst().dropLast() where !segment.isEmpty {
-            guard let range = host.range(of: segment, range: index ..< host.endIndex) else { return false }
-            index = range.upperBound
-        }
-        // A trailing non-"*" segment must anchor at the end *without overlapping*
-        // what the prefix/interior already consumed — otherwise "ab*b" would match
-        // the bare "ab" (prefix "ab" and suffix "b" reusing the same 'b').
-        if segments.count > 1, let last = segments.last, !last.isEmpty {
-            guard host.hasSuffix(last),
-                  host.distance(from: index, to: host.endIndex) >= last.count
-            else { return false }
-        }
-        return true
+    /// Case-insensitive glob match — **moved to `Glob`**, which is what it always was:
+    /// three of this function's callers were never about the SSL scope and two were
+    /// never about hosts (a rule matches a whole URL through it). Kept as a forwarder
+    /// rather than deleted because `LoomSharedModels` is a public SPM product.
+    @available(*, deprecated, message: "Use Glob.matches(_:_:), or Glob.Pattern when matching many strings against one pattern.")
+    public static func matches(pattern: String, host: String) -> Bool {
+        Glob.matches(pattern, host)
     }
 }
 

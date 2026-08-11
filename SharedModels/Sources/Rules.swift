@@ -187,7 +187,7 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         if (hostPattern.map { !$0.isEmpty } ?? false) || (query?.isEmpty == false) {
             let components = URLComponents(string: url)
             if let hostPattern, !hostPattern.isEmpty,
-               !SSLScope.matches(pattern: hostPattern, host: components?.host ?? "") {
+               !Glob.matches(hostPattern, components?.host ?? "") {
                 return false
             }
             if let query, !query.isEmpty {
@@ -215,7 +215,9 @@ public struct RuleMatch: Equatable, Codable, Sendable {
             return url.caseInsensitiveCompare(urlPattern) == .orderedSame
         case .glob:
             // Same whole-string glob the SSL scope uses; it globs any string, not just hosts.
-            return SSLScope.matches(pattern: urlPattern, host: url)
+            // A glob over the whole URL, which is why the matcher is no longer named
+            // after hosts.
+            return Glob.matches(urlPattern, url)
         case .prefix:
             return Self.hasCaseInsensitivePrefix(url, urlPattern)
         }
@@ -1097,6 +1099,6 @@ public enum Pattern {
            regex.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)) != nil {
             return true
         }
-        return SSLScope.matches(pattern: pattern, host: string)
+        return Glob.matches(pattern, string)
     }
 }
