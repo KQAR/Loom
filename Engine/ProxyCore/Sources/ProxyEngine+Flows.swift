@@ -50,8 +50,11 @@ extension ProxyEngine {
         await store.flowAggregates()
     }
 
-    /// One page of the capture, newest-first — the read a windowed list surface uses
-    /// instead of holding every flow in memory.
+    /// One page of the capture, newest-first — ring and durable store merged in order.
+    ///
+    /// Loom's own caller does not page: the main window asks once at boot and holds what
+    /// it gets. What this read is actually for is the merge, and `FlowStore.page` has the
+    /// rest of that story.
     public func flowPage(
         after cursor: FlowCursor?, limit: Int, matching query: FlowQuery
     ) async -> FlowPage {
