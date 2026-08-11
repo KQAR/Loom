@@ -1,6 +1,7 @@
 import Foundation
 import LoomSharedModels
 import SQLite3
+import Synchronization
 
 /// SQLite-backed durable store for completed flows, so captures survive a
 /// relaunch. One table: indexed columns for cheap recency queries plus the whole
@@ -25,7 +26,32 @@ final class FlowPersistence: @unchecked Sendable {
     /// Upper bound on rows, maintained incrementally and re-read exactly after each
     /// prune. `INSERT OR REPLACE` can replace rather than add, so this over-counts
     /// at worst — pruning slightly early is harmless, skipping it would not be.
-    private var rowCount = 0
+    ///
+    /// Backed by `counts` rather than a plain stored property, so the number is
+    /// readable **without hopping this store's queue** — see `approximateStoredRowCount`
+    /// for why that matters. Every existing queue-confined read and write of
+    /// `rowCount` goes on working unchanged, which is the point: a mirror that a
+    /// future write site can forget to update is a mirror that drifts.
+    private var rowCount: Int {
+        get { counts.withLock { $0.stored } }
+        set { counts.withLock { $0.stored = newValue } }
+    }
+
+    /// The row count as two halves — written rows and rows still in the batch — held
+    /// outside the queue so a reader never has to enter it.
+    private let counts = Mutex<Counts>(Counts())
+
+    private struct Counts {
+        var stored = 0
+        var pending = 0
+    }
+
+    /// Call after every mutation of `pending`, so `approximateStoredRowCount` counts
+    /// a flow that has been saved but not yet written.
+    private func notePendingChanged() {
+        let count = pending.count
+        counts.withLock { $0.pending = count }
+    }
 
     /// Rows waiting to be written, and the batching window. Each `save` used to be
     /// its own transaction (and its own `sqlite3_prepare_v2`); a capture burst now
@@ -345,14 +371,26 @@ final class FlowPersistence: @unchecked Sendable {
     /// How many rows the table holds. The denominator behind "searched N of M", and
     /// half of a paged list's row count.
     ///
-    /// Drains the pending batch first, like every other read: a flow that completed a
-    /// few milliseconds ago is saved but not yet written, and a count that excluded it
-    /// would put the list one row short of the page that contains it.
-    var storedRowCount: Int {
-        queue.sync {
-            writePending()
-            return rowCount
-        }
+    /// **The one read that does not enter the queue, and it must stay that way.** Every
+    /// other read here opens with `queue.sync { writePending() }`, which is right for
+    /// them — they are about to return rows, so a flow saved a few milliseconds ago has
+    /// to be on disk first. This one returns a *number*, and paying that price for it
+    /// was a stall in exactly the place `FlowStore` documents as forbidden: the callers
+    /// (`FlowStore.retainedCount`, `search`, `totalRetained`) are all **on the
+    /// `FlowStore` actor**, so `ProxyEngine.status()` held the actor every capture write
+    /// queues on while this queue ran a whole 256-row transaction. `status()` is not
+    /// rare — the audit fan-out re-reads it after every agent write, the panel reads it
+    /// on open, and `get_proxy_status` is a poll an agent is encouraged to make.
+    ///
+    /// So the count is mirrored out of the queue instead (`counts`), including the rows
+    /// still sitting in the batch — which is what draining bought and is preserved here
+    /// without the transaction. It is approximate for the reason `rowCount` already was
+    /// (an `INSERT OR REPLACE` that replaces still counts as an add until the next
+    /// prune re-anchors it), and every caller wants a magnitude: a "of M" denominator, a
+    /// "flows retained" figure, a list's total. Anything needing an exact count must ask
+    /// for it a way that reads rows.
+    var approximateStoredRowCount: Int {
+        counts.withLock { $0.stored + $0.pending }
     }
 
     /// The stored request/response bodies for one flow, or nil if the row is gone.
@@ -383,6 +421,7 @@ final class FlowPersistence: @unchecked Sendable {
         // app believes are gone, and they'd reappear on the next launch.
         queue.async {
             self.pending.removeAll() // no point writing rows we're about to delete
+            self.notePendingChanged()
             self.exec("DELETE FROM flows;")
             self.rowCount = 0
         }
@@ -402,6 +441,7 @@ final class FlowPersistence: @unchecked Sendable {
     /// immediately so a sustained capture never buffers more than `maxBatch`.
     private func enqueue(_ row: Row) {
         pending.append(row)
+        notePendingChanged()
         if pending.count >= maxBatch {
             writePending()
             return
@@ -418,6 +458,7 @@ final class FlowPersistence: @unchecked Sendable {
         guard !pending.isEmpty else { return }
         let rows = pending
         pending.removeAll(keepingCapacity: true)
+        notePendingChanged()
 
         exec("BEGIN IMMEDIATE;")
         var written = 0

@@ -129,11 +129,16 @@ import Testing
         // and quadratic at this size (see `AppFeature.State.recordFlow`).
         s.recordFlows(flows)
 
-        #expect(s.flows.count == cap, "held to the cap")
-        #expect(s.droppedFlowCount == 3, "the 3 oldest were dropped")
+        // The trim cuts to `displayCap - trimSlack`, not to the cap, so that the next few
+        // hundred batches cost nothing — see `State.trimSlack`. The cap is still a
+        // ceiling the window may never exceed.
+        let dropped = AppFeature.State.trimSlack + 3
+        #expect(s.flows.count == cap - AppFeature.State.trimSlack, "trimmed a slack's worth below the cap")
+        #expect(s.flows.count <= cap, "and never above it")
+        #expect(s.droppedFlowCount == dropped, "every dropped row is counted")
         #expect(s.flows.last?.id == flows.last?.id, "newest is retained")
         #expect(s.flows[id: flows[0].id] == nil, "oldest is gone")
-        #expect(s.flows.first?.id == flows[3].id, "oldest survivor is the 4th inserted")
+        #expect(s.flows.first?.id == flows[dropped].id, "the survivors are the newest, in order")
     }
 
     @Test func recordFlow_upsertExistingID_doesNotCountAsNew() {

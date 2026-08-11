@@ -411,13 +411,13 @@ actor FlowStore {
             return FlowSearchResult(
                 flows: recent(limit: limit),
                 budgetExhausted: false,
-                storedFlowCount: persistence?.storedRowCount
+                storedFlowCount: persistence?.approximateStoredRowCount
             )
         }
         var result = await Self.scan(
             snapshot: flows, query: query, limit: max(0, limit), persistence: persistence
         )
-        result.storedFlowCount = persistence?.storedRowCount
+        result.storedFlowCount = persistence?.approximateStoredRowCount
         return result
     }
 
@@ -504,9 +504,13 @@ actor FlowStore {
     /// exactly on completed flows: the stored count plus the ring's *in-flight* flows
     /// is the total, with nothing double-counted. Nil without a store — the ring is
     /// then the whole truth and the caller already has its count.
+    ///
+    /// Approximate by an insert-or-replace's worth, and cheap *because* of it — see
+    /// `FlowPersistence.approximateStoredRowCount`, which is the one read here that
+    /// deliberately does not enter the persistence queue.
     private func totalRetained() -> Int? {
         guard let persistence else { return nil }
-        return persistence.storedRowCount + flows.count(where: { $0.completedAt == nil })
+        return persistence.approximateStoredRowCount + flows.count(where: { $0.completedAt == nil })
     }
 
     @concurrent private static func assemblePage(
@@ -728,7 +732,12 @@ actor FlowStore {
     /// that stalled. This is the number that keeps going up, and the one every read
     /// path can still resolve an id from (`flow(id:)`, `recent(matching:)` and the HAR
     /// export all fall through to the store).
-    var retainedCount: Int? { persistence?.storedRowCount }
+    ///
+    /// Read without entering the persistence queue, which is load-bearing rather than
+    /// incidental: this is on `ProxyEngine.status()`, and holding this actor for a
+    /// SQLite transaction puts that stall in front of every capture write. See
+    /// `FlowPersistence.approximateStoredRowCount`.
+    var retainedCount: Int? { persistence?.approximateStoredRowCount }
 
     /// A new live subscription. Every `broadcast(_:)` (from `upsert` /
     /// `finalizeInFlight`) yields here; see `FlowProviding.flowStream()` for the

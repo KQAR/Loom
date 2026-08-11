@@ -649,9 +649,31 @@ struct RequestTable: NSViewRepresentable {
             selection = rows.indices.contains(row) ? rows[row].id : nil
         }
 
+        /// Sync the table's selected row to `id`.
+        ///
+        /// The early return is the whole point, and it has to be reachable **without
+        /// searching `rows`**. This runs on every capture batch — ten times a second —
+        /// and the search it guards is a linear walk of the window, which at
+        /// `FlowLimits.windowRows` is 20 000 id comparisons to conclude, almost always,
+        /// that nothing moved. That is precisely the shape this file refuses everywhere
+        /// else: `ordinal(of:)` takes an O(1) `index(id:)` rather than scan the capture,
+        /// and `RowDiff` gives up its alignment search after a bounded window so it can
+        /// never cost the capture. This one was scanning it every batch.
+        ///
+        /// Asking the table where its selection *is* answers in O(1) and is correct at
+        /// steady state: `apply` runs first, and `NSTableView` shifts its own selection
+        /// index across `removeRows`/`insertRows` — so after a head trim the selected
+        /// row still holds the selected flow, at a new index nobody had to find. The
+        /// search is kept for the cases where that fails (a `.reload`, or a selection
+        /// the store moved), and those are gestures, not traffic.
         private func applySelection(_ id: Flow.ID?, in table: NSTableView) {
-            let target = id.flatMap { id in rows.firstIndex { $0.id == id } }
             let current = table.selectedRow
+            // Already right: either the selected row is the selected flow, or both sides
+            // agree there is no selection.
+            if current >= 0, rows.indices.contains(current), rows[current].id == id { return }
+            if current < 0, id == nil { return }
+
+            let target = id.flatMap { id in rows.firstIndex { $0.id == id } }
             guard target != (current >= 0 ? current : nil) else { return }
             applyingSelection = true
             defer { applyingSelection = false }
