@@ -34,7 +34,7 @@ extension MCPToolExecutor {
     /// Throws `MCPError.invalidParams` naming the first argument the tool's schema
     /// doesn't declare. Reports one at a time: the caller's fix is per-key, and a
     /// list of every mistake in a hand-written call is rarely what unblocks them.
-    static func validateArguments(_ arguments: [String: Any], against tool: MCPTool) throws {
+    static func validateArguments(_ arguments: [String: JSONValue], against tool: MCPTool) throws {
         guard let unknown = firstUnknownArgument(in: arguments, schema: tool.inputSchema, path: "") else { return }
         throw MCPError.invalidParams(unknown.message(tool: tool.name))
     }
@@ -79,22 +79,24 @@ extension MCPToolExecutor {
     }
 
     private static func firstUnknownArgument(
-        in object: [String: Any], schema: [String: Any], path: String
+        in object: [String: JSONValue], schema: JSONSchema, path: String
     ) -> UnknownArgument? {
-        // No `properties` → a free-form map (or an unschema'd blob). Every key is
-        // legal and there is nothing below to walk.
-        guard let properties = schema["properties"] as? [String: Any] else { return nil }
+        // No `properties` → a free-form map. Every key is legal and there is nothing
+        // below to walk. Reading it off the typed node rather than an `as?` cast is
+        // the difference that matters here: a schema shape this walker could not
+        // decode used to validate nothing, silently.
+        guard let properties = schema.properties else { return nil }
         let declared = properties.keys.sorted()
         // An object that explicitly opts into extras keeps them; its declared
         // children are still checked.
-        let allowsExtras = schema["additionalProperties"] as? Bool == true
+        let allowsExtras = schema.additionalProperties == true
 
         // Sorted so the reported key is stable across runs rather than whichever
         // one the dictionary happened to hash first.
         for key in object.keys.sorted() {
             // MCP reserves `_`-prefixed members protocol-wide.
             if key.hasPrefix("_") { continue }
-            guard let childSchema = properties[key] as? [String: Any] else {
+            guard let childSchema = properties[key] else {
                 if allowsExtras { continue }
                 return UnknownArgument(path: child(of: path, key), declared: declared)
             }
@@ -109,19 +111,22 @@ extension MCPToolExecutor {
     /// Walk a value of any shape against its schema node: objects recurse, arrays
     /// recurse per element through `items`, scalars have nothing to check.
     private static func firstUnknownArgument(
-        in value: Any, schema: [String: Any], path: String
+        in value: JSONValue, schema: JSONSchema, path: String
     ) -> UnknownArgument? {
-        if let object = value as? [String: Any] {
+        switch value {
+        case let .object(object):
             return firstUnknownArgument(in: object, schema: schema, path: path)
-        }
-        if let array = value as? [Any], let items = schema["items"] as? [String: Any] {
-            for (index, element) in array.enumerated() {
+        case let .array(elements):
+            guard let items = schema.items else { return nil }
+            for (index, element) in elements.enumerated() {
                 if let unknown = firstUnknownArgument(in: element, schema: items, path: "\(path)[\(index)]") {
                     return unknown
                 }
             }
+            return nil
+        default:
+            return nil
         }
-        return nil
     }
 
     private static func child(of path: String, _ key: String) -> String {

@@ -207,6 +207,47 @@ welcome (`ttfbMS` is computed, `captureTruncated` folds four fields) as long as 
 the census. The DTOs' JSON is byte-identical to what the dictionaries produced — this was a refactor
 of the renderer, not of the agent-facing surface.
 
+**And so is a schema (0.0.24).** The *input* half of that same hole stayed open for four releases:
+every tool's `inputSchema` was a `[String: Any]` literal, so `MCPToolSchemas.swift` was 1 100 lines
+the compiler could not read — a misspelled keyword, a `required` naming a property no `properties`
+declares, an `items` on a node that never said `"type": "array"` all compiled and shipped to the
+agent. It also forced the escape hatches (`MCPTool: @unchecked Sendable`, the shared sub-schemas
+`nonisolated(unsafe)`), which then said nothing about what a future edit could break, and it made
+`MCPArgumentValidation` re-derive the shape at runtime through `as?` casts — a node it couldn't
+decode validated nothing, silently. Schemas are `JSONSchema` values now (`MCPSchema.swift`,
+serialized in one place by `JSONSchema.json`), `MCPTool` is plainly `Sendable`, and the vocabulary is
+deliberately only what Loom's tools use. One distinction in that type is load-bearing and is the
+reason it isn't "a dictionary with types": **`properties: nil` and `properties: [:]` are different
+schemas** — nil is a free-form map (`set_headers`, `match.query`), where any key is legal, and `[:]`
+is a tool that takes no arguments, where none is. `MCPArgumentValidation` returns early on the first,
+so collapsing them would switch unknown-argument rejection off for every no-argument tool — which is
+why `MCPSchemaTests` pins that **every** advertised tool is an object with non-nil properties, the one
+shape that can't be checked at the declaration. The emitted `tools/list` JSON is unchanged but for
+`set_rule`'s `"required": []`, which is now absent (JSON Schema reads the two identically).
+
+**The arguments are read against that schema, not cast out of an `Any` (0.0.24).** Handlers took the
+raw `[String: Any]` and reached in with `as?`, which cost three things and each one had shipped as a
+defect. (1) **A wrong-typed value read as absent**: `(arguments["only_errors"] as? Bool) ?? false`
+turns `"true"` into `false`, and `arguments["limit"] as? Int` turns a JSON `20.0` into the default —
+the silently-unapplied filter `MCPArgumentValidation` exists to prevent one layer up. (2) **Numeric
+spelling handled per call site** — `since_seconds` accepted both spellings, every other number took
+whichever cast its author wrote. (3) **Nothing checked that a handler reads what the tool
+advertises**, and that one was live: `resume` read `id` as an alias for `pending_id` and its
+description promised "either argument name works", but the schema never declared `id`, so
+`validateArguments` refused the call at the choke point before the handler ran — a false promise for
+four releases, found by this pass and fixed by declaring it. So: `JSONValue` (a checked `Sendable`
+JSON tree) is built **once** in `MCPToolExecutor.call`, `MCPArguments` reads it against the tool's own
+schema node, and every accessor throws `invalidParams` naming the key, its dotted path
+(`actions.map_local.path`) and what it expected. Three rules: **`Any` is allowed only at the two
+Foundation boundaries** — what `JSONSerialization` hands in, what it consumes for the audit render —
+and a third occurrence is a value the compiler can't check for no benefit; **a read of an undeclared
+key trips an assertion** (debug + every test run), because such a read can never fire in production;
+and **integers and doubles stay apart**, so `int` can reject `2.5` instead of truncating it and the
+audit trail records the `20` the agent sent rather than `20.0`. `.forTool(name, values)` is how a
+parser is exercised in isolation with the declared-key check still on. Stricter than before by
+design: `only_errors: "true"`, `group: 3` and `recording: "off"` are now errors rather than
+silently-dropped arguments.
+
 WebSocket flows (ws:// and wss:// via MITM) are captured as a single flow whose frames appear in `get_flow_detail` under `webSocket.messages` (direction/kind/text-or-bytes) and are flagged in `get_recent_flows`. The three bugs behind that sentence — a `wss://` splice that wrote plaintext at a TLS server, a failed upgrade that recorded no flow at all, and a frame length that crashed the process from an event-loop thread — are in [`docs/decisions/websocket-capture.md`](docs/decisions/websocket-capture.md). Three rules survive them and apply to **anything parsing untrusted network bytes**, not just frames: lengths decode wide (`UInt64`) and narrow only once bounded; every remaining-bytes check is a **subtraction**, never an addition on a wire-supplied length; and "not enough bytes yet" and "these bytes aren't frames" are **different answers**, never both `nil`. A capture that stops is never silent — `Flow.webSocketCaptureError` reaches `get_flow_detail`'s `webSocket.captureStopped`, the summary's `captureTruncated`, and the Inspector's frame log.
 
 GraphQL POSTs are recognized (`GraphQLParser`); `get_flow_detail` adds a `graphQL` block (kind/operationName/query/variables) and the Inspector shows a GraphQL tab. HTTP/2 is intercepted when the client negotiates ALPN `h2`: the MITM leaf advertises `h2`+`http/1.1`, and each h2 stream is demuxed through the h2↔h1 codec into the same `TLSInterceptHandler` capture path (falls back to http/1.1 otherwise).
@@ -258,7 +299,7 @@ the flow-emission contract: **`.claude/skills/embed-engine/SKILL.md`** (lazy-loa
 ### Concurrency
 
 - **App / Features / Clients**: Swift 6 language mode, strict concurrency.
-- **MCPServer**: **Swift 6 language mode**. Its NIO surface is one channel handler, so strict concurrency cost three JSON-schema statics (`nonisolated(unsafe)` / `@unchecked Sendable`, each documented at the declaration) and one frozen buffer copy.
+- **MCPServer**: **Swift 6 language mode**. Its NIO surface is one channel handler, so strict concurrency cost one frozen buffer copy and, until 0.0.24, three JSON-schema statics annotated `nonisolated(unsafe)` / `@unchecked Sendable`. Those are **gone**, and how is the reusable part: they were never about sharing, only about the `[String: Any]` the compiler couldn't see into, so typing the schemas (`JSONSchema`) removed the need for the annotation rather than re-justifying it. What remains here is the two `ISO8601DateFormatter`s and one `JSONEncoder` — genuinely shared Foundation objects, documented at the declaration — plus the event-loop-confined handlers.
 - **ProxyCore**: **Swift 6 language mode** too, as of 0.0.16 — but read what that does and does not buy. The channel handlers are still `@unchecked Sendable`, and strict concurrency does not check those, so the gain is on actor boundaries (the three listeners — `ProxyServer`, `SOCKSServer`, `ProvisioningServer` — are now actors like `ReverseProxyServer` already was) and on code written from here on. It is unrelated to the upstream TSan report. Keep NIO code in this module and MCPServer; do not leak channel types across the client boundary.
 - **Do not turn on `SWIFT_APPROACHABLE_CONCURRENCY` / `NonisolatedNonsendingByDefault` for ProxyCore.** It is tempting — it cuts the module's strict-concurrency errors from 26 to 6 by keeping `async` nonisolated calls in the caller's isolation domain, which is exactly the shape of `ProxyEngine` calling into its listeners. It also gives every one of those functions an implicit isolation parameter, i.e. **it changes their ABI**: `ProxyCoreTests` (Swift 5, no flag) called them with the old convention and 24 tests died in `_swift_implicitisolationactor_to_executor_cast`. Enabling it everywhere in this repo would not be enough either — `LoomProxyCore` ships as a public SPM product, and a consumer's build settings are not ours to set. The 20 errors it papered over were the honest signal, and making the listeners actors is the fix.
 - `ProxyEngine` and `FlowStore` are **actors**; the shared engine is `ProxyEngine.shared`.

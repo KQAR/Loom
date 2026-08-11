@@ -10,7 +10,7 @@ import LoomSharedModels
 /// most). Rather than asking the human to patch their dev server's source, the agent
 /// creates an endpoint and changes one line of config.
 extension MCPToolExecutor {
-    func handleListReverseProxies(_ arguments: [String: Any]) async throws -> String {
+    func handleListReverseProxies(_ arguments: MCPArguments) async throws -> String {
         let endpoints = await engine.reverseProxies()
         return prettyJSON([
             "count": endpoints.count,
@@ -18,16 +18,15 @@ extension MCPToolExecutor {
         ])
     }
 
-    func handleCreateReverseProxy(_ arguments: [String: Any]) async throws -> String {
-        guard let upstream = arguments["upstream"] as? String else {
-            throw MCPError.invalidParams("`upstream` must be a string, e.g. \"https://api.example.com\"")
-        }
-        let port = arguments["port"] as? Int ?? 0
+    func handleCreateReverseProxy(_ arguments: MCPArguments) async throws -> String {
+        let upstream = try arguments.requiredString(
+            "upstream", "a string, e.g. \"https://api.example.com\""
+        )
         let endpoint = ReverseProxyEndpoint(
-            requestedPort: port,
+            requestedPort: try arguments.int("port", or: 0),
             upstream: upstream,
-            label: arguments["label"] as? String,
-            keepHostHeader: arguments["keep_host_header"] as? Bool ?? false
+            label: try arguments.string("label"),
+            keepHostHeader: try arguments.bool("keep_host_header", or: false)
         )
         let status: ReverseProxyStatus
         do {
@@ -50,17 +49,17 @@ extension MCPToolExecutor {
         return prettyJSON(payload)
     }
 
-    func handleDeleteReverseProxy(_ arguments: [String: Any]) async throws -> String {
-        guard let raw = arguments["id"] as? String, let id = UUID(uuidString: raw) else {
-            throw MCPError.invalidParams("`id` must be a reverse-proxy endpoint UUID (see list_reverse_proxies)")
-        }
+    func handleDeleteReverseProxy(_ arguments: MCPArguments) async throws -> String {
+        let id = try arguments.requiredUUID(
+            "id", "a reverse-proxy endpoint UUID (see list_reverse_proxies)"
+        )
         do {
             try await engine.deleteReverseProxy(id: id)
         } catch let error as ProxyControlError {
             throw MCPToolFailure(error.message)
         }
         return prettyJSON([
-            "deleted": raw,
+            "deleted": id.uuidString,
             "detail": "The port is closed. A client still pointed at it will now get connection refused.",
         ])
     }

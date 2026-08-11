@@ -19,36 +19,27 @@ import LoomSharedModels
 /// *present* (a test pins description and flag together), because it is what tells
 /// the agent, but the flag is what the audit choke point reads.
 ///
-/// `@unchecked Sendable` rather than checked, for one reason: `inputSchema` is a
-/// `[String: Any]` because that is what `JSONSerialization` consumes on the way
-/// out to `tools/list`. The boxed values are only ever JSON literals — strings,
-/// numbers, booleans, arrays and dictionaries of the same — so every one is a
-/// value type with no shared state, and the whole value is immutable after
-/// `init`. What the compiler can't see is the `Any`, not a mutable box.
-///
-/// The checked alternative is a typed JSON enum threaded through all ~50 tool
-/// definitions and both shared sub-schemas. That is a worthwhile refactor and a
-/// separate one; it would not make this value any more thread-safe than it
-/// already is.
-///
-/// `handler` is `@Sendable` even so, and that is the part the escape hatch must not
-/// swallow: `@unchecked` on the type would otherwise let a future handler close over
-/// non-Sendable state with nothing complaining. The `Any` is unchecked; the closure
-/// is not.
-struct MCPTool: @unchecked Sendable {
+/// **Plainly `Sendable`**, which it could not be while `inputSchema` was a
+/// `[String: Any]`: the dictionary held only JSON literals and was never mutated,
+/// but the `Any` was unprovable, so the type carried `@unchecked Sendable` and the
+/// annotation said nothing about what a future edit could break. `JSONSchema` is a
+/// checked value type, so the compiler answers the question now — and the `Any`
+/// survives only at the serialization boundary (`definition`), which is where
+/// `JSONSerialization` needs it.
+struct MCPTool: Sendable {
     let name: String
     let description: String
-    let inputSchema: [String: Any]
+    let inputSchema: JSONSchema
     /// Touches real traffic, so `MCPToolExecutor.call` records it in the audit trail.
     let isWrite: Bool
-    let handler: @Sendable (MCPToolExecutor, [String: Any]) async throws -> String
+    let handler: @Sendable (MCPToolExecutor, MCPArguments) async throws -> String
 
     init(
         name: String,
         description: String,
-        inputSchema: [String: Any],
+        inputSchema: JSONSchema,
         isWrite: Bool = false,
-        handler: @escaping @Sendable (MCPToolExecutor, [String: Any]) async throws -> String
+        handler: @escaping @Sendable (MCPToolExecutor, MCPArguments) async throws -> String
     ) {
         self.name = name
         self.description = description
@@ -59,7 +50,7 @@ struct MCPTool: @unchecked Sendable {
 
     /// The `tools/list` JSON for this tool.
     var definition: [String: Any] {
-        ["name": name, "description": description, "inputSchema": inputSchema]
+        ["name": name, "description": description, "inputSchema": inputSchema.json]
     }
 }
 
@@ -72,76 +63,68 @@ struct MCPTool: @unchecked Sendable {
 /// anything, so it is worth being able to read end to end. The *pairing* is no
 /// longer a matter of trust: each entry below carries its own handler.
 extension MCPToolExecutor {
-    /// The flow-filter arguments, shared verbatim by `get_recent_flows` and
-    /// `wait_for_flow` — one filter vocabulary, parsed by one `flowQuery(from:)`, so
-    /// the two can't drift into subtly different notions of "matching".
-    /// `nonisolated(unsafe)` for the same reason `MCPTool` is `@unchecked
-    /// Sendable`: a `let` holding only JSON literals, never mutated, only read
-    /// while assembling a response. The `Any` is what the compiler can't check.
-    nonisolated(unsafe) static let flowFilterProperties: [String: Any] = [
-        "host": ["type": "string", "description": "Host, exact or glob: `api.example.com`, `*.example.com`."],
-        "method": [
-            "description": "HTTP method(s) to include, case-insensitive. A string or an array of strings.",
-            "oneOf": [
-                ["type": "string"],
-                ["type": "array", "items": ["type": "string"]],
-            ],
-        ],
-        "url_contains": ["type": "string", "description": "Case-insensitive substring of the full URL (path, query, …)."],
-        "header_contains": [
-            "type": "string",
-            "description": """
+    /// The flow-filter arguments, shared verbatim by `get_recent_flows`,
+    /// `wait_for_flow` and `get_stats` — one filter vocabulary, parsed by one
+    /// `flowQuery(from:)`, so they can't drift into subtly different notions of
+    /// "matching". A tool adds its own arguments with `.adding`, which refuses to
+    /// shadow one of these.
+    ///
+    /// No `nonisolated(unsafe)` any more: `JSONSchema` is a checked `Sendable` value,
+    /// so this is an ordinary immutable static.
+    static let flowFilterProperties: [String: JSONSchema] = [
+        "host": .string("Host, exact or glob: `api.example.com`, `*.example.com`."),
+        "method": .oneOf(
+            [.string(), .array(of: .string())],
+            description: "HTTP method(s) to include, case-insensitive. A string or an array of strings."
+        ),
+        "url_contains": .string("Case-insensitive substring of the full URL (path, query, …)."),
+        "header_contains": .string("""
             Case-insensitive substring of a header. Plain text matches a header name or \
             value (`authorization`, `Bearer ey`); with a colon it means `name: value` and \
             both halves must hit the same header (`x-env: staging`, or `set-cookie:` for \
             "has this header at all"). Searches both sides unless `header_in` narrows it.
-            """,
-        ],
-        "header_in": [
-            "type": "string",
-            "enum": ["any", "request", "response"],
-            "description": """
+            """),
+        "header_in": .string(
+            """
             Which side `header_contains` searches; default `any`. Most header questions \
             have a side — "who sent this auth header" is about requests, "who set this \
             cookie" is about responses — and searching both buries the answer.
             """,
-        ],
-        "body_contains": [
-            "type": "string",
-            "description": """
+            allowed: ExchangeSide.allCases.map(\.rawValue)
+        ),
+        "body_contains": .string("""
             Case-insensitive substring of a captured body — the "which exchange carried \
             this id/token/error string" filter. Matched over raw bytes, so non-UTF-8 \
             payloads are searched too. Searches both sides unless `body_in` narrows it. \
             Combine with `host` / `url_contains` / `since_seconds` to keep the scan \
             narrow, and note a flow with `captureTruncated: true` holds only a body \
             prefix, so a miss on one of those isn't proof.
-            """,
-        ],
-        "body_in": [
-            "type": "string",
-            "enum": ["any", "request", "response"],
-            "description": """
+            """),
+        "body_in": .string(
+            """
             Which side `body_contains` searches; default `any`. Use `request` for the \
             usual question — "which request carried this order id" — because a list \
             endpoint's *response* typically contains every id in the system, so searching \
             both returns a page of noise around the one hit you wanted.
             """,
-        ],
-        "status": [
-            "description": "Status code: an exact number (500) or a class as a string (\"5xx\", \"4xx\").",
-            "oneOf": [
-                ["type": "integer"],
-                ["type": "string"],
-            ],
-        ],
-        "status_min": ["type": "integer", "description": "Lowest status code to include (inclusive)."],
-        "status_max": ["type": "integer", "description": "Highest status code to include (inclusive)."],
-        "only_errors": ["type": "boolean", "description": "Only failures: a transport error or status >= 400 (in-flight flows are excluded)."],
-        "since_seconds": ["type": "number", "description": "Only flows started within the last N seconds — the usual way to isolate \"what I just triggered\"."],
-        "since": ["type": "string", "description": "Only flows started at/after this ISO-8601 timestamp (alternative to `since_seconds`)."],
-        "device_ip": ["type": "string", "description": "Only traffic from this device IP (see list_devices)."],
-        "source_app": ["type": "string", "description": "Only traffic from this local app, by bundle id or display name."],
+            allowed: ExchangeSide.allCases.map(\.rawValue)
+        ),
+        "status": .oneOf(
+            [.integer(), .string()],
+            description: "Status code: an exact number (500) or a class as a string (\"5xx\", \"4xx\")."
+        ),
+        "status_min": .integer("Lowest status code to include (inclusive)."),
+        "status_max": .integer("Highest status code to include (inclusive)."),
+        "only_errors": .boolean("Only failures: a transport error or status >= 400 (in-flight flows are excluded)."),
+        "since_seconds": .number("Only flows started within the last N seconds — the usual way to isolate \"what I just triggered\"."),
+        "since": .string("Only flows started at/after this ISO-8601 timestamp (alternative to `since_seconds`)."),
+        "device_ip": .string("Only traffic from this device IP (see list_devices)."),
+        "source_app": .string("Only traffic from this local app, by bundle id or display name."),
     ]
+
+    /// The shared filter as an object node, for the tools that take it plus a few
+    /// arguments of their own.
+    static let flowFilterSchema: JSONSchema = .object(flowFilterProperties)
 
     /// JSON metadata advertised by `tools/list`, derived from the one table.
     var toolDefinitions: [[String: Any]] { Self.tools.map(\.definition) }
@@ -178,7 +161,7 @@ extension MCPToolExecutor {
             deliberately *not* evidence: a stripped header or a hand-typed curl looks the same. \
             Absent entirely when nothing is counting (the engine embedded without a server).
             """,
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetVersion(args) }
         ),
         MCPTool(
@@ -218,7 +201,7 @@ extension MCPToolExecutor {
             each is listening — one that is not carries `error`, and a client pointed at it gets \
             connection refused, which reads like Loom is down.
             """,
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetProxyStatus(args) }
         ),
         MCPTool(
@@ -248,13 +231,12 @@ extension MCPToolExecutor {
             `create_reverse_proxy` instead — the client connects straight to Loom's port, so no \
             proxy setting is consulted. This is a write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "enabled": ["type": "boolean", "description": "true = route this Mac through Loom, false = turn the system proxy off (NOT restore a previous owner's settings)."],
+            inputSchema: .object(
+                [
+                    "enabled": .boolean("true = route this Mac through Loom, false = turn the system proxy off (NOT restore a previous owner's settings)."),
                 ],
-                "required": ["enabled"],
-            ],
+                required: ["enabled"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetSystemProxy(args) }
         ),
@@ -266,7 +248,7 @@ extension MCPToolExecutor {
             is not listening carries `error` explaining why (usually its port is taken), and a \
             client aimed at it gets connection refused rather than reaching Loom.
             """,
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleListReverseProxies(args) }
         ),
         MCPTool(
@@ -291,25 +273,21 @@ extension MCPToolExecutor {
             or the port cannot be bound — it never reports an endpoint that isn't listening. This \
             is a write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "upstream": [
-                        "type": "string",
-                        "description": "Origin to forward to, e.g. https://api.example.com. A base path is allowed (https://api.example.com/v2) and is prefixed to each request's path. No query or fragment.",
-                    ],
-                    "port": [
-                        "type": "integer",
-                        "description": "Local port to listen on. Omit or 0 to let the OS pick a free one — but a dev server's config names a fixed port, so usually pin it.",
-                    ],
-                    "label": ["type": "string", "description": "Optional note: which project or scenario this endpoint is for."],
-                    "keep_host_header": [
-                        "type": "boolean",
-                        "description": "Keep the client's Host header (127.0.0.1:port) instead of rewriting it to the upstream host. Default false — a real server usually vhost-routes on Host, and sending it 127.0.0.1 yields a 404 that looks like Loom broke the request.",
-                    ],
+            inputSchema: .object(
+                [
+                    "upstream": .string(
+                        "Origin to forward to, e.g. https://api.example.com. A base path is allowed (https://api.example.com/v2) and is prefixed to each request's path. No query or fragment."
+                    ),
+                    "port": .integer(
+                        "Local port to listen on. Omit or 0 to let the OS pick a free one — but a dev server's config names a fixed port, so usually pin it."
+                    ),
+                    "label": .string("Optional note: which project or scenario this endpoint is for."),
+                    "keep_host_header": .boolean(
+                        "Keep the client's Host header (127.0.0.1:port) instead of rewriting it to the upstream host. Default false — a real server usually vhost-routes on Host, and sending it 127.0.0.1 yields a 404 that looks like Loom broke the request."
+                    ),
                 ],
-                "required": ["upstream"],
-            ],
+                required: ["upstream"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleCreateReverseProxy(args) }
         ),
@@ -320,20 +298,17 @@ extension MCPToolExecutor {
             Any client still pointed at that port will get connection refused afterwards, so \
             check whether a dev server config still names it. This is a write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "id": ["type": "string", "description": "Endpoint UUID from list_reverse_proxies."],
-                ],
-                "required": ["id"],
-            ],
+            inputSchema: .object(
+                ["id": .string("Endpoint UUID from list_reverse_proxies.")],
+                required: ["id"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleDeleteReverseProxy(args) }
         ),
         MCPTool(
             name: "list_devices",
             description: "List devices that have sent traffic through the proxy — this Mac plus any LAN devices (e.g. phones), each with detected platform/client (from User-Agent), flow count, and last-seen time.",
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleListDevices(args) }
         ),
         MCPTool(
@@ -350,12 +325,9 @@ extension MCPToolExecutor {
             log is only a prefix of what actually flowed, so a `body_contains` miss on one of those \
             isn't proof.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": Self.flowFilterProperties.merging([
-                    "limit": ["type": "integer", "description": "Max flows to return after filtering (default 20)."],
-                ]) { current, _ in current },
-            ],
+            inputSchema: Self.flowFilterSchema.adding([
+                "limit": .integer("Max flows to return after filtering (default 20)."),
+            ]),
             handler: { ex, args in try await ex.handleGetRecentFlows(args) }
         ),
         MCPTool(
@@ -375,32 +347,28 @@ extension MCPToolExecutor {
             the trigger-then-call sequence can't race); pass `since_seconds` or `since` to widen \
             or pin it.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": Self.flowFilterProperties.merging([
-                    "max_seconds": [
-                        "type": "number",
-                        "description": """
-                        How long to wait before giving up (default \(Self.defaultWaitSeconds), \
-                        max \(Self.maxWaitSeconds)). A timeout is a normal result, not an error: \
-                        `timedOut: true` with an empty `matched`.
-                        """,
-                    ],
-                    "until": [
-                        "type": "string",
-                        "enum": ["completed", "response", "request"],
-                        "description": """
-                        How much of the exchange to wait for. `completed` (default) = it finished \
-                        or failed, so status, timing and both bodies are final. `response` = the \
-                        status line is known but the body may still be streaming — use this for a \
-                        WebSocket (the 101 upgrade), which otherwise never completes while the \
-                        socket is open, or for a long download. `request` = return the moment the \
-                        request is seen, before any response exists.
-                        """,
-                    ],
-                    "limit": ["type": "integer", "description": "Stop waiting once this many flows have matched (default 1)."],
-                ]) { current, _ in current },
-            ],
+            inputSchema: Self.flowFilterSchema.adding([
+                "max_seconds": .number("""
+                    How long to wait before giving up (default \(Self.defaultWaitSeconds), \
+                    max \(Self.maxWaitSeconds)). A timeout is a normal result, not an error: \
+                    `timedOut: true` with an empty `matched`.
+                    """),
+                "until": .string(
+                    """
+                    How much of the exchange to wait for. `completed` (default) = it finished \
+                    or failed, so status, timing and both bodies are final. `response` = the \
+                    status line is known but the body may still be streaming — use this for a \
+                    WebSocket (the 101 upgrade), which otherwise never completes while the \
+                    socket is open, or for a long download. `request` = return the moment the \
+                    request is seen, before any response exists.
+                    """,
+                    // The one enum list still written out: `WaitUntil`'s declaration
+                    // order is request-first, and this list is deliberately
+                    // default-first, which is what the prose above it reads against.
+                    allowed: ["completed", "response", "request"]
+                ),
+                "limit": .integer("Stop waiting once this many flows have matched (default 1)."),
+            ]),
             handler: { ex, args in try await ex.handleWaitForFlow(args) }
         ),
         MCPTool(
@@ -424,46 +392,38 @@ extension MCPToolExecutor {
             totals are a floor: those flows' bodies were evicted from memory, so their size is no \
             longer known.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": Self.flowFilterProperties.merging([
-                    "group_by": [
-                        "type": "string",
-                        "enum": FlowGrouping.allCases.map(\.rawValue),
-                        "description": """
-                        What to bucket by (default host). `endpoint` = method + path with the \
-                        query dropped and id-shaped segments collapsed to `{id}`, so \
-                        `/orders/1` and `/orders/2` are one endpoint. `none` = a single bucket.
-                        """,
-                    ],
-                    "limit": ["type": "integer", "description": "Max buckets, biggest first (default 10). The rest are counted in `bucketsOmitted`."],
-                    "slowest": ["type": "integer", "description": "How many slowest-by-TTFB exchanges to name, with ids to follow up on (default 3)."],
-                ]) { current, _ in current },
-            ],
+            inputSchema: Self.flowFilterSchema.adding([
+                "group_by": .string(
+                    """
+                    What to bucket by (default host). `endpoint` = method + path with the \
+                    query dropped and id-shaped segments collapsed to `{id}`, so \
+                    `/orders/1` and `/orders/2` are one endpoint. `none` = a single bucket.
+                    """,
+                    allowed: FlowGrouping.allCases.map(\.rawValue)
+                ),
+                "limit": .integer("Max buckets, biggest first (default 10). The rest are counted in `bucketsOmitted`."),
+                "slowest": .integer("How many slowest-by-TTFB exchanges to name, with ids to follow up on (default 3)."),
+            ]),
             handler: { ex, args in try await ex.handleGetStats(args) }
         ),
         MCPTool(
             name: "get_flow_detail",
             description: "Get full request and response detail for one flow by id, including headers and body. Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.",
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "id": ["type": "string", "description": "Flow UUID."],
-                    "max_bytes": [
-                        "type": "integer",
-                        "description": "Max body bytes to return per side (default \(Self.defaultBodyBytes)). Larger bodies are truncated with a `nextOffset` to page from.",
-                    ],
-                    "body_offset": [
-                        "type": "integer",
-                        "description": "Byte offset into each body, for paging through a large one (default 0).",
-                    ],
-                    "ws_limit": [
-                        "type": "integer",
-                        "description": "Max WebSocket frames to return, most recent last (default \(Self.defaultWebSocketMessages)).",
-                    ],
+            inputSchema: .object(
+                [
+                    "id": .string("Flow UUID."),
+                    "max_bytes": .integer(
+                        "Max body bytes to return per side (default \(Self.defaultBodyBytes)). Larger bodies are truncated with a `nextOffset` to page from."
+                    ),
+                    "body_offset": .integer(
+                        "Byte offset into each body, for paging through a large one (default 0)."
+                    ),
+                    "ws_limit": .integer(
+                        "Max WebSocket frames to return, most recent last (default \(Self.defaultWebSocketMessages))."
+                    ),
                 ],
-                "required": ["id"],
-            ],
+                required: ["id"]
+            ),
             handler: { ex, args in try await ex.handleGetFlowDetail(args) }
         ),
         MCPTool(
@@ -477,13 +437,10 @@ extension MCPToolExecutor {
             reads as paused rather than as a broken proxy. Resume when you are done. \
             `get_proxy_status.isRecording` is the current value. This is a write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "recording": ["type": "boolean", "description": "true = record, false = pause."],
-                ],
-                "required": ["recording"],
-            ],
+            inputSchema: .object(
+                ["recording": .boolean("true = record, false = pause.")],
+                required: ["recording"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetRecording(args) }
         ),
@@ -496,19 +453,14 @@ extension MCPToolExecutor {
             `get_recent_flows` with `since_seconds` when you don't actually need to destroy \
             the existing capture. This is a write action.
             """,
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             isWrite: true,
             handler: { ex, args in try await ex.handleClearFlows(args) }
         ),
         MCPTool(
             name: "get_audit_log",
             description: "List recent write actions taken through Loom (replay, rules, breakpoints, ssl-scope), newest first, each with the tool name, arguments, outcome and timestamp. Read tools are never logged. Use this to review what write actions have been taken this or a prior session.",
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "limit": ["type": "integer", "description": "Max entries to return (default 50)."],
-                ],
-            ],
+            inputSchema: .object(["limit": .integer("Max entries to return (default 50).")]),
             handler: { ex, args in try await ex.handleGetAuditLog(args) }
         ),
         MCPTool(
@@ -526,34 +478,24 @@ extension MCPToolExecutor {
             replays: [{id, status, ttfbMS}], errors}` — failures are reported, not thrown, \
             because "3 of 20 failed" is the answer you were after.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "id": ["type": "string", "description": "Flow UUID to replay."],
-                    "count": [
-                        "type": "integer",
-                        "description": "How many times to re-send it (default 1, max \(Self.maxReplayCount)). These are real requests to the real upstream.",
-                    ],
-                    "concurrency": [
-                        "type": "integer",
-                        "description": "How many of those to keep in flight at once (default 1 = one after another, max \(Self.maxReplayConcurrency)).",
-                    ],
-                    "method": ["type": "string"],
-                    "url": ["type": "string"],
-                    "set_headers": [
-                        "type": "object",
-                        "description": "Header name/value pairs to add or overwrite.",
-                    ],
-                    "remove_headers": [
-                        "type": "array",
-                        "items": ["type": "string"],
-                        "description": "Header names to remove.",
-                    ],
-                    "body": ["type": "string", "description": "Replacement request body (UTF-8). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."],
-                    "clear_body": ["type": "boolean", "description": "Send an empty request body (ignored if `body` is set)."],
+            inputSchema: .object(
+                [
+                    "id": .string("Flow UUID to replay."),
+                    "count": .integer(
+                        "How many times to re-send it (default 1, max \(Self.maxReplayCount)). These are real requests to the real upstream."
+                    ),
+                    "concurrency": .integer(
+                        "How many of those to keep in flight at once (default 1 = one after another, max \(Self.maxReplayConcurrency))."
+                    ),
+                    "method": .string(),
+                    "url": .string(),
+                    "set_headers": .freeformObject("Header name/value pairs to add or overwrite."),
+                    "remove_headers": .array(of: .string(), "Header names to remove."),
+                    "body": .string("Replacement request body (UTF-8). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."),
+                    "clear_body": .boolean("Send an empty request body (ignored if `body` is set)."),
                 ],
-                "required": ["id"],
-            ],
+                required: ["id"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleReplayFlow(args) }
         ),
@@ -579,57 +521,51 @@ extension MCPToolExecutor {
             one. For two WebSocket flows a `webSocket` block reports frame counts and \
             `firstDifferingMessage` rather than a whole-log diff.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "base": [
-                        "type": "string",
-                        "description": """
+            inputSchema: .object(
+                [
+                    "base": .string("""
                         Baseline flow UUID. If `compared` is omitted, pass the **replayed** \
                         flow's id: it is diffed against its own original (`replayedFrom`), and \
                         the reply reports that original as `baseId` and the replay as \
                         `comparedId` — so the id you passed comes back under the other name. \
                         That is deliberate: the diff always reads original → changed, whichever \
                         end you had at hand.
-                        """,
-                    ],
-                    "compared": ["type": "string", "description": "The changed flow UUID to compare against `base`. Optional when `base` is a replay."],
+                        """),
+                    "compared": .string("The changed flow UUID to compare against `base`. Optional when `base` is a replay."),
                 ],
-                "required": ["base"],
-            ],
+                required: ["base"]
+            ),
             handler: { ex, args in try await ex.handleDiffFlows(args) }
         ),
         MCPTool(
             name: "arm_breakpoint",
             description: "Arm a breakpoint: matching traffic is HELD mid-flight so you can inspect and edit it before it continues. Match by URL pattern (+ optional methods/host/query), same as a rule. Pause the request (before it's forwarded upstream), the response (before it reaches the client), or both. Held exchanges surface in list_pending; release them with resume. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": [
+            inputSchema: .object(
+                [
                     "match": Self.matchSchema,
-                    "on_request": ["type": "boolean", "description": "Pause the request before forwarding upstream (default true)."],
-                    "on_response": ["type": "boolean", "description": "Pause the response before it reaches the client (default false)."],
-                    "comment": ["type": "string", "description": "Optional note on why the breakpoint exists."],
+                    "on_request": .boolean("Pause the request before forwarding upstream (default true)."),
+                    "on_response": .boolean("Pause the response before it reaches the client (default false)."),
+                    "comment": .string("Optional note on why the breakpoint exists."),
                 ],
-                "required": ["match"],
-            ],
+                required: ["match"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleArmBreakpoint(args) }
         ),
         MCPTool(
             name: "disarm_breakpoint",
             description: "Remove an armed breakpoint by id. Exchanges it is already holding still need a resume. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": ["id": ["type": "string", "description": "Breakpoint UUID (from arm_breakpoint / list_pending)."]],
-                "required": ["id"],
-            ],
+            inputSchema: .object(
+                ["id": .string("Breakpoint UUID (from arm_breakpoint / list_pending).")],
+                required: ["id"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleDisarmBreakpoint(args) }
         ),
         MCPTool(
             name: "list_pending",
             description: "List currently armed breakpoints and every exchange held right now awaiting a resume decision. Each pending item carries its id (pass to resume), phase (request/response), full request, and — for a response pause — the response the client would receive. Returns immediately with whatever is held; to wait for the next hold instead of polling, use wait_for_pending.",
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleListPending(args) }
         ),
         MCPTool(
@@ -644,53 +580,53 @@ extension MCPToolExecutor {
             real client connection while you think, and an unattended hold auto-proceeds \
             unchanged when the engine's hold timeout expires — so decide, then resume.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "max_seconds": [
-                        "type": "number",
-                        "description": "How long to wait before giving up (default \(Self.defaultWaitSeconds), max \(Self.maxWaitSeconds)). Timing out is a normal result: `timedOut: true`, empty `pending`.",
-                    ],
-                    "breakpoint_id": ["type": "string", "description": "Only wait for holds from this armed breakpoint (from arm_breakpoint)."],
-                    "limit": ["type": "integer", "description": "Stop waiting once this many exchanges are held (default 1)."],
-                ],
-            ],
+            inputSchema: .object([
+                "max_seconds": .number(
+                    "How long to wait before giving up (default \(Self.defaultWaitSeconds), max \(Self.maxWaitSeconds)). Timing out is a normal result: `timedOut: true`, empty `pending`."
+                ),
+                "breakpoint_id": .string("Only wait for holds from this armed breakpoint (from arm_breakpoint)."),
+                "limit": .integer("Stop waiting once this many exchanges are held (default 1)."),
+            ]),
             handler: { ex, args in try await ex.handleWaitForPending(args) }
         ),
         MCPTool(
             name: "resume",
             description: "Release a held exchange by its pending id. Continue it (optionally editing method/url/status/headers/body first) or `abort` to fail it with a 502. Request-phase edits honor method/url; response-phase edits honor status_code; both honor header + body edits. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "pending_id": [
-                        "type": "string",
-                        "description": "The held exchange's id from list_pending / wait_for_pending (where it is rendered as `id`; either argument name works here).",
-                    ],
-                    "abort": ["type": "boolean", "description": "Fail the exchange with a 502 instead of continuing (default false)."],
-                    "method": ["type": "string", "description": "Request-phase only: replace the HTTP method."],
-                    "url": ["type": "string", "description": "Request-phase only: replace the full URL."],
-                    "status_code": ["type": "integer", "description": "Response-phase only: replace the status code."],
-                    "set_headers": ["type": "object", "description": "Header name/value pairs to add or overwrite."],
-                    "remove_headers": ["type": "array", "items": ["type": "string"], "description": "Header names to remove."],
-                    "body": ["type": "string", "description": "Replacement body (UTF-8). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."],
-                    "clear_body": ["type": "boolean", "description": "Send an empty body (ignored if `body` is set)."],
+            inputSchema: .object(
+                [
+                    "pending_id": .string(
+                        "The held exchange's id from list_pending / wait_for_pending (where it is rendered as `id`; either argument name works here)."
+                    ),
+                    // Declared, not just read: the description promises this spelling
+                    // works, and until it was declared here `validateArguments` refused
+                    // the call at the choke point — the promise was false for four
+                    // releases. Neither is required, because either one satisfies the
+                    // handler, so the pair can't be expressed in `required`.
+                    "id": .string("Alias for `pending_id`, so an item from list_pending can be copied across verbatim."),
+                    "abort": .boolean("Fail the exchange with a 502 instead of continuing (default false)."),
+                    "method": .string("Request-phase only: replace the HTTP method."),
+                    "url": .string("Request-phase only: replace the full URL."),
+                    "status_code": .integer("Response-phase only: replace the status code."),
+                    "set_headers": .freeformObject("Header name/value pairs to add or overwrite."),
+                    "remove_headers": .array(of: .string(), "Header names to remove."),
+                    "body": .string("Replacement body (UTF-8). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."),
+                    "clear_body": .boolean("Send an empty body (ignored if `body` is set)."),
                 ],
-                "required": ["pending_id"],
-            ],
+                required: ["pending_id"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleResume(args) }
         ),
         MCPTool(
             name: "get_certificate_status",
             description: "Get the HTTPS-interception root CA status: whether it exists, whether it's trusted on this machine, its SHA-256 fingerprint, expiry, and exported PEM path.",
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetCertificateStatus(args) }
         ),
         MCPTool(
             name: "export_ca_certificate",
             description: "Write Loom's root CA certificate (PEM) to disk so it can be trusted, and return the file path. This is a write action.",
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             isWrite: true,
             handler: { ex, args in try await ex.handleExportCACertificate(args) }
         ),
@@ -713,7 +649,7 @@ extension MCPToolExecutor {
             scope change will. Read this before concluding a client made no requests. \
             `tunneledHostsEvicted` counts entries dropped past the 256-host cap.
             """,
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetSSLScope(args) }
         ),
         MCPTool(
@@ -732,38 +668,29 @@ extension MCPToolExecutor {
             `removedExcludes`, plus the resulting scope. Decrypting also needs Loom's root CA \
             trusted by the client — see get_certificate_status. This is a write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "host": [
-                        "type": "string",
-                        "description": "Exact hostname, as it appears in get_ssl_scope's tunneledHosts (e.g. \"api.example.com\"). Not a glob — use set_ssl_scope for those.",
-                    ],
+            inputSchema: .object(
+                [
+                    "host": .string(
+                        "Exact hostname, as it appears in get_ssl_scope's tunneledHosts (e.g. \"api.example.com\"). Not a glob — use set_ssl_scope for those."
+                    ),
                 ],
-                "required": ["host"],
-            ],
+                required: ["host"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleInterceptHost(args) }
         ),
         MCPTool(
             name: "set_ssl_scope",
             description: "Set the SSL-proxying scope. Enables/disables HTTPS interception and replaces the include/exclude host globs (e.g. \"*.example.com\"). exclude doubles as the pinned/pass-through list. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "enabled": ["type": "boolean", "description": "Master switch for HTTPS interception."],
-                    "include": [
-                        "type": "array",
-                        "items": ["type": "string"],
-                        "description": "Host globs to decrypt, e.g. [\"*.example.com\", \"api.test\"].",
-                    ],
-                    "exclude": [
-                        "type": "array",
-                        "items": ["type": "string"],
-                        "description": "Host globs to pass through untouched (pinned hosts).",
-                    ],
-                ],
-            ],
+            inputSchema: .object([
+                "enabled": .boolean("Master switch for HTTPS interception."),
+                "include": .array(
+                    of: .string(), "Host globs to decrypt, e.g. [\"*.example.com\", \"api.test\"]."
+                ),
+                "exclude": .array(
+                    of: .string(), "Host globs to pass through untouched (pinned hosts)."
+                ),
+            ]),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetSSLScope(args) }
         ),
@@ -776,7 +703,7 @@ extension MCPToolExecutor {
             Check this when an https:// host fails its handshake for no visible reason — an \
             expired or unreadable identity fails exactly like a missing one.
             """,
-            inputSchema: ["type": "object", "properties": [:] as [String: Any]],
+            inputSchema: .object(),
             handler: { ex, args in try await ex.handleListClientCertificates(args) }
         ),
         MCPTool(
@@ -792,40 +719,33 @@ extension MCPToolExecutor {
             certificate identifies its holder to whoever asked, so `*` is almost never right. \
             This is a write action; the bundle and passphrase are redacted in the audit trail.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "host_pattern": [
-                        "type": "string",
-                        "description": "Hosts to present this identity to, e.g. \"api.corp.example\" or \"*.corp.example\".",
-                    ],
-                    "pkcs12_base64": [
-                        "type": "string",
-                        "description": "Base64 of the PKCS#12 (.p12/.pfx) bundle holding the leaf, chain and private key.",
-                    ],
-                    "passphrase": [
-                        "type": "string",
-                        "description": "Passphrase for the bundle. Omit for an unprotected export.",
-                    ],
-                    "label": ["type": "string", "description": "Name for the operator's list (defaults to host_pattern)."],
-                    "enabled": ["type": "boolean", "description": "Present this identity (default true)."],
-                    "id": ["type": "string", "description": "Replace the identity with this id instead of adding one."],
+            inputSchema: .object(
+                [
+                    "host_pattern": .string(
+                        "Hosts to present this identity to, e.g. \"api.corp.example\" or \"*.corp.example\"."
+                    ),
+                    "pkcs12_base64": .string(
+                        "Base64 of the PKCS#12 (.p12/.pfx) bundle holding the leaf, chain and private key."
+                    ),
+                    "passphrase": .string(
+                        "Passphrase for the bundle. Omit for an unprotected export."
+                    ),
+                    "label": .string("Name for the operator's list (defaults to host_pattern)."),
+                    "enabled": .boolean("Present this identity (default true)."),
+                    "id": .string("Replace the identity with this id instead of adding one."),
                 ],
-                "required": ["host_pattern", "pkcs12_base64"],
-            ],
+                required: ["host_pattern", "pkcs12_base64"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetClientCertificate(args) }
         ),
         MCPTool(
             name: "delete_client_certificate",
             description: "Remove a mutual-TLS client identity by id (from list_client_certificates). Hosts it covered will go back to failing the handshake if they require one. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "id": ["type": "string", "description": "The identity's id."],
-                ],
-                "required": ["id"],
-            ],
+            inputSchema: .object(
+                ["id": .string("The identity's id.")],
+                required: ["id"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleDeleteClientCertificate(args) }
         ),
@@ -844,27 +764,21 @@ extension MCPToolExecutor {
             Redaction is off by default because a debugging export usually needs the token; that \
             is often the bug. This is a write action (writes a file).
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "host": ["type": "string", "description": "Only include flows whose host contains this string."],
-                    "limit": ["type": "integer", "description": "Max flows to include (default 1000, newest first)."],
-                    "filename": ["type": "string", "description": "Output file name (basename only; a .har suffix is added if missing). Written under ~/Library/Application Support/com.loom/exports/. Defaults to loom-export.har."],
-                    "redact": [
-                        "type": "boolean",
-                        "description": "Scrub credentials: Authorization/Cookie/API-key headers and token-ish query parameters become `<redacted>`.",
-                    ],
-                    "redact_headers": [
-                        "type": "array",
-                        "items": ["type": "string"],
-                        "description": "Extra header names to scrub, on top of the built-in set (implies redact).",
-                    ],
-                    "redact_bodies": [
-                        "type": "boolean",
-                        "description": "Drop request/response bodies and WebSocket frame payloads, keeping their sizes (implies redact). Use when you can't audit every payload — which is most of the time if the file is leaving the machine.",
-                    ],
-                ],
-            ],
+            inputSchema: .object([
+                "host": .string("Only include flows whose host contains this string."),
+                "limit": .integer("Max flows to include (default 1000, newest first)."),
+                "filename": .string("Output file name (basename only; a .har suffix is added if missing). Written under ~/Library/Application Support/com.loom/exports/. Defaults to loom-export.har."),
+                "redact": .boolean(
+                    "Scrub credentials: Authorization/Cookie/API-key headers and token-ish query parameters become `<redacted>`."
+                ),
+                "redact_headers": .array(
+                    of: .string(),
+                    "Extra header names to scrub, on top of the built-in set (implies redact)."
+                ),
+                "redact_bodies": .boolean(
+                    "Drop request/response bodies and WebSocket frame payloads, keeping their sizes (implies redact). Use when you can't audit every payload — which is most of the time if the file is leaving the machine."
+                ),
+            ]),
             isWrite: true,
             handler: { ex, args in try await ex.handleExportHAR(args) }
         ),
@@ -881,24 +795,22 @@ extension MCPToolExecutor {
             silently, so "12 of 15" can't read as "all of them". This is a write action (it \
             changes what the capture contains, and the human's window shows them too).
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "path": ["type": "string", "description": "Path to the .har file (~ is expanded)."],
-                    "label": ["type": "string", "description": "What to record as `importedFrom` (defaults to the file name)."],
+            inputSchema: .object(
+                [
+                    "path": .string("Path to the .har file (~ is expanded)."),
+                    "label": .string("What to record as `importedFrom` (defaults to the file name)."),
                 ],
-                "required": ["path"],
-            ],
+                required: ["path"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleImportHAR(args) }
         ),
         MCPTool(
             name: "list_rules",
             description: "List traffic rules and the master rules switch. Without arguments, returns all rules with mock/rewrite bodies truncated. Pass `id` to return that single rule with full (untruncated) bodies.",
-            inputSchema: [
-                "type": "object",
-                "properties": ["id": ["type": "string", "description": "Optional rule UUID — return just this rule, with full bodies."]],
-            ],
+            inputSchema: .object(
+                ["id": .string("Optional rule UUID — return just this rule, with full bodies.")]
+            ),
             handler: { ex, args in try await ex.handleListRules(args) }
         ),
         MCPTool(
@@ -916,41 +828,33 @@ extension MCPToolExecutor {
             neutralises every rule. Check it before reporting that a mock is in place. This is a \
             write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "id": ["type": "string", "description": "Rule UUID to update. Omit to create a new rule."],
-                    "name": ["type": "string", "description": "Short human-readable rule name (shows in flow audit trails). Required when creating."],
-                    "comment": ["type": "string", "description": "Optional note on why the rule exists."],
-                    "group": ["type": "string", "description": "Optional group label (e.g. one group per scenario); a whole group can be toggled with set_group_enabled. On update, pass \"\" to ungroup."],
-                    "enabled": ["type": "boolean", "description": "Default true on create."],
-                    "match": Self.matchSchema,
-                    "actions": Self.actionsSchema,
-                ],
-                "required": [] as [String],
-            ],
+            // No `required`: this is an upsert, so even `name` is only required when
+            // creating, which a schema can't express. The dictionary version said so
+            // with an explicit `"required": []`, which JSON Schema treats exactly as
+            // an absent one — `JSONSchema` emits no key rather than an empty array.
+            inputSchema: .object([
+                "id": .string("Rule UUID to update. Omit to create a new rule."),
+                "name": .string("Short human-readable rule name (shows in flow audit trails). Required when creating."),
+                "comment": .string("Optional note on why the rule exists."),
+                "group": .string("Optional group label (e.g. one group per scenario); a whole group can be toggled with set_group_enabled. On update, pass \"\" to ungroup."),
+                "enabled": .boolean("Default true on create."),
+                "match": Self.matchSchema,
+                "actions": Self.actionsSchema,
+            ]),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetRule(args) }
         ),
         MCPTool(
             name: "delete_rule",
             description: "Delete a traffic rule by id. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": ["id": ["type": "string", "description": "Rule UUID."]],
-                "required": ["id"],
-            ],
+            inputSchema: .object(["id": .string("Rule UUID.")], required: ["id"]),
             isWrite: true,
             handler: { ex, args in try await ex.handleDeleteRule(args) }
         ),
         MCPTool(
             name: "set_rules_enabled",
             description: "Master switch for the rule engine. When off, no rule is applied regardless of per-rule flags. This is a write action.",
-            inputSchema: [
-                "type": "object",
-                "properties": ["enabled": ["type": "boolean"]],
-                "required": ["enabled"],
-            ],
+            inputSchema: .object(["enabled": .boolean()], required: ["enabled"]),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetRulesEnabled(args) }
         ),
@@ -965,147 +869,130 @@ extension MCPToolExecutor {
             in `ineffectiveReason`. The reply's `members` counts the group, `active` counts how \
             many of them now apply. This is a write action.
             """,
-            inputSchema: [
-                "type": "object",
-                "properties": [
-                    "group": ["type": "string", "description": "Group label as shown in list_rules."],
-                    "enabled": ["type": "boolean"],
+            inputSchema: .object(
+                [
+                    "group": .string("Group label as shown in list_rules."),
+                    "enabled": .boolean(),
                 ],
-                "required": ["group", "enabled"],
-            ],
+                required: ["group", "enabled"]
+            ),
             isWrite: true,
             handler: { ex, args in try await ex.handleSetGroupEnabled(args) }
         ),
     ]
 
-    /// Shared `match` schema for create_rule / update_rule.
-    static var matchSchema: [String: Any] {
+    /// Shared `match` schema for `set_rule` and `arm_breakpoint` — one match
+    /// vocabulary, so a rule and a breakpoint can't come to mean different things by
+    /// the same words.
+    static let matchSchema: JSONSchema = .object(
         [
-            "type": "object",
-            "description": "What traffic the rule applies to, matched against the original client request.",
-            "properties": [
-                "url_pattern": [
-                    "type": "string",
-                    "description": "Matched against the full URL, the way match_style says. Omit match_style and the pattern speaks for itself: a `*` in it means glob, otherwise prefix.",
-                ],
-                "match_style": [
-                    "type": "string",
-                    "enum": ["prefix", "glob", "exact", "regex"],
-                    "description": "How url_pattern is compared. prefix: the pattern must be a case-insensitive prefix of the URL, so a pattern with no query string still matches every query string. glob: `*` matches any run of characters and the pattern must cover the whole URL. exact: the URL must equal the pattern. regex: unanchored, case-insensitive. Defaults to glob when the pattern contains `*`, else prefix — pass it explicitly to match a literal `*`. Read back as `matchStyle`.",
-                ],
-                "is_regex": ["type": "boolean", "description": "Older spelling of match_style: \"regex\". Ignored when match_style is set."],
-                "is_exact": ["type": "boolean", "description": "Older spelling of match_style: \"exact\". Ignored when match_style is set; is_regex wins over it."],
-                "host_pattern": ["type": "string", "description": "Optional host glob (e.g. *.example.com) matched against the URL host; combines with url_pattern."],
-                "query": [
-                    "type": "object",
-                    "description": "Optional query predicates, order-independent: each key must be present and equal its value, or \"*\" to require the key with any value. To require a value that is literally `*`, use the explicit form {\"key\": {\"equals\": \"*\"}} — {\"key\": {\"present\": true}} is the long spelling of \"*\". Read back in the same spelling.",
-                ],
-                "source_app": [
-                    "type": "string",
-                    "description": "Optional originating-app predicate: bundle id or display name (see list_devices / a flow's sourceApp), case-insensitive. This is how you scope a rule to one client — mock it for the app under test and leave the browser alone. Traffic Loom can't attribute to a local process (a LAN device has no local pid) never matches an app-scoped rule.",
-                ],
-                "device_ip": [
-                    "type": "string",
-                    "description": "Optional originating-device predicate: the device's IP as seen by the proxy (see list_devices). Scopes a rule to one phone/machine; unattributed traffic never matches.",
-                ],
-                "methods": [
-                    "type": "array",
-                    "items": ["type": "string"],
-                    "description": "HTTP methods to match, e.g. [\"GET\"]. Empty/omitted = all methods.",
-                ],
-            ],
-            "required": ["url_pattern"],
-        ]
-    }
+            "url_pattern": .string(
+                "Matched against the full URL, the way match_style says. Omit match_style and the pattern speaks for itself: a `*` in it means glob, otherwise prefix."
+            ),
+            "match_style": .string(
+                "How url_pattern is compared. prefix: the pattern must be a case-insensitive prefix of the URL, so a pattern with no query string still matches every query string. glob: `*` matches any run of characters and the pattern must cover the whole URL. exact: the URL must equal the pattern. regex: unanchored, case-insensitive. Defaults to glob when the pattern contains `*`, else prefix — pass it explicitly to match a literal `*`. Read back as `matchStyle`.",
+                allowed: MatchStyle.allCases.map(\.rawValue)
+            ),
+            "is_regex": .boolean("Older spelling of match_style: \"regex\". Ignored when match_style is set."),
+            "is_exact": .boolean("Older spelling of match_style: \"exact\". Ignored when match_style is set; is_regex wins over it."),
+            "host_pattern": .string("Optional host glob (e.g. *.example.com) matched against the URL host; combines with url_pattern."),
+            "query": .freeformObject(
+                "Optional query predicates, order-independent: each key must be present and equal its value, or \"*\" to require the key with any value. To require a value that is literally `*`, use the explicit form {\"key\": {\"equals\": \"*\"}} — {\"key\": {\"present\": true}} is the long spelling of \"*\". Read back in the same spelling."
+            ),
+            "source_app": .string(
+                "Optional originating-app predicate: bundle id or display name (see list_devices / a flow's sourceApp), case-insensitive. This is how you scope a rule to one client — mock it for the app under test and leave the browser alone. Traffic Loom can't attribute to a local process (a LAN device has no local pid) never matches an app-scoped rule."
+            ),
+            "device_ip": .string(
+                "Optional originating-device predicate: the device's IP as seen by the proxy (see list_devices). Scopes a rule to one phone/machine; unattributed traffic never matches."
+            ),
+            "methods": .array(
+                of: .string(), "HTTP methods to match, e.g. [\"GET\"]. Empty/omitted = all methods."
+            ),
+        ],
+        required: ["url_pattern"],
+        description: "What traffic the rule applies to, matched against the original client request."
+    )
 
-    /// Shared `actions` schema for create_rule / update_rule.
-    static var actionsSchema: [String: Any] {
+    /// Shared `actions` schema for `set_rule`.
+    static let actionsSchema: JSONSchema = .object(
         [
-            "type": "object",
-            "description": "What to do with matching traffic. Set any combination. block beats mock_response beats map_local when several short-circuits match; request rewrites compose in rule order.",
-            "properties": [
-                "block": ["type": "boolean", "description": "Refuse the request with 403; the upstream is never contacted."],
-                "mock_response": [
-                    "type": "object",
-                    "description": "Short-circuit with a synthesized response; the upstream is never contacted.",
-                    "properties": [
-                        "status_code": ["type": "integer", "description": "Default 200."],
-                        "headers": ["type": "object", "description": "Response header name/value pairs."],
-                        "body": ["type": "string", "description": "UTF-8 response body (e.g. a JSON document). Sent verbatim — a malformed payload is allowed on purpose — but if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry naming the parse error."],
-                        "body_base64": ["type": "string", "description": "Base64-encoded response body for binary payloads (images, protobuf, gzip). Takes precedence over body."],
-                        "content_type": ["type": "string", "description": "Convenience Content-Type, e.g. application/json."],
-                    ],
+            "block": .boolean("Refuse the request with 403; the upstream is never contacted."),
+            "mock_response": .object(
+                [
+                    "status_code": .integer("Default 200."),
+                    "headers": .freeformObject("Response header name/value pairs."),
+                    "body": .string("UTF-8 response body (e.g. a JSON document). Sent verbatim — a malformed payload is allowed on purpose — but if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry naming the parse error."),
+                    "body_base64": .string("Base64-encoded response body for binary payloads (images, protobuf, gzip). Takes precedence over body."),
+                    "content_type": .string("Convenience Content-Type, e.g. application/json."),
                 ],
-                "map_remote": [
-                    "type": "object",
-                    "description": "Re-send the request to a different origin, keeping path + query.",
-                    "properties": [
-                        "destination": ["type": "string", "description": "Origin like http://127.0.0.1:3001 (scheme + host + optional port)."],
-                        "exclude": ["type": "string", "description": "URLs matching this glob/regex are left un-redirected."],
-                        "keep_host_header": ["type": "boolean", "description": "Keep the original Host header instead of following the new origin."],
-                    ],
-                    "required": ["destination"],
+                description: "Short-circuit with a synthesized response; the upstream is never contacted."
+            ),
+            "map_remote": .object(
+                [
+                    "destination": .string("Origin like http://127.0.0.1:3001 (scheme + host + optional port)."),
+                    "exclude": .string("URLs matching this glob/regex are left un-redirected."),
+                    "keep_host_header": .boolean("Keep the original Host header instead of following the new origin."),
                 ],
-                "map_local": [
-                    "type": "object",
-                    "description": "Serve a local file as the response; the upstream is never contacted. It carries no headers of its own beyond content_type — add any others with rewrite_response.set_headers, which runs over whatever the route produced.",
-                    "properties": [
-                        "path": ["type": "string", "description": "Absolute file path."],
-                        "status_code": ["type": "integer", "description": "Default 200."],
-                        "content_type": ["type": "string", "description": "Default: guessed from the file extension."],
-                    ],
-                    "required": ["path"],
+                required: ["destination"],
+                description: "Re-send the request to a different origin, keeping path + query."
+            ),
+            "map_local": .object(
+                [
+                    "path": .string("Absolute file path."),
+                    "status_code": .integer("Default 200."),
+                    "content_type": .string("Default: guessed from the file extension."),
                 ],
-                "rewrite_request": [
-                    "type": "object",
-                    "description": "Mutate the outgoing request before forwarding.",
-                    "properties": [
-                        "method": ["type": "string"],
-                        "url": ["type": "string", "description": "Replacement request URL, whole (scheme + host + path + query). Unlike map_remote, which swaps the origin and keeps the path, this sets the lot; the Host header follows it."],
-                        "set_headers": ["type": "object", "description": "Header name/value pairs to add or overwrite."],
-                        "remove_headers": ["type": "array", "items": ["type": "string"]],
-                        "body": ["type": "string", "description": "Replacement UTF-8 request body. \"\" replaces it with an empty body, which is different from omitting this key (leave the client's body alone). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."],
-                        "body_file": ["type": "string", "description": "Absolute path to a file whose contents replace the request body, read at request time so editing the file needs no rule change. Takes precedence over `body`. If it can't be read the client's own body is forwarded and the failure is logged (a request has no response to report it on)."],
-                    ],
+                required: ["path"],
+                description: "Serve a local file as the response; the upstream is never contacted. It carries no headers of its own beyond content_type — add any others with rewrite_response.set_headers, which runs over whatever the route produced."
+            ),
+            "rewrite_request": .object(
+                [
+                    "method": .string(),
+                    "url": .string("Replacement request URL, whole (scheme + host + path + query). Unlike map_remote, which swaps the origin and keeps the path, this sets the lot; the Host header follows it."),
+                    "set_headers": .freeformObject("Header name/value pairs to add or overwrite."),
+                    "remove_headers": .array(of: .string()),
+                    "body": .string("Replacement UTF-8 request body. \"\" replaces it with an empty body, which is different from omitting this key (leave the client's body alone). Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."),
+                    "body_file": .string("Absolute path to a file whose contents replace the request body, read at request time so editing the file needs no rule change. Takes precedence over `body`. If it can't be read the client's own body is forwarded and the failure is logged (a request has no response to report it on)."),
                 ],
-                "rewrite_response": [
-                    "type": "object",
-                    "description": "Mutate the response (real or mocked) before it reaches the client.",
-                    "properties": [
-                        "status_code": ["type": "integer"],
-                        "set_headers": ["type": "object", "description": "Header name/value pairs to add or overwrite."],
-                        "remove_headers": ["type": "array", "items": ["type": "string"]],
-                        "body": ["type": "string", "description": "Replacement UTF-8 response body. Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."],
-                    ],
+                description: "Mutate the outgoing request before forwarding."
+            ),
+            "rewrite_response": .object(
+                [
+                    "status_code": .integer(),
+                    "set_headers": .freeformObject("Header name/value pairs to add or overwrite."),
+                    "remove_headers": .array(of: .string()),
+                    "body": .string("Replacement UTF-8 response body. Sent verbatim; if it was meant to be JSON and doesn't parse, the reply carries a `warnings` entry."),
                 ],
-                "request_substitutions": Self.substitutionsSchema(
-                    "Find/replace substitutions on the outgoing request (\"modify request\"). Applied in order."),
-                "response_substitutions": Self.substitutionsSchema(
-                    "Find/replace substitutions on the returned response (\"modify response\"). Applied in order."),
-                "delay_ms": ["type": "integer", "description": "Hold the response back this many milliseconds (crude throttle)."],
-            ],
-        ]
-    }
+                description: "Mutate the response (real or mocked) before it reaches the client."
+            ),
+            "request_substitutions": Self.substitutionsSchema(
+                "Find/replace substitutions on the outgoing request (\"modify request\"). Applied in order."),
+            "response_substitutions": Self.substitutionsSchema(
+                "Find/replace substitutions on the returned response (\"modify response\"). Applied in order."),
+            "delay_ms": .integer("Hold the response back this many milliseconds (crude throttle)."),
+        ],
+        description: "What to do with matching traffic. Set any combination. block beats mock_response beats map_local when several short-circuits match; request rewrites compose in rule order."
+    )
 
-    static func substitutionsSchema(_ description: String) -> [String: Any] {
-        [
-            "type": "array",
-            "description": description,
-            "items": [
-                "type": "object",
-                "properties": [
-                    "field": ["type": "string", "enum": ["url", "header", "body"], "description": "Which part to substitute in (url is request-side only)."],
-                    "header_name": [
-                        "type": "string",
-                        "description": "With field \"header\": the one header to substitute in, case-insensitive (e.g. Authorization). Omit to run over every header's value, which is blunt — it also hits any other header containing the same text. Rejected with any other field.",
-                    ],
-                    "match": ["type": "string", "description": "Text or regex to find."],
-                    "replacement": ["type": "string", "description": "Replacement text (regex $1 backrefs allowed)."],
-                    "is_regex": ["type": "boolean", "description": "Treat match as a regular expression (default false)."],
-                    "case_sensitive": ["type": "boolean", "description": "Case-sensitive match (default false)."],
+    static func substitutionsSchema(_ description: String) -> JSONSchema {
+        .array(
+            of: .object(
+                [
+                    "field": .string(
+                        "Which part to substitute in (url is request-side only).",
+                        allowed: SubstitutionRule.Field.Kind.allCases.map(\.rawValue)
+                    ),
+                    "header_name": .string(
+                        "With field \"header\": the one header to substitute in, case-insensitive (e.g. Authorization). Omit to run over every header's value, which is blunt — it also hits any other header containing the same text. Rejected with any other field."
+                    ),
+                    "match": .string("Text or regex to find."),
+                    "replacement": .string("Replacement text (regex $1 backrefs allowed)."),
+                    "is_regex": .boolean("Treat match as a regular expression (default false)."),
+                    "case_sensitive": .boolean("Case-sensitive match (default false)."),
                 ],
-                "required": ["field", "match"],
-            ],
-        ]
+                required: ["field", "match"]
+            ),
+            description
+        )
     }
 }

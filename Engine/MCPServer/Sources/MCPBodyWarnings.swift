@@ -81,13 +81,14 @@ extension MCPToolExecutor {
 
     /// Warnings for a `body` argument sent alongside `set_headers` — the shape
     /// `replay_flow` and `resume` share.
-    static func bodyWarnings(fromArguments arguments: [String: Any]) -> [String] {
-        var declared: String?
-        if let raw = arguments["set_headers"] as? [String: Any] {
-            declared = contentType(of: raw.map { HeaderPair(name: $0.key, value: String(describing: $0.value)) })
-        }
+    static func bodyWarnings(fromArguments arguments: MCPArguments) -> [String] {
+        // A malformed argument is not this function's business — it throws where the
+        // edit itself is parsed, and by the time a warning is being attached that has
+        // already happened. So a read that can't succeed contributes no warning
+        // rather than turning a delivered edit into an error after the fact.
+        let declared = (try? headerPairs(from: arguments)).flatMap { $0.map(contentType(of:)) } ?? nil
         return [malformedJSONWarning(
-            body: arguments["body"] as? String, contentType: declared, label: "body"
+            body: try? arguments.string("body"), contentType: declared, label: "body"
         )].compactMap { $0 }
     }
 
