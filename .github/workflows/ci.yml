@@ -61,7 +61,7 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -98,12 +98,21 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
 
-      - uses: jdx/mise-action@v2
+      # v4 for the Node 24 runtime — but note what v3 added on the way past:
+      # mise-action exports `mise.toml`'s `[env]` block into the steps that follow
+      # it. This repo has one (`TUIST_USE_SWIFTERPM = "1"`), so CI resolves Tuist
+      # dependencies through the SwifterPM store from here on, the way a developer
+      # machine already did. That is an alignment rather than a new opinion — the
+      # committed `Tuist/Package.resolved` was regenerated under that resolver — but
+      # it is a *build-graph* change riding along with a runtime bump, which is the
+      # exact shape of the failures the cache note below is about. Hence the `-v2-`
+      # on the key.
+      - uses: jdx/mise-action@v4
 
       # Own key, separate from the Release workflow's, so the two don't fight over
       # one entry.
@@ -116,14 +125,20 @@ jobs:
       # `module map file … not found` once the graph changed under the stale
       # products. Re-downloading checkouts is what actually took the time; those
       # stay cached, safely keyed on Package.resolved.
+      #
+      # The `-v2-` in the key is deliberate and is the same lesson applied forward:
+      # the restore-key matches by prefix, so without it the first SwifterPM run
+      # would restore a store laid out by the old resolver. Bumping the prefix
+      # retires every pre-SwifterPM entry in one move instead of hoping the layouts
+      # are compatible. It costs one cold run per key.
       - name: Cache SPM
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Tuist/.build
-          key: ${{ runner.os }}-loom-ci-${{ hashFiles('Tuist/Package.resolved') }}
+          key: ${{ runner.os }}-loom-ci-v2-${{ hashFiles('Tuist/Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-loom-ci-
+            ${{ runner.os }}-loom-ci-v2-
 
       # The one failure mode no other gate can see: a custom SF Symbol that
       # compiles clean (actool exits 0, Assets.car is complete, `Image(_:)` has
@@ -166,7 +181,7 @@ jobs:
 
       - name: Upload result bundle
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: ${{ runner.temp }}/Tests.xcresult
@@ -182,13 +197,13 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
 
       - name: Cache SPM
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .build
           key: ${{ runner.os }}-loom-spm-${{ hashFiles('Package.resolved') }}
@@ -218,22 +233,22 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify pinned Xcode
         run: scripts/assert-xcode.sh
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       # Sources only, no build products — see the Build & test job's cache above.
       - name: Cache SPM
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Tuist/.build
-          key: ${{ runner.os }}-loom-tsan-${{ hashFiles('Tuist/Package.resolved') }}
+          key: ${{ runner.os }}-loom-tsan-v2-${{ hashFiles('Tuist/Package.resolved') }}
           restore-keys: |
-            ${{ runner.os }}-loom-tsan-
+            ${{ runner.os }}-loom-tsan-v2-
 
       - name: Install dependencies
         run: tuist install
@@ -338,7 +353,7 @@ jobs:
 
       - name: Upload TSan log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tsan-log
           path: ${{ runner.temp }}/tsan.log
