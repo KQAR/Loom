@@ -40,7 +40,10 @@ full tool set (read + write) plus the `loom` skill explaining them.
 
 Point a client at the proxy (`curl -x http://127.0.0.1:9090 …`, the macOS system
 proxy, or a phone on the same Wi-Fi via the panel's QR), then drive it from the
-agent:
+agent. A client that only understands `ALL_PROXY` gets the **SOCKS5** listener one
+port up (`socks5://127.0.0.1:9091`); one that ignores proxy settings entirely
+(Node's global `fetch`) gets a **reverse-proxy endpoint** — a local port standing in
+for one origin (`create_reverse_proxy`).
 
 - **Read** — `get_recent_flows`, `get_flow_detail`, `list_devices`, `list_rules`, …
 - **Write** — `replay_flow` (re-send with overrides), `set_rule` (mock / map /

@@ -35,7 +35,9 @@ claude plugin install loom@loom
 ## 通过 MCP 使用
 
 先让客户端走代理(`curl -x http://127.0.0.1:9090 …`、macOS 系统代理,或同一 Wi-Fi 下
-的手机扫面板二维码),再由 Agent 驱动:
+的手机扫面板二维码),再由 Agent 驱动。只认 `ALL_PROXY` 的客户端走高一个端口的
+**SOCKS5** 监听(`socks5://127.0.0.1:9091`);完全无视代理设置的(Node 的全局 `fetch`)
+则用**反向代理端点**——一个替某个上游站点接管的本地端口(`create_reverse_proxy`)。
 
 - **读** — `get_recent_flows`、`get_flow_detail`、`list_devices`、`list_rules` …
 - **写** — `replay_flow`(带改写重放)、`set_rule`(mock / 映射 / 改写 / 拦截 / 延迟)、

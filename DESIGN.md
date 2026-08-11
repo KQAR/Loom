@@ -133,17 +133,17 @@ components:
     anatomy: "SF Symbol + one-line fault · single fix action"
   # --- Main window (opaque content, frosted titlebar band) ---
   main-window:
-    structure: "HStack(spacing: 0): sidebar | request-table top / inspector-panel bottom, with a hand-rolled draggable divider (NOT VSplitView: a bare NSSplitView inserts and removes subviews outright, so the inspector could only pop in and out — it slides now, and the divider was all VSplitView was buying). The request table is an NSTableView this app OWNS (RequestTable), not SwiftUI's Table: Table evaluates only visible row bodies but walks its whole collection ~5x per data change (measured: 100,006 subscripts for 20,001 rows, 70-120ms), which at a capture batch every 100ms is the main thread. A find bar sits above the table as a top safe-area inset, hidden until ⌘F. The table OPENS AT THE NEWEST ROW and follows the tail as a GLIDE (a display link closing the remaining distance per unit time), never as a per-batch jump, and never while the reader is scrolling — a batch that fades rows in and jumps the viewport reads as blinking, not as movement. Columns: double-clicking a divider fits one to its content, right-clicking the header chooses which are shown (remembered across launches; hiding the last is refused). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its divider was already fixed and undraggable here. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH 300↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
+    structure: "HStack(spacing: 0): sidebar | request-table top / inspector-panel bottom, with a hand-rolled draggable divider (NOT VSplitView: a bare NSSplitView inserts and removes subviews outright, so the inspector could only pop in and out — it slides now, and the divider was all VSplitView was buying). The request table is an NSTableView this app OWNS (RequestTable), not SwiftUI's Table: Table evaluates only visible row bodies but walks its whole collection ~5x per data change (measured: 100,006 subscripts for 20,001 rows, 70-120ms), which at a capture batch every 100ms is the main thread. A find bar sits above the table as a ROW IN THE SAME VStack, hidden until ⌘F, and its appearance is animated (the table moves with it). NOT a safe-area inset: an inset changes the table's safe area, which AppKit turns into a scroll-view content inset OUTSIDE SwiftUI's animation transaction — the bar slid while NSTableHeaderView jumped. In the stack the table's FRAME is what changes, and a representable's frame is set on every tick, so header, rows and bar move as one. The animation is scoped to the bar's presence (.animation(_:value:)), never a blanket one: that would also animate the table's own updates, which arrive ten times a second under capture. The table OPENS AT THE NEWEST ROW and follows the tail as a GLIDE (a display link closing the remaining distance per unit time), never as a per-batch jump, and never while the reader is scrolling — a batch that fades rows in and jumps the viewport reads as blinking, not as movement. Columns: double-clicking a divider fits one to its content, right-clicking the header chooses which are shown (remembered across launches; hiding the last is refused). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its divider was already fixed and undraggable here. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH 300↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
     defaultSize: "{metrics.main-window-default}"
     titlebar: "FROSTED, not opaque and not bare: the request table extends under the toolbar band and blurs beneath it. Content surfaces below stay opaque — the frost is the band only. NSVisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active) at the BACK of the titlebar container, so toolbar items read crisply over it. .withinWindow is load-bearing: it samples the table below it in this window, where .behindWindow would blur the desktop and leave the rows crisp. NO baseline hairline (titlebarSeparatorStyle = .none, showsBaselineSeparator = false), no border, no shadow — the frost is the only separation. Two rejected: SwiftUI .toolbarBackground(.visible, for: .windowToolbar) is a no-op under .windowStyle(.hiddenTitleBar); titlebarAppearsTransparent = false gives AppKit's OPAQUE fill, not a translucent one."
-    toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + the LISTENER's host:port (verbatim, no digit grouping) — the LAN IP while the proxy is bound to 0.0.0.0, 127.0.0.1 while it is not, never 'whatever address this machine happens to have'; naming an interface the listener is not on is worse than naming a narrow one, because it sends someone to debug their client rather than the LAN switch that caused it — + three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') tinted secondary off / {colors.accent} on — the SAME three values the console's switch-tiles use, because this window and that panel are two renderings of one state. They used to be green, which both contradicted the tile spec and spent the 2xx hue on something that is not a status; SSL keeps one extra value, {colors.status-waiting} for on-but-CA-not-trusted, which is 'waiting on you', not broken. Right (.primaryAction, flat): Record start/stop ('record.circle'/'stop.fill' + label) + Clear ('xmark.bin'). No search field HERE and no title — filtering is the find bar above the table (see main-window § Find bar); `.searchable` would put a stretchy field into this band, whose macOS 26 glass capsule grows with its .principal item. All icons 16pt with ≥26pt tap targets."
+    toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + the LISTENER's host:port (verbatim, no digit grouping) — the LAN IP while the proxy is bound to 0.0.0.0, 127.0.0.1 while it is not, never 'whatever address this machine happens to have'; naming an interface the listener is not on is worse than naming a narrow one, because it sends someone to debug their client rather than the LAN switch that caused it — + three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') tinted secondary off / {colors.accent} on — the SAME three values the console's switch-tiles use, because this window and that panel are two renderings of one state. They used to be green, which both contradicted the tile spec and spent the 2xx hue on something that is not a status; SSL keeps one extra value, {colors.status-waiting} for on-but-CA-not-trusted, which is 'waiting on you', not broken. Left (.navigation): a hand-rolled 'sidebar.left' toggle — AppKit's .toggleSidebar item sends toggleSidebar(_:) down the responder chain and only NSSplitViewController answers it, which is the container this window deliberately doesn't use. NOTHING is .primaryAction: Record ('record.circle'/'stop.fill' + label) sits at the RIGHT END OF THE CHIP behind a divider, because it is the same capture state the dot already reports and splitting them across the band made two places to look; Clear is the flow list's own floating {components.clear-fab}, not a toolbar button, because a destructive control belongs against the thing it destroys. No search field HERE and no title — filtering is the find bar above the table (see main-window § Find bar); `.searchable` would put a stretchy field into this band, whose macOS 26 glass capsule grows with its .principal item. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Errors · Rules · Audit · Breakpoints (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): the pill is for attention, and these are bucket sizes on every row at once) · Sections 'Devices' / 'Apps' / 'Hosts', one Label per entry with the same trailing count. Selection scopes the table."
-  request-table:   # top of the split — a multi-column SwiftUI Table
-    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the ring caps at 2000 and every extra point comes off Path, which is never wide enough) · App (icon) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono, tinted only when mutating — see `method-column`) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
+  request-table:   # top of the split — a multi-column NSTableView this app owns (see main-window.structure)
+    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the window caps at {FlowLimits.windowRows} = 20 000 rows and every extra point comes off Path, which is never wide enough) · App (icon) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono, tinted only when mutating — see `method-column`) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed) · Time (numeric)"
     order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
-    tail-follow: "auto-scroll to the newest row as the list grows; a user scroll stops following, and scrolling back to the bottom resumes it (live-scroll notifications distinguish user gestures from programmatic scrolls)"
+    tail-follow: "a GLIDE toward the newest row as the list grows — a display link closing a fixed fraction of the REMAINING distance per unit time, so a batch landing mid-glide moves the target instead of restarting the motion. Whether to follow is measured from the VIEWPORT'S GEOMETRY a moment before the edit lands, never from a 'user scrolled' flag: a flag can only be cleared by a scroll notification, and those miss momentum, scroller drags, keyboard scrolls and the table's own head-trim shift, so it stays armed and yanks the list down under a reader. An in-flight glide COUNTS as being at the bottom (it is behind the bottom by construction), and nothing programmatic touches the offset during a gesture or for half a second after it — the glide and a live scroll write the same clip view, and interleaved boundsOrigin writes shake the list. No row-edit animation: a batch that fades rows in AND jumps the viewport ten times a second reads as blinking, not as movement."
     selection: "single, drives the inspector below"
     row-context-menu: "right-click a row → Copy ▸ Host · Path · URL · as cURL (curl reconstructs method/headers/body)"
   status-dot:      # the table's status column
@@ -176,6 +176,22 @@ components:
     body-copy: "Body panes (request + response) show a floating copy button pinned top-right that copies the whole body; flips to a checkmark briefly."
     body-json: "when a body parses as JSON (object/array, ≤200KB), Body renders a collapsible, syntax-highlighted tree (JSONView) preserving original key order — chevron nodes, keys .label, strings {colors.syntax-string}, numbers {colors.syntax-number}, bool {colors.syntax-bool}, null secondary; deep nodes start collapsed. Non-JSON / oversized falls back to the line-numbered raw view. Editor syntax colors are a deliberate exception to 'color only for status'."
     tabStrip: "text tabs, selected = semibold + 2pt accent underline (custom, not segmented)"
+  clear-fab:       # discard the capture — floats over the flow list, not in the toolbar
+    where: "bottom-trailing OVERLAY on the request table, not a toolbar item and not a reserved strip: the table keeps its full height and the row stripes fill it."
+    anatomy: "at rest a 12pt {colors.status-error} dot, so it barely covers content. On hover it springs to a 44pt material circle with a `trash` glyph. HELD to fire (0.7 s, `MainView.clearHoldDuration`): a red ring charges around the glyph and springs back if released early."
+    why-hold: "the console cannot present a dialog and this window will not grow one for a control this destructive — the hold IS the confirmation, and unlike a dialog it costs nothing when you are not using it. It is also why the control may be this small: a stray click cannot fire it."
+  glyph-button:    # the shared 'this is clickable' bare symbol — DesignTokens.swift
+    anatomy: "an SF Symbol alone, {colors.accent}, in a {rounded.sm} box that FILLS at {colors.attention-fill} on hover (§ Motion). No bezel, no label. 24pt inside a form, where it sits beside 30pt fields; `compact` = 20 (an AppKit small control's height) on a panel header, whose height is set by one line of {typography.callout} — at 24 the glyph became the tallest thing in the row and pushed the header taller."
+    words: "the tooltip and the accessibility label carry them. A glyph-only add is honest ONLY where the position already says what is being added — a card or a panel whose whole content is the list. Anywhere else, use a labelled button."
+    disabled: "stays VISIBLE, tertiary. A control that vanishes when it can't act reads as a missing feature."
+  loom-picker:     # the one dropdown — DesignTokens.swift
+    anatomy: "the current value + a chevron, hover fill, NO bezel and NO field well. Still a `Menu`, so popup, keyboard handling and accessibility are AppKit's; only the closed state is Loom's."
+    why: "the system pop-up button brings its own bezel and metrics, visibly foreign beside Loom's own text field; the field well was consistent but heavy — a menu is not somewhere you type, and the enterable surface said it was. The chevron alone is the same 'there is more behind this' vocabulary the console's config-row already uses."
+    used-by: "the rule editor and the find bar's scope picker — the picker LEADS the field there, so the line reads 'search in URL for …' left to right."
+  sidebar-panel:   # Rules / Audit / Breakpoints — the content pane, not the flow list
+    what: "selecting Rules / Audit / Breakpoints in the sidebar replaces the request table with a full-pane list. Each is the human's SUPERVISION view of a surface the agent writes over MCP — read-mostly, never a second authoring path (editing a held breakpoint stays agent-only; see INTERACTION.md)."
+    header: "one line: a {typography.callout} .secondary summary phrase on the left ('4 of 7 active', '12 entries'), the panel's single action as a {components.glyph-button} (`compact`) on the right. Glyph-only for the same reason the console's cards are: a panel whose whole content is one list can't have a header button that adds something else. Audit's Clear stays visible when disabled."
+    master-switches: "live on the TOOLBAR CHIP (the wand for rules), not in the panel header — the panel is one rendering of state the chip already owns."
   button-primary:
     style: ".buttonStyle(.borderedProminent)"   # .glassProminent on macOS 26+
     rounded: "{rounded.capsule}"
@@ -533,38 +549,42 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 
 ```
 ┌───────────────┬─────────────────────────────────────────────┐
-│ Sidebar       │   ● 10.0.11.196:9090 🌐 🛡 🪄    ▶ Record  🗑 │  toolbar
+│ Sidebar       │    ● 10.0.11.196:9090 🌐 🛡 🪄 │ ▶ Record    │  toolbar (chip centred)
 │ All Flows  6  ├─────────────────────────────────────────────┤
-│ Errors     2  │  ●  Method  Host        Path         Time    │  request-table
-│ Replayed   0  │  200 GET    127.0.0.1   /api/users   12ms    │  (columns)
-│ ▸ Hosts       │  404 GET    127.0.0.1   /api/missing  9ms    │
-│   127…     3  ├───────────────── drag ──────────────────────┤
-│   local…   3  │  GET /api/users            [Replay]          │  inspector-panel
-│ 180–300       │  [Summary][Request][Response][Diff]          │  (tabbed)
-│               │  … tab content …                            │
+│ Errors     2  │  [in URL ▾] find…              12 + 40 older │  find bar (⌘F only)
+│ Rules      3  ├─────────────────────────────────────────────┤
+│ Audit     12  │  ●  Method  Host        Path         Time    │  request-table
+│ ▸ Hosts       │  ●  GET     127.0.0.1   /api/users   12ms    │  (columns)
+│   127…     3  │  ●  GET     127.0.0.1   /api/missing  9ms  ⬤ │  ← clear-fab floats
+│   local…   3  ├───────────────── drag ──────────────────────┤
+│               │  GET /api/users            [Replay]          │  inspector-panel
+│               │  [Summary][Raw][Headers][Body] │ [Raw][…]    │  (Request | Response)
 └───────────────┴─────────────────────────────────────────────┘
 ```
 
 - **Console** is vibrant material, fixed width, non-scrolling (config is short). No traffic.
-- **Sidebar** (`.listStyle(.sidebar)`): fixed categories (All / Errors / Replayed) with `.badge` counts, then a
-  `Hosts` section — selection scopes the table.
-- **Content**: with no selection, the `Table` fills the whole pane. Selecting a row reveals a `VSplitView` —
-  table on top, tabbed `inspector-panel` below (draggable divider); the inspector's ✕ (top-right) closes it by
-  deselecting.
+- **Sidebar** (`.listStyle(.sidebar)`): `All Flows` / `Errors` / `Rules` / `Audit` / `Breakpoints`, then
+  `Devices` / `Apps` / `Hosts` sections — each row a `Label` with a **plain trailing count, never `.badge()`**
+  (`{components.sidebar-counts}`). Selection scopes the table, or replaces it with a `{components.sidebar-panel}`.
+- **Content**: with no selection, the request table fills the whole pane. Selecting a row slides the tabbed
+  `inspector-panel` up below it over a **hand-rolled draggable divider** (not a `VSplitView` — see
+  `{components.main-window}.structure`); the inspector's ✕ closes it by deselecting.
 - **Toolbar band is frosted** (`{components.main-window}.titlebar`): the request table extends under it and
   blurs beneath it — no hairline, no border, no shadow. Everything below the band stays opaque.
-- **Toolbar**: a centered chip — status dot + the listener's `host:port` + three gray/green status toggles (System proxy,
-  SSL, Map/rewrite); right-aligned flat buttons `Record` (start/stop) + `Clear` (`xmark.bin`), with the macOS 26
-  shared-glass container hidden. No window title. System-proxy/SSL are M2, Map/rewrite and Record
-  (interception) are M2/M3 — UI wired now, engines later.
+- **Toolbar**: a sidebar toggle at the leading edge, and one centred chip — status dot + the listener's
+  `host:port` + three status toggles (System proxy, SSL, Map/rewrite) + **Record** (start/stop) behind a
+  divider, with the macOS 26 shared-glass container hidden. Nothing is right-aligned and there is no window
+  title; discarding the capture is the `{components.clear-fab}` over the list, not a toolbar button.
 - **Find bar**: hidden by default, ⌘F (Edit ▸ Find ▸ Find in Requests) reveals it directly **above the request table**,
-  `.bar` material, one row: needle · scope menu (URL / Headers / Body) · result count or re-run affordance · ✕.
+  `.bar` material, one row: scope picker (`{components.loom-picker}`: URL / Headers / Body) · needle · result
+  count · ✕. The picker **leads**, so the line reads "in URL · find …" left to right. It animates in and out as
+  a row of the table's own stack — not a safe-area inset, which slides the bar while the table's header jumps.
   Esc dismisses, and dismissing clears the needle — a filter still applied with its cause off screen is the
   `isRecording` failure again. **Deliberately not in the toolbar**, which is why the line above no longer says
   "no search": `.searchable` puts a stretchy field into the band whose macOS 26 glass capsule grows with its
   `.principal` item (see `MainView.toolbarContent`), and a find bar belongs against the thing it filters.
   It composes with the sidebar as AND — the category picks *whose* traffic, the needle picks *which exchange* —
-  and it never moves the sidebar badges, so "too narrow a filter" stays distinguishable from "not captured".
+  and it never moves the sidebar counts, so "too narrow a filter" stays distinguishable from "not captured".
 - **Spacing**: base 4pt; console horizontal margin `{metrics.console-margin}` (12pt, narrower than the window's 16). If a value isn't a token, it's probably wrong.
 
 ## Motion
@@ -732,24 +752,41 @@ rejecting what failed:
 
 ### Main window
 
-- **`main-window`** — `HStack` (not `NavigationSplitView`, not `HSplitView` — see main-window.structure above): `sidebar` | `VSplitView(request-table, inspector-panel)`. Opaque
+- **`main-window`** — `HStack` (not `NavigationSplitView`, not `HSplitView`, and the inner split is not a
+  `VSplitView` either — see main-window.structure above): `sidebar` | `request-table` over `inspector-panel`
+  across a hand-rolled draggable divider. Opaque
   content surfaces under a **frosted toolbar band** (`{components.main-window}.titlebar` — the table slides
   under it and blurs, with no hairline, border or shadow), no sidebar/window title. Toolbar per
-  `{components.main-window}.toolbar` — centered status chip, Record + Clear right-aligned, no search field (the find bar sits above the table instead, hidden until ⌘F).
+  `{components.main-window}.toolbar` — a leading sidebar toggle and one centered chip carrying Record; nothing
+  right-aligned, no search field (the find bar sits above the table, hidden until ⌘F) and no Clear button (it is
+  the `{components.clear-fab}` over the list).
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Rules` / `Audit` / `Breakpoints` as
   `Label`s with a trailing count, then `Devices` / `Apps` / `Hosts` sections. The count is **plain tertiary
   monospaced digits, never `.badge()`**: AppKit's pill is right for "N things demanding attention" and wrong
   for a bucket size on every row at once, where a column of pills reads as a column of alerts. Monospaced so
   a count crossing 9→10→100 doesn't shift the row. Selection scopes the table.
-- **`request-table`** — a SwiftUI `Table` (resizable columns, single selection): status-pill · Protocol · Method · Host ·
-  Path (middle-truncated, `↻` accent glyph if replayed) · Time. Everything from the wire is mono.
-- **`status-pill`** — the status column, 44×20 fixed: 3-digit code in `{typography.numeric}` semibold,
-  status-class color 100% text / ~15% fill; `ERR` for transport errors; a small `ProgressView` while in flight.
+- **`request-table`** — an `NSTableView` this app owns (`RequestTable`), **not** SwiftUI's `Table`, which walks
+  its whole collection ~5× per data change (resizable columns, single selection): status-dot · # · App ·
+  Protocol · Method · Host · Path (middle-truncated, `↻` accent glyph if replayed) · Time. Everything from the
+  wire is mono. It is updated by **diffing**, never `reloadData()`, and follows the tail as a glide — both per
+  `{components.request-table}` and CLAUDE.md § Performance.
+- **`status-dot`** — the status column (`StatusDot`), a 9pt status-class dot with an untitled header: the code
+  itself is a tooltip and the inspector's Summary row, and a whole *failed* row is washed instead
+  (`{components.row-fill}`). An in-flight exchange shows a small `ProgressView` in the dot's place, so "still
+  running" reads at a glance.
 - **`inspector-panel`** — the bottom pane, opaque, shown only when a flow is selected. An `HSplitView` split into
   **Request** (left) and **Response** (right), each with its own text tab strip (selected tab = semibold + 2pt
   accent underline). Tab sets, badges and per-pane chrome per `{components.inspector-panel}.requestPane` /
   `.responsePane` — the YAML is the authority; don't restate the tab lists in prose. **Replay lives here** (the
   Request pane's Replay button, same write path as the agent). Layout referenced from Proxyman, not copied.
+- **`sidebar-panel`** — Rules / Audit / Breakpoints replace the table with a full-pane list: a summary phrase
+  left, one `{components.glyph-button}` right, per `{components.sidebar-panel}`. These are supervision views of
+  what the agent wrote over MCP, never a second authoring path.
+- **`clear-fab`** — discarding the capture: a red dot over the list that expands on hover and is **held** to
+  fire. Not a toolbar button and not a dialog — see `{components.clear-fab}`.
+- **Shared controls** (`DesignTokens.swift`, beside `CapsuleBadge`) — `{components.glyph-button}` and
+  `{components.loom-picker}` are used across the console cards, the rule editor, the sidebar panels and the find
+  bar. A control on its third surface belongs in that file, not in the feature that happened to need it first.
 - **`empty-state`** — `ContentUnavailableView`: distinct copy for *proxy stopped* vs *running, nothing captured
   yet*. Never a custom illustration.
 

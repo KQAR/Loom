@@ -646,6 +646,56 @@ header title as a floor); and **right-clicking the header chooses columns**, rem
 across launches, with hiding the last one refused on both sides — the menu that would undo
 it lives on a header that by then has nothing left to draw.
 
+### Rules say what they mean, and the window says it the same way (0.0.23)
+
+The round is one theme in three layers: **a thing an agent can write that the human's
+surface cannot show is not supervised**, and each layer had its own version of it.
+
+**The rule model encoded choices as booleans.** `isRegex` + `isExact` gave four
+combinations for three states with the precedence settled in a comment, and glob-vs-prefix
+was *inferred* from whether the pattern contained a `*` — so a literal `*` could not be
+prefix-matched. `MatchStyle` makes the fourth state sayable. `MockBody` / `RewriteBody`
+replace the `bodyText` + `bodyBase64` pairs, so an undecodable payload is refused at the
+boundary instead of becoming a silently empty response; `QueryPredicate` replaces the
+`*`-means-any sentinel; `RulesState.disabledGroups` makes a group switch its own axis,
+because writing `isEnabled = false` onto every member meant flipping a scenario off and on
+turned rules back on that the human had deliberately turned off — unrecoverably, and
+scenario switching is what groups are for. Wire shapes are unchanged wherever they can be
+and the legacy spellings still parse: an old rules file loads.
+
+**The editor could not show — and could silently destroy — several of those fields.**
+`mapLocal`, `rewriteResponse`, mock headers, comments and multi-method matches were carried
+invisibly, and touching an unrelated control dropped them. The three census tests
+(`RenderParityTests` and friends) are written to catch a field the *agent* can't see; here
+they caught fields the *human* couldn't, which is the same defect pointed the other way.
+
+**Three main-window surfaces still spoke a different dialect.** Panel actions are bare
+glyphs like the console's cards, the find bar animates in as a row of the table's own stack
+(as a `safeAreaInset` it changed the safe area, which AppKit turns into a content inset
+outside SwiftUI's transaction — the bar slid while the header jumped), and one dropdown
+(`LoomPicker`) is used everywhere a menu is closed. `GlyphButton` and `LoomPicker` moved to
+`DesignTokens.swift`: a control on its third surface belongs in the shared file.
+
+**A connection failure was one opaque sentence.** Everything short of a handshake reached
+the operator as `NIOPosix.NIOConnectionError error 1` — identical for a refused port, an
+unresolvable name and a black hole; in the capture that prompted it, 94 % of the ring.
+`UpstreamConnectionError` is `UpstreamTLSError`'s sibling for the hop before it, naming
+host:port, the reason per address and the errno, with DNS kept separate from connect. And
+`capturedCount` plateaus at the ring's cap by construction, so read as "how much have I
+captured" it says capture stopped — `flowsRetained` is the number that keeps going up.
+The three caps live in `FlowLimits` now, with `FlowLimitsTests` pinning
+`memoryRing ≤ windowRows ≤ persistedRows`, which no single value can express.
+
+**Two more reads that scaled with the capture.** A *count* is a read too:
+`storedRowCount` opened with a synchronous SQLite drain on the queue batched writes flush
+on, while holding the `FlowStore` actor — reached from `get_proxy_status`, which the skill
+encourages an agent to poll. And the table's selection sync walked the window every batch to
+conclude nothing had moved. Both are O(1) now; `recordVisibleFlows` folds a batch into the
+visible projection instead of re-filtering the window (7.9 ms → 1.7 ms with a category
+selected). The documentation caught up in the same round: DESIGN.md and INTERACTION.md were
+still describing a `VSplitView`, a SwiftUI `Table`, a `Replayed` sidebar category, `.badge`
+counts and toolbar Record/Clear buttons — none of which the window has had for releases.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
