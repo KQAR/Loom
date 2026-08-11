@@ -21,6 +21,24 @@ struct FlowFilterBar: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            // Ahead of the field, because it qualifies what you are about to
+            // type rather than the answer you already got — the line reads
+            // "search in URL for …" left to right.
+            // Same dropdown as the rule editor's (`LoomPicker`): value plus a
+            // chevron, no bezel. A pop-up button's bezel is the heaviest thing in a
+            // one-line `.bar` strip whose other controls are a plain field and a
+            // borderless glyph.
+            LoomPicker(
+                selection: Binding(
+                    get: { store.search.scope },
+                    set: { store.send(.searchScopeChanged($0)) }
+                ),
+                items: FlowSearchScope.allCases.map { ($0, $0.label) },
+                font: .callout
+            )
+            .help("URL is matched here; headers and bodies are matched by the engine")
+            .accessibilityLabel("Search in")
+
             TextField(
                 "Filter requests",
                 text: Binding(
@@ -33,18 +51,6 @@ struct FlowFilterBar: View {
             .focused($fieldFocused)
             .onSubmit { store.send(.searchRefreshRequested) }
 
-            Picker("Search in", selection: Binding(
-                get: { store.search.scope },
-                set: { store.send(.searchScopeChanged($0)) }
-            )) {
-                ForEach(FlowSearchScope.allCases, id: \.self) { scope in
-                    Text(scope.label).tag(scope)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.menu)
-            .fixedSize()
-            .help("URL is matched here; headers and bodies are matched by the engine")
 
             status
 

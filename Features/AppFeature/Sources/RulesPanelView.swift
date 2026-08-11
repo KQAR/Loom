@@ -56,12 +56,14 @@ struct RulesPanelView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
             Spacer()
-            Button {
+            // Glyph-only, like the console cards' `plus` (DESIGN.md § Components):
+            // the panel's whole content is the rule list, so the one button on its
+            // header can't be adding anything else, and the word was spending width
+            // on a fact the position already gives. Tooltip and accessibility label
+            // still say it.
+            GlyphButton(systemImage: "plus", help: "New rule", size: GlyphButton.compact) {
                 store.send(.newRuleTapped)
-            } label: {
-                Label("New Rule", systemImage: "plus")
             }
-            .controlSize(.small)
         }
         .padding(.horizontal, LoomTheme.Space.md)
         .padding(.vertical, LoomTheme.Space.sm)

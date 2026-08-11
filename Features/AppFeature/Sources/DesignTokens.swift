@@ -266,6 +266,127 @@ extension View {
     }
 }
 
+/// A dropdown drawn as its own value plus a chevron — no bezel, no well.
+///
+/// It went through the system pop-up button (AppKit's own bezel and metrics,
+/// visibly foreign beside a `LoomTextField`) and then through the field well,
+/// which was consistent but heavy: a menu is not somewhere you type, and giving
+/// it the enterable surface said it was. What is left is the value and the
+/// affordance — the same restraint the console's `config-row` uses, where a
+/// chevron is the whole "there is more behind this" vocabulary — with a hover
+/// fill because a control that changes silently is one the eye misses
+/// (DESIGN.md § Motion).
+///
+/// Still a `Menu`, so the popup, keyboard handling and accessibility are AppKit's;
+/// only the closed state is Loom's.
+struct LoomPicker<Value: Hashable>: View {
+    @Binding var selection: Value
+    let items: [(value: Value, label: String)]
+    /// `nil` hugs the current value; a width pins it, so a row of pickers doesn't
+    /// reflow as you change one.
+    var width: CGFloat?
+    /// Matches whatever text it sits among — `.body` in the rule sheet, `.callout`
+    /// in the find bar's single dense line.
+    var font: Font = .body
+
+    @State private var hovering = false
+
+    private var currentLabel: String {
+        items.first { $0.value == selection }?.label ?? ""
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(items, id: \.value) { item in
+                Button {
+                    selection = item.value
+                } label: {
+                    // A checkmark only on the selected one — an empty `systemImage`
+                    // renders as a missing-symbol placeholder rather than nothing.
+                    if item.value == selection { Label(item.label, systemImage: "checkmark") }
+                    else { Text(item.label) }
+                }
+            }
+        } label: {
+            HStack(spacing: LoomTheme.Space.xxs) {
+                Text(currentLabel).font(font).lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                // Any slack goes *after* the pair. A width is pinned so the row
+                // doesn't reflow as the value changes, not to push the chevron to
+                // an edge — a borderless control has no edge to push it to, so the
+                // gap just read as two unrelated glyphs.
+                if width != nil { Spacer(minLength: 0) }
+            }
+            .padding(.horizontal, LoomTheme.Space.xxs)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
+                    .fill(LoomTheme.Palette.accent.opacity(hovering ? LoomTheme.attentionOpacity : 0))
+            )
+            .contentShape(Rectangle())
+        }
+        // **Not `.menuStyle(.borderlessButton)`.** Measured with a probe
+        // (screenshot, four combinations): that style re-lays-out a custom label
+        // and puts the trailing glyph *before* the text — which is why the chevron
+        // kept coming out on the left however the `HStack` was ordered. `.plain`
+        // button style with the indicator hidden lays the label out as written.
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: width == nil, vertical: true)
+        .frame(width: width)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// A bare SF Symbol button that fills on hover — the design system's "this is
+/// clickable" affordance (DESIGN.md § Motion). Used for add and remove.
+///
+/// Glyph-only, same as the console's cards (`ReverseProxyCard`, and
+/// DESIGN.md § Components spells it out there): the section a `plus` sits in
+/// already says what is being added, so the word spends width on a fact the
+/// position gives — while the tooltip and the accessibility label still say it
+/// in words. A bordered `+ Add` button per section also out-weighed the rows it
+/// was adding to, which is the other half of why they are gone.
+struct GlyphButton: View {
+    let systemImage: String
+    let help: String
+    var tint: Color = LoomTheme.Palette.accent
+    /// A disabled glyph stays visible rather than disappearing: a control that
+    /// vanishes when it can't act reads as a missing feature.
+    var isEnabled: Bool = true
+    /// The tap target's box. 24 inside a form, where it sits beside 30pt fields;
+    /// `compact` (20, an AppKit small control's height) on a panel header, whose
+    /// height is set by a single line of `.callout` text — at 24 the glyph became
+    /// the tallest thing in the row and pushed the header down.
+    var size: CGFloat = 24
+    let action: () -> Void
+
+    static let compact: CGFloat = 20
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(size < 24 ? .callout : .body)
+                .foregroundStyle(isEnabled ? AnyShapeStyle(tint) : AnyShapeStyle(.tertiary))
+                .frame(width: size, height: size)
+                .background(
+                    RoundedRectangle(cornerRadius: LoomTheme.Radius.sm)
+                        .fill(tint.opacity(hovering && isEnabled ? LoomTheme.attentionOpacity : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
 /// The one pill/badge style used across the inspector, rules panel and the
 /// method/status badges. `tint == nil` gives the neutral quaternary fill;
 /// a tint gives colored text on a faint tint of the same hue.
