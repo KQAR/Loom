@@ -181,7 +181,7 @@ import LoomSharedModels
     }
 
     @Test func flowQuery_parsesEveryFilter() throws {
-        let query = try MCPToolExecutor.flowQuery(from: [
+        let query = try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", [
             "host": "*.example.com",
             "method": ["post", "put"],
             "url_contains": "/orders",
@@ -192,7 +192,7 @@ import LoomSharedModels
             "only_errors": true,
             "device_ip": "192.168.1.9",
             "source_app": "com.apple.Safari",
-        ])
+        ]))
         #expect(query.host == "*.example.com")
         #expect(query.methods == ["post", "put"])
         #expect(query.urlContains == "/orders")
@@ -206,35 +206,35 @@ import LoomSharedModels
     }
 
     @Test func flowQuery_methodAcceptsASingleString() throws {
-        #expect(try MCPToolExecutor.flowQuery(from: ["method": "get"]).methods == ["get"])
+        #expect(try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["method": "get"])).methods == ["get"])
     }
 
     @Test func flowQuery_statusAcceptsExactOrClass() throws {
-        let exact = try MCPToolExecutor.flowQuery(from: ["status": 503])
+        let exact = try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["status": 503]))
         #expect(exact.statusMin == 503 && exact.statusMax == 503)
-        let klass = try MCPToolExecutor.flowQuery(from: ["status": "5xx"])
+        let klass = try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["status": "5xx"]))
         #expect(klass.statusMin == 500 && klass.statusMax == 599)
-        let upper = try MCPToolExecutor.flowQuery(from: ["status": "4XX"])
+        let upper = try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["status": "4XX"]))
         #expect(upper.statusMin == 400 && upper.statusMax == 499)
     }
 
     @Test func flowQuery_sinceSecondsAndISO8601() throws {
-        let relative = try #require(MCPToolExecutor.flowQuery(from: ["since_seconds": 60]).since)
+        let relative = try #require(MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["since_seconds": 60])).since)
         #expect(abs(relative.timeIntervalSinceNow + 60) < 5)
 
-        let absolute = try #require(MCPToolExecutor.flowQuery(from: ["since": "2026-07-25T10:00:00Z"]).since)
+        let absolute = try #require(MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["since": "2026-07-25T10:00:00Z"])).since)
         #expect(absolute == Date(timeIntervalSince1970: 1_784_973_600))
         // Fractional seconds are what JS clients emit — must parse, not throw.
-        #expect(try MCPToolExecutor.flowQuery(from: ["since": "2026-07-25T10:00:00.123Z"]).since != nil)
+        #expect(try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["since": "2026-07-25T10:00:00.123Z"])).since != nil)
     }
 
     /// A filter that silently fails to apply is worse than an error: the agent
     /// receives unfiltered traffic and believes it is filtered.
     @Test func flowQuery_malformedArguments_areRejected() {
-        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["status": "abc"]) }
-        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["status": true]) }
-        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["method": 7]) }
-        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: ["since": "yesterday"]) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["status": "abc"])) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["status": true])) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["method": 7])) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.flowQuery(from: .forTool("get_recent_flows", ["since": "yesterday"])) }
     }
 
     @Test func getRecentFlows_appliesTheFilter() async throws {

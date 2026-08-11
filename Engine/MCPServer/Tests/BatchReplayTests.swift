@@ -117,11 +117,19 @@ import LoomSharedModels
     }
 
     @Test func boundedInt_defaultsAndCeilings() throws {
-        #expect(try MCPToolExecutor.boundedInt(nil, field: "count", default: 1, max: 50) == 1)
-        #expect(try MCPToolExecutor.boundedInt(7, field: "count", default: 1, max: 50) == 7)
-        #expect(throws: MCPError.self) {
-            try MCPToolExecutor.boundedInt("many", field: "count", default: 1, max: 50)
+        func count(_ values: [String: JSONValue]) throws -> Int {
+            try MCPToolExecutor.boundedInt(
+                .forTool("replay_flow", values), "count", default: 1, max: 50
+            )
         }
+        #expect(try count([:]) == 1)
+        #expect(try count(["count": 7]) == 7)
+        // `20.0` is the same request as `20` — JSON has one number type, and a client
+        // encoder that writes the fractional spelling used to silently get the default.
+        #expect(try count(["count": 7.0]) == 7)
+        #expect(throws: MCPError.self) { try count(["count": "many"]) }
+        #expect(throws: MCPError.self) { try count(["count": 7.5]) }
+        #expect(throws: MCPError.self) { try count(["count": 51]) }
     }
 
     /// The whole batch is one audited write action, carrying the count in its

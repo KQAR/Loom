@@ -5,12 +5,12 @@ import LoomSharedModels
 /// carries live credentials) and `import_har`, which lands foreign flows in the
 /// same store so they can be inspected, diffed and replayed like captured ones.
 extension MCPToolExecutor {
-    func handleExportHAR(_ arguments: [String: Any]) async throws -> String {
-        let limit = (arguments["limit"] as? Int) ?? 1000
+    func handleExportHAR(_ arguments: MCPArguments) async throws -> String {
+        let limit = try arguments.int("limit", or: 1000)
         // HAR needs full request/response bodies, so hydrate (bodies live in
         // separate storage now); the list/summary tools stay on the body-free path.
         var flows = await engine.recentFlowsForExport(limit: limit)
-        if let host = (arguments["host"] as? String), !host.isEmpty {
+        if let host = try arguments.string("host"), !host.isEmpty {
             let needle = host.lowercased()
             flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
         }
@@ -25,7 +25,7 @@ extension MCPToolExecutor {
         // a path argument. Any directory component in `filename` is stripped.
         let exportsDir = HandshakeStore.directory.appendingPathComponent("exports", isDirectory: true)
         let filename: String
-        if let raw = arguments["filename"] as? String, !raw.isEmpty {
+        if let raw = try arguments.string("filename"), !raw.isEmpty {
             let base = (raw as NSString).lastPathComponent
             guard !base.isEmpty, base != ".", base != "..", !base.hasPrefix(".") else {
                 throw MCPError.invalidParams("invalid filename: \(raw)")
@@ -72,10 +72,10 @@ extension MCPToolExecutor {
     /// primary use. `redact: false` with explicit header names is an error rather than
     /// a silent no-op — that combination reads as "redact these", and a file that
     /// still holds credentials must never be the result of a misread argument.
-    static func redaction(from arguments: [String: Any]) throws -> FlowRedaction? {
-        let requested = arguments["redact"] as? Bool
-        let extraHeaders = arguments["redact_headers"] as? [String]
-        let dropBodies = arguments["redact_bodies"] as? Bool
+    static func redaction(from arguments: MCPArguments) throws -> FlowRedaction? {
+        let requested = try arguments.bool("redact")
+        let extraHeaders = try arguments.stringArray("redact_headers")
+        let dropBodies = try arguments.bool("redact_bodies")
 
         if requested == false, extraHeaders?.isEmpty == false || dropBodies == true {
             throw MCPError.invalidParams(
@@ -93,15 +93,16 @@ extension MCPToolExecutor {
         )
     }
 
-    func handleImportHAR(_ arguments: [String: Any]) async throws -> String {
-        guard let raw = arguments["path"] as? String, !raw.isEmpty else {
+    func handleImportHAR(_ arguments: MCPArguments) async throws -> String {
+        let raw = try arguments.requiredString("path", "the path to a .har file")
+        guard !raw.isEmpty else {
             throw MCPError.invalidParams("`path` must be the path to a .har file")
         }
         let url = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath)
         guard let data = try? Data(contentsOf: url) else {
             throw MCPToolFailure("could not read \(url.path)")
         }
-        let label = (arguments["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let label = try arguments.string("label").flatMap { $0.isEmpty ? nil : $0 }
             ?? url.lastPathComponent
 
         let result: HARImport.Result

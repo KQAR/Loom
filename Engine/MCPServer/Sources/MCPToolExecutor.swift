@@ -46,7 +46,17 @@ struct MCPToolExecutor {
 
     /// Dispatch one `tools/call`. Returns the tool's text result, or throws a
     /// `MCPError` describing why the call could not be dispatched.
-    func call(name: String, arguments: [String: Any]) async throws -> String {
+    ///
+    /// Takes Foundation's `[String: Any]` because that is what `JSONSerialization`
+    /// produced one layer up, and converts it **here, once**: everything past this
+    /// line — validation, the handlers, the audit rendering — works on `JSONValue`,
+    /// so the whole tool surface is checked `Sendable` and no handler casts an `Any`
+    /// again (see `MCPJSONValue.swift` for why the boundary is drawn here).
+    func call(name: String, arguments rawArguments: [String: Any]) async throws -> String {
+        try await call(name: name, arguments: JSONValue.object(fromJSON: rawArguments))
+    }
+
+    func call(name: String, arguments: [String: JSONValue]) async throws -> String {
         guard let tool = Self.toolsByName[name] else {
             throw MCPError.unknownTool(name)
         }
@@ -56,16 +66,17 @@ struct MCPToolExecutor {
         // `MCPArgumentValidation`). Nothing touched real traffic, so this is a
         // dispatch refusal like an unknown tool name, not an audited failure.
         try Self.validateArguments(arguments, against: tool)
+        let parsed = MCPArguments(tool: name, values: arguments, schema: tool.inputSchema)
         let handler = tool.handler
         // Read tools run straight through. Write tools are the whole reason Loom
         // exists — record each in the audit trail (success or failure) so the
         // supervising human can see what the agent did to real traffic.
         guard tool.isWrite else {
-            return try await handler(self, arguments)
+            return try await handler(self, parsed)
         }
         let renderedArgs = AuditEntry.truncate(Self.auditArguments(arguments))
         do {
-            let result = try await handler(self, arguments)
+            let result = try await handler(self, parsed)
             await engine.recordAudit(AuditEntry(
                 tool: name, succeeded: true,
                 arguments: renderedArgs, detail: AuditEntry.truncate(result)
@@ -86,16 +97,15 @@ struct MCPToolExecutor {
         }
     }
 
-    /// Render a tool's arguments as compact JSON for the audit trail. Falls back
-    /// to `String(describing:)` for the rare non-JSON value. Truncation is applied
-    /// by the caller (whole-string, so we don't split a key from its value).
-    static func auditArguments(_ arguments: [String: Any]) -> String {
+    /// Render a tool's arguments as compact JSON for the audit trail. Truncation is
+    /// applied by the caller (whole-string, so we don't split a key from its value).
+    static func auditArguments(_ arguments: [String: JSONValue]) -> String {
         guard !arguments.isEmpty else { return "{}" }
-        let arguments = redactingSecrets(arguments)
-        guard JSONSerialization.isValidJSONObject(arguments),
-              let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys]),
+        let object = redactingSecrets(arguments).mapValues(\.json)
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let string = String(data: data, encoding: .utf8)
-        else { return String(describing: arguments) }
+        else { return String(describing: object) }
         return string
     }
 
@@ -110,10 +120,10 @@ struct MCPToolExecutor {
     /// is the part supervision needs.
     static let redactedArgumentNames: Set<String> = ["pkcs12_base64", "passphrase"]
 
-    private static func redactingSecrets(_ arguments: [String: Any]) -> [String: Any] {
+    private static func redactingSecrets(_ arguments: [String: JSONValue]) -> [String: JSONValue] {
         guard arguments.keys.contains(where: redactedArgumentNames.contains) else { return arguments }
-        return arguments.mapValues { $0 }.reduce(into: [:]) { result, pair in
-            result[pair.key] = redactedArgumentNames.contains(pair.key) ? "<redacted>" : pair.value
+        return arguments.reduce(into: [:]) { result, pair in
+            result[pair.key] = redactedArgumentNames.contains(pair.key) ? .string("<redacted>") : pair.value
         }
     }
 

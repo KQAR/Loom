@@ -128,13 +128,13 @@ import LoomSharedModels
     // MARK: - export_har redaction arguments
 
     @Test func redactionIsOptIn() throws {
-        #expect(try MCPToolExecutor.redaction(from: [:]) == nil, "a debugging export usually needs the token")
-        #expect(try MCPToolExecutor.redaction(from: ["redact": false]) == nil)
-        #expect(try MCPToolExecutor.redaction(from: ["redact": true]) != nil)
+        #expect(try MCPToolExecutor.redaction(from: .forTool("export_har", [:])) == nil, "a debugging export usually needs the token")
+        #expect(try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact": false])) == nil)
+        #expect(try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact": true])) != nil)
         // Asking for either detail implies redaction — no way to name headers and get
         // an unredacted file.
-        #expect(try MCPToolExecutor.redaction(from: ["redact_bodies": true])?.dropBodies == true)
-        let extra = try MCPToolExecutor.redaction(from: ["redact_headers": ["x-internal"]])
+        #expect(try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact_bodies": true]))?.dropBodies == true)
+        let extra = try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact_headers": ["x-internal"]]))
         #expect(extra?.headerNames.contains("x-internal") == true)
         #expect(extra?.headerNames.contains("authorization") == true, "the built-ins stay")
     }
@@ -144,13 +144,13 @@ import LoomSharedModels
     /// scrubbed.
     @Test func redactFalseWithRedactionOptionsIsRejected() {
         #expect(throws: MCPError.self) {
-            try MCPToolExecutor.redaction(from: ["redact": false, "redact_bodies": true])
+            try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact": false, "redact_bodies": true]))
         }
         #expect(throws: MCPError.self) {
-            try MCPToolExecutor.redaction(from: ["redact": false, "redact_headers": ["authorization"]])
+            try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact": false, "redact_headers": ["authorization"]]))
         }
         #expect(throws: MCPError.self) {
-            try MCPToolExecutor.redaction(from: ["redact_headers": ["  "]])
+            try MCPToolExecutor.redaction(from: .forTool("export_har", ["redact_headers": ["  "]]))
         }
     }
 

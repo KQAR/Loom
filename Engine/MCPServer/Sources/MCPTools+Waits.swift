@@ -47,7 +47,7 @@ extension MCPToolExecutor {
     static let defaultWaitLookback: Double = 10
 
     /// How much of an exchange `wait_for_flow` waits for.
-    enum WaitUntil: String {
+    enum WaitUntil: String, CaseIterable {
         /// The request has been seen; nothing is known about the response yet.
         case request
         /// The status line is known (streaming, completed or failed).
@@ -81,9 +81,9 @@ extension MCPToolExecutor {
     ///    still in the store for the next one. So a client-side abort, or the
     ///    caller's own `max_seconds`, degrades to polling — never to lost traffic.
     ///    `waitStartedAt` comes back so a retry can resume from exactly here.
-    func handleWaitForFlow(_ arguments: [String: Any]) async throws -> String {
+    func handleWaitForFlow(_ arguments: MCPArguments) async throws -> String {
         let seconds = try Self.waitSeconds(from: arguments)
-        let limit = max(1, (arguments["limit"] as? Int) ?? 1)
+        let limit = max(1, try arguments.int("limit", or: 1))
         let until = try Self.waitUntil(from: arguments)
         var draftQuery = try Self.flowQuery(from: arguments)
         let startedWaitingAt = Date()
@@ -141,10 +141,10 @@ extension MCPToolExecutor {
     /// as `wait_for_flow`, for the same reason — except a hold is *not* retained
     /// state: it is a live connection that auto-proceeds when the engine's hold
     /// timeout expires, so a missed notification really would be a missed exchange.
-    func handleWaitForPending(_ arguments: [String: Any]) async throws -> String {
+    func handleWaitForPending(_ arguments: MCPArguments) async throws -> String {
         let seconds = try Self.waitSeconds(from: arguments)
-        let limit = max(1, (arguments["limit"] as? Int) ?? 1)
-        let breakpointID = try Self.optionalUUID(arguments["breakpoint_id"], field: "breakpoint_id")
+        let limit = max(1, try arguments.int("limit", or: 1))
+        let breakpointID = try arguments.uuid("breakpoint_id")
         let startedWaitingAt = Date()
 
         let accepts: @Sendable (PendingBreakpoint) -> Bool = { pending in
@@ -208,35 +208,15 @@ extension MCPToolExecutor {
         return await collector.collected
     }
 
-    static func waitSeconds(from arguments: [String: Any]) throws -> Double {
-        let raw: Double
-        switch arguments["max_seconds"] {
-        case let value as Double: raw = value
-        case let value as Int: raw = Double(value)
-        case nil: return defaultWaitSeconds
-        default: throw MCPError.invalidParams("`max_seconds` must be a number")
-        }
+    static func waitSeconds(from arguments: MCPArguments) throws -> Double {
+        guard let raw = try arguments.double("max_seconds") else { return defaultWaitSeconds }
         guard raw > 0 else { throw MCPError.invalidParams("`max_seconds` must be greater than 0") }
         // Clamped rather than rejected: a client asking for a longer wait than the
         // MCP transport will tolerate gets the longest safe one, not an error.
         return min(raw, maxWaitSeconds)
     }
 
-    /// An optional UUID argument. A present-but-malformed value is an error, never a
-    /// silently ignored filter.
-    static func optionalUUID(_ raw: Any?, field: String) throws -> UUID? {
-        guard let raw else { return nil }
-        guard let text = raw as? String, let id = UUID(uuidString: text) else {
-            throw MCPError.invalidParams("`\(field)` must be a UUID string")
-        }
-        return id
-    }
-
-    static func waitUntil(from arguments: [String: Any]) throws -> WaitUntil {
-        guard let raw = arguments["until"] else { return .completed }
-        guard let text = raw as? String, let until = WaitUntil(rawValue: text.lowercased()) else {
-            throw MCPError.invalidParams("`until` must be one of: completed, response, request")
-        }
-        return until
+    static func waitUntil(from arguments: MCPArguments) throws -> WaitUntil {
+        try arguments.option("until", or: .completed)
     }
 }

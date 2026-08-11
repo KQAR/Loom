@@ -7,7 +7,7 @@ import Foundation
 /// bodies, "who set this cookie" is about response headers. Searching both and
 /// letting the caller sort it out is not free — a list endpoint's response tends
 /// to contain every id in the system, so the noise scales with the data.
-public enum ExchangeSide: String, Equatable, Codable, Sendable {
+public enum ExchangeSide: String, Equatable, Codable, Sendable, CaseIterable {
     case any
     case request
     case response

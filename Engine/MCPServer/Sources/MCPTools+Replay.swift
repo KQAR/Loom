@@ -13,16 +13,12 @@ extension MCPToolExecutor {
 
     static let maxReplayConcurrency = 10
 
-    func handleReplayFlow(_ arguments: [String: Any]) async throws -> String {
-        guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
-            throw MCPError.invalidParams("`id` must be a flow UUID string")
-        }
-        let overrides = Self.overrides(from: arguments)
-        let count = try Self.boundedInt(
-            arguments["count"], field: "count", default: 1, max: Self.maxReplayCount
-        )
+    func handleReplayFlow(_ arguments: MCPArguments) async throws -> String {
+        let id = try arguments.requiredUUID("id", "a flow UUID string")
+        let overrides = try Self.overrides(from: arguments)
+        let count = try Self.boundedInt(arguments, "count", default: 1, max: Self.maxReplayCount)
         let concurrency = try Self.boundedInt(
-            arguments["concurrency"], field: "concurrency", default: 1, max: Self.maxReplayConcurrency
+            arguments, "concurrency", default: 1, max: Self.maxReplayConcurrency
         )
 
         // One replay keeps the single-flow shape it has always had — the common case
@@ -107,9 +103,10 @@ extension MCPToolExecutor {
 
     /// A positive integer argument with a documented ceiling. Absent → `default`;
     /// present but out of range → an error naming the ceiling.
-    static func boundedInt(_ raw: Any?, field: String, default fallback: Int, max ceiling: Int) throws -> Int {
-        guard let raw else { return fallback }
-        guard let value = raw as? Int else { throw MCPError.invalidParams("`\(field)` must be an integer") }
+    static func boundedInt(
+        _ arguments: MCPArguments, _ field: String, default fallback: Int, max ceiling: Int
+    ) throws -> Int {
+        guard let value = try arguments.int(field) else { return fallback }
         guard value >= 1 else { throw MCPError.invalidParams("`\(field)` must be at least 1") }
         guard value <= ceiling else {
             throw MCPError.invalidParams("`\(field)` must be at most \(ceiling) (asked for \(value))")
@@ -117,26 +114,28 @@ extension MCPToolExecutor {
         return value
     }
 
-    static func overrides(from arguments: [String: Any]) -> ReplayOverrides {
-        var setHeaders: [HeaderPair]?
-        if let raw = arguments["set_headers"] as? [String: Any] {
-            setHeaders = raw.map { HeaderPair(name: $0.key, value: String(describing: $0.value)) }
-        }
-        let removeHeaders = arguments["remove_headers"] as? [String]
-        let body: BodyOverride
-        if let bodyString = arguments["body"] as? String {
-            body = .replace(Data(bodyString.utf8))
-        } else if (arguments["clear_body"] as? Bool) == true {
-            body = .clear
-        } else {
-            body = .keep
-        }
-        return ReplayOverrides(
-            method: arguments["method"] as? String,
-            url: arguments["url"] as? String,
-            setHeaders: setHeaders,
-            removeHeaders: removeHeaders,
-            body: body
+    static func overrides(from arguments: MCPArguments) throws -> ReplayOverrides {
+        ReplayOverrides(
+            method: try arguments.string("method"),
+            url: try arguments.string("url"),
+            setHeaders: try Self.headerPairs(from: arguments),
+            removeHeaders: try arguments.stringArray("remove_headers"),
+            body: try Self.bodyOverride(from: arguments)
         )
+    }
+
+    /// The `set_headers` free-form map as ordered pairs. Shared with `resume`, which
+    /// takes the same three body/header arguments — two copies of "how a header edit
+    /// is spelled" is how the two write paths drift.
+    static func headerPairs(from arguments: MCPArguments) throws -> [HeaderPair]? {
+        try arguments.stringMap("set_headers")?.map { HeaderPair(name: $0.key, value: $0.value) }
+    }
+
+    /// `body` replaces, `clear_body` empties, neither leaves the captured body alone.
+    /// `body` wins, as its description says.
+    static func bodyOverride(from arguments: MCPArguments) throws -> BodyOverride {
+        if let text = try arguments.string("body") { return .replace(Data(text.utf8)) }
+        if try arguments.bool("clear_body", or: false) { return .clear }
+        return .keep
     }
 }

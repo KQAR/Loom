@@ -215,18 +215,18 @@ import LoomSharedModels
     // MARK: - Argument validation
 
     @Test func maxSeconds_isClampedToTheTransportLimit_notRejected() throws {
-        #expect(try MCPToolExecutor.waitSeconds(from: [:]) == MCPToolExecutor.defaultWaitSeconds)
-        #expect(try MCPToolExecutor.waitSeconds(from: ["max_seconds": 5]) == 5)
-        #expect(try MCPToolExecutor.waitSeconds(from: ["max_seconds": 6000]) == MCPToolExecutor.maxWaitSeconds,
+        #expect(try MCPToolExecutor.waitSeconds(from: .forTool("wait_for_flow", [:])) == MCPToolExecutor.defaultWaitSeconds)
+        #expect(try MCPToolExecutor.waitSeconds(from: .forTool("wait_for_flow", ["max_seconds": 5])) == 5)
+        #expect(try MCPToolExecutor.waitSeconds(from: .forTool("wait_for_flow", ["max_seconds": 6000])) == MCPToolExecutor.maxWaitSeconds,
                 "a client asking for longer than the MCP transport tolerates gets the longest safe wait")
-        #expect(throws: MCPError.self) { try MCPToolExecutor.waitSeconds(from: ["max_seconds": 0]) }
-        #expect(throws: MCPError.self) { try MCPToolExecutor.waitSeconds(from: ["max_seconds": "soon"]) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.waitSeconds(from: .forTool("wait_for_flow", ["max_seconds": 0])) }
+        #expect(throws: MCPError.self) { try MCPToolExecutor.waitSeconds(from: .forTool("wait_for_flow", ["max_seconds": "soon"])) }
     }
 
     @Test func until_rejectsAnUnknownValue() throws {
-        #expect(try MCPToolExecutor.waitUntil(from: [:]) == .completed)
-        #expect(try MCPToolExecutor.waitUntil(from: ["until": "RESPONSE"]) == .response)
-        #expect(throws: MCPError.self) { try MCPToolExecutor.waitUntil(from: ["until": "eventually"]) }
+        #expect(try MCPToolExecutor.waitUntil(from: .forTool("wait_for_flow", [:])) == .completed)
+        #expect(try MCPToolExecutor.waitUntil(from: .forTool("wait_for_flow", ["until": "RESPONSE"])) == .response)
+        #expect(throws: MCPError.self) { try MCPToolExecutor.waitUntil(from: .forTool("wait_for_flow", ["until": "eventually"])) }
     }
 
     @Test func waitForPending_rejectsAMalformedBreakpointID() async {

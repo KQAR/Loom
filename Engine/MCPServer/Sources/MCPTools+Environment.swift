@@ -11,7 +11,7 @@ import LoomSharedModels
 extension MCPToolExecutor {
     // MARK: - Handlers (one per tool)
 
-    func handleGetVersion(_ arguments: [String: Any]) async throws -> String {
+    func handleGetVersion(_ arguments: MCPArguments) async throws -> String {
         var payload: [String: Any] = [
             "app": "Loom",
             "appVersion": appVersion,
@@ -30,7 +30,7 @@ extension MCPToolExecutor {
         return prettyJSON(payload)
     }
 
-    func handleGetProxyStatus(_ arguments: [String: Any]) async throws -> String {
+    func handleGetProxyStatus(_ arguments: MCPArguments) async throws -> String {
         let status = await engine.status()
         var render = ProxyStatusRender(
             isRunning: status.isRunning,
@@ -83,10 +83,8 @@ extension MCPToolExecutor {
         return prettyJSON(MCPRender.dict(render))
     }
 
-    func handleSetSystemProxy(_ arguments: [String: Any]) async throws -> String {
-        guard let enabled = arguments["enabled"] as? Bool else {
-            throw MCPError.invalidParams("`enabled` must be a boolean")
-        }
+    func handleSetSystemProxy(_ arguments: MCPArguments) async throws -> String {
+        let enabled = try arguments.requiredBool("enabled")
         guard let routing else {
             throw MCPToolFailure(
                 "System-proxy control isn't available here (Loom's engine is running without the app's "
@@ -137,16 +135,16 @@ extension MCPToolExecutor {
         return prettyJSON(payload)
     }
 
-    func handleListDevices(_ arguments: [String: Any]) async throws -> String {
+    func handleListDevices(_ arguments: MCPArguments) async throws -> String {
         let devices = await engine.connectedDevices()
         return prettyJSON(MCPRender.array(devices.map(DeviceSummaryRender.init)))
     }
 
-    func handleGetCertificateStatus(_ arguments: [String: Any]) async throws -> String {
+    func handleGetCertificateStatus(_ arguments: MCPArguments) async throws -> String {
         prettyJSON(Self.certificateStatus(await engine.certificateStatus()))
     }
 
-    func handleExportCACertificate(_ arguments: [String: Any]) async throws -> String {
+    func handleExportCACertificate(_ arguments: MCPArguments) async throws -> String {
         do {
             let url = try await engine.exportCACertificate()
             return prettyJSON([
@@ -158,7 +156,7 @@ extension MCPToolExecutor {
         }
     }
 
-    func handleGetSSLScope(_ arguments: [String: Any]) async throws -> String {
+    func handleGetSSLScope(_ arguments: MCPArguments) async throws -> String {
         // The scope and what it is *not* covering answer one question together, so
         // they ride one call: an agent that has to ask twice will read an empty
         // capture as "the client never ran" before it gets to the second ask.
@@ -166,12 +164,10 @@ extension MCPToolExecutor {
         return prettyJSON(MCPRender.dict(SSLScopeRender(scope, tunneled: await engine.tunneledHosts())))
     }
 
-    func handleInterceptHost(_ arguments: [String: Any]) async throws -> String {
-        guard let host = (arguments["host"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !host.isEmpty
-        else {
-            throw MCPToolFailure("host is required")
-        }
+    func handleInterceptHost(_ arguments: MCPArguments) async throws -> String {
+        let host = try arguments.requiredString("host", "a hostname")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { throw MCPToolFailure("host is required") }
         let outcome = await engine.interceptHost(host)
         var payload: [String: Any] = [
             "host": host,
@@ -193,12 +189,12 @@ extension MCPToolExecutor {
         return prettyJSON(payload)
     }
 
-    func handleSetSSLScope(_ arguments: [String: Any]) async throws -> String {
+    func handleSetSSLScope(_ arguments: MCPArguments) async throws -> String {
         let current = await engine.sslScope()
         let scope = SSLScope(
-            enabled: (arguments["enabled"] as? Bool) ?? current.enabled,
-            include: (arguments["include"] as? [String]) ?? current.include,
-            exclude: (arguments["exclude"] as? [String]) ?? current.exclude
+            enabled: try arguments.bool("enabled", or: current.enabled),
+            include: try arguments.stringArray("include") ?? current.include,
+            exclude: try arguments.stringArray("exclude") ?? current.exclude
         )
         await engine.setSSLScope(scope)
         return prettyJSON(Self.scope(scope))
@@ -206,40 +202,31 @@ extension MCPToolExecutor {
 
     // MARK: - Mutual TLS (client certificates)
 
-    func handleListClientCertificates(_ arguments: [String: Any]) async throws -> String {
+    func handleListClientCertificates(_ arguments: MCPArguments) async throws -> String {
         let summaries = await engine.clientCertificates()
         return prettyJSON([
             "clientCertificates": MCPRender.array(summaries.map(ClientCertificateRender.init)),
         ])
     }
 
-    func handleSetClientCertificate(_ arguments: [String: Any]) async throws -> String {
-        guard let hostPattern = arguments["host_pattern"] as? String, !hostPattern.isEmpty else {
+    func handleSetClientCertificate(_ arguments: MCPArguments) async throws -> String {
+        let hostPattern = try arguments.requiredString("host_pattern", "a non-empty string")
+        guard !hostPattern.isEmpty else {
             throw MCPError.invalidParams("`host_pattern` must be a non-empty string")
         }
-        guard let base64 = arguments["pkcs12_base64"] as? String,
-              let pkcs12 = Data(base64Encoded: base64, options: .ignoreUnknownCharacters),
-              !pkcs12.isEmpty
-        else {
+        let base64 = try arguments.requiredString("pkcs12_base64", "base64 of a PKCS#12 bundle")
+        guard let pkcs12 = Data(base64Encoded: base64, options: .ignoreUnknownCharacters), !pkcs12.isEmpty else {
             throw MCPError.invalidParams("`pkcs12_base64` must be base64 of a PKCS#12 bundle")
         }
-        let id: UUID
-        if let raw = arguments["id"] as? String {
-            guard let parsed = UUID(uuidString: raw) else {
-                throw MCPError.invalidParams("`id` must be a UUID")
-            }
-            id = parsed
-        } else {
-            id = UUID()
-        }
+        let id = try arguments.uuid("id") ?? UUID()
 
         let certificate = ClientCertificate(
             id: id,
             hostPattern: hostPattern,
             pkcs12: pkcs12,
-            passphrase: (arguments["passphrase"] as? String) ?? "",
-            label: (arguments["label"] as? String) ?? "",
-            isEnabled: (arguments["enabled"] as? Bool) ?? true
+            passphrase: try arguments.string("passphrase", or: ""),
+            label: try arguments.string("label", or: ""),
+            isEnabled: try arguments.bool("enabled", or: true)
         )
         do {
             try await engine.setClientCertificate(certificate)
@@ -255,10 +242,8 @@ extension MCPToolExecutor {
         return prettyJSON(MCPRender.dict(ClientCertificateRender(saved)).merging(["saved": true]) { _, new in new })
     }
 
-    func handleDeleteClientCertificate(_ arguments: [String: Any]) async throws -> String {
-        guard let raw = arguments["id"] as? String, let id = UUID(uuidString: raw) else {
-            throw MCPError.invalidParams("`id` must be a UUID")
-        }
+    func handleDeleteClientCertificate(_ arguments: MCPArguments) async throws -> String {
+        let id = try arguments.requiredUUID("id", "a UUID")
         do {
             try await engine.deleteClientCertificate(id: id)
         } catch let error as ProxyControlError {
@@ -276,8 +261,8 @@ extension MCPToolExecutor {
         MCPRender.dict(SSLScopeRender(scope))
     }
 
-    func handleGetAuditLog(_ arguments: [String: Any]) async throws -> String {
-        let limit = (arguments["limit"] as? Int) ?? 50
+    func handleGetAuditLog(_ arguments: MCPArguments) async throws -> String {
+        let limit = try arguments.int("limit", or: 50)
         let entries = await engine.recentAuditEntries(limit: limit)
         return prettyJSON(MCPRender.array(entries.map(AuditEntryRender.init)))
     }

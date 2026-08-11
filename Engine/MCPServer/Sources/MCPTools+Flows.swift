@@ -7,25 +7,23 @@ import LoomSharedModels
 /// One filter vocabulary, parsed in one place, is deliberate — `get_recent_flows`
 /// and `wait_for_flow` must not drift into subtly different notions of "matching".
 extension MCPToolExecutor {
-    func handleGetRecentFlows(_ arguments: [String: Any]) async throws -> String {
-        let limit = (arguments["limit"] as? Int) ?? 20
+    func handleGetRecentFlows(_ arguments: MCPArguments) async throws -> String {
+        let limit = try arguments.int("limit", or: 20)
         let query = try Self.flowQuery(from: arguments)
         let flows = await engine.recentFlows(matching: query, limit: limit)
         return prettyJSON(flows.map(Self.flowSummary))
     }
 
-    func handleGetFlowDetail(_ arguments: [String: Any]) async throws -> String {
-        guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
-            throw MCPError.invalidParams("`id` must be a flow UUID string")
-        }
+    func handleGetFlowDetail(_ arguments: MCPArguments) async throws -> String {
+        let id = try arguments.requiredUUID("id", "a flow UUID string")
         guard let flow = await engine.flow(id: id) else {
-            throw MCPToolFailure("no flow with id \(idString)")
+            throw MCPToolFailure("no flow with id \(id.uuidString)")
         }
         return prettyJSON(Self.flowDetail(
             flow,
-            offset: max(0, (arguments["body_offset"] as? Int) ?? 0),
-            maxBytes: max(1, (arguments["max_bytes"] as? Int) ?? Self.defaultBodyBytes),
-            webSocketLimit: max(1, (arguments["ws_limit"] as? Int) ?? Self.defaultWebSocketMessages)
+            offset: max(0, try arguments.int("body_offset", or: 0)),
+            maxBytes: max(1, try arguments.int("max_bytes", or: Self.defaultBodyBytes)),
+            webSocketLimit: max(1, try arguments.int("ws_limit", or: Self.defaultWebSocketMessages))
         ))
     }
 
@@ -35,11 +33,11 @@ extension MCPToolExecutor {
     /// finally covers history too, not just the ring.
     static let statsScanCap = 5_000
 
-    func handleGetStats(_ arguments: [String: Any]) async throws -> String {
+    func handleGetStats(_ arguments: MCPArguments) async throws -> String {
         let query = try Self.flowQuery(from: arguments)
         let grouping = try Self.grouping(from: arguments)
-        let limit = (arguments["limit"] as? Int) ?? 10
-        let slowest = (arguments["slowest"] as? Int) ?? 3
+        let limit = try arguments.int("limit", or: 10)
+        let slowest = try arguments.int("slowest", or: 3)
 
         let result = await engine.searchFlows(matching: query, limit: Self.statsScanCap)
         let stats = FlowStats.compute(flows: result.flows, grouping: grouping, limit: limit, slowest: slowest)
@@ -69,14 +67,8 @@ extension MCPToolExecutor {
         MCPRender.dict(StatsBucketRender(bucket))
     }
 
-    static func grouping(from arguments: [String: Any]) throws -> FlowGrouping {
-        guard let raw = arguments["group_by"] else { return .host }
-        guard let text = raw as? String, let grouping = FlowGrouping(rawValue: text.lowercased()) else {
-            throw MCPError.invalidParams(
-                "`group_by` must be one of: \(FlowGrouping.allCases.map(\.rawValue).joined(separator: ", "))"
-            )
-        }
-        return grouping
+    static func grouping(from arguments: MCPArguments) throws -> FlowGrouping {
+        try arguments.option("group_by", or: .host)
     }
 
     /// Parse the `get_recent_flows` filter arguments. Malformed input is rejected
@@ -85,40 +77,37 @@ extension MCPToolExecutor {
     /// Parse a side selector, rejecting an unknown value rather than silently
     /// widening to "both" — a typo that quietly searches the other half too would
     /// return the exact noise the selector exists to remove.
-    static func exchangeSide(_ raw: Any?, key: String) throws -> ExchangeSide {
-        guard let raw else { return .any }
-        guard let text = raw as? String, let side = ExchangeSide(rawValue: text) else {
-            throw MCPError.invalidParams("`\(key)` must be one of \"any\", \"request\", \"response\"")
-        }
-        return side
-    }
-
-    static func flowQuery(from arguments: [String: Any]) throws -> FlowQuery {
+    static func flowQuery(from arguments: MCPArguments) throws -> FlowQuery {
         var query = FlowQuery()
-        query.host = arguments["host"] as? String
-        query.urlContains = arguments["url_contains"] as? String
-        query.deviceIP = arguments["device_ip"] as? String
-        query.sourceApp = arguments["source_app"] as? String
-        query.headerContains = arguments["header_contains"] as? String
-        query.headerSide = try Self.exchangeSide(arguments["header_in"], key: "header_in")
-        query.bodyContains = arguments["body_contains"] as? String
-        query.bodySide = try Self.exchangeSide(arguments["body_in"], key: "body_in")
-        query.onlyErrors = (arguments["only_errors"] as? Bool) ?? false
+        query.host = try arguments.string("host")
+        query.urlContains = try arguments.string("url_contains")
+        query.deviceIP = try arguments.string("device_ip")
+        query.sourceApp = try arguments.string("source_app")
+        query.headerContains = try arguments.string("header_contains")
+        query.headerSide = try arguments.option("header_in", or: .any)
+        query.bodyContains = try arguments.string("body_contains")
+        query.bodySide = try arguments.option("body_in", or: .any)
+        query.onlyErrors = try arguments.bool("only_errors", or: false)
 
-        switch arguments["method"] {
-        case let single as String: query.methods = [single]
-        case let many as [String]: query.methods = many
+        // `method` and `status` are the two `oneOf` arguments, so they are the two
+        // read as values rather than through a typed accessor — the shape *is* the
+        // vocabulary here, and collapsing either to one type would drop a spelling
+        // the schema advertises.
+        switch arguments.value("method") {
+        case let .string(single): query.methods = [single]
+        case .array: query.methods = try arguments.stringArray("method")
         case nil: break
         default: throw MCPError.invalidParams("`method` must be a string or an array of strings")
         }
 
-        query.statusMin = arguments["status_min"] as? Int
-        query.statusMax = arguments["status_max"] as? Int
-        switch arguments["status"] {
-        case let exact as Int:
+        query.statusMin = try arguments.int("status_min")
+        query.statusMax = try arguments.int("status_max")
+        switch arguments.value("status") {
+        case .int, .double:
+            let exact = try arguments.int("status")
             query.statusMin = exact
             query.statusMax = exact
-        case let text as String:
+        case let .string(text):
             guard let range = Self.statusClass(text) else {
                 throw MCPError.invalidParams("`status` must be a number (500) or a class like \"5xx\"")
             }
@@ -128,12 +117,10 @@ extension MCPToolExecutor {
         default: throw MCPError.invalidParams("`status` must be a number or a string like \"5xx\"")
         }
 
-        if let seconds = arguments["since_seconds"] as? Double {
+        if let seconds = try arguments.double("since_seconds") {
             query.since = Date().addingTimeInterval(-abs(seconds))
-        } else if let seconds = arguments["since_seconds"] as? Int {
-            query.since = Date().addingTimeInterval(-abs(Double(seconds)))
         }
-        if let raw = arguments["since"] as? String {
+        if let raw = try arguments.string("since") {
             guard let date = Self.iso8601.date(from: raw) ?? Self.iso8601Fractional.date(from: raw) else {
                 throw MCPError.invalidParams("`since` must be an ISO-8601 timestamp")
             }
@@ -151,10 +138,8 @@ extension MCPToolExecutor {
         return (digit * 100) ... (digit * 100 + 99)
     }
 
-    func handleSetRecording(_ arguments: [String: Any]) async throws -> String {
-        guard let recording = arguments["recording"] as? Bool else {
-            throw MCPError.invalidParams("`recording` must be a boolean")
-        }
+    func handleSetRecording(_ arguments: MCPArguments) async throws -> String {
+        let recording = try arguments.requiredBool("recording")
         await engine.setRecording(recording)
         return prettyJSON(["isRecording": recording])
     }
@@ -162,18 +147,16 @@ extension MCPToolExecutor {
     /// Destructive: wipes the ring and the durable store. Audited like every write,
     /// and the engine broadcasts the clear so the human's window empties too rather
     /// than showing flows that no longer exist.
-    func handleClearFlows(_ arguments: [String: Any]) async throws -> String {
+    func handleClearFlows(_ arguments: MCPArguments) async throws -> String {
         let before = await engine.status().capturedCount
         await engine.clearFlows()
         return prettyJSON(["cleared": before])
     }
 
-    func handleDiffFlows(_ arguments: [String: Any]) async throws -> String {
-        guard let baseString = arguments["base"] as? String, let baseID = UUID(uuidString: baseString) else {
-            throw MCPError.invalidParams("`base` must be a flow UUID string")
-        }
+    func handleDiffFlows(_ arguments: MCPArguments) async throws -> String {
+        let baseID = try arguments.requiredUUID("base", "a flow UUID string")
         guard let baseFlow = await engine.flow(id: baseID) else {
-            throw MCPToolFailure("no flow with id \(baseString)")
+            throw MCPToolFailure("no flow with id \(baseID.uuidString)")
         }
 
         // Resolve the two sides. Explicit `compared` wins; otherwise diff a replay
@@ -181,7 +164,7 @@ extension MCPToolExecutor {
         // which is the natural one-argument "how did my replay change things" call.
         let base: Flow
         let compared: Flow
-        if let comparedString = arguments["compared"] as? String {
+        if let comparedString = try arguments.string("compared") {
             guard let comparedID = UUID(uuidString: comparedString) else {
                 throw MCPError.invalidParams("`compared` must be a flow UUID string")
             }
@@ -192,7 +175,7 @@ extension MCPToolExecutor {
             compared = comparedFlow
         } else {
             guard let originalID = baseFlow.replayedFrom else {
-                throw MCPToolFailure("flow \(baseString) was not replayed from another flow — pass `compared` explicitly")
+                throw MCPToolFailure("flow \(baseID.uuidString) was not replayed from another flow — pass `compared` explicitly")
             }
             guard let original = await engine.flow(id: originalID) else {
                 throw MCPToolFailure("original flow \(originalID.uuidString) (replayedFrom) is no longer in the store — pass `compared` explicitly")

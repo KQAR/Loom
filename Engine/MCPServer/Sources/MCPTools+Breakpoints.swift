@@ -7,16 +7,16 @@ import LoomSharedModels
 extension MCPToolExecutor {
     // MARK: Breakpoints
 
-    func handleArmBreakpoint(_ arguments: [String: Any]) async throws -> String {
-        guard let matchRaw = arguments["match"] as? [String: Any],
-              let match = Self.ruleMatch(from: matchRaw) else {
+    func handleArmBreakpoint(_ arguments: MCPArguments) async throws -> String {
+        guard let matchRaw = try arguments.object("match"),
+              let match = try Self.ruleMatch(from: matchRaw) else {
             throw MCPError.invalidParams("`match` with `url_pattern` is required")
         }
         let breakpoint = Breakpoint(
             match: match,
-            onRequest: (arguments["on_request"] as? Bool) ?? true,
-            onResponse: (arguments["on_response"] as? Bool) ?? false,
-            comment: arguments["comment"] as? String
+            onRequest: try arguments.bool("on_request", or: true),
+            onResponse: try arguments.bool("on_response", or: false),
+            comment: try arguments.string("comment")
         )
         do {
             try await engine.armBreakpoint(breakpoint)
@@ -26,19 +26,17 @@ extension MCPToolExecutor {
         return prettyJSON(Self.breakpoint(breakpoint))
     }
 
-    func handleDisarmBreakpoint(_ arguments: [String: Any]) async throws -> String {
-        guard let idString = arguments["id"] as? String, let id = UUID(uuidString: idString) else {
-            throw MCPError.invalidParams("`id` must be a breakpoint UUID string")
-        }
+    func handleDisarmBreakpoint(_ arguments: MCPArguments) async throws -> String {
+        let id = try arguments.requiredUUID("id", "a breakpoint UUID string")
         do {
             try await engine.disarmBreakpoint(id: id)
         } catch let error as ProxyControlError {
             throw MCPToolFailure(error.message)
         }
-        return prettyJSON(["disarmed": idString])
+        return prettyJSON(["disarmed": id.uuidString])
     }
 
-    func handleListPending(_ arguments: [String: Any]) async throws -> String {
+    func handleListPending(_ arguments: MCPArguments) async throws -> String {
         let armed = await engine.armedBreakpoints()
         let pending = await engine.pendingBreakpoints()
         return prettyJSON([
@@ -47,42 +45,33 @@ extension MCPToolExecutor {
         ])
     }
 
-    func handleResume(_ arguments: [String: Any]) async throws -> String {
+    func handleResume(_ arguments: MCPArguments) async throws -> String {
         // `id` is accepted as well as `pending_id` because the held exchange renders
         // its own identifier as `id` (list_pending / wait_for_pending), so copying the
         // field straight across — the obvious thing to do — used to fail validation
-        // and cost a round trip to discover.
-        let rawID = (arguments["pending_id"] ?? arguments["id"]) as? String
-        guard let idString = rawID, let id = UUID(uuidString: idString) else {
+        // and cost a round trip to discover. **The schema has to declare it too**, and
+        // for four releases it did not: `validateArguments` runs at the choke point off
+        // the advertised properties, so a call sending `id` was refused before this
+        // line ever ran and the description's promise was false. The typed reader is
+        // what surfaced it — reading an undeclared key now trips an assertion.
+        guard let id = try arguments.uuid("pending_id") ?? arguments.uuid("id") else {
             throw MCPError.invalidParams("`pending_id` (or `id`) must be a held-breakpoint UUID string")
         }
-        let abort = (arguments["abort"] as? Bool) ?? false
-        var setHeaders: [HeaderPair]?
-        if let raw = arguments["set_headers"] as? [String: Any] {
-            setHeaders = raw.map { HeaderPair(name: $0.key, value: String(describing: $0.value)) }
-        }
-        let body: BodyOverride
-        if let bodyString = arguments["body"] as? String {
-            body = .replace(Data(bodyString.utf8))
-        } else if (arguments["clear_body"] as? Bool) == true {
-            body = .clear
-        } else {
-            body = .keep
-        }
+        let abort = try arguments.bool("abort", or: false)
         let edit = BreakpointEdit(
-            method: arguments["method"] as? String,
-            url: arguments["url"] as? String,
-            statusCode: arguments["status_code"] as? Int,
-            setHeaders: setHeaders,
-            removeHeaders: arguments["remove_headers"] as? [String],
-            body: body
+            method: try arguments.string("method"),
+            url: try arguments.string("url"),
+            statusCode: try arguments.int("status_code"),
+            setHeaders: try Self.headerPairs(from: arguments),
+            removeHeaders: try arguments.stringArray("remove_headers"),
+            body: try Self.bodyOverride(from: arguments)
         )
         do {
             try await engine.resumeBreakpoint(pendingID: id, abort: abort, edit: edit)
         } catch let error as ProxyControlError {
             throw MCPToolFailure(error.message)
         }
-        var payload: [String: Any] = ["resumed": idString, "aborted": abort]
+        var payload: [String: Any] = ["resumed": id.uuidString, "aborted": abort]
         // The edit already went to the client; the warning is how the operator learns
         // the JSON they meant to send wasn't JSON (`MCPBodyWarnings`).
         if !abort { Self.attach(warnings: Self.bodyWarnings(fromArguments: arguments), to: &payload) }
