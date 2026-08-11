@@ -85,7 +85,7 @@ import Foundation
         config.add(TrafficRule(
             name: "mock for the app under test",
             match: RuleMatch(urlPattern: "*", sourceApp: "com.example.MyApp"),
-            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 418, bodyText: "teapot")))
+            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 418, body: .text("teapot"))))
         ))
         let forwarder = RuleApplyingForwarder(base: upstream, rules: config)
 
@@ -154,7 +154,7 @@ import Foundation
         try await engine.addRule(TrafficRule(
             name: "mock for the app under test",
             match: RuleMatch(urlPattern: "*", sourceApp: "com.example.MyApp"),
-            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 418, bodyText: "teapot")))
+            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 418, body: .text("teapot"))))
         ))
 
         let captured = Flow(

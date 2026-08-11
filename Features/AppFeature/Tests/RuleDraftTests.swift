@@ -5,8 +5,11 @@ import Testing
 @testable import AppFeature
 
 /// `RuleDraft` is the flattened, editable mirror of a `TrafficRule`. Its contract
-/// is that editing a rule the UI doesn't fully surface (mapLocal, rewriteResponse,
-/// multi-method matches, comments) never silently drops those fields on save.
+/// is that every field of the model is reachable from the editor and survives a
+/// round trip — the fields that used to be merely *carried* (mapLocal,
+/// rewriteResponse, mock headers, multi-method matches, comments) are now edited
+/// like the rest, so these tests check both that they round-trip and that editing
+/// them lands in the model.
 @Suite struct RuleDraftTests {
     private func built(_ rule: TrafficRule) -> TrafficRule {
         switch RuleDraft(rule: rule).build() {
@@ -20,11 +23,11 @@ import Testing
         #expect(built(rule) == rule)
     }
 
-    @Test func mock_preservesStatusBodyAndCarriedHeaders() {
+    @Test func mock_preservesStatusBodyAndHeaders() {
         let mock = MockResponseAction(
             statusCode: 201,
-            headers: [HeaderPair(name: "X-Debug", value: "1")], // MCP-set, editor doesn't surface
-            bodyText: #"{"ok":true}"#,
+            headers: [HeaderPair(name: "X-Debug", value: "1")],
+            body: .text(#"{"ok":true}"#),
             contentType: "application/json"
         )
         let rule = Fixtures.rule(route: .mock(mock))
@@ -38,10 +41,115 @@ import Testing
         #expect(out.headers == [HeaderPair(name: "X-Debug", value: "1")])
     }
 
-    @Test func mapLocal_carriedThroughUnsurfacedByEditor() {
+    @Test func mapLocal_roundTrips() {
         let local = MapLocalAction(path: "/tmp/fixture.json", statusCode: 200, contentType: "application/json")
         let rule = Fixtures.rule(route: .mapLocal(local))
         #expect(built(rule).actions.route == .mapLocal(local))
+    }
+
+    /// The failure this whole redesign is about: a `mapLocal` route used to be an
+    /// invisible carried field that `build()` only restored when nothing else had
+    /// claimed the route — so turning on Mock (or Redirect) destroyed it with no
+    /// indication. It is a picker case now, so the two are the *same* property and
+    /// switching away and back keeps the payload.
+    @Test func mapLocal_survivesSwitchingRouteAwayAndBack() {
+        let local = MapLocalAction(path: "/tmp/fixture.json", statusCode: 204, contentType: "application/json")
+        var draft = RuleDraft(rule: Fixtures.rule(route: .mapLocal(local)))
+        #expect(draft.responseSource == .shortCircuit)
+        #expect(draft.respBodySource == .file)
+
+        draft.setResponseBodySource(.text)
+        guard case let .success(mocked) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        guard case .mock = mocked.actions.route else {
+            Issue.record("expected a mock route")
+            return
+        }
+
+        draft.setResponseBodySource(.file)
+        guard case let .success(back) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(back.actions.route == .mapLocal(local), "the local-file payload must not be lost by a detour")
+    }
+
+    @Test func mapLocal_editedPathLandsInTheModel() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .block))
+        draft.setResponseBodySource(.file)
+        draft.respBodyFile = "/tmp/edited.json"
+        draft.respStatus = "201"
+        draft.respContentType = "text/plain"
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(rule.actions.route == .mapLocal(
+            MapLocalAction(path: "/tmp/edited.json", statusCode: 201, contentType: "text/plain")))
+    }
+
+    @Test func mapLocal_relativePath_fails() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .block))
+        draft.setResponseBodySource(.file)
+        draft.respBodyFile = "fixtures/home.json"
+        guard case .failure = draft.build() else {
+            Issue.record("expected a build failure for a non-absolute path")
+            return
+        }
+    }
+
+    @Test func mapLocal_nonNumericStatus_fails() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .block))
+        draft.setResponseBodySource(.file)
+        draft.respBodyFile = "/tmp/x.json"
+        draft.respStatus = "two hundred"
+        guard case .failure = draft.build() else {
+            Issue.record("expected a build failure for a non-numeric status")
+            return
+        }
+    }
+
+    // MARK: The route is one property, so two segments can't both claim it
+
+    @Test func choosingMock_turnsRedirectOff() {
+        var draft = RuleDraft(rule: Fixtures.rule(
+            route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001"))))
+        #expect(draft.redirectOn)
+        #expect(draft.responseSource == .upstream, "a redirect is an upstream source")
+
+        draft.responseSource = .shortCircuit
+        #expect(!draft.redirectOn, "the redirect must visibly turn off, not be dropped at save time")
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        guard case .mock = rule.actions.route else {
+            Issue.record("expected a mock route")
+            return
+        }
+    }
+
+    @Test func settingResponsePickerOff_doesNotKillARedirect() {
+        var draft = RuleDraft(rule: Fixtures.rule(
+            route: .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001"))))
+        draft.responseSource = .upstream // already reads upstream; re-picking must be a no-op
+        #expect(draft.redirectOn)
+        #expect(draft.route == .mapRemote)
+    }
+
+    @Test func turningRedirectOn_clearsAMockRoute() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .mock(MockResponseAction())))
+        #expect(draft.routeClaimedElsewhere)
+        draft.redirectOn = true
+        draft.redirectDest = "http://127.0.0.1:3001"
+        #expect(draft.responseSource == .upstream)
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(rule.actions.route == .mapRemote(MapRemoteAction(destination: "http://127.0.0.1:3001")))
     }
 
     @Test func mapRemote_roundTrips() {
@@ -50,23 +158,171 @@ import Testing
         #expect(built(rule).actions.route == .mapRemote(remote))
     }
 
-    @Test func rewriteResponse_carriedThrough() {
+    @Test func rewriteResponse_roundTrips() {
         var rule = Fixtures.rule(route: .passthrough)
         let rewrite = ResponseRewriteAction(statusCode: 418, bodyText: "teapot")
         rule.actions.rewriteResponse = rewrite
         #expect(built(rule).actions.rewriteResponse == rewrite)
     }
 
-    @Test func comment_preservedThoughEditorHidesIt() {
+    /// With the source short-circuiting, the three sections *are* the synthesized
+    /// response — status, headers and body land on the mock itself rather than as
+    /// a rewrite that says the same thing a second time.
+    @Test func shortCircuitSections_landOnTheMockItself() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .mock(MockResponseAction(statusCode: 200))))
+        #expect(draft.responseSource == .shortCircuit)
+        draft.respStatus = "503"
+        draft.respSetHeaders = "X-Res: 2"
+        draft.respBodyOn = true
+        draft.respBodySource = .text
+        draft.respBody = "res-body"
+        guard case let .success(rule) = draft.build(), case let .mock(mock) = rule.actions.route else {
+            Issue.record("expected a mock route")
+            return
+        }
+        #expect(mock.statusCode == 503)
+        #expect(mock.headers == [HeaderPair(name: "X-Res", value: "2")])
+        #expect(mock.body == .text("res-body"))
+        #expect(rule.actions.rewriteResponse == nil, "no second copy of the same instruction")
+    }
+
+    /// The one combination the pane has no room to lay out: a synthesized route
+    /// **plus** a response rewrite (which an agent can write, and which behaves
+    /// differently from folding it into the mock when several rules match). It is
+    /// carried through untouched — and, unlike the old carried fields, the draft
+    /// can say it is there so the editor can name it.
+    @Test func aRewriteOverAMock_isCarried_andAnnounced() {
+        var rule = Fixtures.rule(route: .mock(MockResponseAction(statusCode: 200)))
+        let rewrite = ResponseRewriteAction(statusCode: 503, setHeaders: [HeaderPair(name: "X-Res", value: "2")])
+        rule.actions.rewriteResponse = rewrite
+
+        let draft = RuleDraft(rule: rule)
+        #expect(draft.carriedResponseRewriteSummary == "status + headers")
+        #expect(built(rule).actions.rewriteResponse == rewrite)
+        #expect(built(rule) == rule, "opening and saving must change nothing")
+    }
+
+    /// On the upstream path there is nothing to carry — the sections are the
+    /// rewrite — so the notice must not appear.
+    @Test func noCarriedRewriteNotice_onTheUpstreamPath() {
+        var rule = Fixtures.rule(route: .passthrough)
+        rule.actions.rewriteResponse = ResponseRewriteAction(statusCode: 503)
+        #expect(RuleDraft(rule: rule).carriedResponseRewriteSummary == nil)
+    }
+
+    @Test func rewriteResponse_blankStatusMeansKeepIt() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .passthrough))
+        draft.respStatus = "  "
+        draft.respBodyOn = true
+        draft.respBodySource = .text
+        draft.respBody = "only the body"
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(rule.actions.rewriteResponse?.statusCode == nil)
+        #expect(rule.actions.rewriteResponse?.bodyText == "only the body")
+    }
+
+    @Test func rewriteResponse_nonNumericStatus_fails() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .block))
+        draft.respStatus = "teapot"
+        guard case .failure = draft.build() else {
+            Issue.record("expected a build failure for a non-numeric status override")
+            return
+        }
+    }
+
+    /// Clearing the field is how a rewrite is removed — there is no switch to turn
+    /// off, so an empty status has to mean "no status override" rather than
+    /// leaving the old one stranded in the model. The rule keeps another action so
+    /// it stays valid; a rule with nothing left is refused, which is a different
+    /// rule.
+    @Test func rewriteResponse_clearedField_isRemovedNotStranded() {
+        var rule = Fixtures.rule(route: .passthrough)
+        rule.actions.rewriteResponse = ResponseRewriteAction(statusCode: 418)
+        rule.actions.delayMilliseconds = 100
+        var draft = RuleDraft(rule: rule)
+        #expect(draft.responseLineEdited)
+        draft.respStatus = ""
+        guard case let .success(out) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(out.actions.rewriteResponse == nil, "the human must be able to delete it, not just see it")
+        #expect(out.actions.delayMilliseconds == 100)
+    }
+
+    /// Block hides the three response sections — a 403 with a fixed body has
+    /// nothing to edit — so a rewrite on a blocking rule is carried, not dropped.
+    /// It was dropped, and this is the test that found it.
+    @Test func aRewriteOnABlockingRule_survivesASave() {
+        var rule = Fixtures.rule(route: .block)
+        let rewrite = ResponseRewriteAction(statusCode: 451, bodyText: "gone")
+        rule.actions.rewriteResponse = rewrite
+        #expect(built(rule).actions.rewriteResponse == rewrite)
+        #expect(built(rule) == rule)
+        #expect(RuleDraft(rule: rule).carriedResponseRewriteSummary == "status + body")
+    }
+
+    @Test func mockHeaders_areEditable() {
+        var draft = RuleDraft(rule: Fixtures.rule(route: .mock(
+            MockResponseAction(headers: [HeaderPair(name: "X-Debug", value: "1")]))))
+        draft.respSetHeaders = "X-Debug: 2\nX-New: yes"
+        guard case let .success(rule) = draft.build(), case let .mock(mock) = rule.actions.route else {
+            Issue.record("expected a mock route")
+            return
+        }
+        #expect(mock.headers == [HeaderPair(name: "X-Debug", value: "2"), HeaderPair(name: "X-New", value: "yes")])
+    }
+
+    @Test func comment_isEditable() {
         var rule = Fixtures.rule(route: .block)
         rule.comment = "authored via MCP"
         #expect(built(rule).comment == "authored via MCP")
+
+        var draft = RuleDraft(rule: rule)
+        draft.comment = "  " // cleared by the human
+        guard case let .success(out) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(out.comment == nil, "whitespace is not a note")
     }
 
-    @Test func multiMethod_matchPreservedWhenUntouched() {
+    @Test func multiMethod_roundTrips() {
         let rule = Fixtures.rule(methods: ["GET", "HEAD"], route: .block)
-        // Editor's single-select dropdown shows the first method but must keep the set.
         #expect(built(rule).match.methods == ["GET", "HEAD"])
+    }
+
+    /// The old single-select dropdown showed the first method and replaced the
+    /// whole set on save, so editing a `["POST","PUT"]` rule to also cover GET
+    /// silently dropped PUT. Multi-select edits the list itself.
+    @Test func multiMethod_editingOneKeepsTheOthers() {
+        var draft = RuleDraft(rule: Fixtures.rule(methods: ["POST", "PUT"], route: .block))
+        draft.methods.append("GET")
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(rule.match.methods == ["POST", "PUT", "GET"])
+
+        draft.methods.removeAll { $0 == "POST" }
+        guard case let .success(narrowed) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(narrowed.match.methods == ["PUT", "GET"])
+    }
+
+    @Test func noMethods_meansAnyMethod() {
+        var draft = RuleDraft(rule: Fixtures.rule(methods: ["GET"], route: .block))
+        draft.methods = []
+        guard case let .success(rule) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(rule.match.methods.isEmpty)
     }
 
     @Test func delay_roundTrips() {
@@ -100,11 +356,10 @@ import Testing
             isEnabled: false,
             match: RuleMatch(
                 urlPattern: "https://api.example.com/v1/*",
-                isRegex: false,
+                style: .glob,
                 methods: ["GET", "POST"],
-                isExact: false,
                 hostPattern: "*.example.com",
-                query: ["ab_test": "on"],
+                query: ["ab_test": .equals("on")],
                 sourceApp: "com.example.MyApp",
                 deviceIP: "192.168.1.9"
             ),
@@ -112,14 +367,15 @@ import Testing
                 route: .mock(MockResponseAction(
                     statusCode: 418,
                     headers: [HeaderPair(name: "X-Mock", value: "yes")],
-                    bodyText: #"{"ok":true}"#,
+                    body: .text(#"{"ok":true}"#),
                     contentType: "application/json"
                 )),
                 rewriteRequest: RequestRewriteAction(
                     method: "PUT",
+                    url: "https://api.example.com/v2/home",
                     setHeaders: [HeaderPair(name: "X-Req", value: "1")],
                     removeHeaders: ["Cookie"],
-                    bodyText: "req-body"
+                    body: .text("req-body")
                 ),
                 rewriteResponse: ResponseRewriteAction(
                     statusCode: 503,
@@ -146,8 +402,9 @@ import Testing
         let expected: Set<String> = [
             // TrafficRule
             "id", "name", "comment", "group", "isEnabled", "match", "actions", "createdAt",
-            // RuleMatch
-            "urlPattern", "isRegex", "methods", "isExact", "hostPattern", "query",
+            // RuleMatch ("isRegex" below belongs to SubstitutionRule; RuleMatch's
+            // own regex/exact booleans are one `style` enum now)
+            "urlPattern", "style", "methods", "hostPattern", "query",
             "sourceApp", "deviceIP",
             // RuleActions
             "route", "rewriteRequest", "rewriteResponse",
@@ -155,11 +412,16 @@ import Testing
             // Route payloads (mock shown here; the others are covered by the
             // per-route tests above, and adding a Route case is a compile error in
             // MCPServerTests' RuleCodecParityTests)
-            "mock", "statusCode", "headers", "bodyText", "bodyBase64", "contentType",
-            // Rewrites
-            "method", "setHeaders", "removeHeaders",
-            // SubstitutionRule
-            "field", "replacement", "caseSensitive",
+            "mock", "statusCode", "headers", "contentType",
+            // MockBody: the census fixture below uses `.bytes`, so `text` is not
+            // in this set — `MockBodyTests` covers the other case.
+            "body", "bytes",
+            // Rewrites. The request's body is a `RewriteBody` (`text`/`file`);
+            // `bodyText` is the response rewrite's, which stays a plain string
+            // because a file body there is `mapLocal`, not a rewrite.
+            "method", "url", "setHeaders", "removeHeaders", "bodyText", "text",
+            // SubstitutionRule ("isRegex" is this type's, not the match's)
+            "field", "replacement", "caseSensitive", "isRegex",
         ]
         let actual = Self.fieldNames(of: maximalRuleForCensus)
         let added = actual.subtracting(expected)
@@ -178,10 +440,10 @@ import Testing
             name: "census",
             comment: "c",
             group: "g",
-            match: RuleMatch(urlPattern: "x", hostPattern: "h", query: ["q": "1"], sourceApp: "a", deviceIP: "1.2.3.4"),
+            match: RuleMatch(urlPattern: "x", hostPattern: "h", query: ["q": .equals("1")], sourceApp: "a", deviceIP: "1.2.3.4"),
             actions: RuleActions(
-                route: .mock(MockResponseAction(bodyText: "b", bodyBase64: "Yg==", contentType: "text/plain")),
-                rewriteRequest: RequestRewriteAction(method: "GET", bodyText: "b"),
+                route: .mock(MockResponseAction(body: .bytes(Data("b".utf8)), contentType: "text/plain")),
+                rewriteRequest: RequestRewriteAction(method: "GET", body: .text("b")),
                 rewriteResponse: ResponseRewriteAction(statusCode: 200, bodyText: "b"),
                 requestSubstitutions: [SubstitutionRule(field: .url, match: "m", replacement: "r")],
                 responseSubstitutions: [SubstitutionRule(field: .body, match: "m", replacement: "r")],
@@ -223,16 +485,16 @@ import Testing
             name: "exact + host + query",
             match: RuleMatch(
                 urlPattern: "https://api.example.com/v1/home",
-                isExact: true,
+                style: .exact,
                 hostPattern: "*.example.com",
-                query: ["ab_test": "on", "debug": "*"]
+                query: ["ab_test": .equals("on"), "debug": .present]
             ),
             actions: RuleActions(route: .block)
         )
         let out = built(rule).match
         #expect(out.isExact)
         #expect(out.hostPattern == "*.example.com")
-        #expect(out.query == ["ab_test": "on", "debug": "*"])
+        #expect(out.query == ["ab_test": .equals("on"), "debug": .present])
     }
 
     /// A rule an agent scoped to one app or device must survive a human opening it in
@@ -272,7 +534,7 @@ import Testing
     @Test func enablingRegex_clearsExact() throws {
         var draft = RuleDraft(rule: TrafficRule(
             name: "r",
-            match: RuleMatch(urlPattern: "https://api.example.com/home", isExact: true),
+            match: RuleMatch(urlPattern: "https://api.example.com/home", style: .exact),
             actions: RuleActions(route: .block)
         ))
         draft.isRegex = true // user flips regex on; exact must not survive into the model
@@ -291,13 +553,13 @@ import Testing
             Issue.record("build failed")
             return
         }
-        #expect(rule.match.query == ["keep": "1"])
+        #expect(rule.match.query == ["keep": .equals("1")])
     }
 
     // MARK: Binary (base64) mock body
 
     @Test func mockBodyBase64_roundTrips() {
-        let mock = MockResponseAction(statusCode: 200, bodyBase64: "aGVsbG8=", contentType: "application/octet-stream")
+        let mock = MockResponseAction(statusCode: 200, body: .bytes(Data("hello".utf8)), contentType: "application/octet-stream")
         let rule = Fixtures.rule(route: .mock(mock))
         guard case let .mock(out) = built(rule).actions.route else {
             Issue.record("expected mock route")
@@ -309,8 +571,9 @@ import Testing
 
     @Test func mockBody_invalidBase64_fails() {
         var draft = RuleDraft(rule: Fixtures.rule(route: .mock(MockResponseAction())))
-        draft.mockBodyIsBinary = true
-        draft.mockBodyBase64 = "not valid base64!!!"
+        draft.respBodyOn = true
+        draft.respBodySource = .binary
+        draft.respBodyBase64 = "not valid base64!!!"
         guard case .failure = draft.build() else {
             Issue.record("expected a build failure for invalid base64")
             return
@@ -321,7 +584,7 @@ import Testing
 
     @Test func build_nonNumericMockStatus_fails() {
         var draft = RuleDraft(rule: Fixtures.rule(route: .mock(MockResponseAction())))
-        draft.mockStatus = "abc"
+        draft.respStatus = "abc"
         guard case .failure = draft.build() else {
             Issue.record("expected a build failure for a non-numeric status")
             return
@@ -330,7 +593,6 @@ import Testing
 
     @Test func build_nonNumericDelay_fails() {
         var draft = RuleDraft(rule: Fixtures.rule(route: .block))
-        draft.delayOn = true
         draft.delayMs = "soon"
         guard case .failure = draft.build() else {
             Issue.record("expected a build failure for a non-numeric delay")

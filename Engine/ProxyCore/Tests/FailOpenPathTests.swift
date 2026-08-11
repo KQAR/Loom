@@ -75,7 +75,7 @@ import LoomSharedModels
         let url = directory.appendingPathComponent("rules-ok.json")
         let rule = TrafficRule(
             name: "mock home", match: RuleMatch(urlPattern: "*/home"),
-            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 200, bodyText: "{}")))
+            actions: RuleActions(route: .mock(MockResponseAction(statusCode: 200, body: .text("{}"))))
         )
         let first = RulesConfig(fileURL: url)
         first.add(rule) // mutations persist

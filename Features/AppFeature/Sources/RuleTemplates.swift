@@ -26,7 +26,11 @@ enum RuleFactory {
                 match: RuleMatch(urlPattern: base, methods: [flow.request.method]),
                 actions: RuleActions(route: .mock(MockResponseAction(
                     statusCode: response?.statusCode ?? 200,
-                    bodyText: response?.body.flatMap { String(data: $0, encoding: .utf8) },
+                    // A captured body that isn't UTF-8 is pinned as bytes rather
+                    // than dropped — the old `bodyText:` path lost it silently.
+                    body: response?.body.map { data in
+                        String(data: data, encoding: .utf8).map(MockBody.text) ?? .bytes(data)
+                    },
                     contentType: contentType ?? "application/json"
                 )))
             )
@@ -45,7 +49,7 @@ enum RuleFactory {
             let pattern = "://" + NSRegularExpression.escapedPattern(for: host) + #"(:\d+)?(/|$)"#
             return TrafficRule(
                 name: "Block \(host)",
-                match: RuleMatch(urlPattern: pattern, isRegex: true),
+                match: RuleMatch(urlPattern: pattern, style: .regex),
                 actions: RuleActions(route: .block)
             )
         }

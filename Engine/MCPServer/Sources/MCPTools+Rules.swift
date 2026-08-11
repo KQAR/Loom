@@ -17,11 +17,18 @@ extension MCPToolExecutor {
             return prettyJSON(Self.rule(rule, truncateBodies: false))
         }
         let state = await engine.rulesState()
-        return prettyJSON([
+        var out: [String: Any] = [
             "enabled": state.enabled,
             "count": state.rules.count,
             "rules": state.rules.map { Self.rule($0, truncateBodies: true) },
-        ])
+        ]
+        // Only when something is switched off: a group switch is the third reason
+        // an enabled-looking rule does nothing, and it is invisible on the rule
+        // itself. `null` is the ungrouped bucket.
+        if !state.disabledGroups.isEmpty {
+            out["disabledGroups"] = state.disabledGroups.map { $0 as Any? ?? NSNull() }
+        }
+        return prettyJSON(out)
     }
 
     /// `set_rule`: upsert. No `id` → create (name/match/actions required); `id` →
@@ -92,19 +99,13 @@ extension MCPToolExecutor {
     /// mistaken for "fine"; the reason names the tool that fixes it.
     func writtenRule(_ rule: TrafficRule) async -> [String: Any] {
         var out = Self.rule(rule, truncateBodies: false)
-        let masterEnabled = await engine.rulesState().enabled
-        out["effective"] = masterEnabled && rule.isEnabled
-        if !masterEnabled {
-            out["ineffectiveReason"] = """
-            The rules master switch is off, so no rule applies to traffic — including \
-            this one. Turn it on with set_rules_enabled(enabled: true).
-            """
-        } else if !rule.isEnabled {
-            out["ineffectiveReason"] = """
-            This rule is disabled, so it will not apply to traffic. Enable it with \
-            set_rule(id: …, enabled: true), or set_group_enabled if it belongs to a group.
-            """
-        }
+        // One definition of "why isn't this applying", on the model, so the three
+        // switches (master / group / rule) can't be enumerated differently here
+        // than anywhere else — the group one was missing entirely, which made a
+        // rule written into a switched-off group report `effective: true`.
+        let reason = await engine.rulesState().ineffectiveReason(for: rule)
+        out["effective"] = reason == nil
+        if let reason { out["ineffectiveReason"] = reason }
         // A body that was meant to be JSON and isn't gets written as asked — a
         // malformed payload is a legitimate thing to mock — but never silently
         // (`MCPBodyWarnings`).
@@ -143,10 +144,14 @@ extension MCPToolExecutor {
             throw MCPToolFailure("no rules in group \"\(group)\" — see list_rules")
         }
         await engine.setGroupEnabled(group: group, enabled: enabled)
-        var out: [String: Any] = ["group": group, "enabled": enabled, "affected": members.count]
-        // Enabling a group under a closed master switch changes nothing observable —
-        // the same silent no-op as a freshly created rule, so it gets the same answer.
-        let masterEnabled = await engine.rulesState().enabled
+        let state = await engine.rulesState()
+        var out: [String: Any] = ["group": group, "enabled": enabled, "members": members.count]
+        // The group switch is its own axis now, so "how many of this group's rules
+        // are actually live" is no longer implied by `affected` — a member the
+        // human turned off individually stays off, which is the point of the
+        // change and is exactly what an agent would otherwise misreport.
+        out["active"] = state.activeRules.filter { $0.group == group }.count
+        let masterEnabled = state.enabled
         out["effective"] = masterEnabled && enabled
         if enabled, !masterEnabled {
             out["ineffectiveReason"] = """
@@ -177,18 +182,48 @@ extension MCPToolExecutor {
         return name
     }
 
+    /// The wire keeps three ways to say the same thing, because two of them are
+    /// what every agent already sends: `match_style` (the model's own vocabulary),
+    /// and the older `is_regex` / `is_exact` booleans. They collapse to one
+    /// `MatchStyle` here — the one place that can receive the illegal combination
+    /// — with regex beating exact, as the old matcher did.
+    static func matchStyle(from raw: [String: Any]) -> MatchStyle? {
+        if let named = raw["match_style"] as? String, let style = MatchStyle(rawValue: named) {
+            return style
+        }
+        if (raw["is_regex"] as? Bool) == true { return .regex }
+        if (raw["is_exact"] as? Bool) == true { return .exact }
+        return nil // let the pattern speak: `*` → glob, else prefix
+    }
+
     static func ruleMatch(from raw: [String: Any]) -> RuleMatch? {
         guard let pattern = raw["url_pattern"] as? String else { return nil }
         return RuleMatch(
             urlPattern: pattern,
-            isRegex: (raw["is_regex"] as? Bool) ?? false,
+            style: matchStyle(from: raw),
             methods: (raw["methods"] as? [String]) ?? [],
-            isExact: (raw["is_exact"] as? Bool) ?? false,
             hostPattern: (raw["host_pattern"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-            query: (raw["query"] as? [String: String]).flatMap { $0.isEmpty ? nil : $0 },
+            query: queryPredicates(raw["query"]),
             sourceApp: (raw["source_app"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             deviceIP: (raw["device_ip"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         )
+    }
+
+    /// Query predicates, either spelling. `{"v": "2"}` with `*` for "any value" is
+    /// what every agent already sends; `{"v": {"equals": "*"}}` is how a parameter
+    /// whose value really is `*` gets said, which the sentinel alone cannot.
+    static func queryPredicates(_ raw: Any?) -> [String: QueryPredicate]? {
+        guard let dict = raw as? [String: Any], !dict.isEmpty else { return nil }
+        var out: [String: QueryPredicate] = [:]
+        for (key, value) in dict {
+            if let text = value as? String {
+                out[key] = QueryPredicate(legacyWireValue: text)
+            } else if let object = value as? [String: Any] {
+                if let equals = object["equals"] as? String { out[key] = .equals(equals) }
+                else if (object["present"] as? Bool) == true { out[key] = .present }
+            }
+        }
+        return out.isEmpty ? nil : out
     }
 
     static func ruleActions(from raw: [String: Any]) throws -> RuleActions {
@@ -199,11 +234,18 @@ extension MCPToolExecutor {
         var routes: [Route] = []
         if (raw["block"] as? Bool) == true { routes.append(.block) }
         if let mock = raw["mock_response"] as? [String: Any] {
-            routes.append(.mock(MockResponseAction(
+            let base64 = mock["body_base64"] as? String
+            // Refused here, where the offending string still exists to quote: the
+            // model holds decoded bytes, so an undecodable payload would otherwise
+            // become a silently empty body.
+            if let base64, Data(base64Encoded: base64) == nil {
+                throw MCPError.invalidParams("mock_response.body_base64 is not valid base64")
+            }
+            routes.append(.mock(MockResponseAction.fromWire(
                 statusCode: (mock["status_code"] as? Int) ?? 200,
                 headers: headerPairs(mock["headers"]),
                 bodyText: mock["body"] as? String,
-                bodyBase64: mock["body_base64"] as? String,
+                bodyBase64: base64,
                 contentType: mock["content_type"] as? String
             )))
         }
@@ -233,11 +275,22 @@ extension MCPToolExecutor {
         actions.route = routes.first ?? .passthrough
 
         if let rewrite = raw["rewrite_request"] as? [String: Any] {
+            // One body, two spellings on the wire; the boundary that can receive
+            // both is where the choice is made, and a file outranks inline text.
+            let body: RewriteBody?
+            if let path = rewrite["body_file"] as? String, !path.isEmpty {
+                body = .file(path: path)
+            } else if let text = rewrite["body"] as? String {
+                body = .text(text)
+            } else {
+                body = nil
+            }
             actions.rewriteRequest = RequestRewriteAction(
                 method: rewrite["method"] as? String,
+                url: (rewrite["url"] as? String).flatMap { $0.isEmpty ? nil : $0 },
                 setHeaders: headerPairs(rewrite["set_headers"]),
                 removeHeaders: (rewrite["remove_headers"] as? [String]) ?? [],
-                bodyText: rewrite["body"] as? String
+                body: body
             )
         }
         if let rewrite = raw["rewrite_response"] as? [String: Any] {
@@ -266,9 +319,14 @@ extension MCPToolExecutor {
             guard let fieldRaw = item["field"] as? String else {
                 throw MCPError.invalidParams("\(key): each item needs a `field`")
             }
-            guard let field = SubstitutionRule.Field(rawValue: fieldRaw) else {
+            guard let kind = SubstitutionRule.Field.Kind(rawValue: fieldRaw) else {
                 throw MCPError.invalidParams("\(key): invalid field \"\(fieldRaw)\" (url/header/body)")
             }
+            let headerName = item["header_name"] as? String
+            if headerName != nil, kind != .header {
+                throw MCPError.invalidParams("\(key): header_name only applies to field \"header\"")
+            }
+            let field = SubstitutionRule.Field(kind: kind, headerName: headerName)
             guard let match = item["match"] as? String else {
                 throw MCPError.invalidParams("\(key): each item needs a `match` string")
             }

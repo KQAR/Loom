@@ -4,8 +4,9 @@ import SwiftUI
 
 /// The main-window rules surface (sidebar → Rules). The agent authors rules over
 /// MCP; here the human supervises them: master switch, per-group and per-rule
-/// enable/disable, delete. Grouping is display + batch-toggle only — evaluation
-/// order stays the flat list order.
+/// enable/disable, delete. A group has a switch of its own (`RulesState.disabledGroups`)
+/// that composes with each rule's — switching a scenario off never overwrites which
+/// rules the human had turned off inside it. Evaluation order stays the flat list order.
 struct RulesPanelView: View {
     @Bindable var store: StoreOf<RulesFeature>
     /// Collapsed groups, keyed by `groupKey` (nil group has its own sentinel).
@@ -83,6 +84,7 @@ struct RulesPanelView: View {
                         RuleRow(
                             rule: rule,
                             engineEnabled: store.rulesEnabled,
+                            groupEnabled: store.rulesState.isGroupEnabled(group.key),
                             onToggle: { store.send(.ruleToggled(rule.id)) },
                             onEdit: { store.send(.editRuleTapped(rule.id)) },
                             onDelete: { store.send(.ruleDeleted(rule.id)) }
@@ -101,18 +103,24 @@ struct RulesPanelView: View {
     /// Collapsible group header. The leading checkmark toggles the whole group on/off
     /// (aligned with the per-rule checkboxes below); the label toggles collapse.
     private func groupHeader(_ group: String?, rules: [TrafficRule]) -> some View {
-        let allOn = rules.allSatisfy(\.isEnabled)
+        // The group's own switch, not "are all its rules on" — those are different
+        // facts now, and reading the second would show a group with one
+        // individually-disabled rule as switched off.
+        let groupOn = store.rulesState.isGroupEnabled(group)
         let isCollapsed = collapsed.contains(Self.groupKey(group))
         return HStack(spacing: LoomTheme.Space.sm) {
-            // Batch enable/disable — checkmark at the left start, not a switch.
+            // Switches the whole group; each rule keeps its own flag.
             Toggle(isOn: Binding(
-                get: { allOn },
+                get: { groupOn },
                 set: { store.send(.ruleGroupToggled(group: group, enabled: $0)) }
             )) {
                 EmptyView()
             }
             .toggleStyle(.checkbox)
-            .help(group == nil ? "Enable/disable all ungrouped rules" : "Enable/disable the whole group")
+            .tint(LoomTheme.Palette.accent)
+            .help(group == nil
+                ? "Switch the ungrouped rules on or off (each rule keeps its own switch)"
+                : "Switch the whole group on or off (each rule keeps its own switch)")
 
             Button {
                 if isCollapsed { collapsed.remove(Self.groupKey(group)) }
@@ -144,7 +152,7 @@ struct RulesPanelView: View {
         ContentUnavailableView {
             Label("No rules yet", systemImage: "wand.and.stars")
         } description: {
-            Text("Ask your agent to call `create_rule`, or right-click a captured request → Add Rule.")
+            Text("Ask your agent to call `set_rule`, or right-click a captured request → Add Rule.")
         }
     }
 }
@@ -154,6 +162,9 @@ struct RulesPanelView: View {
 private struct RuleRow: View {
     let rule: TrafficRule
     let engineEnabled: Bool
+    /// Its group's switch. A rule can be enabled and still inert because the group
+    /// it belongs to is off — the row has to show that, or the checkbox lies.
+    let groupEnabled: Bool
     let onToggle: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -164,6 +175,7 @@ private struct RuleRow: View {
                 EmptyView()
             }
             .toggleStyle(.checkbox)
+            .tint(LoomTheme.Palette.accent)
             .help(rule.isEnabled ? "Disable this rule" : "Enable this rule")
 
             // The info block is a button: click (or double-click the row) to edit.
@@ -175,6 +187,12 @@ private struct RuleRow: View {
                             .foregroundStyle(dimmed ? .secondary : .primary)
                         ForEach(actionBadges, id: \.self) { badge in
                             CapsuleBadge(text: badge, hPadding: 5, vPadding: 1)
+                        }
+                        // Tinted apart from the action badges: these say who the
+                        // rule is limited to, not what it does.
+                        ForEach(scopeBadges) { badge in
+                            CapsuleBadge(text: badge.text, tint: LoomTheme.Palette.accent, hPadding: 5, vPadding: 1)
+                                .help(badge.detail)
                         }
                     }
                     Text(patternText)
@@ -212,33 +230,12 @@ private struct RuleRow: View {
             .help("Delete this rule")
         }
         .padding(.vertical, 2)
-        .opacity(engineEnabled ? 1 : 0.55)
+        .opacity(engineEnabled && groupEnabled ? 1 : 0.55)
     }
 
-    private var dimmed: Bool { !rule.isEnabled || !engineEnabled }
+    private var dimmed: Bool { !rule.isEnabled || !engineEnabled || !groupEnabled }
 
-    private var patternText: String {
-        var parts: [String] = []
-        if !rule.match.methods.isEmpty {
-            parts.append(rule.match.methods.joined(separator: "/").uppercased())
-        }
-        parts.append(rule.match.isRegex ? "/\(rule.match.urlPattern)/" : rule.match.urlPattern)
-        return parts.joined(separator: " ")
-    }
-
-    private var actionBadges: [String] {
-        let a = rule.actions
-        var badges: [String] = []
-        switch a.route {
-        case .passthrough: break
-        case .block: badges.append("BLOCK")
-        case .mock: badges.append("MOCK")
-        case .mapRemote: badges.append("MAP REMOTE")
-        case .mapLocal: badges.append("MAP LOCAL")
-        }
-        if a.rewriteRequest?.isEmpty == false { badges.append("REQ") }
-        if a.rewriteResponse?.isEmpty == false { badges.append("RES") }
-        if let ms = a.delayMilliseconds { badges.append("DELAY \(ms)ms") }
-        return badges
-    }
+    private var patternText: String { RuleSummary.patternText(for: rule) }
+    private var actionBadges: [String] { RuleSummary.actionBadges(for: rule) }
+    private var scopeBadges: [RuleSummary.ScopeBadge] { RuleSummary.scopeBadges(for: rule) }
 }

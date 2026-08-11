@@ -33,6 +33,7 @@ import Testing
         var actions: [String: Any] = [
             "rewrite_request": [
                 "method": "PUT",
+                "url": "https://api.example.com/v2/home",
                 "set_headers": ["X-Req": "1"],
                 "remove_headers": ["Cookie"],
                 "body": "req-body",
@@ -63,7 +64,6 @@ import Testing
                 "status_code": 418,
                 "headers": ["X-Mock": "yes"],
                 "body": "mocked",
-                "body_base64": Data("bin".utf8).base64EncodedString(),
                 "content_type": "application/json",
             ]
         case .mapLocal:
@@ -98,27 +98,27 @@ import Testing
     /// would belong to the main-actor region. The dictionary is built fresh here and
     /// never kept, so it genuinely is disconnected.
     private func maximalInput(for route: Route) -> sending [String: Any] {
-        // `is_regex` and `is_exact` are alternatives, and the render only emits each
-        // when true — so one route variant matches exactly and the rest by regex,
-        // which is what makes the union of renders cover both fields.
+        // One variant is an exact match written the old way (`is_exact`), the rest
+        // are regexes written the new way (`match_style`) — so the union covers
+        // both spellings of the same field.
         let exactVariant = Self.routeCaseName(route) == "block"
+        var match: [String: Any] = [
+            "url_pattern": exactVariant
+                ? "https://api.example.com/v1/home"
+                : "https://api\\.example\\.com/.*",
+            "host_pattern": "*.example.com",
+            "query": ["v": "2"],
+            "source_app": "com.example.app",
+            "device_ip": "192.168.1.42",
+            "methods": ["GET", "POST"],
+        ]
+        if exactVariant { match["is_exact"] = true } else { match["match_style"] = "regex" }
         return [
             "name": "maximal",
             "comment": "why this rule exists",
             "group": "scenario-a",
             "enabled": false,
-            "match": [
-                "url_pattern": exactVariant
-                    ? "https://api.example.com/v1/home"
-                    : "https://api\\.example\\.com/.*",
-                "is_regex": !exactVariant,
-                "is_exact": exactVariant,
-                "host_pattern": "*.example.com",
-                "query": ["v": "2"],
-                "source_app": "com.example.app",
-                "device_ip": "192.168.1.42",
-                "methods": ["GET", "POST"],
-            ],
+            "match": match,
             "actions": actionsInput(for: route),
         ]
     }
@@ -143,10 +143,11 @@ import Testing
         #expect(rule.isEnabled == false)
 
         #expect(rule.match.urlPattern == "https://api\\.example\\.com/.*")
+        #expect(rule.match.style == .regex)
         #expect(rule.match.isRegex)
         #expect(rule.match.isExact == false)
         #expect(rule.match.hostPattern == "*.example.com")
-        #expect(rule.match.query == ["v": "2"])
+        #expect(rule.match.query == ["v": .equals("2")])
         #expect(rule.match.sourceApp == "com.example.app")
         #expect(rule.match.deviceIP == "192.168.1.42")
         #expect(rule.match.methods == ["GET", "POST"])
@@ -157,15 +158,15 @@ import Testing
         }
         #expect(mock.statusCode == 418)
         #expect(mock.headers == [HeaderPair(name: "X-Mock", value: "yes")])
-        #expect(mock.bodyText == "mocked")
-        #expect(mock.bodyBase64 == Data("bin".utf8).base64EncodedString())
+        #expect(mock.body == .text("mocked"))
         #expect(mock.contentType == "application/json")
 
         let rewriteRequest = try #require(rule.actions.rewriteRequest)
         #expect(rewriteRequest.method == "PUT")
+        #expect(rewriteRequest.url == "https://api.example.com/v2/home")
         #expect(rewriteRequest.setHeaders == [HeaderPair(name: "X-Req", value: "1")])
         #expect(rewriteRequest.removeHeaders == ["Cookie"])
-        #expect(rewriteRequest.bodyText == "req-body")
+        #expect(rewriteRequest.body == .text("req-body"))
 
         let rewriteResponse = try #require(rule.actions.rewriteResponse)
         #expect(rewriteResponse.statusCode == 503)
@@ -186,6 +187,167 @@ import Testing
         #expect(responseSub.caseSensitive == false)
 
         #expect(rule.actions.delayMilliseconds == 250)
+    }
+
+    /// The four match styles, each spelled the way an agent would. The older
+    /// boolean spellings map onto the same enum — `is_regex` beating `is_exact`,
+    /// which is the precedence the old two-boolean matcher had — and a bare
+    /// pattern still infers glob-or-prefix from its own `*`.
+    @Test func everyMatchStyle_survivesTheCodec() async throws {
+        let cases: [(input: [String: Any], expected: MatchStyle)] = [
+            (["url_pattern": "https://a/x", "match_style": "prefix"], .prefix),
+            (["url_pattern": "https://a/*", "match_style": "glob"], .glob),
+            (["url_pattern": "https://a/x", "match_style": "exact"], .exact),
+            (["url_pattern": "https://a/.*", "match_style": "regex"], .regex),
+            (["url_pattern": "https://a/x", "is_regex": true], .regex),
+            (["url_pattern": "https://a/x", "is_exact": true], .exact),
+            (["url_pattern": "https://a/x", "is_regex": true, "is_exact": true], .regex),
+            (["url_pattern": "https://a/*"], .glob),
+            (["url_pattern": "https://a/x"], .prefix),
+            // The state the two booleans could not express at all: a literal `*`
+            // that must not be read as a wildcard.
+            (["url_pattern": "https://a/*", "match_style": "prefix"], .prefix),
+        ]
+        for (input, expected) in cases {
+            let engine = StubEngine()
+            let executor = makeExecutor(engine)
+            _ = try await executor.call(name: "set_rule", arguments: [
+                "name": "styled", "match": input, "actions": ["block": true],
+            ])
+            let rule = try #require(engine.rules.rules.last)
+            #expect(rule.match.style == expected, "input \(input) should have parsed as \(expected)")
+
+            let json = try #require(try JSONSerialization.jsonObject(
+                with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+            ) as? [String: Any])
+            let match = try #require(json["match"] as? [String: Any])
+            #expect(match["matchStyle"] as? String == expected.rawValue, "the style must read back")
+        }
+    }
+
+    /// A header substitution can name its target, which is the middle ground the
+    /// model had no room for: blunter than "every header value", cheaper than
+    /// overwriting the whole header through `rewrite_request.set_headers`.
+    @Test func headerSubstitution_carriesItsTargetBothWays() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        _ = try await executor.call(name: "set_rule", arguments: [
+            "name": "targeted", "match": ["url_pattern": "https://a/x"],
+            "actions": ["request_substitutions": [
+                ["field": "header", "header_name": "Authorization", "match": "old", "replacement": "new"],
+                ["field": "header", "match": "old", "replacement": "new"],
+            ]],
+        ])
+        let rule = try #require(engine.rules.rules.last)
+        #expect(rule.actions.requestSubstitutions.first?.field == .header(name: "Authorization"))
+        #expect(rule.actions.requestSubstitutions.last?.field == .header(), "no target means every header")
+
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+        ) as? [String: Any])
+        let subs = try #require(((json["actions"] as? [String: Any])?["requestSubstitutions"]) as? [[String: Any]])
+        #expect(subs.first?["headerName"] as? String == "Authorization")
+        #expect(subs.last?["headerName"] == nil, "absent is what untargeted looks like")
+    }
+
+    @Test func queryPredicates_bothSpellings_surviveTheCodec() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        _ = try await executor.call(name: "set_rule", arguments: [
+            "name": "queried",
+            "match": ["url_pattern": "https://a/x", "query": [
+                "v": "2",
+                "token": "*",
+                "flag": ["equals": "*"], // the one the sentinel cannot say
+            ]],
+            "actions": ["block": true],
+        ])
+        let rule = try #require(engine.rules.rules.last)
+        #expect(rule.match.query == ["v": .equals("2"), "token": .present, "flag": .equals("*")])
+
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+        ) as? [String: Any])
+        let query = try #require((json["match"] as? [String: Any])?["query"] as? [String: Any])
+        #expect(query["v"] as? String == "2")
+        #expect(query["token"] as? String == "*")
+        #expect((query["flag"] as? [String: Any])?["equals"] as? String == "*")
+    }
+
+    /// A request body from a file: the other `RewriteBody` case, which the maximal
+    /// input above can't also carry (one body, one case).
+    @Test func requestBodyFile_survivesTheCodec_andOutranksInlineText() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        _ = try await executor.call(name: "set_rule", arguments: [
+            "name": "filed", "match": ["url_pattern": "https://a/x"],
+            "actions": ["rewrite_request": ["body": "ignored", "body_file": "/tmp/loom-fixture.json"]],
+        ])
+        let rule = try #require(engine.rules.rules.last)
+        #expect(rule.actions.rewriteRequest?.body == .file(path: "/tmp/loom-fixture.json"))
+        #expect(rule.actions.rewriteRequest?.bodyText == nil, "one body, not two")
+
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+        ) as? [String: Any])
+        let rewrite = try #require(((json["actions"] as? [String: Any])?["rewriteRequest"]) as? [String: Any])
+        #expect(rewrite["bodyFile"] as? String == "/tmp/loom-fixture.json")
+        #expect(rewrite["body"] == nil)
+    }
+
+    @Test func headerName_onANonHeaderField_isRefused() async {
+        do {
+            _ = try await makeExecutor(StubEngine()).call(name: "set_rule", arguments: [
+                "name": "bad", "match": ["url_pattern": "https://a/x"],
+                "actions": ["request_substitutions": [
+                    ["field": "body", "header_name": "Authorization", "match": "a"],
+                ]],
+            ])
+            Issue.record("expected invalid params")
+        } catch let error as MCPError {
+            #expect("\(error)".contains("header_name"))
+        } catch { Issue.record("expected MCPError, got \(error)") }
+    }
+
+    /// A binary mock body: base64 in, base64 out, and — since a mock has exactly
+    /// one body now — base64 wins when a caller sends both, at the one boundary
+    /// that can receive both.
+    @Test func binaryMockBody_survivesTheCodec_andOutranksText() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        let base64 = Data("bin".utf8).base64EncodedString()
+        _ = try await executor.call(name: "set_rule", arguments: [
+            "name": "binary", "match": ["url_pattern": "https://a/x"],
+            "actions": ["mock_response": ["body": "ignored", "body_base64": base64]],
+        ])
+        let rule = try #require(engine.rules.rules.last)
+        guard case let .mock(mock) = rule.actions.route else {
+            Issue.record("expected a mock route")
+            return
+        }
+        #expect(mock.body == .bytes(Data("bin".utf8)))
+        #expect(mock.bodyText == nil, "one body, not two")
+        #expect(mock.resolvedBody() == Data("bin".utf8))
+
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+        ) as? [String: Any])
+        let rendered = try #require(((json["actions"] as? [String: Any])?["mockResponse"]) as? [String: Any])
+        #expect(rendered["bodyBase64"] as? String == base64)
+    }
+
+    /// Undecodable base64 is refused where the offending string still exists to
+    /// name — the model holds bytes, so it would otherwise land as an empty body.
+    @Test func invalidBase64MockBody_isRefused() async {
+        do {
+            _ = try await makeExecutor(StubEngine()).call(name: "set_rule", arguments: [
+                "name": "bad", "match": ["url_pattern": "https://a/x"],
+                "actions": ["mock_response": ["body_base64": "not base64!!!"]],
+            ])
+            Issue.record("expected invalid params")
+        } catch let error as MCPError {
+            #expect("\(error)".contains("base64"))
+        } catch { Issue.record("expected MCPError, got \(error)") }
     }
 
     @Test func everyRouteCase_survivesInputToStoredRule() async throws {
@@ -276,6 +438,10 @@ import Testing
     /// camelCase model field → its wire name, where mechanical snake_casing is wrong.
     private static let schemaAliases: [String: String] = [
         "isEnabled": "enabled",
+        "style": "match_style",
+        // `MockBody`'s two cases: one model field (`body`), two wire keys.
+        "text": "body",
+        "bytes": "body_base64",
         "bodyText": "body",
         "delayMilliseconds": "delay_ms",
         "excludePattern": "exclude",
@@ -285,6 +451,9 @@ import Testing
     /// camelCase model field → rendered key, where they differ.
     private static let renderAliases: [String: String] = [
         "isEnabled": "enabled",
+        "style": "matchStyle",
+        "text": "body",
+        "bytes": "bodyBase64",
         "bodyText": "body",
         "delayMilliseconds": "delayMs",
         "excludePattern": "exclude",

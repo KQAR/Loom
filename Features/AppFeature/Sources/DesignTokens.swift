@@ -110,6 +110,22 @@ public enum LoomTheme {
         public static let lg: CGFloat = 20
     }
 
+    /// Control metrics for Loom's own wells (`loomField()` and the editor's
+    /// fields), which are `.plain` controls inside a drawn surface and so have no
+    /// system metric of their own to inherit.
+    ///
+    /// The app renders in the pre-26 system design (CLAUDE.md § Known Issues), where
+    /// an `NSTextField` is 21pt — right for a dense inspector, too tight for a form
+    /// the human types URLs and JSON into. These give a ~30pt row: comfortable to
+    /// hit, still shorter than a macOS 26 field, and one value so a field, a menu
+    /// and a text area can't drift to three different heights.
+    public enum Control {
+        /// Vertical padding inside an editable well.
+        public static let fieldPaddingV: CGFloat = 7
+        /// Horizontal padding inside an editable well.
+        public static let fieldPaddingH: CGFloat = Space.xs
+    }
+
     public enum Radius {
         public static let sm: CGFloat = 6
         public static let md: CGFloat = 10

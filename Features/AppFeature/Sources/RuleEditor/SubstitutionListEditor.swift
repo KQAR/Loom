@@ -8,20 +8,18 @@ struct SubstitutionListEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
-            HStack {
-                Text(hint).font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer()
-                Button {
+            HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
+                EditorHint(hint)
+                Spacer(minLength: LoomTheme.Space.xs)
+                GlyphButton(systemImage: "plus", help: "Add a substitution") {
                     subs.append(SubstitutionRule(field: allowURL ? .url : .body, match: "", replacement: ""))
-                } label: {
-                    Label("Add", systemImage: "plus")
                 }
-                .controlSize(.small)
             }
 
             if subs.isEmpty {
-                Text("No substitutions yet.").font(.callout).foregroundStyle(.tertiary)
+                // Same voice as the rest of the sheet's empty sections: one
+                // tertiary line, no illustration, no bordered placeholder box.
+                Text("No substitutions yet.").font(.body).foregroundStyle(.tertiary)
             } else {
                 ForEach($subs) { $sub in
                     SubstitutionRow(sub: $sub, allowURL: allowURL) {

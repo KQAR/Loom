@@ -127,16 +127,19 @@ will affect before doing it. Every call is recorded in the audit trail.
 
 ## Rules (`set_rule`) — the shape
 
-A rule is a **structured** match + action (no text DSL). Match on a URL
-glob-or-regex + HTTP methods, optionally narrowed by `host_pattern`, `query`, and
-**who sent it** (`source_app` / `device_ip` — unattributed traffic never matches a
-scoped rule); then one action:
+A rule is a **structured** match + action (no text DSL). Match on a URL pattern —
+`match_style` says how it is read (prefix / glob / exact / regex; omit it and a `*`
+in the pattern means glob, otherwise prefix) — plus HTTP methods, optionally
+narrowed by `host_pattern`, `query`, and **who sent it** (`source_app` /
+`device_ip` — unattributed traffic never matches a scoped rule); then one action:
 
 - **mock** — return a canned status/headers/body without hitting the network.
 - **map remote** — redirect to another origin (`+exclude`/`keepHostHeader`).
 - **map local** — serve a local file.
 - **rewrite** — modify the request and/or response headers/body.
-- **find/replace** — `request_substitutions` / `response_substitutions` text swaps.
+- **find/replace** — `request_substitutions` / `response_substitutions` text swaps
+  (a `header` substitution takes an optional `header_name`; without one it edits
+  *every* header's value).
 - **block** — fail the request.
 - **delay** — add latency.
 - optional `group` label for batch enable/disable (scenario switching).

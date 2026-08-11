@@ -80,9 +80,8 @@ final class RulesConfig: Sendable {
     /// Enable/disable every rule in a group (`nil` = the ungrouped rules).
     func setGroupEnabled(group: String?, enabled: Bool) {
         mutate { state in
-            for index in state.rules.indices where state.rules[index].group == group {
-                state.rules[index].isEnabled = enabled
-            }
+            if enabled { state.disabledGroups.remove(group) }
+            else { state.disabledGroups.insert(group) }
         }
     }
 
@@ -100,6 +99,13 @@ final class RulesConfig: Sendable {
     private func mutate(_ body: (inout RulesState) -> Void) {
         state.withLock { state in
             body(&state)
+            // A group switch outlives its members otherwise, and a *new* rule
+            // written into that group name later would be silently off. Pruning
+            // here — one place every mutation passes through — means the set only
+            // ever holds groups that exist.
+            if !state.disabledGroups.isEmpty {
+                state.disabledGroups.formIntersection(Set(state.rules.map(\.group)))
+            }
             let updated = state
             // Enqueued under the lock: that is what pins the write order to the
             // mutation order. Only the enqueue is on the lock; the encode + write run

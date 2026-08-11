@@ -90,8 +90,35 @@ enum RuleEngine {
             let actions = rule.actions
             if let rewrite = actions.rewriteRequest, !rewrite.isEmpty {
                 if let newMethod = rewrite.method { plan.method = newMethod.uppercased() }
+                if let newURL = rewrite.url.flatMap(URL.init(string:)) {
+                    // Whole-URL replacement, unlike mapRemote's origin swap. The Host
+                    // header has to follow it or the upstream is asked for one host
+                    // under another's name — same reasoning as mapRemote's default.
+                    plan.url = newURL
+                    plan.headers.removeAll { $0.name.lowercased() == "host" }
+                }
                 plan.headers = applyHeaderEdits(plan.headers, set: rewrite.setHeaders, remove: rewrite.removeHeaders)
-                if let bodyText = rewrite.bodyText { plan.body = Data(bodyText.utf8) }
+                switch rewrite.body {
+                case nil:
+                    break
+                case let .text(text):
+                    // `.text("")` is a body of zero bytes, which is a different
+                    // instruction from "leave the body alone" (the nil above).
+                    plan.body = Data(text.utf8)
+                case let .file(path):
+                    if let data = try? Data(contentsOf: URL(fileURLWithPath: path)) {
+                        plan.body = data
+                    } else {
+                        // Read at request time, so this is a live failure, and a
+                        // request has no response object to answer on the way
+                        // `mapLocal` answers with a 404. The client's own body goes
+                        // upstream unchanged; the log line is the only channel.
+                        Log.rules.error("""
+                        Rule \(rule.name, privacy: .public) could not read request body file \
+                        \(path, privacy: .public); the original request body was forwarded instead.
+                        """)
+                    }
+                }
             }
             applyRequestSubstitutions(actions.activeRequestSubstitutions, to: &plan)
             switch actions.route {
@@ -156,7 +183,15 @@ enum RuleEngine {
             case .url:
                 if let newURL = URL(string: sub.apply(to: plan.url.absoluteString)) { plan.url = newURL }
             case .header:
-                plan.headers = plan.headers.map { HeaderPair(name: $0.name, value: sub.apply(to: $0.value)) }
+                // `targets(header:)` is the model's, not re-derived here: an
+                // untargeted substitution still edits every value, a targeted one
+                // only its own header — and both sides of the exchange ask the
+                // same way.
+                plan.headers = plan.headers.map { pair in
+                    sub.targets(header: pair.name)
+                        ? HeaderPair(name: pair.name, value: sub.apply(to: pair.value))
+                        : pair
+                }
             case .body:
                 if let body = plan.body, let text = String(data: body, encoding: .utf8) {
                     plan.body = Data(sub.apply(to: text).utf8)
@@ -172,7 +207,11 @@ enum RuleEngine {
             case .url:
                 continue // no URL on a response
             case .header:
-                result.headers = result.headers.map { HeaderPair(name: $0.name, value: sub.apply(to: $0.value)) }
+                result.headers = result.headers.map { pair in
+                    sub.targets(header: pair.name)
+                        ? HeaderPair(name: pair.name, value: sub.apply(to: pair.value))
+                        : pair
+                }
             case .body:
                 if let text = String(data: result.body, encoding: .utf8) {
                     result.body = Data(sub.apply(to: text).utf8)
