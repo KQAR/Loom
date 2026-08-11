@@ -435,15 +435,21 @@ actor FlowStore {
     @concurrent private static func scan(
         snapshot: [Flow], query: FlowQuery, limit: Int, persistence: FlowPersistence?
     ) async -> FlowSearchResult {
+        // Prepared once, not per row: the query's own side of the work (the host
+        // pattern, the URL needle, the header needle's bytes) is the same for every
+        // flow in the ring, and paying for it per row is what made a host-filtered scan
+        // 3.9 ms — see `FlowQuery.metadataPredicate`.
+        let predicate = query.metadataPredicate()
+        let bodies = query.bodyPredicate()
         var matches: [Flow] = []
         matches.reserveCapacity(min(limit, 64))
         for flow in snapshot.reversed() {
             guard matches.count < limit else { break }
             if Task.isCancelled { break }
-            guard query.matchesMetadata(flow) else { continue }
+            guard predicate.matches(flow) else { continue }
             // Cheap predicates first, always: hydration is a synchronous SQLite blob
             // read, and one per non-matching flow is the cost this ordering avoids.
-            guard !query.needsBodies || query.matchesBodies(Self.hydrated(flow, from: persistence))
+            guard !query.needsBodies || bodies.matches(Self.hydrated(flow, from: persistence))
             else { continue }
             matches.append(flow)
         }
@@ -532,12 +538,14 @@ actor FlowStore {
         limit: Int,
         persistence: FlowPersistence?
     ) async -> (flows: [Flow], nextCursor: FlowCursor?) {
+        let predicate = query.metadataPredicate()
+        let bodies = query.bodyPredicate()
         var fromRing: [Flow] = []
         for flow in snapshot {
             if Task.isCancelled { break }
             if let cursor, !cursor.precedes(flow) { continue }
-            guard query.matchesMetadata(flow) else { continue }
-            if query.needsBodies, !query.matchesBodies(Self.hydrated(flow, from: persistence)) { continue }
+            guard predicate.matches(flow) else { continue }
+            if query.needsBodies, !bodies.matches(Self.hydrated(flow, from: persistence)) { continue }
             fromRing.append(flow)
         }
         fromRing.sort(by: FlowCursor.isOrderedBefore)

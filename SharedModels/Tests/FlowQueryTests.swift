@@ -235,4 +235,65 @@ import LoomSharedModels
         #expect(!query.matches(flow(method: "POST", status: 200)), "not an error")
         #expect(!query.matches(flow(method: "POST", url: "https://other.test/x", status: 500)), "wrong host")
     }
+
+    // MARK: The prepared predicate
+
+    /// The prepared form is what every scan runs (`FlowStore.scan`,
+    /// `FlowStore.assemblePage`, `FlowPersistence.scan`); `matchesMetadata` is the same
+    /// predicate with the preparation folded in. If they can disagree, the answer an
+    /// agent gets depends on which internal path served it.
+    @Test func thePreparedFormAgreesWithTheOneShotForm() {
+        let flows = [
+            flow(url: "https://api.example.com/v1/orders"),
+            flow(url: "https://API.EXAMPLE.COM/v1/orders"),
+            flow(url: "https://cdn.example.com/logo.png", status: 404),
+            flow(method: "POST", url: "https://api.example.com/v1/orders?page=2", status: 500),
+            flow(url: "not a url at all"),
+            flow(url: "https://api.example.com:8443/v1/orders"),
+        ]
+        var queries: [FlowQuery] = []
+        for host in ["api.example.com", "API.example.com", "*.example.com", "*.EXAMPLE.com", "nope.test"] {
+            var query = FlowQuery(); query.host = host; queries.append(query)
+        }
+        for needle in ["/v1/orders", "ORDERS", "page=2", "nothing"] {
+            var query = FlowQuery(); query.urlContains = needle; queries.append(query)
+        }
+        var errors = FlowQuery(); errors.onlyErrors = true; queries.append(errors)
+
+        for query in queries {
+            let prepared = query.metadataPredicate()
+            for flow in flows {
+                #expect(
+                    prepared.matches(flow) == query.matchesMetadata(flow),
+                    "prepared and one-shot disagree on \(query) for \(flow.request.url)"
+                )
+            }
+        }
+    }
+
+    /// The literal-host fast path compares the URL's authority in place rather than
+    /// materializing the host — and a host on the wire may be uppercase, because DNS is
+    /// case-insensitive and nothing normalizes what a client sent. A case-*sensitive*
+    /// byte compare here would have silently dropped those rows, which is the one way
+    /// this optimization could have been wrong.
+    @Test func aLiteralHostFilterStaysCaseInsensitive() {
+        var query = FlowQuery()
+        query.host = "API.example.com"
+        let predicate = query.metadataPredicate()
+        #expect(predicate.matches(flow(url: "https://api.example.com/v1/orders")))
+        #expect(predicate.matches(flow(url: "https://API.EXAMPLE.COM/v1/orders")))
+        #expect(!predicate.matches(flow(url: "https://apiXexample.com/v1/orders")))
+        #expect(!predicate.matches(flow(url: "https://api.example.com.evil.test/v1")))
+    }
+
+    /// A port is not part of the host, on either path — `flow.host` strips it and the
+    /// fast path must agree.
+    @Test func aHostFilterIgnoresThePort() {
+        var query = FlowQuery()
+        query.host = "api.example.com"
+        #expect(query.metadataPredicate().matches(flow(url: "https://api.example.com:8443/v1")))
+        var glob = FlowQuery()
+        glob.host = "*.example.com"
+        #expect(glob.metadataPredicate().matches(flow(url: "https://api.example.com:8443/v1")))
+    }
 }

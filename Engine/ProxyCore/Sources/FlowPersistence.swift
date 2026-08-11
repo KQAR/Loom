@@ -346,6 +346,11 @@ final class FlowPersistence: @unchecked Sendable {
             }
             bind { sqlite3_bind_int(stmt, $0, Int32(rowBudget)) }
 
+            // Prepared before the walk, like the ring's scan: this loop decodes rows off
+            // disk, and re-preparing the query per row would add to the one cost the row
+            // budget exists to bound.
+            let predicate = query.metadataPredicate()
+            let bodies = query.bodyPredicate()
             var matches: [Flow] = []
             var examined = 0
             while matches.count < limit, sqlite3_step(stmt) == SQLITE_ROW {
@@ -354,12 +359,12 @@ final class FlowPersistence: @unchecked Sendable {
                 let json = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
                 guard let flow = try? decoder.decode(Flow.self, from: json), !seen.contains(flow.id)
                 else { continue }
-                guard query.matchesMetadata(flow) else { continue }
+                guard predicate.matches(flow) else { continue }
                 if query.needsBodies {
                     let hydrated = flow.attachingBodies(
                         request: Self.blob(stmt, 1), response: Self.blob(stmt, 2)
                     )
-                    guard query.matchesBodies(hydrated) else { continue }
+                    guard bodies.matches(hydrated) else { continue }
                 }
                 // The body-free row, like every other list read (invariant I2).
                 matches.append(flow)

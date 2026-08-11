@@ -42,6 +42,35 @@ public enum URLHost {
         }
     }
 
+    /// Whether the URL's host equals `lowercasedHost`, folding ASCII case as it
+    /// compares and without materializing the host.
+    ///
+    /// The case-sensitive version above is right for the table, whose keys come from
+    /// `host(ofURLString:)` and so already agree byte for byte. A *filter* is a
+    /// different question: `host: "API.example.com"` has always matched
+    /// `https://api.example.com/...` (the glob lowercases both sides), and a host on the
+    /// wire may be uppercase — DNS is case-insensitive and nothing normalizes the URL a
+    /// client sent. Taking the allocation-free path with a case-sensitive compare would
+    /// have quietly dropped those rows.
+    public static func hostMatches(urlString: String, lowercasedHost: String) -> Bool {
+        switch hostRange(in: urlString) {
+        case let .range(bounds):
+            let host = urlString.utf8[bounds]
+            let needle = lowercasedHost.utf8
+            guard host.count == needle.count else { return false }
+            for (lhs, rhs) in zip(host, needle) where fold(lhs) != rhs { return false }
+            return true
+        case .needsFoundation:
+            return fallback(urlString)?.lowercased() == lowercasedHost
+        }
+    }
+
+    /// ASCII case fold, the only folding a hostname needs (a non-ASCII host is
+    /// punycode by the time it reaches a URL).
+    @inline(__always) private static func fold(_ byte: UInt8) -> UInt8 {
+        (byte >= 0x41 && byte <= 0x5A) ? byte &+ 0x20 : byte
+    }
+
     /// The two readings of an authority a flow table needs, from **one** scan.
     ///
     /// They differ only in the port, and only ever for display: `key` is what

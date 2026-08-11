@@ -51,6 +51,17 @@ public enum Glob {
         /// The pattern, lowercased — for a caller taking the literal path itself.
         public var literal: String { lowercased }
 
+        /// Whether the host of `url` matches — the flow filter's question.
+        ///
+        /// A literal pattern never materializes the host: `URLHost.hostMatches` compares
+        /// the URL's authority bytes in place, which is what keeps a host-filtered scan
+        /// off the allocator. A glob has to see the host as a string, so it pays for one.
+        public func matchesHost(ofURL url: String) -> Bool {
+            guard !isLiteral else { return URLHost.hostMatches(urlString: url, lowercasedHost: lowercased) }
+            guard let host = URLHost.host(ofURLString: url) else { return false }
+            return matches(host)
+        }
+
         public func matches(_ rawString: String) -> Bool {
             let string = rawString.lowercased()
             if lowercased == string { return true }
