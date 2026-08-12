@@ -17,6 +17,46 @@ M4) — Loom owns every request header, so a map-remote rule's `keepHostHeader` 
 drops Host so it follows the mapped origin). `forward` (buffered) is a **fold** over
 `forwardStream` (`.collect()`), and replay folds `forwardStream` too. Never add a second path.
 
+## Upstream connections are pooled
+
+`UpstreamConnectionPool` keeps upstream sockets alive between requests, keyed by
+`(host, port, isTLS, mTLS identity)`. Before it, `forwardStream` built a
+`ClientBootstrap` per call and the response relay closed the channel on `.end`, so
+**every intercepted HTTPS request paid a fresh TCP connect and TLS handshake** —
+measured against a real test API at ~96 ms on top of a 20 ms server round trip, i.e.
+the proxy costing five times the thing it proxied. That is the entire reason Loom
+felt slow next to Charles, which pools; a phone on the same Wi-Fi saw it doubled.
+
+Five rules, each of which is a way to get this wrong rather than a preference:
+
+- **Keep-alive is not enough to pool a connection.** `UpstreamExchangeSlot.responseIsReusable`
+  also requires framing — a `Content-Length`, chunked, or a status/method that
+  carries no body. A response delimited by the connection *closing* ends with the
+  socket, so parking one hands the next request something already going away.
+- **A leased connection may be dead, so the retry is load-bearing.** An origin can
+  reap a parked socket at any moment, including between the lease and the write, so
+  a pooled attempt that fails **having yielded nothing** is retried once on a fresh
+  connection. That is what `UpstreamAttemptFailure.didYield` is for, and why the
+  relay reports the outcome instead of finishing the caller's stream itself — a
+  relay that had already finished it would have spent the choice.
+- **Only a `.bytes` body may lease.** The retry needs a request it can re-send; a
+  `.stream` body is a live back-pressured pull from the client, consumed exactly
+  once. Streamed requests connect fresh and still *release* into the pool.
+- **The final `end` flush is awaited.** With `promise: nil` a write to a socket the
+  origin had already closed was swallowed and the exchange then waited forever on a
+  response that could not arrive. This is where staleness surfaces.
+- **The stream's `onTermination` must not close a connection that was handed back.**
+  `ActiveUpstreamBox` is cleared before the release, so a consumer walking away
+  mid-response closes the socket and a consumer finishing normally does not.
+
+`UpstreamResponseRelay` is plainly `Sendable` as a result: one relay serves many
+exchanges, and what used to be its per-exchange handler state is the slot's.
+`NIOHTTPResponseDecompressor` is safe to keep across responses (it builds a decoder
+per `.head` and drops it on `.end`) — pinned by a test, because a stale decoder
+would surface as a corrupt body several requests later, nowhere near the cause.
+`ProxyEngine.stop()` drains the pool: the switch being off is a promise that Loom
+is not holding sockets open at anyone's origin.
+
 ## Response streaming
 
 - `forwardStream` yields head/body/end events; `StreamRelay` relays them to the client (chunked
