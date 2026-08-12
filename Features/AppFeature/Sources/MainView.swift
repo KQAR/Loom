@@ -270,11 +270,17 @@ public struct MainView: View {
     /// count is of *held exchanges*, not armed breakpoints — a parked live
     /// connection is the thing the human has to act on; how many breakpoints an
     /// agent armed is only interesting when none of them is holding anything.
+    ///
+    /// The title is tinted **only** while something is held, and says nothing at all
+    /// otherwise — `.foregroundStyle(.primary)` is not "the default". Every other row
+    /// here leaves its `Text` unstyled, so all of them dim together when the window
+    /// stops being key; naming a style, even the one that looks like the default, opts
+    /// that row out of the dimming, and Breakpoints alone stayed at full contrast in an
+    /// unfocused window — reading as an alert on a row with nothing to report.
     private var breakpointsSidebarRow: some View {
         let held = store.breakpoints.heldCount
         return countedRow(count: held > 0 ? held : store.breakpoints.armed.count) {
-            Text("Breakpoints")
-                .foregroundStyle(held > 0 ? LoomTheme.Palette.warning : .primary)
+            breakpointsTitle(held: held)
         } icon: {
             Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
                 .symbolRenderingMode(.monochrome)
@@ -285,6 +291,17 @@ public struct MainView: View {
         .help(held > 0
             ? "\(held) exchange\(held == 1 ? "" : "s") held — the client is still waiting"
             : "Breakpoints armed by your agent")
+    }
+
+    /// The Breakpoints title, tinted only when there is something held. Split out
+    /// because "apply no style" and "apply the default style" are different views and
+    /// only a `@ViewBuilder` branch can say the first one.
+    @ViewBuilder private func breakpointsTitle(held: Int) -> some View {
+        if held > 0 {
+            Text("Breakpoints").foregroundStyle(LoomTheme.Palette.warning)
+        } else {
+            Text("Breakpoints")
+        }
     }
 
     /// Sidebar row title with a trailing pin glyph when pinned.
