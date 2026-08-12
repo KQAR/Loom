@@ -46,13 +46,19 @@ enum RuleEngine {
         state: RulesState, method: String, url: URL, origin: RequestOrigin? = nil
     ) -> [TrafficRule] {
         guard state.enabled else { return [] }
-        let urlString = url.absoluteString
+        // Prepared once for the whole list: `RuleMatch.matches(method:url:)` builds a
+        // context per call, so matching N rules used to parse the URL N times (any rule
+        // with a host/query predicate) and re-encode it N times (any glob rule). Same
+        // verdicts, one derivation — see `RequestMatchContext`.
+        var context = RequestMatchContext(method: method, url: url.absoluteString)
         // One pass, one allocation. `state.activeRules` would build a second array of
         // every enabled rule before this filter touched it — on every exchange, on the
         // event loop, to produce a result that is usually empty.
-        return state.rules.filter {
-            $0.isEnabled && $0.match.matches(method: method, url: urlString, origin: origin)
+        var matched: [TrafficRule] = []
+        for rule in state.rules where rule.isEnabled {
+            if rule.match.matches(&context, origin: origin) { matched.append(rule) }
         }
+        return matched
     }
 
     static func planRequest(
