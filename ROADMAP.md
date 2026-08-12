@@ -696,6 +696,61 @@ selected). The documentation caught up in the same round: DESIGN.md and INTERACT
 still describing a `VSplitView`, a SwiftUI `Table`, a `Replayed` sidebar category, `.badge`
 counts and toolbar Record/Clear buttons — none of which the window has had for releases.
 
+### The surfaces get typed, and the hot paths get measured (0.0.24)
+
+Two themes, and they are the same one seen from either end: **a representation the
+compiler cannot read is a representation that drifts**, and **a cost nobody measured is a
+cost nobody knows the size of**.
+
+**The MCP input surface was a dictionary.** Every tool's `inputSchema` was a
+`[String: Any]` literal — 1 100 lines the compiler could not see into, where a misspelled
+keyword, a `required` naming a property no `properties` declares, and an `items` on a node
+that never said `"type": "array"` all compiled and shipped to the agent. It also forced the
+escape hatches (`MCPTool: @unchecked Sendable`, `nonisolated(unsafe)` sub-schemas) and made
+`MCPArgumentValidation` re-derive the shape at runtime through `as?` casts, so a node it
+could not decode validated nothing, silently. Schemas are `JSONSchema` values now, and the
+arguments are *read against them* (`JSONValue` + `MCPArguments`) instead of cast out of an
+`Any`: a wrong-typed value is an error naming the key and its dotted path rather than a
+filter that silently didn't apply. One live defect fell out of the pass — `resume`'s
+description promised "either argument name works" for `id`, while the schema never declared
+it, so the choke point refused the call before the handler ran. Four releases of a false
+promise. Detail in AGENTS.md § MCP Tools.
+
+**Rule matching was Foundation string search, on the event loop, per rule, per request.**
+`Glob` lowercased both sides and walked interior segments with `String.range(of:)`;
+preparing the pattern removes only a third of that (107 ms → 74 ms per 1 000 requests
+against 50 glob rules), because the search itself was 97 % of the cost. Matching over
+case-folded bytes — the boundary `ByteSearch` already draws for body search, with the
+`String` path kept for anything non-ASCII so IDN folding is unchanged — plus a bounded
+pattern cache (`RegexCache`'s shape) and a `RequestMatchContext` that parses and encodes the
+request **once for the whole rule list** instead of once per rule: **9.4 ms**, i.e. 0.107 →
+0.0094 ms of event-loop time per exchange, paid twice since breakpoints match too.
+
+**The boot aggregate decoded the whole table.** `FlowPersistence.aggregate()` runs once per
+launch over everything retained and cost **383 ms on 20 000 rows, of which 3.6 ms is
+SQLite** — the rest `JSONDecoder`, spent on the serial queue batched capture writes flush
+on, while a capture is already running. The four folded values are columns now and the fold
+is a `GROUP BY`: **13 ms**. Two things that swap must not lose: a representative is grouped
+by *value* (a device's typing is merged across its flows, so one arbitrary row would drop
+it), and NULL must not read as "no app" on a table written before the columns existed —
+`PRAGMA user_version` gates it, so exactly one launch after the upgrade pays what every
+launch used to. Verified on a real 5 619-row store, not only a fixture.
+
+**And two things measured and then *not* changed**, which is the half worth recording.
+Read/write contention on `FlowStore` looked like a 15× write slowdown; at realistic poll
+rates (1, 10, 100 Hz, and four concurrent readers) it is 0.03 ms against 0.01 ms quiet, and
+only a reader spinning with no sleep at all reproduces the original number. The earlier
+figure was an artefact of the measurement. Likewise the remaining ~70 % of rule-matching
+time is now the pattern-cache lookup, which only a prepared rule list owned by
+`RulesConfig`/`BreakpointStore` would remove — named in AGENTS.md rather than done.
+
+**One UI fix, and its rule.** `.foregroundStyle(.primary)` is not "the default ink": a
+`List` dims its rows when the window stops being key, and a row that *names* `.primary`
+opts out and stays lit alone. The sidebar's Breakpoints row — the one category that turns
+orange when it has something to report — was the only bright row in an unfocused window,
+reporting nothing. DESIGN.md § Colors carries the rule, including where naming an ink is
+correct (overriding a `Button` label's accent).
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
