@@ -594,15 +594,18 @@ extension MCPToolExecutor {
             description: "Release a held exchange by its pending id. Continue it (optionally editing method/url/status/headers/body first) or `abort` to fail it with a 502. Request-phase edits honor method/url; response-phase edits honor status_code; both honor header + body edits. This is a write action.",
             inputSchema: .object(
                 [
+                    // One name, deliberately — an `id` alias was accepted here for four
+                    // releases (undeclared, so `validateArguments` refused it anyway) on
+                    // the reasoning that an item from list_pending should copy across
+                    // verbatim. That is the argument *against* it: list_pending returns
+                    // two arrays whose entries both render an `id`, the armed breakpoint's
+                    // and the held exchange's, both UUIDs. An alias accepts the wrong one
+                    // and the engine answers "no such hold", which reads as a hold that
+                    // already resolved rather than as the wrong kind of id. Rejected at
+                    // the choke point, the same slip names itself and suggests the fix.
                     "pending_id": .string(
-                        "The held exchange's id from list_pending / wait_for_pending (where it is rendered as `id`; either argument name works here)."
+                        "The held exchange's id — the `id` of an entry in list_pending / wait_for_pending's `pending` array, NOT the `id` of an `armed` breakpoint (that one is `breakpointId` on the held entry)."
                     ),
-                    // Declared, not just read: the description promises this spelling
-                    // works, and until it was declared here `validateArguments` refused
-                    // the call at the choke point — the promise was false for four
-                    // releases. Neither is required, because either one satisfies the
-                    // handler, so the pair can't be expressed in `required`.
-                    "id": .string("Alias for `pending_id`, so an item from list_pending can be copied across verbatim."),
                     "abort": .boolean("Fail the exchange with a 502 instead of continuing (default false)."),
                     "method": .string("Request-phase only: replace the HTTP method."),
                     "url": .string("Request-phase only: replace the full URL."),

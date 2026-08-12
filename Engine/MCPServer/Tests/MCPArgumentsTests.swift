@@ -71,17 +71,18 @@ import LoomSharedModels
         #expect(MCPArguments.forTool("get_recent_flows", ["host": nil]).has("host") == false)
     }
 
-    // MARK: The alias that never worked
+    // MARK: The alias that is gone on purpose
 
-    @Test func resume_acceptsTheIdSpellingItsDescriptionPromises() async throws {
-        // `resume` reads `id` as an alias for `pending_id` and says so in its
-        // description — but the schema didn't declare it, so `validateArguments`
-        // refused the call at the choke point before the handler ran. Nothing held,
-        // so this reaches the engine and fails there; what must NOT come back is
-        // "unknown argument id".
-        let executor = makeExecutor()
-        await #expect(throws: MCPToolFailure.self) {
-            try await executor.call(name: "resume", arguments: ["id": UUID().uuidString])
+    @Test func resume_rejectsTheIdSpellingRatherThanGuessingWhichIdItIs() async {
+        // `resume` accepted `id` as an alias for `pending_id` for four releases (never
+        // successfully — it wasn't declared, so the choke point refused it anyway). The
+        // alias is gone rather than completed, because `list_pending` renders an `id`
+        // on both an armed breakpoint and a held exchange: accepting `id` takes either
+        // and answers "no such hold" for the wrong one, which reads as a hold that
+        // already resolved. This must stay a *validation* error naming the key, not a
+        // tool failure from the engine.
+        await #expect(throws: MCPError.self) {
+            try await makeExecutor().call(name: "resume", arguments: ["id": UUID().uuidString])
         }
     }
 

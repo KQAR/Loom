@@ -714,7 +714,11 @@ arguments are *read against them* (`JSONValue` + `MCPArguments`) instead of cast
 filter that silently didn't apply. One live defect fell out of the pass — `resume`'s
 description promised "either argument name works" for `id`, while the schema never declared
 it, so the choke point refused the call before the handler ran. Four releases of a false
-promise. Detail in AGENTS.md § MCP Tools.
+promise — and it is resolved by keeping *one* spelling rather than by completing the alias,
+because `list_pending` renders an `id` on both an armed breakpoint and a held exchange:
+the argument name meant to make copying safe is the one that cannot say which of the two
+was copied, and the wrong one comes back as "no such hold", i.e. as a hold that resolved on
+its own. Detail in AGENTS.md § MCP Tools.
 
 **Rule matching was Foundation string search, on the event loop, per rule, per request.**
 `Glob` lowercased both sides and walked interior segments with `String.range(of:)`;

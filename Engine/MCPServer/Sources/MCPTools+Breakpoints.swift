@@ -46,16 +46,13 @@ extension MCPToolExecutor {
     }
 
     func handleResume(_ arguments: MCPArguments) async throws -> String {
-        // `id` is accepted as well as `pending_id` because the held exchange renders
-        // its own identifier as `id` (list_pending / wait_for_pending), so copying the
-        // field straight across — the obvious thing to do — used to fail validation
-        // and cost a round trip to discover. **The schema has to declare it too**, and
-        // for four releases it did not: `validateArguments` runs at the choke point off
-        // the advertised properties, so a call sending `id` was refused before this
-        // line ever ran and the description's promise was false. The typed reader is
-        // what surfaced it — reading an undeclared key now trips an assertion.
-        guard let id = try arguments.uuid("pending_id") ?? arguments.uuid("id") else {
-            throw MCPError.invalidParams("`pending_id` (or `id`) must be a held-breakpoint UUID string")
+        // One spelling. The `id` alias this used to read is gone rather than fixed:
+        // list_pending renders an `id` on *both* an armed breakpoint and a held
+        // exchange, so accepting `id` here takes either and answers "no such hold" for
+        // the wrong one — indistinguishable from a hold that resolved on its own.
+        // Refused at the choke point, the same slip comes back naming the key.
+        guard let id = try arguments.uuid("pending_id") else {
+            throw MCPError.invalidParams("`pending_id` must be a held-breakpoint UUID string")
         }
         let abort = try arguments.bool("abort", or: false)
         let edit = BreakpointEdit(
