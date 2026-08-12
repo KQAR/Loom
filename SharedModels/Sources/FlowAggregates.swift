@@ -87,6 +87,45 @@ public struct FlowAggregates: Equatable, Sendable {
         }
     }
 
+    /// Fold in many flows that share a value, in one step — what a `GROUP BY` over a
+    /// store hands back (`FlowPersistence.aggregate`), where the count arrives already
+    /// summed and the flows themselves are never materialized.
+    ///
+    /// These are `contribute` split by field and given a multiplicity, not a second way
+    /// to count: each does exactly what `contribute` does for its own field, so folding
+    /// a capture row-by-row and folding it grouped must produce the same value. That is
+    /// what `FlowPersistenceAggregateTests` pins, and it is the only reason the store is
+    /// allowed to skip decoding.
+    public mutating func addHost(_ host: String, count: Int) {
+        guard count > 0 else { return }
+        hostCounts[host, default: 0] += count
+    }
+
+    public mutating func addApp(_ app: SourceApp, count: Int) {
+        guard count > 0 else { return }
+        appCounts[app.groupingKey, default: 0] += count
+        appReps[app.groupingKey] = app
+    }
+
+    public mutating func addDevice(_ device: SourceDevice, count: Int) {
+        guard count > 0 else { return }
+        let key = device.groupingKey
+        deviceCounts[key, default: 0] += count
+        if var existing = deviceReps[key] {
+            // The same "keep the richest typing seen" merge `contribute` does.
+            if existing.platform == nil { existing.platform = device.platform }
+            if existing.client == nil { existing.client = device.client }
+            deviceReps[key] = existing
+        } else {
+            deviceReps[key] = device
+        }
+    }
+
+    public mutating func addErrors(_ count: Int) {
+        guard count > 0 else { return }
+        errorCount += count
+    }
+
     /// Undo `contribute` — for a replaced or evicted flow. A key that reaches zero is
     /// removed along with its representative, so an emptied host/app/device disappears
     /// from the sidebar instead of lingering at 0.
