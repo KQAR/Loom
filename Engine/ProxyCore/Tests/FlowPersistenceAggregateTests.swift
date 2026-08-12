@@ -164,7 +164,7 @@ import LoomSharedModels
         #expect(reopened.aggregate().appCounts == ["curl": 1])
     }
 
-    /// Write the pre-0.0.25 table by hand — the eight original columns, no
+    /// Write the pre-0.0.24 table by hand — the eight original columns, no
     /// `user_version` — so the migration and the backfill are exercised against the
     /// shape they actually have to read, not against a table this build wrote.
     private func writeLegacyTable(_ flows: [Flow]) {
