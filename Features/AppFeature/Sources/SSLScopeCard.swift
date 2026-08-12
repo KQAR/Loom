@@ -156,6 +156,8 @@ struct SSLScopeCard: View {
         case .noCertificateAuthority: "no root CA yet"
         case .leafMintFailed: "couldn't mint a certificate"
         case .notTLSOrHTTP: "not HTTP or TLS — can't be read"
+        case .clientHandshakeFailed: "client refused Loom's certificate — pinned, or CA not trusted there"
+        case .protocolError: "protocol error — Loom's codec rejected the stream"
         }
     }
 

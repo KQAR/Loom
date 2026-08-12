@@ -32,6 +32,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     private var requestHead: HTTPRequestHead?
     private var requestURL: URL?
     private var requestAbsolute: String?
+    /// The flow recorded when this request's head arrived. Nil between exchanges.
+    private var observed: CapturedExchange.Observed?
     /// Live bridge for the current request's streamed body — created lazily on the
     /// first body chunk, so an h2 DATA body with no Content-Length still streams
     /// (h2 frames the body without h1 framing headers).
@@ -62,6 +64,11 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
             requestHead = head
             requestURL = url
             requestAbsolute = absolute
+            // Recorded here, not at `.end`: a request that stalls after its head is
+            // still a request, and used to leave no trace at all.
+            observed = CapturedExchange.observe(
+                channel: context.channel, head: head, urlString: absolute, store: store
+            )
         case var .body(chunk):
             if droppingRequest { return }
             if bodyBridge == nil {
@@ -111,10 +118,13 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     }
 
     private func resetRequest() {
-        requestHead = nil; requestURL = nil; requestAbsolute = nil
+        requestHead = nil; requestURL = nil; requestAbsolute = nil; observed = nil
     }
 
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, absolute: String, body: RequestBody, capture: RequestBodyCapture?) {
+        let observed = self.observed ?? CapturedExchange.observe(
+            channel: channel, head: head, urlString: absolute, store: store
+        )
         // wss: keep the client's TLS handler in place, strip only the HTTP framing
         // + this handler; the upstream leg re-originates TLS.
         let requestPath = head.uri.hasPrefix("/") ? head.uri : "/\(head.uri)"
@@ -131,7 +141,7 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                     MITMPipeline.encoderName, MITMPipeline.decoderName, MITMPipeline.interceptName,
                 ]
             ),
-            store: store, forwarder: forwarder
+            store: store, forwarder: forwarder, observed: observed
         )
     }
 

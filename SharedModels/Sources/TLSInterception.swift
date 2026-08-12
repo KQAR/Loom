@@ -103,6 +103,28 @@ public enum TunnelReason: String, Codable, Sendable, CaseIterable {
     /// the connection is server-first and said nothing before the sniff deadline.
     /// Being in the SSL scope does not make these readable.
     case notTLSOrHTTP
+    /// Loom presented its leaf and the **client aborted the handshake** — a pinned
+    /// host, or a client whose trust store doesn't have Loom's CA (a JVM, Python,
+    /// Go, an app with its own store).
+    ///
+    /// The one reason on this list where the traffic did not merely go *unread*: it
+    /// did not happen. The client sent a fatal alert (RFC 8446 §6.2 —
+    /// `unknown_ca` / `bad_certificate` / `certificate_unknown`) and hung up before
+    /// any request, so the operator's page is broken rather than opaque. An include
+    /// cannot fix it; the remedy is an `exclude` entry (which makes the host work
+    /// again, relayed and visibly listed) or trusting Loom's CA in that client.
+    case clientHandshakeFailed
+    /// The decrypted stream broke a protocol rule Loom's codec enforces, so the
+    /// exchange could not be read and the connection was closed.
+    ///
+    /// The measured case is HTTP/2: `SETTINGS_MAX_HEADER_LIST_SIZE` starts at
+    /// SwiftNIO's 16 KB default on a brand-new connection — the decoder only picks
+    /// up a larger advertised value once the peer acknowledges the SETTINGS frame
+    /// (RFC 9113 §6.5.3) — so a client whose *first* request carries a field
+    /// section over 16 KB (an app with grown session cookies) has it rejected.
+    /// Like `clientHandshakeFailed`, the request did not happen: this is a broken
+    /// page, not an opaque one. `detail` names the codec error.
+    case protocolError
 }
 
 /// One host Loom saw HTTPS (or opaque TCP) activity to and relayed without
@@ -122,10 +144,17 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
     /// `.notTLSOrHTTP` the moment someone intercepts it and the bytes turn out not
     /// to be TLS at all — and the latest one is the one worth acting on.
     public var reason: TunnelReason
+    /// What Loom saw, when the reason alone doesn't say enough to act on — the
+    /// handshake error for `.clientHandshakeFailed`, nil for every other reason.
+    ///
+    /// It is a field rather than a log line because both readers need it: the
+    /// human to know *which* client refused the certificate, and the agent to tell
+    /// "this host is pinned" from "your CA isn't installed" without a second call.
+    public var detail: String?
 
     public init(
         host: String, port: Int, connections: Int = 1,
-        firstSeen: Date, lastSeen: Date, reason: TunnelReason
+        firstSeen: Date, lastSeen: Date, reason: TunnelReason, detail: String? = nil
     ) {
         self.host = host
         self.port = port
@@ -133,6 +162,7 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
         self.firstSeen = firstSeen
         self.lastSeen = lastSeen
         self.reason = reason
+        self.detail = detail
     }
 
     public var id: String { "\(host):\(port)" }
@@ -143,8 +173,19 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
     public var interceptable: Bool {
         switch reason {
         case .interceptionDisabled, .notInScope, .excluded: true
-        case .noCertificateAuthority, .leafMintFailed, .notTLSOrHTTP: false
+        case .noCertificateAuthority, .leafMintFailed, .notTLSOrHTTP, .clientHandshakeFailed,
+             .protocolError: false
         }
+    }
+
+    /// Did the client's traffic fail, rather than merely go unread?
+    ///
+    /// Every other reason on this list is a pass-through: the request reached the
+    /// origin and Loom simply didn't read it. A rejected handshake is the one where
+    /// the request never happened, so a surface that treats "unread" as benign has
+    /// to tell this one apart.
+    public var brokeTheClient: Bool {
+        reason == .clientHandshakeFailed || reason == .protocolError
     }
 }
 

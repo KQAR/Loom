@@ -25,6 +25,44 @@ enum CapturedExchange {
         let webSocketRemoveHandlerNames: [String]
     }
 
+    /// A request recorded the moment its head was parsed, before anything decided
+    /// what to do with it. Carried into `handle` so the exchange keeps that identity
+    /// and that clock rather than starting a second flow.
+    struct Observed {
+        let id: UUID
+        let startedAt: Date
+    }
+
+    /// Record the request as soon as its **head** is parsed.
+    ///
+    /// The flow used to be created on the first body chunk (or on `.end` for a
+    /// bodyless request), which meant a request that arrived and then stalled —
+    /// an h2 body blocked by flow control, an upload the client never finished —
+    /// recorded *nothing at all*. On every surface that is identical to a client
+    /// that never ran, which is the failure this project already refuses to ship
+    /// for pass-throughs (`TunneledHostLog`) and for refused connections
+    /// (`RefusalLog`). A request Loom has parsed is a fact Loom holds; it belongs
+    /// in the capture the moment it exists, in-flight, not once it succeeds.
+    ///
+    /// Found on the wire: a phone uploaded 31 KB of HEADERS+DATA to Loom, got no
+    /// response, and the capture showed no flow — so "the proxy lost it" and "the
+    /// app never asked" could not be told apart, by a human or an agent.
+    static func observe(
+        channel: Channel, head: HTTPRequestHead, urlString: String, store: FlowStore
+    ) -> Observed {
+        let observed = Observed(id: UUID(), startedAt: Date())
+        let headers = HTTPUtil.headerPairs(head.headers)
+        let request = CapturedRequest(
+            method: head.method.rawValue, url: urlString, headers: headers, body: nil
+        )
+        let device = device(channel: channel, headers: headers)
+        let flow = Flow(
+            id: observed.id, request: request, startedAt: observed.startedAt, sourceDevice: device
+        )
+        Task { await store.upsert(flow) }
+        return observed
+    }
+
     static func handle(
         channel: Channel,
         head: HTTPRequestHead,
@@ -32,7 +70,8 @@ enum CapturedExchange {
         bodyCapture: RequestBodyCapture?,
         routing: Routing,
         store: FlowStore,
-        forwarder: UpstreamForwarding
+        forwarder: UpstreamForwarding,
+        observed: Observed
     ) {
         let headers = HTTPUtil.headerPairs(head.headers)
         // For a streamed body the bytes aren't known yet; `bodyCapture` fills them in
@@ -46,8 +85,10 @@ enum CapturedExchange {
         let capturedRequest = CapturedRequest(
             method: head.method.rawValue, url: routing.urlString, headers: headers, body: initialBody
         )
-        let flowID = UUID()
-        let startedAt = Date()
+        // Identity and clock come from `observe`, which already put this request in
+        // the capture: an exchange must continue that flow, never open a second one.
+        let flowID = observed.id
+        let startedAt = observed.startedAt
         let keepAlive = head.isKeepAlive
         let method = head.method.rawValue
         let sourcePort = channel.remoteAddress?.port
