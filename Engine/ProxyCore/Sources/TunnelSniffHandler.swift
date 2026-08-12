@@ -34,14 +34,37 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         case socks = "SOCKS"
     }
 
-    /// How long to wait for a client to speak before assuming it never will.
+    /// How long to wait for the client to speak before **asking the other side** —
+    /// not before giving up on it.
     ///
-    /// Short enough that a server-first handshake isn't visibly slowed, long enough
-    /// that a client-first one is never misclassified — the latter is already sitting
-    /// on the socket when the reply/ack goes out, so it wins this race by orders of
-    /// magnitude, not by a margin. Server-first protocols (SSH, SMTP, IMAP, MySQL,
-    /// PostgreSQL) are the reason it exists at all: classifying on client bytes alone
-    /// deadlocks them, and only they ever pay it.
+    /// This used to be a classifier: on expiry the tunnel was declared `.opaque` and
+    /// relayed byte-for-byte, unread. That was wrong twice over, and the proof is in
+    /// `ProtocolSniff.classify`, which decides `.opaque` on the *first byte* for
+    /// anything it doesn't recognise. So `.needMore` — the only state that survives
+    /// to the deadline — means one of exactly two things, and the timer was a wrong
+    /// answer to both:
+    ///
+    /// - **The client has said nothing.** Either it is a server-first protocol (SSH,
+    ///   SMTP, IMAP, MySQL, PostgreSQL — the reason a deadline exists at all), or it
+    ///   is a pooled connection a client opened *ahead of need*. OkHttp and Chrome
+    ///   both do that: `CONNECT`, take the ack, park the tunnel, send the
+    ///   ClientHello seconds later when a request finally wants it. Declaring those
+    ///   opaque relayed every request on that connection unread — for the whole life
+    ///   of the connection, silently, because an unread relay records no flow.
+    /// - **The client has said part of something recognisable** (a lone `0x16`, a
+    ///   prefix of the h2 preface, an unfinished method token). It is client-first by
+    ///   demonstration; the rest of the prefix is merely late. On a lossy link a
+    ///   split ClientHello is ordinary, and the old behaviour blind-relayed it —
+    ///   losing capture exactly where a debugging proxy earns its keep.
+    ///
+    /// So expiry now starts a **speculative upstream connection** and lets whichever
+    /// side speaks next settle it: a server greeting proves server-first (glue, reuse
+    /// that connection), and client bytes classify normally (drop it, install the
+    /// capture stack). Silence from both is not a verdict, and this handler no longer
+    /// pretends it is — the tunnel simply stays undecided, which is what it is.
+    ///
+    /// The value stays 150 ms: it is what a server-first handshake waits before its
+    /// greeting can arrive, and nothing else pays it.
     static let sniffDeadline: TimeAmount = .milliseconds(150)
 
     private let host: String
@@ -60,6 +83,15 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     /// a second time onto a pipeline this handler has already left.
     private var routed = false
     private var deadlineTask: Scheduled<Void>?
+    /// The client channel, captured when this handler joins the pipeline so the
+    /// probe's callback can reach it without carrying a non-`Sendable` `Channel`
+    /// through a `@Sendable` bootstrap closure.
+    private var clientChannel: Channel?
+    /// The speculative upstream connection and its greeting buffer, live only
+    /// between the deadline firing and whichever side speaks next.
+    private var probe: Channel?
+    private var probeHandler: UpstreamGreetingProbe?
+    private var probeStarted = false
 
     init(
         host: String,
@@ -91,6 +123,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     /// reconfigure a pipeline mid-mutation. Auto-read is paused across the hand-over
     /// by both callers, so this task always runs before the next read.
     func handlerAdded(context: ChannelHandlerContext) {
+        clientChannel = context.channel
         armDeadline(context: context)
         guard !pending.isEmpty else { return }
         // `assumeIsolated()` rather than a bare `execute`: the closure captures
@@ -122,11 +155,15 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     func channelInactive(context: ChannelHandlerContext) {
         routed = true
         cancelDeadline()
+        closeProbe()
         context.fireChannelInactive()
     }
 
     func handlerRemoved(context: ChannelHandlerContext) {
         cancelDeadline()
+        // A probe still held here is one no route claimed — the server-first path
+        // clears it first precisely so this doesn't close the connection it glued.
+        closeProbe()
     }
 
     private func advance(context: ChannelHandlerContext) {
@@ -141,15 +178,128 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         // `assumeIsolated()` is what states that to the compiler (and checks it).
         deadlineTask = context.eventLoop.assumeIsolated().scheduleTask(in: Self.sniffDeadline) { [weak self] in
             guard let self, !self.routed else { return }
-            // Nothing buffered means nothing to classify; anything buffered that still
-            // reads as `.needMore` is a partial prefix that isn't going to complete.
-            self.route(context: context, guess: .opaque)
+            self.startUpstreamProbe(context: context)
         }
     }
 
     private func cancelDeadline() {
         deadlineTask?.cancel()
         deadlineTask = nil
+    }
+
+    // MARK: - Asking the other side
+
+    /// Open a speculative upstream connection and wait for whoever speaks next.
+    ///
+    /// It writes nothing: anything the client already said stays buffered here,
+    /// because sending it would rule out the MITM this tunnel may still turn out to
+    /// need. The connection exists only to hear a greeting.
+    ///
+    /// It is one connection per undecided tunnel, so it cannot outnumber the tunnels
+    /// the client already opened — and it is dropped the moment the client speaks.
+    /// A failure to connect is deliberately **not** a verdict either: the client may
+    /// still be about to send a ClientHello, and the real connection made for it will
+    /// fail on its own and be reported through `UpstreamConnectionError` rather than
+    /// as a silently unread tunnel.
+    private func startUpstreamProbe(context: ChannelHandlerContext) {
+        guard !routed, !probeStarted else { return }
+        probeStarted = true
+        let host = self.host
+        let port = self.port
+        // Same loop as the client, so a glue built from this connection satisfies
+        // `GlueHandler`'s one-loop requirement without a hop.
+        let bootstrap = ClientBootstrap(group: context.eventLoop)
+            .channelInitializer { [weak self] upstream in
+                upstream.eventLoop.makeCompletedFuture {
+                    let probe = UpstreamGreetingProbe { [weak self] in
+                        // Fired on the upstream channel's loop, which is the client's.
+                        self?.serverSpokeFirst()
+                    }
+                    self?.probeHandler = probe
+                    try upstream.pipeline.syncOperations.addHandler(probe)
+                }
+            }
+        bootstrap.connect(host: host, port: port).assumeIsolated().whenComplete { [weak self] result in
+            guard case let .success(upstream) = result else { return }
+            guard let self, !self.routed else {
+                upstream.close(promise: nil)
+                return
+            }
+            self.probe = upstream
+        }
+    }
+
+    /// The upstream greeted us before the client said anything decisive: this is a
+    /// server-first protocol, so glue the two ends and reuse the connection the
+    /// greeting already arrived on.
+    private func serverSpokeFirst() {
+        guard !routed, let client = clientChannel, let upstream = probe, let probeHandler else { return }
+        routed = true
+        cancelDeadline()
+        // Cleared *before* removing this handler: `handlerRemoved` closes a live
+        // probe, and this is the one path where the probe is the connection we are
+        // about to hand to the glue rather than one to discard.
+        probe = nil
+        self.probeHandler = nil
+
+        let startedAt = Date()
+        TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
+        if observeTunnels {
+            TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
+        }
+
+        var clientSaid = client.allocator.buffer(capacity: pending.count)
+        clientSaid.writeBytes(pending)
+        pending = []
+        let entryPoint = self.entryPoint
+        let host = self.host
+        let port = self.port
+
+        // Both ends stay paused across the swap, for the same reason `route` pauses
+        // the client: between removing a handler and installing the glue the
+        // pipeline has nothing to receive bytes, and inbound bytes that reach the
+        // end of a pipeline are dropped without a sound. The upstream side is the
+        // one that matters here — it has already started talking.
+        _ = client.setOption(ChannelOptions.autoRead, value: false)
+        _ = upstream.setOption(ChannelOptions.autoRead, value: false)
+
+        upstream.pipeline.removeHandler(probeHandler)
+            .flatMap { client.pipeline.removeHandler(self) }
+            .flatMap { TunnelFlow.glue(client: client, upstream: upstream) }
+            .assumeIsolated()
+            .whenComplete { result in
+                guard case .success = result else {
+                    Log.proxy.error("""
+                    \(entryPoint.rawValue, privacy: .public) server-first splice to \
+                    \(host, privacy: .public):\(port) failed: \(String(describing: result))
+                    """)
+                    client.close(promise: nil)
+                    upstream.close(promise: nil)
+                    return
+                }
+                // Order matters: whatever the client managed to say before the
+                // greeting has to reach the server ahead of anything it says next,
+                // and the greeting itself was consumed by the probe, so nothing but
+                // this write will ever deliver it.
+                if clientSaid.readableBytes > 0 {
+                    upstream.writeAndFlush(clientSaid, promise: nil)
+                }
+                if let greeting = probeHandler.takeBuffered(), greeting.readableBytes > 0 {
+                    client.writeAndFlush(greeting, promise: nil)
+                }
+                _ = client.setOption(ChannelOptions.autoRead, value: true)
+                _ = upstream.setOption(ChannelOptions.autoRead, value: true)
+                client.read()
+                upstream.read()
+            }
+    }
+
+    /// Drop a speculative connection that turned out not to be the answer. Safe to
+    /// call when there is none.
+    private func closeProbe() {
+        probe?.close(promise: nil)
+        probe = nil
+        probeHandler = nil
     }
 
     /// Install the stack the sniffed protocol calls for, then replay the bytes that
@@ -161,6 +311,11 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     private func route(context: ChannelHandlerContext, guess: ClientProtocolGuess) {
         routed = true
         cancelDeadline()
+        // The client settled it, so a speculative connection opened while waiting is
+        // the wrong one to keep: an `.opaque` route needs a fresh one it can glue,
+        // and a MITM route must reach the origin through its own TLS. One wasted
+        // connect, only on a tunnel that had already gone quiet past the deadline.
+        closeProbe()
 
         let channel = context.channel
         let host = self.host
@@ -265,5 +420,49 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                 }
                 return TunnelFlow.glue(client: channel, upstream: upstream)
             }
+    }
+}
+
+/// Sits on a speculative upstream connection and reports the first byte the server
+/// sends, which is the only evidence that separates a server-first protocol from a
+/// tunnel whose client simply hasn't spoken yet.
+///
+/// It **buffers every byte** rather than only the first: the notification hands the
+/// decision back to `TunnelSniffHandler`, and the pipeline reconfiguration that
+/// follows takes several event-loop turns, during which more of the greeting can
+/// arrive. Forwarding those on would drop them off the end of a pipeline that has
+/// no glue in it yet — a server-first splice that loses the tail of its banner is a
+/// hang, not a warning.
+// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
+// § Sendable escape hatches for what that forbids inside a `Task {}`.
+final class UpstreamGreetingProbe: ChannelInboundHandler, RemovableChannelHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+    typealias InboundOut = ByteBuffer
+
+    private let onGreeting: @Sendable () -> Void
+    private var buffered: ByteBuffer?
+    private var announced = false
+
+    init(onGreeting: @escaping @Sendable () -> Void) {
+        self.onGreeting = onGreeting
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var incoming = unwrapInboundIn(data)
+        if buffered == nil {
+            buffered = incoming
+        } else {
+            buffered?.writeBuffer(&incoming)
+        }
+        guard !announced else { return }
+        announced = true
+        onGreeting()
+    }
+
+    /// Hand over everything the server said. Called once, after this handler has
+    /// been removed and the glue is in place.
+    func takeBuffered() -> ByteBuffer? {
+        defer { buffered = nil }
+        return buffered
     }
 }
