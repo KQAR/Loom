@@ -755,6 +755,52 @@ orange when it has something to report — was the only bright row in an unfocus
 reporting nothing. DESIGN.md § Colors carries the rule, including where naming an ink is
 correct (overriding a `Button` label's accent).
 
+### The window's width reaches the columns, and a "can't" turns out to be a wrong diagnosis (0.0.25)
+
+Two items, both of the same kind: something had been *described* rather than measured, and
+the description was wrong in a way that cost real work.
+
+**Widening the main window did nothing useful.** `RequestTable` never set
+`columnAutoresizingStyle`, so AppKit's default applied — `.lastColumnOnlyAutoresizingStyle`
+gives every extra point to the **rightmost** column, which here is Time, capped at 100. Time
+grew to its cap, everything past it was empty background, and Path — the one column whose
+content is unbounded, and which the ordinal column's own comment already called "never wide
+enough" — never moved. The columns are laid out in `Coordinator.layoutColumns` now: spare
+width goes to Host and Path in the ratio of their ideal widths, Host stopping at its cap
+because a host name has a length and a path does not, with Path as the sink so the rightmost
+column sits on the trailing edge at every width. Narrowing reverses it in two passes — Path
+to its minimum first, then Host gives its share back — and only then does the table scroll,
+because a window too narrow for its columns is not a reason to crush the column with
+unbounded content. A width the operator dragged is theirs from then on.
+
+One measurement in that is load-bearing and was wrong first: the gap is read off
+`rect(ofColumn:).maxX`, **never `table.frame.width`**. A scroll view stretches its document
+view to the viewport, so the frame reports the width the table was *given* rather than the
+width its columns occupy — `lastMaxX=927` at a 900pt viewport and again at 1900pt, with the
+frame reading 900 and 1900. The first version computed the gap from the frame, which is
+identically zero, and shipped a no-op that read correctly; the test harness's own
+`trailingGap` had the same bug and reported green through it. DESIGN.md § request-table
+carries the rule and the trap.
+
+**And ThreadSanitizer runs locally, which AGENTS.md said for several releases it could not.**
+The claim was that TSan's runtime segfaults during its own init "on macOS 26". The segfault
+is real; the attribution was not, and the tell was in plain sight — CI runs `macos-26-arm64`
+and its TSan job is green. The only variable is the toolchain. Root cause is a re-entrancy
+during TSan's own initialization: `libSystem`'s stack-guard setup calls `strlcpy`, TSan's
+interceptor starts `__tsan::Initialize`, platform init asks for the memory map, which on
+current dyld reaches `dyld_shared_cache_iterate_text` — an introspection API using
+`dispatch_once`, which TSan also intercepts — and control re-enters TSan to dereference
+`thr->slot` before that slot exists. The OS contributes only the trigger. `scripts/tsan-local.sh`
+points `TEST_RUNNER_DYLD_LIBRARY_PATH` at the newer runtime the Command Line Tools already
+carry: 464 tests in 78 suites, zero races, ~8 s, against a runner that otherwise dies before
+bootstrapping. CI is deliberately unchanged — its toolchain is already fixed. Full record,
+including the TCC signature that is byte-identical to the runtime bug except for a trailing
+`abort() called`: [`docs/decisions/tsan-local-runtime.md`](docs/decisions/tsan-local-runtime.md).
+
+The pattern worth keeping from both: **a claim about what a platform refuses is a
+measurement, not a deduction** — the same lesson `docs/decisions/privileged-helper.md`
+records, arrived at twice more, once from each direction.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
