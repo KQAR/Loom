@@ -265,6 +265,18 @@ utility — closer to the system's own controls than to a themed Electron tool.
   controls (`Toggle`) explicitly, since they default to the system one.
 - **Ink ladder** (`.primary` / `.secondary` / `.tertiary`): text and metadata inside the vibrant panel —
   the hierarchical styles are *vibrancy-aware* and adapt to the material automatically. Never manual opacity.
+
+  > **The default ink is *no* `foregroundStyle`, not `.primary`.** They render alike in a focused window
+  > and diverge in every state where the platform re-inks a whole container: a `List` dims its rows when
+  > the window stops being key, and a row that named `.primary` opts out of the dimming and stays at full
+  > contrast on its own. The sidebar's Breakpoints row did exactly that — the one category that turns
+  > orange when it has something to report was also the only row still bright in an unfocused window,
+  > i.e. it read as an alert while reporting nothing. So a conditional tint applies the style **only on
+  > the branch that has something to say** (`@ViewBuilder`, because "apply no style" and "apply the
+  > default style" are different views and a ternary can only choose between two styles). Naming an ink
+  > is right when you are overriding *someone else's* styling rather than restating the default —
+  > `RulesPanelView`'s rule name is a `Button` label, which would otherwise render in the button's accent,
+  > and that `.primary` is load-bearing.
 - **Panel material** (`{colors.panel-material}`): the popover background. A system menu/vibrant material —
   it has no hex and must never be simulated with a translucent fill. Rows and sections sit on it transparently.
 - **Attention fills**: fault cards tint at ~12% `{colors.status-error}` — just enough to lift them off the
