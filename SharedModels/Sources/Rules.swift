@@ -176,32 +176,44 @@ public struct RuleMatch: Equatable, Codable, Sendable {
     /// omitting it on a rule that constrains the origin means the rule cannot match,
     /// by design: an app-scoped rule that applied to unattributed traffic would be
     /// acting on requests that might be a different app's.
+    ///
+    /// **A caller matching several rules against one request must not use this** —
+    /// it builds a fresh `RequestMatchContext` every time, which re-parses the URL
+    /// (`URLComponents`) and re-encodes it for every rule in the list. Build one
+    /// context and pass it to `matches(_:origin:)` instead; that is what
+    /// `RuleEngine.matchingRules` and `BreakpointStore.firstMatch` do.
     public func matches(method: String, url: String, origin: RequestOrigin? = nil) -> Bool {
+        var context = RequestMatchContext(method: method, url: url)
+        return matches(&context, origin: origin)
+    }
+
+    /// Does this request match, against a context shared by every rule in one
+    /// evaluation? `inout` because the context parses the URL lazily and keeps the
+    /// result: the first rule with a `hostPattern` or a `query` pays for the parse
+    /// and the rest read it.
+    public func matches(_ context: inout RequestMatchContext, origin: RequestOrigin? = nil) -> Bool {
         if !matchesOrigin(origin) { return false }
         if !methods.isEmpty,
-           !methods.contains(where: { $0.caseInsensitiveCompare(method) == .orderedSame }) {
+           !methods.contains(where: { $0.caseInsensitiveCompare(context.method) == .orderedSame }) {
             return false
         }
         // Host / query predicates run off the parsed URL, so they compose with any
         // urlPattern style without the caller hand-anchoring a regex.
-        if (hostPattern.map { !$0.isEmpty } ?? false) || (query?.isEmpty == false) {
-            let components = URLComponents(string: url)
-            if let hostPattern, !hostPattern.isEmpty,
-               !Glob.matches(hostPattern, components?.host ?? "") {
-                return false
-            }
-            if let query, !query.isEmpty {
-                let actual = Self.queryItems(components)
-                for (key, predicate) in query {
-                    switch predicate {
-                    case .present:
-                        if actual[key] == nil { return false }
-                    case let .equals(value):
-                        if actual[key] != value { return false }
-                    }
+        if let hostPattern, !hostPattern.isEmpty {
+            guard Glob.matches(hostPattern, context.host ?? "") else { return false }
+        }
+        if let query, !query.isEmpty {
+            let actual = context.queryItems
+            for (key, predicate) in query {
+                switch predicate {
+                case .present:
+                    if actual[key] == nil { return false }
+                case let .equals(value):
+                    if actual[key] != value { return false }
                 }
             }
         }
+        let url = context.url
         // One switch, no precedence: the style says which comparison runs, and the
         // "does it contain a `*`" test that used to decide two of these at match
         // time now happens once, when the pattern is authored.
@@ -217,7 +229,14 @@ public struct RuleMatch: Equatable, Codable, Sendable {
             // Same whole-string glob the SSL scope uses; it globs any string, not just hosts.
             // A glob over the whole URL, which is why the matcher is no longer named
             // after hosts.
-            return Glob.matches(urlPattern, url)
+            let pattern = Glob.pattern(for: urlPattern)
+            // The context encoded the URL's bytes once for the whole rule list; the
+            // pattern says whether it can use them (ASCII on both sides) and the
+            // string form is the fallback, so the answer is the same either way.
+            if let asciiURL = context.asciiURL, let verdict = pattern.matches(asciiBytes: asciiURL) {
+                return verdict
+            }
+            return pattern.matches(url)
         case .prefix:
             return Self.hasCaseInsensitivePrefix(url, urlPattern)
         }
@@ -308,12 +327,82 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         return true
     }
 
-    private static func queryItems(_ components: URLComponents?) -> [String: String] {
+    static func queryItems(_ components: URLComponents?) -> [String: String] {
         var result: [String: String] = [:]
         for item in components?.queryItems ?? [] {
             result[item.name] = item.value ?? ""
         }
         return result
+    }
+}
+
+/// One request, prepared once for a whole list of rule predicates.
+///
+/// Every rule in the list is matched against the *same* method and URL, so anything
+/// derived from them is per-request work that was being paid per rule: `URLComponents`
+/// parsed the URL again for every rule carrying a `hostPattern` or a `query`, and the
+/// glob path re-encoded the URL to bytes for every rule. With 50 rules that is 50
+/// parses and 50 encodings of one string, on the event loop, per exchange.
+///
+/// Both derivations are lazy: a rule list with no host/query predicate never parses,
+/// and a list with no glob rule never encodes.
+public struct RequestMatchContext {
+    public let method: String
+    public let url: String
+
+    private var parsedComponents = false
+    private var components: URLComponents?
+    private var parsedQueryItems: [String: String]?
+    private var encodedURL = false
+    private var encodedBytes: [UInt8]?
+
+    public init(method: String, url: String) {
+        self.method = method
+        self.url = url
+    }
+
+    /// The URL's bytes when it is pure ASCII (the overwhelmingly common case — a URL
+    /// on the wire is percent-encoded and punycoded), for `Glob.Pattern`'s byte path.
+    /// Nil for a non-ASCII URL, which sends every pattern down the `String` path and
+    /// its Unicode-correct case folding.
+    ///
+    /// Derived on first ask, not in `init`: a rule list with no glob rule never needs
+    /// it, and encoding it eagerly made the prefix and exact styles measurably slower
+    /// (8.7 ms against 5.3 ms per 1 000 requests at 50 rules) for a value they never
+    /// read.
+    public var asciiURL: [UInt8]? {
+        mutating get {
+            if encodedURL { return encodedBytes }
+            encodedURL = true
+            var url = url
+            encodedBytes = url.withUTF8 { buffer -> [UInt8]? in
+                for byte in buffer where byte >= 0x80 { return nil }
+                return Array(buffer)
+            }
+            return encodedBytes
+        }
+    }
+
+    /// The URL's host as `URLComponents` reads it — the same value the per-rule parse
+    /// produced, so a host predicate's verdict is unchanged.
+    public var host: String? {
+        mutating get { parse()?.host }
+    }
+
+    public var queryItems: [String: String] {
+        mutating get {
+            if let parsedQueryItems { return parsedQueryItems }
+            let items = RuleMatch.queryItems(parse())
+            parsedQueryItems = items
+            return items
+        }
+    }
+
+    private mutating func parse() -> URLComponents? {
+        if parsedComponents { return components }
+        parsedComponents = true
+        components = URLComponents(string: url)
+        return components
     }
 }
 

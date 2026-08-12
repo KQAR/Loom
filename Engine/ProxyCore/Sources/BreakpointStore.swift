@@ -174,11 +174,18 @@ final class BreakpointStore: Sendable {
     func firstMatch(
         method: String, url: String, phase: BreakpointPhase, origin: RequestOrigin? = nil
     ) -> Breakpoint? {
-        state.withLock { state in
-            state.breakpoints.first { bp in
-                (phase == .request ? bp.onRequest : bp.onResponse)
-                    && bp.match.matches(method: method, url: url, origin: origin)
+        // Prepared once for the whole armed list, for the reason `RequestMatchContext`
+        // gives: the per-call form re-parses and re-encodes the same URL for every
+        // breakpoint. This runs on the event loop for every exchange, twice (request
+        // phase and response phase).
+        var context = RequestMatchContext(method: method, url: url)
+        return state.withLock { state in
+            for bp in state.breakpoints
+            where (phase == .request ? bp.onRequest : bp.onResponse)
+                && bp.match.matches(&context, origin: origin) {
+                return bp
             }
+            return nil
         }
     }
 
