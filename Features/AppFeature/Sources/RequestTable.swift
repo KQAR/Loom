@@ -77,6 +77,13 @@ struct RequestTable: NSViewRepresentable {
         table.menu = context.coordinator.makeRowMenu()
         table.headerView?.menu = context.coordinator.makeHeaderMenu()
 
+        // The columns are laid out by `Coordinator.layoutColumns`, not by AppKit. The default
+        // (`.lastColumnOnlyAutoresizingStyle`) hands every extra point to the *rightmost*
+        // column, which here is Time — capped at 100 — so widening the window grew Time to its
+        // cap and then left dead space to the right of it, while Path, the one column never
+        // wide enough, stayed exactly as narrow as it started.
+        table.columnAutoresizingStyle = .noColumnAutoresizing
+
         let hidden = Column.hiddenColumns()
         for spec in Column.allCases {
             let column = NSTableColumn(identifier: spec.identifier)
@@ -255,6 +262,32 @@ struct RequestTable: NSViewRepresentable {
     /// How many of the newest rows a fit-to-content measurement reads.
     static let sizeToFitRowBudget = 2000
 
+    // MARK: Filling the width
+
+    /// The column that swallows whatever width the others don't want, so the rightmost column
+    /// is always flush with the table's trailing edge.
+    ///
+    /// Path first — it is the only column whose content is unbounded, and its `maxWidth` says
+    /// so. Host is the fallback for a table with Path hidden, and *as the sink it ignores its
+    /// own `maxWidth`*: a cap on the sink is a gap on the right, which is the thing being
+    /// fixed. `visible` is in the table's own column order, so the last-resort case picks the
+    /// rightmost one.
+    static func slackSink(among visible: [Column]) -> Column? {
+        if visible.contains(.path) { return .path }
+        if visible.contains(.host) { return .host }
+        return visible.last
+    }
+
+    /// What Host takes out of the spare width when it is not the sink.
+    ///
+    /// The two absorb in the ratio of their ideal widths (180 : 320), so a wider window reads
+    /// as the same table with more room rather than as a different layout — and Host stops at
+    /// its `maxWidth`, because a host name has a length and Path does not.
+    static func hostWidth(slack: CGFloat) -> CGFloat {
+        let share = slack * (Column.host.idealWidth / (Column.host.idealWidth + Column.path.idealWidth))
+        return min(max(share, Column.host.minWidth), Column.host.maxWidth)
+    }
+
     // MARK: Coordinator
 
     @MainActor
@@ -310,6 +343,8 @@ struct RequestTable: NSViewRepresentable {
             // time, and it can move between windows afterwards. The handler filters.
             nc.addObserver(self, selector: #selector(windowOcclusionChanged),
                            name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+            nc.addObserver(self, selector: #selector(columnDidResize),
+                           name: NSTableView.columnDidResizeNotification, object: table)
         }
 
         func detach() {
@@ -800,9 +835,108 @@ struct RequestTable: NSViewRepresentable {
         private var wantsInitialTailScroll = true
 
         func scrollViewDidLayout() {
+            layoutColumns()
             guard wantsInitialTailScroll, !rows.isEmpty, maximumOffsetY > 0 else { return }
             wantsInitialTailScroll = false
             setOffsetY(maximumOffsetY)
+        }
+
+        // MARK: Column widths
+
+        /// True while `layoutColumns` is writing widths, so the resize notifications it
+        /// causes are not mistaken for the operator dragging a divider.
+        private var isLayingOutColumns = false
+
+        /// Columns the operator has sized by hand. Their width is theirs from then on — the
+        /// spare width goes around them. Deliberately not persisted: a column width is a
+        /// property of the window someone is looking at, and `hiddenColumns` is the one piece
+        /// of table state that has to survive a relaunch (an invisible column is unexplainable
+        /// after one; a width is self-evident).
+        private var handSizedColumns: Set<Column> = []
+
+        @objc private func columnDidResize(_ note: Notification) {
+            guard !isLayingOutColumns,
+                  let column = note.userInfo?["NSTableColumn"] as? NSTableColumn,
+                  let spec = Column(rawValue: column.identifier.rawValue)
+            else { return }
+            handSizedColumns.insert(spec)
+        }
+
+        /// Give the window's spare width to Host and Path, and leave nothing at the right.
+        ///
+        /// Runs on every layout of the scroll view, which is what a window resize produces.
+        /// The arithmetic is deliberately *read back* rather than predicted: the table's own
+        /// width after a retile accounts for intercell spacing and for AppKit's rounding, and
+        /// the sink closes whatever difference is left. Predicting it means a column that
+        /// misses the trailing edge by two points on some future AppKit.
+        func layoutColumns() {
+            guard let table, let scrollView, !isLayingOutColumns else { return }
+            let available = scrollView.contentView.bounds.width
+            guard available > 0 else { return }
+
+            let specs = table.tableColumns.compactMap { column -> (Column, NSTableColumn)? in
+                guard !column.isHidden, let spec = Column(rawValue: column.identifier.rawValue)
+                else { return nil }
+                return (spec, column)
+            }
+            guard let sink = RequestTable.slackSink(among: specs.map(\.0)),
+                  let sinkColumn = specs.first(where: { $0.0 == sink })?.1,
+                  let lastVisible = table.tableColumns.lastIndex(where: { !$0.isHidden })
+            else { return }
+
+            isLayingOutColumns = true
+            defer { isLayingOutColumns = false }
+
+            // A cap on the sink is a gap on the right, so the sink's own `maxWidth` is lifted
+            // while it holds that role and put back when it doesn't. This only ever matters
+            // with Path hidden — Path's cap is nominal — and it has to be a real write,
+            // because `NSTableColumn` clamps `width` against `maxWidth` on assignment rather
+            // than letting a caller mean it.
+            for (spec, column) in specs where spec == .host {
+                column.maxWidth = sink == .host ? .greatestFiniteMagnitude : spec.maxWidth
+            }
+
+            var hostColumn: NSTableColumn?
+            if sink != .host, !handSizedColumns.contains(.host),
+               let host = specs.first(where: { $0.0 == .host })?.1 {
+                let others = specs
+                    .filter { $0.0 != .host && $0.0 != sink }
+                    .reduce(0) { $0 + $1.1.width }
+                host.width = RequestTable.hostWidth(slack: available - others)
+                hostColumn = host
+            }
+
+            /// Move the sink onto the trailing edge, and report what it could not absorb.
+            ///
+            /// The measurement is the trailing edge of the last visible column, **not**
+            /// `table.frame.width`: a scroll view stretches its document view to the viewport,
+            /// so the frame reports the width the table was *given* rather than the width its
+            /// columns occupy, and a gap computed from it is always zero — which is how the
+            /// first version of this shipped a no-op that looked right. `rect(ofColumn:)`
+            /// includes intercell spacing and the inset style's edge insets, so it is measured
+            /// rather than summed.
+            func closeGap() -> CGFloat {
+                table.tile()
+                let gap = available - table.rect(ofColumn: lastVisible).maxX
+                // Sub-point differences are AppKit's own rounding, and chasing them would
+                // write a width on every layout pass for no visible change.
+                if abs(gap) > 0.5 {
+                    // Never under the minimum — past that a column stops showing its content.
+                    sinkColumn.width = max(sinkColumn.width + gap, sink.minWidth)
+                    table.tile()
+                }
+                return available - table.rect(ofColumn: lastVisible).maxX
+            }
+
+            // Anything still hanging past the trailing edge means the sink is on its floor and
+            // the window is narrower than the columns want. Host gives its share back before
+            // the table starts scrolling: Path's minimum is the width its content needs, while
+            // Host's share is only a preference about where spare room goes.
+            if closeGap() < -0.5, let hostColumn {
+                hostColumn.width = max(hostColumn.width + (available - table.rect(ofColumn: lastVisible).maxX),
+                                       Column.host.minWidth)
+                _ = closeGap()
+            }
         }
 
         /// Time constant of the glide: the distance remaining decays by `1/e` this often.
@@ -937,6 +1071,10 @@ struct RequestTable: NSViewRepresentable {
             var hidden = Column.hiddenColumns()
             if tableColumn.isHidden { hidden.insert(spec) } else { hidden.remove(spec) }
             Column.setHiddenColumns(hidden)
+            // Hiding a column frees its width and unhiding one spends width the sink was
+            // holding; either way the trailing edge has just moved, and no scroll-view layout
+            // is coming to notice it.
+            layoutColumns()
         }
 
         private var clickedFlow: Flow? {
