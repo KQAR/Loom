@@ -531,6 +531,9 @@ struct TunneledHostRender: Encodable {
     var lastSeen: Date
     var reason: String
     var interceptable: Bool
+    /// Present only for `clientHandshakeFailed`, where the reason alone does not
+    /// separate "this host is pinned" from "your CA is not installed here".
+    var detail: String?
 
     init(_ entry: TunneledHost) {
         host = entry.host
@@ -540,6 +543,7 @@ struct TunneledHostRender: Encodable {
         lastSeen = entry.lastSeen
         reason = entry.reason.rawValue
         interceptable = entry.interceptable
+        detail = entry.detail
     }
 }
 

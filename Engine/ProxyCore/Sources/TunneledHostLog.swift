@@ -34,20 +34,24 @@ final class TunneledHostLog: Sendable {
 
     private let state = Mutex(State())
 
-    /// Fold one relayed connection into the host's entry.
-    func record(host: String, port: Int, reason: TunnelReason, at date: Date = Date()) {
+    /// Fold one unread connection into the host's entry.
+    func record(
+        host: String, port: Int, reason: TunnelReason, detail: String? = nil, at date: Date = Date()
+    ) {
         let key = "\(host.lowercased()):\(port)"
         state.withLock {
             if var existing = $0.hosts[key] {
                 existing.connections += 1
                 existing.lastSeen = date
-                // Latest reason wins — see `TunneledHost.reason`.
+                // Latest reason wins — see `TunneledHost.reason` — and the detail
+                // travels with it rather than outliving the reason that explained it.
                 existing.reason = reason
+                existing.detail = detail
                 $0.hosts[key] = existing
                 return
             }
             $0.hosts[key] = TunneledHost(
-                host: host, port: port, firstSeen: date, lastSeen: date, reason: reason
+                host: host, port: port, firstSeen: date, lastSeen: date, reason: reason, detail: detail
             )
             guard $0.hosts.count > Self.capacity else { return }
             // Evict least-recently-active. A dictionary has no order to drop from,

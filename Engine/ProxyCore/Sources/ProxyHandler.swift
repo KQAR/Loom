@@ -47,6 +47,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     /// bodyless request. Chunks are pumped in and pulled by the forwarder under
     /// back-pressure.
     private var bodyBridge: RequestBodyBridge?
+    /// The flow recorded when this request's head arrived. Nil between exchanges.
+    private var observed: CapturedExchange.Observed?
     /// Set when the request head was malformed so the trailing body/end are ignored.
     private var droppingRequest = false
 
@@ -84,6 +86,12 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             }
             requestHead = resolved.head
             requestURL = resolved.url
+            // Recorded here, not at `.end`: a request that stalls after its head is
+            // still a request, and used to leave no trace at all.
+            observed = CapturedExchange.observe(
+                channel: context.channel, head: resolved.head,
+                urlString: resolved.head.uri, store: store
+            )
         case var .body(chunk):
             if droppingRequest { return }
             // First body chunk: begin streaming. Pausing auto-read (mirrors the
@@ -110,13 +118,13 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 bodyBridge.finish()
                 self.bodyBridge = nil
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
-                requestHead = nil; requestURL = nil
+                requestHead = nil; requestURL = nil; observed = nil
                 return
             }
-            if droppingRequest { droppingRequest = false; requestHead = nil; requestURL = nil; return }
+            if droppingRequest { droppingRequest = false; requestHead = nil; requestURL = nil; observed = nil; return }
             guard let head = requestHead, let url = requestURL else { return }
             startExchange(channel: context.channel, head: head, url: url, body: .bytes(nil), capture: nil)
-            requestHead = nil; requestURL = nil
+            requestHead = nil; requestURL = nil; observed = nil
         }
     }
 
@@ -279,6 +287,9 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
     }
 
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, body: RequestBody, capture: RequestBodyCapture?) {
+        let observed = self.observed ?? CapturedExchange.observe(
+            channel: channel, head: head, urlString: head.uri, store: store
+        )
         let ws = Self.webSocketRouting(for: url)
         CapturedExchange.handle(
             channel: channel, head: head, body: body, bodyCapture: capture,
@@ -291,7 +302,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 webSocketRequestPath: Self.originForm(url),
                 webSocketRemoveHandlerNames: ["loom.http.encoder", "loom.http.decoder", "loom.proxy"]
             ),
-            store: store, forwarder: forwarder
+            store: store, forwarder: forwarder, observed: observed
         )
     }
 

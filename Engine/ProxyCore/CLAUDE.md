@@ -100,6 +100,51 @@ Silence from both sides stays undecided and is deliberately **not** recorded in
 would put every warm tunnel a browser holds in front of an operator asking why a
 host went unread.
 
+## An error SwiftNIO raises is Loom's to answer
+
+A pipeline with no error handler turns a codec failure into an **infinite wait**,
+which is the worst thing a debugging proxy can do: the operator blames their app,
+and the capture agrees with them. Two places raised errors that reached the end of a
+pipeline and stopped existing; both are now handled, and any new pipeline needs the
+same treatment.
+
+- **Client-facing TLS** (`ClientTLSFailureReporter`, between `NIOSSLServerHandler`
+  and ALPN). A client that refuses Loom's leaf sends a fatal alert and hangs up
+  before any request — no flow to attach the failure to, so it lands in
+  `TunneledHostLog` as `.clientHandshakeFailed` with the handshake error in
+  `detail`. Only `NIOSSLError.handshakeFailed` counts: an unclean shutdown is an
+  ordinary mid-stream hangup, and recording it as "the client refused Loom" would
+  put noise on the one surface an operator reads to find a missing host.
+- **Intercepted HTTP/2** (`HTTP2ConnectionErrorReporter`, at the tail of the
+  *connection* channel). Records `.protocolError` and then **closes**, because HPACK
+  is per-connection state (RFC 7541 §2.3): a header block that could not be decoded
+  leaves the dynamic table desynchronised, so nothing after it can be read either.
+  RFC 9113 §5.4.1 — signal the connection error and close; carrying on is not an
+  option, and staying silent is what produced a phone spinning forever.
+
+## A proxy must not be stricter than the origin
+
+`MITMPipeline.maxHeaderListSize` replaces SwiftNIO's advertised
+`SETTINGS_MAX_HEADER_LIST_SIZE` of 16 KB (`HPACKDecoder.defaultMaxHeaderListSize`,
+whose own comment calls the value "somewhat arbitrary"). Any limit Loom enforces
+that the real server does not becomes a failure that exists *only while Loom is in
+the path*.
+
+Measured: an app whose session cookies had grown to 15–31 KB refreshed its home
+screen and the request vanished — the origin answered the same 20 KB header in
+58 ms, Loom's HTTP/1.1 path in 196 ms, and Loom's h2 path not at all. One line
+reproduces it: `curl --http2 -x 127.0.0.1:9090 -H "Cookie: k=$(python3 -c "print('a'*20000)")"`.
+
+**One caveat that is upstream's, and is why the error handler matters as much as
+the limit.** SwiftNIO builds its frame decoder in `handlerAdded` with the HPACK
+default and only raises it on `localSettingsChanged` — i.e. when the peer
+*acknowledges* Loom's SETTINGS (RFC 9113 §6.5.3). So on a brand-new connection the
+16 KB limit still applies until the ACK lands, and a client that sends its first
+request without waiting (RFC 9113 §3.4 explicitly allows this) can still trip it.
+Measured after the fix: the steady-state case answers 200, and the first-request
+case fails in 80 ms with a closed connection instead of hanging for 20 s. Closing
+that window needs a change in swift-nio-http2, not here.
+
 ## Response streaming
 
 - `forwardStream` yields head/body/end events; `StreamRelay` relays them to the client (chunked
