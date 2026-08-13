@@ -33,6 +33,9 @@ public actor ProxyEngine: ProxyControlling {
     lazy var reverseServer = ReverseProxyServer(group: group)
 
     let forwarder: UpstreamForwarding
+    /// Keeps upstream connections alive between requests. Nil when an embedder
+    /// injected its own `upstream`, which owns whatever pooling it does.
+    private let upstreamPool: UpstreamConnectionPool?
     let caStore: CAStore
     let config: InterceptionConfig
     let rulesConfig: RulesConfig
@@ -166,8 +169,12 @@ public actor ProxyEngine: ProxyControlling {
         let clientIdentities = configuration.clientCertificates
             ?? (durable ? ClientCertificateConfig() : ClientCertificateConfig(fileURL: nil))
         self.clientIdentities = clientIdentities
+        let upstreamPool = configuration.upstream == nil ? UpstreamConnectionPool() : nil
+        self.upstreamPool = upstreamPool
         let upstream = configuration.upstream
-            ?? NIOStreamingForwarder(group: group, clientIdentities: clientIdentities)
+            ?? NIOStreamingForwarder(
+                group: group, clientIdentities: clientIdentities, pool: upstreamPool ?? UpstreamConnectionPool()
+            )
         self.forwarder = BreakpointForwarder(
             base: RuleApplyingForwarder(base: upstream, rules: rulesConfig),
             store: breakpointStore
@@ -258,6 +265,10 @@ public actor ProxyEngine: ProxyControlling {
         await server.stop()
         await socksServer.stop()
         await reverseServer.stopAll()
+        // Parked upstream sockets are held on the origins' behalf as much as ours,
+        // and the switch being off is a promise that Loom is not talking to anyone.
+        // Not terminal: the pool is usable again when the proxy is switched back on.
+        upstreamPool?.drain()
         // The endpoints stay configured (they are persisted); only this run's bind
         // state goes away, so a status read after stop() doesn't claim a live port.
         reverseProxyConfig.clearBindState()

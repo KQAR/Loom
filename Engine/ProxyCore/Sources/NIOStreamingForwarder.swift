@@ -29,15 +29,20 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// client certificate (the default, and what an embedder gets unless it wires
     /// one — presenting a credential is not a neutral default).
     private let clientIdentities: ClientIdentityProviding?
+    /// Keeps upstream connections alive between requests. See
+    /// `UpstreamConnectionPool` for what a missing one used to cost.
+    private let pool: UpstreamConnectionPool
 
     init(
         group: EventLoopGroup,
         connectTimeout: TimeAmount = .seconds(30),
-        clientIdentities: ClientIdentityProviding? = nil
+        clientIdentities: ClientIdentityProviding? = nil,
+        pool: UpstreamConnectionPool = UpstreamConnectionPool()
     ) {
         self.group = group
         self.connectTimeout = connectTimeout
         self.clientIdentities = clientIdentities
+        self.pool = pool
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
@@ -76,43 +81,20 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 return
             }
 
-            let group = self.group
-            let connectTimeout = self.connectTimeout
-            let box = ChannelBox()
+            let key = UpstreamPoolKey(host: host, port: port, isTLS: isTLS, identity: identity)
+            let active = ActiveUpstreamBox()
             let task = Task {
-                let bootstrap = ClientBootstrap(group: group)
-                    .connectTimeout(connectTimeout)
-                    .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-                    .channelInitializer { channel in
-                        channel.eventLoop.makeCompletedFuture {
-                            let sync = channel.pipeline.syncOperations
-                            if let clientTLS {
-                                try sync.addHandler(NIOSSLClientHandler(
-                                    context: clientTLS.context, serverHostname: clientTLS.serverName
-                                ))
-                            }
-                            try sync.addHTTPClientHandlers()
-                            // Decompress gzip/deflate so relayed/captured bytes are plaintext;
-                            // the now-wrong Content-Encoding/Length are stripped on `.head`.
-                            // The ratio cap is a decompression-bomb guard: bodies come from
-                            // arbitrary origins, and `.none` is the setting swift-nio-extras
-                            // itself documents as leaving you open to denial of service. 100x
-                            // is far above real content (text gzips ~3-10x) and far below a
-                            // zip bomb (1000x+), so it costs nothing legitimate. The capture
-                            // is separately capped; this bounds the *inflation*.
-                            try sync.addHandler(
-                                NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))
-                            )
-                            try sync.addHandler(StreamingResponseHandler(
-                                continuation: continuation,
-                                contextualize: { UpstreamTLSError.wrapping($0, host: host, isTLS: isTLS, identity: identity) }
-                            ))
-                        }
-                    }
                 do {
-                    let channel = try await bootstrap.connect(host: host, port: port).get()
-                    box.set(channel)
-                    try await Self.writeRequest(channel: channel, method: method, url: url, host: host, port: port, headers: headers, body: body)
+                    try await self.runExchange(
+                        key: key, clientTLS: clientTLS, method: method, url: url,
+                        headers: headers, body: body, continuation: continuation, active: active
+                    )
+                    // The forwarder, not the relay, terminates the caller's stream:
+                    // a failure with nothing yet yielded is a retry candidate, and a
+                    // relay that had already finished the stream would have spent
+                    // the outcome that decision needs.
+                    continuation.yield(.end)
+                    continuation.finish()
                 } catch {
                     // Two wrappers, one hop each, and neither touches what the other
                     // claims: the TLS one only wraps NIOSSL's own errors, the
@@ -128,8 +110,169 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 }
             }
             // On stream completion/cancellation, stop connecting and close the socket.
-            continuation.onTermination = { _ in task.cancel(); box.close() }
+            continuation.onTermination = { _ in task.cancel(); active.terminate() }
         }
+    }
+
+    // MARK: - One exchange, over a pooled or a fresh connection
+
+    /// Run one request/response, preferring a pooled connection.
+    ///
+    /// The retry is the load-bearing part of pooling and not a nicety: a parked
+    /// connection can be closed by the origin at any moment, and the FIN can land
+    /// in the window between leasing it and writing to it. Without a retry, pooling
+    /// would trade a reliable 96 ms for an occasional failed request — a bad trade
+    /// at any latency.
+    ///
+    /// It is offered only for a request whose body is `.bytes`, which is the whole
+    /// reason `RequestBody` is a sum type here. A `.stream` body is a live,
+    /// back-pressured pull from the client that is consumed exactly once; there is
+    /// no second copy to re-send, so a streamed request opens its own connection
+    /// rather than gamble one. It still *releases* into the pool afterwards, so the
+    /// requests that follow it reuse the socket it opened.
+    private func runExchange(
+        key: UpstreamPoolKey,
+        clientTLS: (context: NIOSSLContext, serverName: String?)?,
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
+        active: ActiveUpstreamBox
+    ) async throws {
+        let replayable: Bool
+        if case .bytes = body { replayable = true } else { replayable = false }
+
+        if replayable, let pooled = pool.lease(key) {
+            do {
+                try await attempt(
+                    on: pooled, method: method, url: url, headers: headers, body: body,
+                    continuation: continuation, active: active
+                )
+                return
+            } catch let failure as UpstreamAttemptFailure {
+                guard !failure.didYield else { throw failure.underlying }
+                Log.forward.debug(
+                    """
+                    Pooled upstream connection to \(key.host, privacy: .public):\(key.port, privacy: .public) \
+                    was stale; retrying on a fresh one
+                    """
+                )
+            }
+        }
+
+        let fresh = try await connect(key: key, clientTLS: clientTLS)
+        do {
+            try await attempt(
+                on: fresh, method: method, url: url, headers: headers, body: body,
+                continuation: continuation, active: active
+            )
+        } catch let failure as UpstreamAttemptFailure {
+            throw failure.underlying
+        }
+    }
+
+    /// Arm the connection's slot, write the request, await the response's end, and
+    /// then either park the connection or close it.
+    private func attempt(
+        on connection: UpstreamConnection,
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
+        active: ActiveUpstreamBox
+    ) async throws {
+        guard active.adopt(connection) else {
+            // The consumer already went away; nothing to run this exchange for.
+            connection.close()
+            throw CancellationError()
+        }
+
+        let promise = connection.channel.eventLoop.makePromise(of: UpstreamAttemptEnd.self)
+        connection.slot.arm(
+            continuation: continuation,
+            methodIsHead: method.uppercased() == "HEAD"
+        ) { result in
+            promise.completeWith(result.mapError { $0 as Error })
+        }
+
+        // A TLS handshake failure does not come back from `connect()` — the TCP
+        // connection succeeds and the handshake fails later, inside the pipeline —
+        // so on a fresh connection it can land before the slot is armed, where
+        // `fail` is a no-op. If it already ran to completion the channel is
+        // inactive by now, and this is what turns that into a failed attempt
+        // instead of a promise nothing will ever complete. A failure still in
+        // flight arrives at the relay, which fails the slot we just armed.
+        if !connection.channel.isActive {
+            connection.slot.fail(ForwarderError.connectionClosed)
+        }
+
+        do {
+            try await Self.writeRequest(
+                channel: connection.channel, method: method, url: url,
+                host: connection.key.host, port: connection.key.port, headers: headers, body: body
+            )
+        } catch {
+            // Disarms and completes the promise; a no-op if the relay already saw
+            // the failure first, which is the ordinary race on a dead socket.
+            connection.slot.fail(error)
+        }
+
+        let end: UpstreamAttemptEnd
+        do {
+            end = try await promise.futureResult.get()
+        } catch {
+            active.clear()
+            connection.close()
+            throw error
+        }
+
+        active.clear()
+        switch end {
+        case .reusable: pool.release(connection)
+        case .mustClose: connection.close()
+        }
+    }
+
+    /// Open a new upstream connection with the response relay already installed.
+    private func connect(
+        key: UpstreamPoolKey, clientTLS: (context: NIOSSLContext, serverName: String?)?
+    ) async throws -> UpstreamConnection {
+        let slot = UpstreamExchangeSlot()
+        let notifier = UpstreamInactiveNotifier()
+        let bootstrap = ClientBootstrap(group: group)
+            .connectTimeout(connectTimeout)
+            .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .channelInitializer { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    let sync = channel.pipeline.syncOperations
+                    if let clientTLS {
+                        try sync.addHandler(NIOSSLClientHandler(
+                            context: clientTLS.context, serverHostname: clientTLS.serverName
+                        ))
+                    }
+                    try sync.addHTTPClientHandlers()
+                    // Decompress gzip/deflate so relayed/captured bytes are plaintext;
+                    // the now-wrong Content-Encoding/Length are stripped on `.head`.
+                    // The ratio cap is a decompression-bomb guard: bodies come from
+                    // arbitrary origins, and `.none` is the setting swift-nio-extras
+                    // itself documents as leaving you open to denial of service. 100x
+                    // is far above real content (text gzips ~3-10x) and far below a
+                    // zip bomb (1000x+), so it costs nothing legitimate. The capture
+                    // is separately capped; this bounds the *inflation*.
+                    //
+                    // Safe to keep across a pooled connection's later requests: it
+                    // builds a decoder per response `.head` and drops it on `.end`.
+                    try sync.addHandler(
+                        NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))
+                    )
+                    try sync.addHandler(UpstreamResponseRelay(slot: slot, notifier: notifier))
+                }
+            }
+        let channel = try await bootstrap.connect(host: key.host, port: key.port).get()
+        let connection = UpstreamConnection(key: key, channel: channel, slot: slot)
+        // Weak: while the connection is parked the pool holds it, and once it is
+        // neither parked nor in flight there is nothing left to evict.
+        notifier.onInactive { [pool, weak connection] in
+            guard let connection else { return }
+            pool.forget(connection)
+        }
+        return connection
     }
 
     // MARK: - Request
@@ -199,7 +342,11 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 try await channel.writeAndFlush(HTTPClientRequestPart.body(.byteBuffer(buffer))).get()
             }
         }
-        channel.writeAndFlush(HTTPClientRequestPart.end(nil), promise: nil)
+        // Awaited, unlike the parts above: on a pooled connection the origin may
+        // have closed while it was parked, and this flush is where that surfaces.
+        // With `promise: nil` the failure was swallowed and the exchange waited on
+        // a response the socket could never carry.
+        try await channel.writeAndFlush(HTTPClientRequestPart.end(nil)).get()
     }
 
     /// Origin-form request target: path + query (path defaults to "/").
@@ -260,56 +407,69 @@ enum ForwarderError: Error {
     case connectionClosed
 }
 
-/// Thread-safe holder so the stream's onTermination can close the upstream channel
-/// once it's connected (connect happens asynchronously inside a Task).
-private final class ChannelBox: Sendable {
-    /// `Channel` is not `Sendable`; holding it inside the `Mutex` is what makes this
-    /// box safe without an `@unchecked` on the class.
+/// Tracks the connection an in-flight exchange is running on, so the stream's
+/// `onTermination` can close it when the consumer walks away mid-response — and,
+/// just as importantly, so it does **not** close one that has already been handed
+/// back to the pool.
+private final class ActiveUpstreamBox: Sendable {
     private struct State {
-        var channel: Channel?
-        var closed = false
+        var connection: UpstreamConnection?
+        var terminated = false
     }
 
     private let state = Mutex(State())
 
-    func set(_ channel: Channel) {
+    /// Take ownership of `connection` for the duration of an exchange. Returns
+    /// false if the consumer already terminated, in which case there is nothing
+    /// left to run and the caller closes it.
+    func adopt(_ connection: UpstreamConnection) -> Bool {
         state.withLock { state in
-            if state.closed { channel.close(promise: nil) } else { state.channel = channel }
+            guard !state.terminated else { return false }
+            state.connection = connection
+            return true
         }
     }
 
-    func close() {
-        state.withLock { state in
-            state.closed = true
-            state.channel?.close(promise: nil)
-            state.channel = nil
+    /// The exchange finished; whatever happens to the connection now is the pool's
+    /// decision, not this box's.
+    func clear() {
+        state.withLock { $0.connection = nil }
+    }
+
+    func terminate() {
+        let connection = state.withLock { state -> UpstreamConnection? in
+            state.terminated = true
+            let current = state.connection
+            state.connection = nil
+            return current
         }
+        connection?.close()
     }
 }
 
 /// Relays one HTTP response upstream→stream as it arrives: `.head` then each body
-/// chunk then `.end`, so SSE / long-poll / large downloads flow through instead of
-/// being buffered. Closes the upstream channel when the response ends.
-// @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
-// § Sendable escape hatches for what that forbids inside a `Task {}`.
-private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked Sendable {
+/// chunk, so SSE / long-poll / large downloads flow through instead of being
+/// buffered.
+///
+/// Two things it deliberately does **not** do, both of which it used to. It does not
+/// close the channel on `.end` — that is what made every request pay a fresh TCP
+/// and TLS handshake, and the decision now belongs to the pool. And it does not
+/// terminate the caller's stream: it hands the outcome to `UpstreamExchangeSlot`
+/// and the forwarder decides, because a failure with nothing yielded is retryable
+/// and finishing the stream here would spend that choice.
+///
+/// Plainly `Sendable`, not `@unchecked`: it holds no mutable state at all. What
+/// would have been per-exchange handler state lives in the slot, which is exactly
+/// what lets one relay serve many exchanges on a pooled connection.
+private final class UpstreamResponseRelay: ChannelInboundHandler, Sendable {
     typealias InboundIn = HTTPClientResponsePart
 
-    private let continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation
-    /// Adds context to a failing error on its way out. A TLS handshake failure does
-    /// **not** come back from `connect()` — the TCP connection succeeds and the
-    /// handshake fails afterwards, inside the pipeline, arriving here as
-    /// `errorCaught`. So this is the only place that sees it, and wrapping it at the
-    /// call site (as this first tried) silently misses every one.
-    private let contextualize: @Sendable (Error) -> Error
-    private var finished = false
+    private let slot: UpstreamExchangeSlot
+    private let notifier: UpstreamInactiveNotifier
 
-    init(
-        continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
-        contextualize: @escaping @Sendable (Error) -> Error = { $0 }
-    ) {
-        self.continuation = continuation
-        self.contextualize = contextualize
+    init(slot: UpstreamExchangeSlot, notifier: UpstreamInactiveNotifier) {
+        self.slot = slot
+        self.notifier = notifier
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -319,35 +479,27 @@ private final class StreamingResponseHandler: ChannelInboundHandler, @unchecked 
             // no longer describe the bytes — strip them (the client writer re-frames).
             let headers = HTTPUtil.sanitizeDecodedResponseHeaders(HTTPUtil.headerPairs(head.headers))
             let version = "HTTP/\(head.version.major).\(head.version.minor)"
-            continuation.yield(.head(statusCode: Int(head.status.code), httpVersion: version, headers: headers))
+            slot.receivedHead(head, headers: headers, httpVersion: version)
         case var .body(chunk):
             if let bytes = chunk.readBytes(length: chunk.readableBytes) {
-                continuation.yield(.body(Data(bytes)))
+                slot.receivedBody(Data(bytes))
             }
         case .end:
-            finish(nil)
-            context.close(promise: nil)
+            slot.completeSuccessfully()
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        finish(ForwarderError.connectionClosed)
+        // Fails an armed slot; a no-op when nothing is armed, which is what a
+        // connection dying while parked in the pool looks like. Either way the pool
+        // must stop offering it.
+        slot.fail(ForwarderError.connectionClosed)
+        notifier.fire()
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        finish(error)
+        slot.fail(error)
         context.close(promise: nil)
-    }
-
-    private func finish(_ error: Error?) {
-        guard !finished else { return }
-        finished = true
-        if let error {
-            continuation.finish(throwing: contextualize(error))
-        } else {
-            continuation.yield(.end)
-            continuation.finish()
-        }
     }
 }
