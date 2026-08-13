@@ -6,8 +6,12 @@ struct RequestPane: View {
     let flow: Flow
     let original: Flow?
 
-    enum Tab: Hashable { case summary, graphQL, raw, headers, cookies, body, diff }
-    @State private var tab: Tab = .summary
+    /// The pane's tabs. `flowSummary` is the odd one out and is named for it:
+    /// every other case here is scoped to the *request*, while that one reports
+    /// the whole exchange (see `FlowSummary`). It is hosted here rather than
+    /// given a pane of its own — a UI decision, recorded in DESIGN.md.
+    enum Tab: Hashable { case flowSummary, query, graphQL, raw, headers, cookies, body, diff }
+    @State private var tab: Tab = .flowSummary
 
     /// What the pane derives from the request body/headers, parsed **once** per
     /// render. `tabs` needs it (to decide which tabs exist) and `content` needs it
@@ -17,12 +21,17 @@ struct RequestPane: View {
     /// while the selected request is still in flight.
     private struct Derived {
         var cookies: [CookieItem]
+        var query: [URLQueryPair]
         var graphQL: GraphQLOperation?
     }
 
     private static func derive(_ flow: Flow) -> Derived {
         Derived(
             cookies: CookieParsing.requestCookies(flow.request.headers),
+            // Parsed here with the rest for the same reason: `tabs` needs the count
+            // to decide whether the tab exists and `content` needs the items, and as
+            // a computed property each render split the URL twice over.
+            query: QueryParsing.items(inURL: flow.request.url),
             // Guard on size before parsing — a large POST would otherwise hang the
             // panel on open.
             graphQL: {
@@ -33,7 +42,10 @@ struct RequestPane: View {
     }
 
     private func tabs(_ derived: Derived) -> [(String, Tab)] {
-        var t: [(String, Tab)] = [("Summary", .summary)]
+        var t: [(String, Tab)] = [("Summary", .flowSummary)]
+        // Conditional and counted, the same rule Cookies follows: most requests
+        // have no query, and a permanent empty tab is a tab people stop reading.
+        if !derived.query.isEmpty { t.append(("Query(\(derived.query.count))", .query)) }
         if derived.graphQL != nil { t.append(("GraphQL", .graphQL)) }
         t.append(("Raw", .raw))
         t.append(("Headers(\(flow.request.headers.count))", .headers))
@@ -67,9 +79,10 @@ struct RequestPane: View {
         }
         .onChange(of: flow.id) {
             // Reset if the selected tab no longer applies to the new flow.
-            if tab == .diff, original == nil { tab = .summary }
-            if tab == .cookies, derived.cookies.isEmpty { tab = .summary }
-            if tab == .graphQL, derived.graphQL == nil { tab = .summary }
+            if tab == .diff, original == nil { tab = .flowSummary }
+            if tab == .cookies, derived.cookies.isEmpty { tab = .flowSummary }
+            if tab == .query, derived.query.isEmpty { tab = .flowSummary }
+            if tab == .graphQL, derived.graphQL == nil { tab = .flowSummary }
         }
     }
 
@@ -79,7 +92,8 @@ struct RequestPane: View {
     /// main thread on open.
     @ViewBuilder private func content(_ derived: Derived) -> some View {
         switch tab {
-        case .summary: Scrolled { SummaryTable(flow: flow) }
+        case .flowSummary: Scrolled { FlowSummary(flow: flow) }
+        case .query: Scrolled { QueryView(items: derived.query) }
         case .graphQL: Scrolled { GraphQLView(operation: derived.graphQL) }
         case .raw: RawTab(flow: flow, pane: "req", makeText: Self.rawText)
         case .headers: Scrolled { HeadersList(headers: flow.request.headers) }

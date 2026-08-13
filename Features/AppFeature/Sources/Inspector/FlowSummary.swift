@@ -1,7 +1,21 @@
 import LoomSharedModels
 import SwiftUI
 
-/// Everything Loom knows about one exchange that isn't its headers or its body.
+/// Everything Loom knows about one **flow** that isn't its headers or its body.
+///
+/// Flow-scoped, not request-scoped, and the name says so because the placement
+/// cannot: it is drawn as the first tab of the *Request* pane, sitting under a
+/// heading that describes half of what it reports. Most of these rows are the
+/// response's or the connection's — the status code, TTFB and transfer, the
+/// response body's size, the whole Connection group (which is entirely about
+/// Loom's hop to the origin). Anyone reading `RequestPane` could reasonably
+/// conclude the scope is the request and add a row on that basis, or hesitate to
+/// add a response-side one; the type name is what stops both.
+///
+/// Why it lives in the left pane at all is a UI decision recorded in DESIGN.md
+/// (§ inspector-parity): one flow-level tab beside the request's own is what
+/// every comparable debugger does, and a third pane for two dozen rows is not
+/// worth the width.
 ///
 /// Grouped rather than flat, and the grouping is the point: the list grew from
 /// nine rows to about twenty-five, and a flat wall of label/value pairs makes the
@@ -24,7 +38,7 @@ import SwiftUI
 /// not blur them. The capture group is the mirror of that rule — it appears
 /// *only* when something is missing, and with no heading left to tint, its own
 /// labels carry the warning hue.
-struct SummaryTable: View {
+struct FlowSummary: View {
     let flow: Flow
 
     var body: some View {
