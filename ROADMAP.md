@@ -801,6 +801,54 @@ The pattern worth keeping from both: **a claim about what a platform refuses is 
 measurement, not a deduction** — the same lesson `docs/decisions/privileged-helper.md`
 records, arrived at twice more, once from each direction.
 
+### An exchange says how it travelled, and a silence gets a name (0.0.26)
+
+One round, one theme: everything here was a fact the engine already held and no surface
+returned — or a fact a surface *stated* and the engine had stopped agreeing with.
+
+**Upstream connections are pooled.** Every intercepted request paid a fresh TCP connect and
+a full TLS handshake to the origin — ~96 ms on a 20 ms server, which is measurably the whole
+of why Loom felt slower than Charles. `UpstreamConnectionPool` keeps them, and the pooling is
+what made the next item legible: a reused connection and a fresh one now differ by a number an
+operator can read rather than by a feeling.
+
+**`FlowTransport` records how an exchange travelled** — upstream address, whether the socket
+was reused, both TLS legs (which routinely disagree, and only one of them was ever visible),
+the response's encoded size, and `ConnectionSetup`'s `dnsMS` / `tcpMS` / `tlsHandshakeMS`.
+That last one is the half of "why is this slow" TTFB folds into the server's think-time:
+measured live, a first request to `example.com` was 279 ms of which 184 ms was setup, and the
+next one over the same socket was 169 ms with none. Three of its rules cost a wrong answer
+first — DNS is timed by resolving once *for measurement* and then letting the bootstrap
+connect normally (handing it the address would drop Happy Eyeballs to make a number prettier),
+`tcpMS` excludes the handshake, and `requestSendMS` is refused on a connection-opening TLS
+exchange because NIOSSL buffers the write and that clock came back digit-for-digit equal to
+`tlsHandshakeMS` — a wrong answer dressed as a precise one. Absent means unmeasured
+throughout, never "no".
+
+**Three silences got names.** The sniff deadline used to *conclude* on expiry and relay
+unread, so a pooled client that pre-connects and speaks seconds later was invisible with the
+app working perfectly; it now opens a speculative upstream connection and lets whichever side
+speaks next settle it. A client refusing Loom's leaf and an intercepted h2 codec error both
+turned into an infinite wait with an empty capture; both are `TunneledHostLog` reasons now
+(`clientHandshakeFailed` / `protocolError`, with the error in `detail`). And a request is
+recorded when its **head** is parsed rather than when it succeeds — a phone uploading 31 KB
+that got no answer used to record nothing at all, which is indistinguishable from a client
+that never ran.
+
+**A LAN device's apps have names**, so `SourceApp` carries *how* it was attributed
+(`.process` — a pid, a fact about a socket — vs `.userAgent`, a claim by the client), and the
+sidebar's Devices and Apps became one tree because "this app, on this device" was previously
+unaskable. The human window also gained a Query tab and a scoped flow summary.
+
+**And the doc surfaces had to catch up, which is the part worth recording.** LAN app
+attribution flows into origin-scoped rules, so a rule scoped to a phone's app matches now —
+while `set_rule`'s own schema still told the agent that such traffic "never matches an
+app-scoped rule". Nothing failed; the agent was simply told not to try. Same shape as the
+0.0.19 render census and the 0.0.24 schema typing, on the one representation neither of those
+can check: **prose ships to the agent as surely as a field does, and only a reader notices
+when it stops being true.** Fixed here, along with the skill's tunnel-reason list and its
+"why is this slow" recipe, which now says to read `transport` before blaming the server.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:

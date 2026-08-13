@@ -85,7 +85,7 @@ each one is *for*.
 | `get_recent_flows` | newest-first summaries; filter server-side (host, method, url/header/body contains, status, since, app, device) |
 | `wait_for_flow` | block until a matching flow lands — the "trigger, then look" tool |
 | `get_stats` | aggregate: counts, error rates, TTFB/duration percentiles, slowest ids |
-| `get_flow_detail` | full headers + body for one id (+ WebSocket / GraphQL blocks) |
+| `get_flow_detail` | full headers + body for one id (+ `transport`: the connection, its TLS legs and its setup cost; + WebSocket / GraphQL blocks) |
 | `diff_flows` | structured diff of two flows, or a replay vs its original |
 | `get_audit_log` | write actions taken through Loom, yours or a prior session's |
 | `get_certificate_status` | root-CA state: generated, trusted, fingerprint, expiry, path |
