@@ -76,13 +76,25 @@ public struct SetupFeature: Sendable {
 
         /// Unread origins the operator did **not** ask for.
         ///
-        /// With the default scope decrypting everything, an `excluded` pass-through is
-        /// working as configured, and flagging it would train the human to ignore the
-        /// flag. What still deserves attention is an origin going unread for a reason
-        /// nobody chose — interception switched off, or a host somehow outside a scope
-        /// that is meant to cover everything.
+        /// Which reasons count depends on the scope, and getting that wrong makes this
+        /// number worthless in one direction or the other. An `excluded` pass-through
+        /// was asked for under any scope. **`notInScope` is asked for under a
+        /// whitelist** — it is the configuration working, and the ordinary state of
+        /// every host nobody named, so counting it would have put a permanent "67
+        /// unread" on the console the moment the default flipped (0.0.27), which is
+        /// the "teach the human to ignore the number" failure with a new cause.
+        /// Under a wildcard include it means the opposite: a host escaped a scope
+        /// meant to cover everything, and that is worth a look.
+        ///
+        /// What is left under a whitelist is interception being switched off entirely
+        /// while traffic arrives — the one case where the operator's *stated* intent
+        /// and what Loom is doing disagree.
         public var unexpectedlyUnreadHosts: [TunneledHost] {
-            tunneledHosts.filter { $0.interceptable && $0.reason != .excluded }
+            tunneledHosts.filter { entry in
+                guard entry.interceptable, entry.reason != .excluded else { return false }
+                if entry.reason == .notInScope, !interceptsEverything { return false }
+                return true
+            }
         }
 
         /// Origins whose traffic **failed**, as opposed to merely going unread.
@@ -104,25 +116,51 @@ public struct SetupFeature: Sendable {
         }
 
         /// Everything the operator has to act on, in the order it deserves
-        /// attention: broken first, then unread-but-fixable, then the deliberate
-        /// pass-throughs, then what no setting can read.
+        /// attention: broken first, then unread-but-fixable, then the pass-throughs
+        /// that are the configuration working, then what no setting can read.
         ///
-        /// One definition rather than an ordering written at the render site, so a
-        /// second reader of this list can't disagree about which origin matters most.
-        /// The four buckets partition
-        /// `tunneledHosts` — broken implies `!interceptable`, so the last bucket
-        /// subtracts it rather than listing it twice.
+        /// One definition rather than an ordering written at the render site, so the
+        /// console card and the window's Not Decrypted panel can't disagree about
+        /// which origin matters most.
+        ///
+        /// **A ranking, not a concatenation of filters.** The first version was four
+        /// `filter` calls appended together, which is only a partition as long as the
+        /// four predicates stay complementary — and they stopped being so within the
+        /// hour, when `unexpectedlyUnreadHosts` became scope-aware and `notInScope`
+        /// under a whitelist fell out of every bucket. A row silently vanishing from
+        /// the one surface that explains a missing host is the failure this whole
+        /// area exists to prevent, so the shape is now a total function over the
+        /// entries: every host gets exactly one rank, and the sort is stable on the
+        /// engine's own recency order (Swift's `sort` is not stable, hence the index).
         public var tunneledHostsByUrgency: [TunneledHost] {
-            brokenHosts
-                + unexpectedlyUnreadHosts
-                + tunneledHosts.filter { $0.reason == .excluded }
-                + tunneledHosts.filter { !$0.interceptable && !$0.brokeTheClient }
+            let unexpected = Set(unexpectedlyUnreadHosts.map(\.id))
+            return tunneledHosts.enumerated()
+                .sorted { lhs, rhs in
+                    let l = Self.urgencyRank(lhs.element, unexpected: unexpected)
+                    let r = Self.urgencyRank(rhs.element, unexpected: unexpected)
+                    return l == r ? lhs.offset < rhs.offset : l < r
+                }
+                .map(\.element)
         }
 
-        /// Is the scope decrypting everything? The default, and not a problem in
-        /// itself — it is the reason a capture is complete out of the box. It only
-        /// decides wording: with `*` there is no include list worth reading, so the
-        /// summary talks about what is being *passed through* instead.
+        /// Lower sorts first. Takes the unexpected set rather than re-deriving it per
+        /// comparison — that would be O(n²) over a 256-entry log.
+        static func urgencyRank(_ entry: TunneledHost, unexpected: Set<TunneledHost.ID>) -> Int {
+            if entry.brokeTheClient { return 0 }
+            if unexpected.contains(entry.id) { return 1 }
+            // Interceptable and not flagged: a deliberate pass-through, or — under a
+            // whitelist — simply a host nobody has named yet. Both are the
+            // configuration working, and both are one Decrypt from being read.
+            if entry.interceptable { return 2 }
+            return 3
+        }
+
+        /// Is the scope decrypting everything? **No longer the default** (0.0.27) but
+        /// still one deliberate setting away, and two surfaces read it: with `*` there
+        /// is no include list worth reading, so the summary talks about what is being
+        /// *passed through* instead — and `notInScope` flips from "the ordinary state
+        /// of an un-named host" to "a host escaped a scope meant to cover everything"
+        /// (see `unexpectedlyUnreadHosts`).
         public var interceptsEverything: Bool {
             sslScope.enabled && sslScope.include.contains("*")
         }
@@ -155,6 +193,10 @@ public struct SetupFeature: Sendable {
         case task
         /// Cheap re-sync of all setup state when a window/panel appears.
         case refresh
+        /// Long-running: keep the tunnelled-host list current while the main window's
+        /// Not Decrypted panel is on screen. Scoped to that view's lifetime by the
+        /// caller, so nothing polls when nobody is looking.
+        case watchTunneledHosts
         /// Re-read only the state an *agent* can write: the SSL scope, what it left
         /// tunnelled, and the client identities. Deliberately narrower than
         /// `.refresh` — the helper state and the system-proxy snapshot cost an XPC
@@ -189,6 +231,15 @@ public struct SetupFeature: Sendable {
         /// it stops being offered. The list is a to-do list; this is how an item
         /// leaves it without being intercepted.
         case excludeHostTapped(String)
+        /// Stop decrypting a host that is currently in the whitelist — the request
+        /// table's row menu. Distinct from `excludeHostTapped`: under a whitelist the
+        /// inverse of "decrypt this" is dropping the include entry, and an exclude is
+        /// only added when a glob makes that insufficient (`SSLScope.stopIntercepting`).
+        case stopInterceptHostTapped(String)
+        /// The scope was migrated to a whitelist on this launch. Carries the sentence
+        /// rather than a flag: the reducer's job here is to put it on the console line,
+        /// not to decide what it says.
+        case scopeMigrationNoticed(String)
         case sslGlobsExpandTapped
         case sslScopeDraftChanged(String)
         /// Add a typed glob to `exclude`. The card's one text field feeds this rather
@@ -219,6 +270,9 @@ public struct SetupFeature: Sendable {
 
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.privilegedHelperClient) var privilegedHelperClient
+    /// The panel's watch sleeps on this rather than on `Task.sleep`, so a test can
+    /// prove it polls *again* instead of spending real seconds finding out.
+    @Dependency(\.continuousClock) var clock
 
     public init() {}
 
@@ -251,6 +305,12 @@ public struct SetupFeature: Sendable {
                     // Re-read on every appearance, because the other writer is an
                     // agent: an identity can appear without the human doing anything.
                     await send(.clientCertificatesLoaded(proxyClient.clientCertificates()))
+                    // Once, on the launch that rewrote a seeded wildcard: the engine
+                    // does the migration (it must land before the listeners bind) and
+                    // this is the only place it becomes a sentence the human reads.
+                    if let notice = Self.consumeWhitelistMigrationNotice() {
+                        await send(.scopeMigrationNoticed(notice))
+                    }
                 }
 
             case .refreshAgentWritable:
@@ -398,15 +458,13 @@ public struct SetupFeature: Sendable {
                 state.sslEnabled = enabling
                 var next = state.sslScope
                 next.enabled = enabling
-                // First time on with no scope: decrypt everything. A whitelist was
-                // tried and rejected as the default — it makes the common case
-                // "traffic happened and Loom read none of it" and costs a second run
-                // of the client to fix, because the bytes of the first one are gone.
-                // The cost of this direction is a client with its own certificate
-                // store (a JVM, Python, Go) failing at the client rather than here.
-                // Nothing is pre-excluded for it — the failure shows up as a flow with
-                // a TLS error, and the pass-through list is how it gets carved out.
-                if enabling, next.include.isEmpty { next.include = ["*"] }
+                // Nothing is seeded. Switching interception on means "Loom may now
+                // decrypt hosts I name", not "decrypt everything" — the wide default
+                // this replaces (0.0.27) had to be undone host by host before an app
+                // with its own trust store would run at all, and that tax was paid on
+                // every host the operator never asked about. Traffic is still fully
+                // observed while un-named: it lands in `tunneledHosts`, which is what
+                // the sidebar's "Not Decrypted" panel renders.
                 state.sslScope = next
                 let scope = next
                 return .run { send in
@@ -434,6 +492,19 @@ public struct SetupFeature: Sendable {
                     .cancellable(id: CancelID.tunneledHostPoll, cancelInFlight: true)
                 )
 
+            case .watchTunneledHosts:
+                // Slower than the console card's 2 s poll and for a different reason:
+                // this list is read while an app is being *driven*, so it has to catch
+                // up on its own, but a host appearing a few seconds late costs nothing
+                // — the operator's next step is to re-run the client anyway.
+                return .run { [clock] send in
+                    while !Task.isCancelled {
+                        await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
+                        try await clock.sleep(for: .seconds(3))
+                    }
+                }
+                .cancellable(id: CancelID.tunneledHostWatch, cancelInFlight: true)
+
             case .tunneledHostsTick:
                 return .run { send in await send(.tunneledHostsLoaded(proxyClient.tunneledHosts())) }
 
@@ -455,6 +526,15 @@ public struct SetupFeature: Sendable {
                     await send(.sslScopeLoaded(proxyClient.sslScope()))
                     await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
                 }
+
+            case let .scopeMigrationNoticed(notice):
+                state.sslScopeMessage = notice
+                return .none
+
+            case let .stopInterceptHostTapped(host):
+                var next = state.sslScope
+                let outcome = next.stopIntercepting(host: host)
+                return persist(next, into: &state, message: Self.stopInterceptMessage(host: host, outcome: outcome))
 
             case let .excludeHostTapped(host):
                 var next = state.sslScope
@@ -615,7 +695,7 @@ public struct SetupFeature: Sendable {
         }
     }
 
-    private enum CancelID: Hashable { case tunneledHostPoll }
+    private enum CancelID: Hashable { case tunneledHostPoll, tunneledHostWatch }
 
     /// Write an edited scope through and re-read the tunnelled list against it, so a
     /// host that just became intercepted stops being offered.
@@ -634,6 +714,36 @@ public struct SetupFeature: Sendable {
             await send(.sslScopeLoaded(proxyClient.sslScope()))
             await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
         }
+    }
+
+    /// Read (and clear) the engine's "the seeded wildcard was dropped" marker.
+    ///
+    /// `UserDefaults` rather than a `ProxyControlling` requirement: the fact is
+    /// one-shot, per-install and never read again, and threading it through the
+    /// control protocol would add a `ProxyCapability` case that exists for one
+    /// sentence on one launch. Both ends are in this process, so the key the engine
+    /// writes is the key read here.
+    static func consumeWhitelistMigrationNotice(
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        let appliedKey = "com.loom.sslScopeWhitelistMigrationApplied"
+        let announcedKey = "com.loom.sslScopeWhitelistMigrationAnnounced"
+        guard defaults.bool(forKey: appliedKey), !defaults.bool(forKey: announcedKey) else { return nil }
+        defaults.set(true, forKey: announcedKey)
+        return """
+        HTTPS is now decrypted per host: the previous “decrypt everything” default was \
+        dropped. Traffic is still listed under Not Decrypted — pick a host there to read it.
+        """
+    }
+
+    /// What stopping achieved. The `shadowedByInclude` case is why this is prose:
+    /// dropping the entry was not enough, so an exclude now stands that a later
+    /// "decrypt this host" would have to undo.
+    static func stopInterceptMessage(host: String, outcome: StopInterceptOutcome) -> String {
+        if let glob = outcome.shadowedByInclude {
+            return "\(host) is passed through, but “\(glob)” still includes it — added an exclude to win."
+        }
+        return "\(host) is no longer decrypted. It stays visible under Not Decrypted."
     }
 
     /// What an intercept actually achieved. The `shadowedByExclude` case is the whole

@@ -127,33 +127,32 @@ struct SSLScopeCard: View {
                     .controlSize(.small)
                     .help("Decrypt \(entry.host) from now on")
             }
-            if Self.offersExclude(entry) {
+            if Self.offersStopDecrypting(entry, scope: store.sslScope) {
                 Button {
-                    store.send(.excludeHostTapped(entry.host))
+                    store.send(.stopInterceptHostTapped(entry.host))
                 } label: {
                     Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
-                .help("Never decrypt \(entry.host)")
+                .help("Stop decrypting \(entry.host)")
             }
         }
     }
 
-    /// Whether "never decrypt this" is worth offering.
+    /// Whether "stop decrypting this" is worth offering.
     ///
-    /// Two groups, and the second was the gap. **Something unread that wasn't asked
-    /// for**: an already-excluded row has nothing to add to the exclude list, and
-    /// offering it would imply unfinished business when it is the configuration
-    /// working. **And every broken origin** — for those, excluding is not a
-    /// preference, it is the repair: the connection is relayed untouched, so a
-    /// pinned client or one that doesn't trust Loom's CA starts working again on the
-    /// next attempt. It used to be reachable only for `interceptable` rows, i.e.
-    /// never for the one state where it fixes something, which left a warning with
-    /// no action beside it — the dead end DESIGN.md's alert channel exists to avoid.
-    static func offersExclude(_ entry: TunneledHost) -> Bool {
-        if entry.brokeTheClient { return true }
-        return entry.interceptable && entry.reason != .excluded
+    /// Exactly when the scope currently *does* decrypt the host — which for an entry on
+    /// this list means one of two things: Loom tried and the client refused
+    /// (`clientHandshakeFailed`, and dropping the include entry is the repair), or an
+    /// include glob covers it while something else made it unreadable.
+    ///
+    /// It used to be "add an exclude", offered for every `interceptable` row, and under
+    /// a whitelist that is 67 buttons whose write does nothing: a host nobody named is
+    /// already passed through, so excluding it is a carve-out against a decision that
+    /// was never made. Asking the scope removes the question — no scope, no button.
+    static func offersStopDecrypting(_ entry: TunneledHost, scope: SSLScope) -> Bool {
+        scope.shouldIntercept(host: entry.host)
     }
 
     /// Broken states get their own glyph: `lock.slash` reads as "not locked", which

@@ -50,11 +50,15 @@ in what order, and what to do when the answer is "nothing captured".
   ignores proxy settings entirely (Node's `fetch`/undici) needs
   `create_reverse_proxy`. `get_proxy_status` has the authoritative ports and
   routing state; `list_devices` shows who is sending.
-- **HTTPS needs interception scope + a trusted CA.** Plain HTTP is captured out
-  of the box. A host Loom relays instead of decrypting records **no flow at
-  all**, which looks exactly like a client that never ran — so when an `https://`
-  host is missing, read `get_ssl_scope` (its `tunneledHosts` is the only surface
-  holding that fact) before concluding nothing happened.
+- **HTTPS is decrypted per host, and the list starts empty.** Plain HTTP is
+  captured out of the box; an `https://` host is relayed untouched until someone
+  names it (`intercept_host`), which is why an app that pins or carries its own
+  trust store keeps working with Loom in the path. A relayed host records **no
+  flow at all**, which looks exactly like a client that never ran — so when an
+  `https://` host is missing, read `get_ssl_scope` (its `tunneledHosts` is the
+  only surface holding that fact) before concluding nothing happened, then
+  decrypt and have the client run **again**. The first run's bodies are gone;
+  that round trip is the normal loop, not a mistake.
 
 ## The debugging loop
 

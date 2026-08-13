@@ -298,14 +298,15 @@ import Testing
 
     // MARK: SSL interception
 
-    /// Turning HTTPS on decrypts **everything**.
+    /// Turning HTTPS on decrypts **nothing yet** (0.0.27).
     ///
-    /// A whitelist default was built and rejected: it makes the common case "traffic
-    /// happened and Loom read none of it", and fixing that costs a second run of the
-    /// client because the first run's bytes are gone. The cost of this direction — a
-    /// client with its own certificate store failing at the client — is handled case by
-    /// case in the pass-through list, not by a guessed default.
-    @Test func test_toggleSSL_enabling_decryptsEverything_thenReloadsCert() async {
+    /// It used to seed `include: ["*"]`, and that seed is what made an app under test
+    /// unrunnable until its hosts had been carved out one by one — Loom was terminating
+    /// TLS for every client on the machine, a phone's whole OS included. The switch now
+    /// means "Loom may decrypt hosts I name"; naming them is the Not Decrypted panel's
+    /// Decrypt (or `intercept_host`). Traffic is observed either way, which is what
+    /// makes an empty include list honest rather than blind.
+    @Test func test_toggleSSL_enabling_seedsNothing_thenReloadsCert() async {
         let cert = CertificateStatus(isGenerated: true, isTrusted: false)
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
@@ -316,7 +317,7 @@ import Testing
         }
         await store.send(.toggleSSLTapped) {
             $0.sslEnabled = true
-            $0.sslScope = SSLScope(enabled: true, include: ["*"])
+            $0.sslScope = SSLScope(enabled: true, include: [])
         }
         await store.receive(\.certificateStatusLoaded) {
             $0.certificateStatus = cert
@@ -678,15 +679,70 @@ import Testing
         #expect(leading == ["refused.example.com", "h2.example.com"])
     }
 
-    /// "Pass through" is the repair for a broken origin, and it used to be reachable
-    /// only for `interceptable` rows — i.e. never for the one state where it fixes
-    /// something, leaving a warning with no action beside it.
-    @Test func excludeIsOfferedForBrokenOrigins() {
-        #expect(SSLScopeCard.offersExclude(Self.host("a", .clientHandshakeFailed)))
-        #expect(SSLScopeCard.offersExclude(Self.host("b", .protocolError)))
-        #expect(SSLScopeCard.offersExclude(Self.host("c", .notInScope)))
-        // Already passed through: nothing to add to the exclude list.
-        #expect(!SSLScopeCard.offersExclude(Self.host("d", .excluded)))
+    /// The partition has to survive the scope changing under it, which is what broke the
+    /// first version: `unexpectedlyUnreadHosts` stopped claiming `notInScope` under a
+    /// whitelist and that host then belonged to no bucket at all, vanishing from the one
+    /// surface that explains a host with no flows.
+    @Test func urgencyOrder_isAPartitionUnderEveryScopeShape() {
+        for scope in [
+            SSLScope(enabled: true, include: []),                  // whitelist, nothing named
+            SSLScope(enabled: true, include: ["api.test"]),        // whitelist, one named
+            SSLScope(enabled: true, include: ["*"]),               // the old wide default
+            SSLScope(enabled: false),                              // interception off
+        ] {
+            var state = SetupFeature.State()
+            state.sslScope = scope
+            state.sslEnabled = scope.enabled
+            state.tunneledHosts = Self.everyReason
+            let ordered = state.tunneledHostsByUrgency
+            #expect(ordered.count == Self.everyReason.count, "dropped a row under \(scope.include)")
+            #expect(Set(ordered.map(\.id)) == Set(Self.everyReason.map(\.id)))
+        }
+    }
+
+    /// Under a whitelist, `notInScope` is the ordinary state of every host nobody named
+    /// — counting it would have put a permanent "67 unread" on the console the moment
+    /// the default flipped, which is the same "train them to ignore it" failure the
+    /// `excluded` exemption was written for.
+    @Test func anUnnamedHostIsNotUnreadUnderAWhitelist() {
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["api.test"])
+        state.tunneledHosts = Self.everyReason
+        #expect(!state.unexpectedlyUnreadHosts.contains(where: { $0.reason == .notInScope }))
+        // Interception switched off entirely is still worth flagging: that one is Loom
+        // not doing what its own switch says.
+        #expect(state.unexpectedlyUnreadHosts.map(\.reason) == [.interceptionDisabled])
+    }
+
+    /// A wildcard include flips it back: a host escaping a scope meant to cover
+    /// everything is a real anomaly, not the ordinary case.
+    @Test func anUnnamedHostIsUnreadUnderAWildcardInclude() {
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["*"])
+        state.tunneledHosts = Self.everyReason
+        #expect(state.unexpectedlyUnreadHosts.contains(where: { $0.reason == .notInScope }))
+    }
+
+    /// Stop Decrypting is offered exactly where the scope says the host *is* being
+    /// decrypted. The old rule ("add an exclude", for every interceptable row) became
+    /// 67 buttons whose write did nothing the moment the default flipped: a host nobody
+    /// named is already passed through.
+    @Test func stopDecryptingIsOfferedOnlyWhereTheScopeDecrypts() {
+        let named = SSLScope(enabled: true, include: ["refused.example.com"])
+        // Loom tried this one and the client refused — dropping the entry is the repair.
+        #expect(SSLScopeCard.offersStopDecrypting(Self.host("refused.example.com", .clientHandshakeFailed), scope: named))
+        // Nobody named this one: it is already relayed, so there is nothing to stop.
+        #expect(!SSLScopeCard.offersStopDecrypting(Self.host("unnamed.test", .notInScope), scope: named))
+        // A glob covering it counts as decrypted, whatever the entry's reason says.
+        #expect(SSLScopeCard.offersStopDecrypting(
+            Self.host("api.corp", .protocolError), scope: SSLScope(enabled: true, include: ["*.corp"])
+        ))
+        // Interception off decrypts nothing at all.
+        #expect(!SSLScopeCard.offersStopDecrypting(
+            Self.host("api.test", .interceptionDisabled), scope: SSLScope(enabled: false, include: ["api.test"])
+        ))
     }
 
     /// A broken origin gets its own glyph: `lock.slash` reads as "not locked", true of

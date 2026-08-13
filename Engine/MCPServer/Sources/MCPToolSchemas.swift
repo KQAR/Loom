@@ -677,10 +677,12 @@ extension MCPToolExecutor {
             description: """
             Get the SSL-proxying scope: whether interception is enabled and the include/exclude \
             host globs. Hosts matching an include glob (and no exclude glob) are MITM-decrypted; \
-            everything else is blind-tunneled. The default is `include: ["*"]`, so a host is \
-            usually missing because someone put it in `exclude` — a client that carries its own \
-            certificate store (a JVM, Python, Go) or a pinned host has to be carved out or it \
-            fails its handshake.
+            everything else is blind-tunneled. **The scope is a whitelist: `include` starts \
+            empty and nothing is decrypted until a host is named** (`intercept_host`). So a host \
+            missing from the capture is the ordinary case, not a misconfiguration — read \
+            `tunneledHosts` below and decrypt what you need. This also means a client that \
+            carries its own certificate store (a JVM, Python, Go) or pins its certificate keeps \
+            working until someone asks Loom to decrypt it.
 
             `tunneledHosts` is how you tell a carve-out from an idle client: one entry per origin \
             Loom relayed without reading, newest first, with `connections`, `lastSeen` and a \
@@ -690,8 +692,9 @@ extension MCPToolExecutor {
             SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
             scope change will. Two reasons mean the traffic did not merely go unread — the \
             request never happened and the operator's page is broken: `clientHandshakeFailed` \
-            (the client refused Loom's leaf and hung up before sending anything; fix is an \
-            `exclude` entry or trusting Loom's CA in that client) and `protocolError` (Loom's \
+            (the client refused Loom's leaf and hung up before sending anything; fix is trusting \
+            Loom's CA in that client, or leaving the host out of `include` so it is relayed \
+            untouched) and `protocolError` (Loom's \
             HTTP/2 codec could not read the connection and closed it; `detail` carries the \
             codec's own error). Both carry `detail`, and both clear themselves once a client \
             completes a handshake against Loom's leaf on that host. Read this before concluding \
@@ -711,7 +714,10 @@ extension MCPToolExecutor {
             someone carved into `exclude` that you now need to read.
 
             Only affects connections made AFTER the call; an exchange already relayed is gone, so \
-            re-run the client. The reply says what it took: `effective` (false when a wildcard \
+            **re-run the client** — under a whitelist scope that is the normal loop, not an \
+            error: drive the client once, read `get_ssl_scope.tunneledHosts` for the origins it \
+            touched, decrypt the ones you need, drive it again. There is no way to recover the \
+            first run's bodies. The reply says what it took: `effective` (false when a wildcard \
             `exclude` still shadows the host — `shadowedByExclude` names it, and only whoever \
             wrote that glob should narrow it), `alreadyIncluded`, `enabledInterception`, \
             `removedExcludes`, plus the resulting scope. Decrypting also needs Loom's root CA \
@@ -730,7 +736,16 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "set_ssl_scope",
-            description: "Set the SSL-proxying scope. Enables/disables HTTPS interception and replaces the include/exclude host globs (e.g. \"*.example.com\"). exclude doubles as the pinned/pass-through list. This is a write action.",
+            description: """
+            Set the SSL-proxying scope. Enables/disables HTTPS interception and REPLACES the \
+            include/exclude host globs (e.g. "*.example.com"). `include` is a whitelist and is \
+            empty by default — passing `include: ["*"]` decrypts everything, which is a \
+            deliberate setting rather than the default it used to be, and it breaks any client on \
+            the machine that doesn't trust Loom's CA. Prefer `intercept_host` for one host: it \
+            adds rather than replaces, and can't lose a concurrent edit from the console. \
+            `exclude` is only needed to punch a hole in a glob you put in `include`. This is a \
+            write action.
+            """,
             inputSchema: .object([
                 "enabled": .boolean("Master switch for HTTPS interception."),
                 "include": .array(

@@ -104,7 +104,7 @@ import Testing
             coordinator = RequestTable.Coordinator(
                 selection: .constant(nil), followTail: .constant(true),
                 onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in },
-                onExcludeHost: { _ in }
+                onStopDecrypting: { _ in }
             )
             // Both matter to the arithmetic: `.inset` decides the edge insets and intercell
             // spacing the trailing edge is measured against, and the autoresizing style is

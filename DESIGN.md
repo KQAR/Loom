@@ -144,7 +144,7 @@ components:
     toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + the LISTENER's host:port (verbatim, no digit grouping) — the LAN IP while the proxy is bound to 0.0.0.0, 127.0.0.1 while it is not, never 'whatever address this machine happens to have'; naming an interface the listener is not on is worse than naming a narrow one, because it sends someone to debug their client rather than the LAN switch that caused it — + three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') tinted secondary off / {colors.accent} on — the SAME three values the console's switch-tiles use, because this window and that panel are two renderings of one state. They used to be green, which both contradicted the tile spec and spent the 2xx hue on something that is not a status; SSL keeps one extra value, {colors.status-waiting} for on-but-CA-not-trusted, which is 'waiting on you', not broken. Left (.navigation): a hand-rolled 'sidebar.left' toggle — AppKit's .toggleSidebar item sends toggleSidebar(_:) down the responder chain and only NSSplitViewController answers it, which is the container this window deliberately doesn't use. NOTHING is .primaryAction: Record ('record.circle'/'stop.fill' + label) sits at the RIGHT END OF THE CHIP behind a divider, because it is the same capture state the dot already reports and splitting them across the band made two places to look; Clear is the flow list's own floating {components.clear-fab}, not a toolbar button, because a destructive control belongs against the thing it destroys. No search field HERE and no title — filtering is the find bar above the table (see main-window § Find bar); `.searchable` would put a stretchy field into this band, whose macOS 26 glass capsule grows with its .principal item. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
-    anatomy: "All Flows · Errors · Rules · Audit · Breakpoints (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): the pill is for attention, and these are bucket sizes on every row at once) · Sections 'Devices' / 'Hosts', one Label per entry with the same trailing count. Selection scopes the table."
+    anatomy: "All Flows · Errors · Rules · Audit · Breakpoints · Not Decrypted (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): the pill is for attention, and these are bucket sizes on every row at once) · Sections 'Devices' / 'Hosts', one Label per entry with the same trailing count. Selection scopes the table."
     devices-are-a-tree: "a device row, and INDENTED UNDER IT the apps seen on that device. There is no separate 'Apps' section: a flat one listed Mac apps only (a LAN device has no local pid, so nothing was attributed — see AGENTS.md § SourceApp) and put the same flow in two unrelated buckets with no way to ask 'this app, ON this device'. The fold control is a CHEVRON IN THE DEVICE ROW, not the row's own tap and not a DisclosureGroup: a DisclosureGroup's label is not a selectable List row, which would cost the device row its click — and selecting a whole device is the more common of the two things this tree is for. A device with no attributed apps has no chevron. New devices arrive EXPANDED (the persisted set is the COLLAPSED one), because the surface someone opens to watch a phone they just connected must not hide what it is doing."
     empty-selection: "a selection that admits nothing gets its OWN empty state — 'No requests in this selection', naming the picked rows and offering Show All Flows — never 'Waiting for traffic'. Multi-select makes an empty intersection routine rather than rare (two rows from different groups miss each other easily), and telling someone to send requests through the proxy while 273 flows sit behind their filter sends them to debug the wrong thing. Same rule the find bar's 'No matching requests' already follows."
     multi-select: "the selection is a SET (⌘-click, ⇧-click), meaning OR within a dimension and AND across: two hosts = either host, a host + a device = that host's traffic from that device, Errors + anything = that thing's failures. Devices and apps are ONE dimension, so a device plus one of its own apps is a union and the device wins — AND-ing them would answer with the app alone, the smaller of the two rows the human clicked. All Flows and the three panels are EXCLUSIVE: a panel replaces the table rather than filtering it, so it cannot compose, and whichever side was newly clicked wins. Deselecting everything is All Flows, never an empty table."
@@ -208,8 +208,8 @@ components:
     anatomy: "the current value + a chevron, hover fill, NO bezel and NO field well. Still a `Menu`, so popup, keyboard handling and accessibility are AppKit's; only the closed state is Loom's."
     why: "the system pop-up button brings its own bezel and metrics, visibly foreign beside Loom's own text field; the field well was consistent but heavy — a menu is not somewhere you type, and the enterable surface said it was. The chevron alone is the same 'there is more behind this' vocabulary the console's config-row already uses."
     used-by: "the rule editor and the find bar's scope picker — the picker LEADS the field there, so the line reads 'search in URL for …' left to right."
-  sidebar-panel:   # Rules / Audit / Breakpoints — the content pane, not the flow list
-    what: "selecting Rules / Audit / Breakpoints in the sidebar replaces the request table with a full-pane list. Each is the human's SUPERVISION view of a surface the agent writes over MCP — read-mostly, never a second authoring path (editing a held breakpoint stays agent-only; see INTERACTION.md)."
+  sidebar-panel:   # Rules / Audit / Breakpoints / Not Decrypted — the content pane, not the flow list
+    what: "selecting Rules / Audit / Breakpoints / Not Decrypted in the sidebar replaces the request table with a full-pane list. The first three are the human's SUPERVISION view of a surface the agent writes over MCP — read-mostly, never a second authoring path (editing a held breakpoint stays agent-only; see INTERACTION.md). Not Decrypted is the exception and the reason it earns a pane: since the scope became a whitelist (0.0.27) that list is where the capture is CHOSEN, so its Decrypt is a primary action, not supervision. Its count is untinted — an un-named host is the ordinary state under a whitelist, and one phone puts dozens here, so a colour would be permanent."
     header: "one line: a {typography.callout} .secondary summary phrase on the left ('4 of 7 active', '12 entries'), the panel's single action as a {components.glyph-button} (`compact`) on the right. Glyph-only for the same reason the console's cards are: a panel whose whole content is one list can't have a header button that adds something else. Audit's Clear stays visible when disabled."
     master-switches: "live on the TOOLBAR CHIP (the wand for rules), not in the panel header — the panel is one rendering of state the chip already owns."
   button-primary:
@@ -521,13 +521,16 @@ connection refused, and Loom cannot undo that from here.
 
 **SSL Scope** is a `config-row` under the HTTPS tile, for the same reason Reverse Proxies
 is one: there is nothing to toggle — the tile above already carries on/off — and what
-this row holds is two lists. The scope decrypts everything by default, so the
-informative half is what is *not* being read: the trailing detail is `all but 2`, and
-then `· N unread` for origins going unread that nobody asked for. That second number is
-the load-bearing one — the only hint on a collapsed console that a capture is thinner
-than it looks — and it deliberately excludes deliberate pass-throughs, which also means
-the icon only goes orange for something unexpected. A row that flagged the configuration
-working would train the reader to ignore it.
+this row holds is two lists. The scope is a **whitelist** (0.0.27) — nothing is decrypted
+until a host is named — so the trailing detail leads with what *is* being read
+(`3 hosts`, or `all hosts` when someone has set a wildcard), then `· N refused` for
+origins whose clients rejected Loom's certificate, then `· N unread` for origins going
+unread that nobody asked for. Those trailing numbers are the load-bearing ones — the only
+hint on a collapsed console that a capture is thinner than it looks — and each excludes
+the state that is simply the configuration working: an un-named host is not "unread"
+under a whitelist, any more than a deliberate pass-through was under the old wide
+default. Only an unexpected state takes the icon orange. A row that flagged the
+configuration working would train the reader to ignore it.
 
 Its card leads with the seen-not-decrypted list (host, then reason · connections · port
 in a caption, with **Decrypt**, and a `xmark` for "never" only on rows that weren't
@@ -537,11 +540,15 @@ engine's 256-host bound dropped. The two glob lists sit **behind one disclosure 
 above them shrinks: an intercepted host drops out of the tunnelled list, whereas the
 pass-through list gains an entry every time something breaks. Collapsed, never absent —
 removing an entry is the only way to start decrypting a carved-out host, and this card is
-the only surface on which an agent's scope write becomes visible to the human. Opened, the lists are capped at 10 and drop from the *front*:
+the only surface on which an agent's scope write becomes visible to the human — the main
+window has its own, the sidebar's **Not Decrypted** panel, which is where the same list
+is *worked* rather than glanced at (see § main-window). Opened, the lists are capped at 10 and drop from the *front*:
 newest is written last, so the end is what someone who just changed something is looking
-for. The single text field adds to the **pass-through** list, since under the default
-scope an include entry does nothing; the include list itself is shown only when it says
-something a reader can't already infer (i.e. not while it is the bare `*`).
+for. The single text field adds to the **pass-through** list, which under a whitelist is the
+narrower write — it punches a hole in a glob someone put in the include list — and
+**Decrypt** on a tunnelled row is how the include list grows. The include list itself is
+shown only when it says something a reader can't already infer (i.e. not while it is the
+bare `*`).
 
 Rows marked **conditional** are absent rather than empty (tiles never are — a switch that
 vanishes is a switch you cannot turn on): Breakpoints appears only

@@ -224,6 +224,29 @@ public struct InterceptOutcome: Equatable, Codable, Sendable {
     public var effective: Bool { shadowedByExclude == nil }
 }
 
+/// What `SSLScope.stopIntercepting(host:)` had to change.
+///
+/// Separate from `InterceptOutcome` rather than shared: the two calls fail in
+/// different directions, and a struct carrying both sets of fields would have half
+/// of them meaningless at every call site.
+public struct StopInterceptOutcome: Equatable, Codable, Sendable {
+    /// Exact `include` entries dropped.
+    public var removedIncludes: [String] = []
+    /// An `include` *glob* still covers the host, so removing entries could not
+    /// finish the job on its own.
+    public var shadowedByInclude: String?
+    /// An `exclude` was added because of that glob. The host is passed through, but
+    /// by a standing carve-out rather than by simply not being named.
+    public var addedExclude = false
+
+    public init() {}
+
+    /// Is the host passed through as a result of this call? Always true — the two
+    /// mechanisms between them cover every case — and stated so a caller reports the
+    /// outcome the same way it reports `intercept`'s.
+    public var effective: Bool { true }
+}
+
 /// Which hosts Loom decrypts (MITM) vs. blind-tunnels. A host is intercepted
 /// only when interception is `enabled`, it matches an `include` glob, and it
 /// matches no `exclude` glob. `exclude` doubles as the pinned / pass-through
@@ -296,6 +319,36 @@ public struct SSLScope: Equatable, Codable, Sendable {
         // one answer the caller acts on, and deriving it twice is how the two
         // disagree.
         outcome.shadowedByExclude = excludeGlob(matching: host)
+        return outcome
+    }
+
+    /// Stop decrypting `host`, and say what that took.
+    ///
+    /// The inverse of `intercept(host:)`, and under a whitelist scope the inverse is
+    /// **removing the include entry**, not adding an exclude: an exclude would be a
+    /// standing carve-out that outlives the entry it was answering, so re-adding the
+    /// host later would silently do nothing. Dropping the entry returns the host to
+    /// where every un-named host already is — observed, tunnelled, one click from
+    /// being decrypted again.
+    ///
+    /// An `exclude` is still added in the one case where removing cannot finish the
+    /// job: the host was covered by a *glob* (`*`, `*.corp`) that belongs to some
+    /// broader intent, so narrowing it is not this call's business.
+    public mutating func stopIntercepting(host: String) -> StopInterceptOutcome {
+        var outcome = StopInterceptOutcome()
+        let exact = include.filter { $0.lowercased() == host.lowercased() }
+        if !exact.isEmpty {
+            include.removeAll { $0.lowercased() == host.lowercased() }
+            outcome.removedIncludes = exact
+        }
+        // Re-read rather than reason about it, for the same reason `intercept` does.
+        if let glob = include.first(where: { Glob.matches($0, host) }) {
+            outcome.shadowedByInclude = glob
+            if !exclude.contains(where: { $0.lowercased() == host.lowercased() }) {
+                exclude.append(host)
+                outcome.addedExclude = true
+            }
+        }
         return outcome
     }
 

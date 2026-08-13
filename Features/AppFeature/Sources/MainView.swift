@@ -190,6 +190,7 @@ public struct MainView: View {
             countedRow(count: store.audit.entries.count) { Text("Audit") } icon: { categoryIcon("checklist") }
                 .tag(FlowCategory.audit)
             breakpointsSidebarRow
+            notDecryptedSidebarRow
 
             if !store.capture.devices.isEmpty {
                 Section {
@@ -370,6 +371,27 @@ public struct MainView: View {
             : "Breakpoints armed by your agent")
     }
 
+    /// Origins Loom saw and did not decrypt — the main window's half of the SSL
+    /// scope, and since 0.0.27 the surface the capture is *chosen* from rather than a
+    /// warning about it.
+    ///
+    /// Untinted, deliberately: with a whitelist the ordinary state of a host nobody
+    /// named is "not decrypted", so one phone puts dozens here and a colour would be
+    /// permanent (the Errors row is the sidebar's only tinted count for exactly that
+    /// reason). The count is still the honest size of what is going unread.
+    private var notDecryptedSidebarRow: some View {
+        let count = store.setup.tunneledHosts.count
+        return countedRow(count: count) {
+            Text("Not Decrypted")
+        } icon: {
+            categoryIcon("lock.slash")
+        }
+        .tag(FlowCategory.notDecrypted)
+        .help(count == 0
+            ? "Origins Loom relayed without decrypting"
+            : "\(count) origin\(count == 1 ? "" : "s") seen but not decrypted — pick one to read it")
+    }
+
     /// The Breakpoints title, tinted only when there is something held. Split out
     /// because "apply no style" and "apply the default style" are different views and
     /// only a `@ViewBuilder` branch can say the first one.
@@ -523,6 +545,8 @@ public struct MainView: View {
             AuditPanelView(store: store.scope(state: \.audit, action: \.audit))
         } else if store.capture.panelCategory == .breakpoints {
             BreakpointsPanelView(store: store.scope(state: \.breakpoints, action: \.breakpoints))
+        } else if store.capture.panelCategory == .notDecrypted {
+            NotDecryptedPanelView(store: store.scope(state: \.setup, action: \.setup))
         } else {
             flowArea
         }
@@ -912,7 +936,7 @@ public struct MainView: View {
             case let .host(host): host
             case let .device(ip): deviceName(ip) ?? ip
             case let .app(device, key): appName(device: device, key: key) ?? key
-            case .all, .rules, .audit, .breakpoints: nil
+            case .all, .rules, .audit, .breakpoints, .notDecrypted: nil
             }
         }
         // Joined with "+" rather than "and"/"or": which one it is depends on whether
@@ -1110,7 +1134,7 @@ private struct RequestTableView: View {
             onReplay: { store.send(.replayTapped($0)) },
             onCopyCurl: { store.send(.copyCurlTapped($0)) },
             onAddRule: { store.send(.addRuleFromFlow($0, $1)) },
-            onExcludeHost: { store.send(.excludeHostFromDecryption($0)) }
+            onStopDecrypting: { store.send(.stopDecryptingHost($0)) }
         )
         // Selection is an interactive signal, so it is the accent's job (DESIGN.md
         // § Colors) — untinted, `NSTableView` fills the row with the *system* accent, a
