@@ -1,0 +1,377 @@
+import Foundation
+import Synchronization
+import NIOCore
+import NIOHTTP1
+import NIOPosix
+import Testing
+@testable import LoomProxyCore
+import LoomSharedModels
+
+/// The upstream pool, against a real local NIO HTTP/1.1 server that counts the
+/// connections it accepts.
+///
+/// The counter is the whole point of this suite: every other property here
+/// (correct bodies, correct headers) was already true when each request opened its
+/// own socket, so a test that only checked responses would have passed against the
+/// unpooled forwarder this replaced.
+@Suite("Upstream connection pool", .timeLimit(.minutes(1)))
+final class UpstreamConnectionPoolTests {
+    private let group: MultiThreadedEventLoopGroup
+    private let server: Channel
+    private let accepts: AcceptCounter
+    /// Captured once so the closures below never have to reach through `self`.
+    private let origin: String
+
+    init() throws {
+        group = MultiThreadedEventLoopGroup(numberOfThreads: 3)
+        let accepts = AcceptCounter()
+        self.accepts = accepts
+        server = try Self.startServer(group: group, accepts: accepts)
+        origin = "http://127.0.0.1:\(server.localAddress!.port!)"
+    }
+
+    deinit {
+        try? server.close().wait()
+        shutdownBlocking(group)
+    }
+
+    static func startServer(group: EventLoopGroup, accepts: AcceptCounter) throws -> Channel {
+        try ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                accepts.increment()
+                return channel.eventLoop.makeCompletedFuture {
+                    let sync = channel.pipeline.syncOperations
+                    try sync.configureHTTPServerPipeline()
+                    try sync.addHandler(PoolTestResponder())
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).wait()
+    }
+
+    private var acceptCount: Int { accepts.value }
+    private func url(_ path: String) -> URL { URL(string: origin + path)! }
+
+    // MARK: - The reuse itself
+
+    @Test func sequentialRequests_shareOneConnection() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        for index in 0..<5 {
+            let result = try await forwarder.forward(
+                method: "GET", url: url("/ok?i=\(index)"), headers: [], body: nil
+            )
+            #expect(result.statusCode == 200)
+            #expect(String(decoding: result.body, as: UTF8.self) == "ok")
+        }
+        #expect(acceptCount == 1, "five keep-alive requests to one origin must cost one connection")
+    }
+
+    @Test func poolIsPerOrigin_soAPortChangeDoesNotReuse() async throws {
+        // A second server on its own port: same host, different origin, and the key
+        // has to keep them apart or a request lands on the wrong server entirely.
+        let otherAccepts = AcceptCounter()
+        let other = try Self.startServer(group: group, accepts: otherAccepts)
+        defer { other.close(promise: nil) }
+
+        let forwarder = NIOStreamingForwarder(group: group)
+        _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+        _ = try await forwarder.forward(
+            method: "GET", url: URL(string: "http://127.0.0.1:\(other.localAddress!.port!)/ok")!,
+            headers: [], body: nil
+        )
+        _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+
+        #expect(acceptCount == 1)
+        #expect(otherAccepts.value == 1)
+    }
+
+    @Test func concurrentRequests_doNotShareOneConnection() async throws {
+        // HTTP/1.1 has no multiplexing here, so three overlapping exchanges need
+        // three sockets — a pool that handed the same one out twice would interleave
+        // two requests on one connection and corrupt both.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let urls = (0..<3).map { url("/slow?i=\($0)") }
+        try await withThrowingTaskGroup(of: String.self) { tasks in
+            for target in urls {
+                tasks.addTask {
+                    let result = try await forwarder.forward(
+                        method: "GET", url: target, headers: [], body: nil
+                    )
+                    return String(decoding: result.body, as: UTF8.self)
+                }
+            }
+            var bodies: [String] = []
+            for try await body in tasks { bodies.append(body) }
+            #expect(bodies == ["slow", "slow", "slow"])
+        }
+        #expect(acceptCount == 3, "overlapping exchanges must each get their own connection")
+    }
+
+    @Test func bodiesStayCorrectAcrossAReusedConnection() async throws {
+        // The failure this guards against is not "slow" but "wrong": a reused
+        // connection whose decoder or decompressor carried state would answer the
+        // second request with a mangled version of the first.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let first = try await forwarder.forward(
+            method: "POST", url: url("/echo"), headers: [], body: Data("alpha".utf8)
+        )
+        let second = try await forwarder.forward(
+            method: "POST", url: url("/echo"), headers: [], body: Data("bravo-and-longer".utf8)
+        )
+        #expect(String(decoding: first.body, as: UTF8.self) == "alpha")
+        #expect(String(decoding: second.body, as: UTF8.self) == "bravo-and-longer")
+        #expect(acceptCount == 1)
+    }
+
+    @Test func compressedAndPlainResponses_interleaveOnOneConnection() async throws {
+        // `NIOHTTPResponseDecompressor` builds its decoder per response head and
+        // drops it on end, which is what makes it safe to keep across a pooled
+        // connection — pinned here because a stale decoder would surface as a
+        // corrupt body several requests later, nowhere near the cause.
+        let forwarder = NIOStreamingForwarder(group: group)
+        for _ in 0..<2 {
+            let compressed = try await forwarder.forward(method: "GET", url: url("/deflate"), headers: [], body: nil)
+            #expect(String(decoding: compressed.body, as: UTF8.self) == PoolTestResponder.deflatedPlaintext)
+            let plain = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+            #expect(String(decoding: plain.body, as: UTF8.self) == "ok")
+        }
+        #expect(acceptCount == 1)
+    }
+
+    // MARK: - What must not be pooled
+
+    @Test func connectionCloseResponse_isNotReused() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        for _ in 0..<3 {
+            _ = try await forwarder.forward(method: "GET", url: url("/close"), headers: [], body: nil)
+        }
+        #expect(acceptCount == 3, "a `Connection: close` response ends the connection with it")
+    }
+
+    @Test func closeDelimitedResponse_isNotReused() async throws {
+        // No Content-Length and no chunked framing: the body ends when the socket
+        // does, so there is nothing left to pool. Parking one of these would hand
+        // the next request a socket already closing.
+        let forwarder = NIOStreamingForwarder(group: group)
+        for _ in 0..<3 {
+            let result = try await forwarder.forward(method: "GET", url: url("/nolength"), headers: [], body: nil)
+            #expect(String(decoding: result.body, as: UTF8.self) == "unframed")
+        }
+        #expect(acceptCount == 3)
+    }
+
+    @Test func streamedRequestBody_doesNotLeaseButDoesRelease() async throws {
+        // A live client stream is consumed exactly once, so there is no second copy
+        // to re-send if a leased connection turns out to be stale — such a request
+        // opens its own connection. It must still hand that connection back.
+        let forwarder = NIOStreamingForwarder(group: group)
+        _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+        #expect(acceptCount == 1)
+
+        let bridge = RequestBodyBridge(capture: RequestBodyCapture())
+        bridge.yield(Data("streamed".utf8))
+        bridge.finish()
+        var streamedBody = Data()
+        for try await event in forwarder.forwardStream(
+            method: "POST", url: url("/echo"), headers: [],
+            body: .stream(bridge.chunks, contentLength: 8)
+        ) {
+            if case let .body(chunk) = event { streamedBody.append(chunk) }
+        }
+        #expect(String(decoding: streamedBody, as: UTF8.self) == "streamed")
+        #expect(acceptCount == 2, "a streamed body declines the parked connection")
+
+        _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+        #expect(acceptCount == 2, "...but releases its own, so the next request reuses it")
+    }
+
+    // MARK: - Staleness
+
+    @Test func originClosingAParkedConnection_neverFailsTheNextRequest() async throws {
+        // `/reap` answers normally — keep-alive, Content-Length, everything a
+        // poolable response has — and then drops the socket, which is what a real
+        // origin's idle reaper does. Whether the FIN is seen while the connection is
+        // parked (evicted) or after it has been leased (retried on a fresh socket)
+        // is a race by nature, so this asserts the contract that holds either way:
+        // no request fails. Twenty rounds is what makes the leased-then-dead branch
+        // likely to be exercised rather than merely possible.
+        let forwarder = NIOStreamingForwarder(group: group)
+        for index in 0..<20 {
+            let result = try await forwarder.forward(
+                method: "GET", url: url("/reap?i=\(index)"), headers: [], body: nil
+            )
+            #expect(result.statusCode == 200)
+            #expect(String(decoding: result.body, as: UTF8.self) == "reaped")
+        }
+    }
+
+    // MARK: - Bounds and lifecycle
+
+    @Test func idleConnectionsAreCappedPerOrigin() async throws {
+        let pool = UpstreamConnectionPool(limits: .init(idlePerKey: 2, totalIdle: 8, idleTimeout: .seconds(45)))
+        let forwarder = NIOStreamingForwarder(group: group, pool: pool)
+        let urls = (0..<5).map { url("/slow?i=\($0)") }
+        try await withThrowingTaskGroup(of: Void.self) { tasks in
+            for target in urls {
+                tasks.addTask {
+                    _ = try await forwarder.forward(method: "GET", url: target, headers: [], body: nil)
+                }
+            }
+            try await tasks.waitForAll()
+        }
+        #expect(acceptCount == 5, "the burst still runs at full width")
+        #expect(pool.idleCount <= 2, "only the cap is parked; the rest are closed on release")
+    }
+
+    @Test func drain_closesParkedConnections() async throws {
+        let pool = UpstreamConnectionPool()
+        let forwarder = NIOStreamingForwarder(group: group, pool: pool)
+        _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+        #expect(pool.idleCount == 1)
+
+        pool.drain()
+        #expect(pool.idleCount == 0)
+
+        // Not terminal: the pool works again afterwards, which is what lets the
+        // proxy's off switch drain it without breaking the on switch.
+        _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+        #expect(acceptCount == 2)
+        #expect(pool.idleCount == 1)
+    }
+
+    @Test func aDisabledPool_keepsTheOldOneConnectionPerRequestShape() async throws {
+        let forwarder = NIOStreamingForwarder(group: group, pool: .disabled)
+        for _ in 0..<3 {
+            _ = try await forwarder.forward(method: "GET", url: url("/ok"), headers: [], body: nil)
+        }
+        #expect(acceptCount == 3)
+    }
+
+    // MARK: - The reuse predicate, directly
+
+    @Test func responseIsReusable_readsFramingNotJustKeepAlive() {
+        func head(_ status: HTTPResponseStatus, _ pairs: [(String, String)], version: HTTPVersion = .http1_1) -> HTTPResponseHead {
+            var headers = HTTPHeaders()
+            for pair in pairs { headers.add(name: pair.0, value: pair.1) }
+            return HTTPResponseHead(version: version, status: status, headers: headers)
+        }
+        let reusable = UpstreamExchangeSlot.responseIsReusable
+
+        #expect(reusable(head(.ok, [("Content-Length", "3")]), false))
+        #expect(reusable(head(.ok, [("Transfer-Encoding", "chunked")]), false))
+        #expect(reusable(head(.noContent, []), false), "204 carries no body to frame")
+        #expect(reusable(head(.notModified, []), false), "304 carries no body to frame")
+        #expect(reusable(head(.ok, []), true), "a HEAD response carries no body to frame")
+
+        #expect(!reusable(head(.ok, [("Content-Length", "3"), ("Connection", "close")]), false))
+        #expect(!reusable(head(.ok, [("Content-Length", "3")], version: .http1_0), false))
+        #expect(!reusable(head(.ok, []), false), "close-delimited: the body ends when the socket does")
+    }
+}
+
+/// Connections the test server accepted. A class rather than a bare `Mutex`
+/// because a noncopyable value can't be captured by the bootstrap's escaping
+/// initializer closure.
+final class AcceptCounter: Sendable {
+    private let count = Mutex(0)
+    func increment() { count.withLock { $0 += 1 } }
+    var value: Int { count.withLock { $0 } }
+}
+
+/// Answers by path, with the framing each test needs.
+private final class PoolTestResponder: ChannelInboundHandler {
+    typealias InboundIn = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    static let deflatedPlaintext = "compressed payload, compressed payload"
+
+    private var path = ""
+    private var body = ""
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        switch unwrapInboundIn(data) {
+        case let .head(head):
+            path = String(head.uri.prefix(while: { $0 != "?" }))
+            body = ""
+        case var .body(buffer):
+            body += buffer.readString(length: buffer.readableBytes) ?? ""
+        case .end:
+            respond(context: context)
+        }
+    }
+
+    private func respond(context: ChannelHandlerContext) {
+        switch path {
+        case "/echo":
+            write(context: context, body: body, extra: [])
+        case "/close":
+            write(context: context, body: "closed", extra: [("Connection", "close")], thenClose: true)
+        case "/nolength":
+            // Deliberately unframed: no Content-Length, no chunked. The body is
+            // whatever arrives before the close.
+            let head = HTTPResponseHead(version: .http1_1, status: .ok)
+            context.write(wrapOutboundOut(.head(head)), promise: nil)
+            var buffer = context.channel.allocator.buffer(capacity: 8)
+            buffer.writeString("unframed")
+            context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+            context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in
+                context.close(promise: nil)
+            }
+        case "/reap":
+            // A well-framed, keep-alive response — and then the origin reaps the
+            // socket anyway, the way a real idle timeout does.
+            write(context: context, body: "reaped", extra: [], thenClose: true, announceClose: false)
+        case "/deflate":
+            let compressed = Self.zlibDeflate(Data(Self.deflatedPlaintext.utf8))
+            var headers = HTTPHeaders()
+            headers.add(name: "Content-Encoding", value: "deflate")
+            headers.add(name: "Content-Length", value: String(compressed.count))
+            context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))), promise: nil)
+            var buffer = context.channel.allocator.buffer(capacity: compressed.count)
+            buffer.writeBytes(compressed)
+            context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+            context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+        case "/slow":
+            context.eventLoop.scheduleTask(in: .milliseconds(120)) {
+                self.write(context: context, body: "slow", extra: [])
+            }
+        default:
+            write(context: context, body: "ok", extra: [])
+        }
+    }
+
+    private func write(
+        context: ChannelHandlerContext, body: String, extra: [(String, String)],
+        thenClose: Bool = false, announceClose: Bool = true
+    ) {
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Length", value: String(body.utf8.count))
+        for pair in extra where announceClose || pair.0.lowercased() != "connection" {
+            headers.add(name: pair.0, value: pair.1)
+        }
+        context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))), promise: nil)
+        var buffer = context.channel.allocator.buffer(capacity: body.utf8.count)
+        buffer.writeString(body)
+        context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+        let end = context.writeAndFlush(wrapOutboundOut(.end(nil)))
+        if thenClose { end.whenComplete { _ in context.close(promise: nil) } }
+    }
+
+    /// RFC 1950 zlib stream, same construction as the forwarder suite's responder.
+    private static func zlibDeflate(_ original: Data) -> Data {
+        let raw = (try? (original as NSData).compressed(using: .zlib) as Data) ?? Data()
+        var out = Data([0x78, 0x9C])
+        out.append(raw)
+        var a: UInt32 = 1, b: UInt32 = 0
+        for byte in original {
+            a = (a + UInt32(byte)) % 65521
+            b = (b + a) % 65521
+        }
+        let adler = (b << 16) | a
+        out.append(contentsOf: [
+            UInt8((adler >> 24) & 0xFF), UInt8((adler >> 16) & 0xFF),
+            UInt8((adler >> 8) & 0xFF), UInt8(adler & 0xFF),
+        ])
+        return out
+    }
+}
