@@ -52,8 +52,9 @@ struct RequestTable: NSViewRepresentable {
     let onReplay: (Flow.ID) -> Void
     let onCopyCurl: (Flow.ID) -> Void
     let onAddRule: (Flow.ID, RuleTemplate) -> Void
-    /// Stop decrypting a host, by its name rather than the flow's id: the scope is
-    /// keyed on the host and the row is only how the operator picked one.
+    /// Start / stop decrypting a host, by its name rather than the flow's id: the
+    /// scope is keyed on the host and the row is only how the operator picked one.
+    let onDecryptHost: (String) -> Void
     let onStopDecrypting: (String) -> Void
 
     /// Fixed, not automatic: `usesAutomaticRowHeights` measures every row it draws, and
@@ -63,7 +64,7 @@ struct RequestTable: NSViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(selection: $selection, followTail: $followTail,
                     onReplay: onReplay, onCopyCurl: onCopyCurl, onAddRule: onAddRule,
-                    onStopDecrypting: onStopDecrypting)
+                    onDecryptHost: onDecryptHost, onStopDecrypting: onStopDecrypting)
     }
 
     func makeNSView(context: Context) -> RequestScrollView {
@@ -128,7 +129,7 @@ struct RequestTable: NSViewRepresentable {
     /// Widths carried over verbatim from the SwiftUI `Table` this replaces, including
     /// the reasoning attached to two of them.
     enum Column: String, CaseIterable {
-        case status, ordinal, app, proto, method, host, path, time
+        case status, ordinal, app, lock, proto, method, host, path, time
 
         var identifier: NSUserInterfaceItemIdentifier { .init(rawValue) }
 
@@ -137,6 +138,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: ""
             case .ordinal: "#"
             case .app: "App"
+            case .lock: ""
             case .proto: "Protocol"
             case .method: "Method"
             case .host: "Host"
@@ -150,12 +152,20 @@ struct RequestTable: NSViewRepresentable {
             case .status: 28
             case .ordinal: 30
             case .app: 36
+            case .lock: 26
             // Sized to the widest token this column can hold — `HTTPS`, 5 mono glyphs —
             // not to the header word, which is the only thing here that wants more room.
             case .proto: 46
             case .method: 52
             case .host: 110
-            case .path: 160
+            // Lower than it reads: Path is the slack sink, so it is back above 300pt the
+            // moment the window has room, and this floor only bites in a viewport
+            // narrower than the columns want. It came down from 160 when the Decrypted
+            // column was added — every column costs ~17.5pt of `.inset` padding and
+            // intercell spacing *beyond* its width, so a 9-column table at a 700pt
+            // viewport (a 1000pt window, or a 700pt one with the sidebar collapsed) was
+            // 40pt over even with Host and Path both on their floors.
+            case .path: 120
             case .time: 56
             }
         }
@@ -165,6 +175,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: 28
             case .ordinal: 38
             case .app: 36
+            case .lock: 26
             case .proto: 52
             case .method: 62
             case .host: 180
@@ -181,6 +192,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: 28
             case .ordinal: 56
             case .app: 36
+            case .lock: 26
             case .proto: 64
             case .method: 90
             case .host: 280
@@ -195,6 +207,7 @@ struct RequestTable: NSViewRepresentable {
             switch self {
             case .status: "Status"
             case .ordinal: "Number"
+            case .lock: "Decrypted"
             default: title
             }
         }
@@ -248,7 +261,7 @@ struct RequestTable: NSViewRepresentable {
             case .host: MainView.hostReading(flow.request.url).label
             case .path: MainView.path(flow.request.url)
             case .time: flow.durationMS.map { "\($0)ms" } ?? "—"
-            case .status, .app: ""
+            case .status, .app, .lock: ""
             }
             widest = max(widest, (text as NSString).size(withAttributes: attributes).width)
         }
@@ -301,6 +314,7 @@ struct RequestTable: NSViewRepresentable {
         private let onReplay: (Flow.ID) -> Void
         private let onCopyCurl: (Flow.ID) -> Void
         private let onAddRule: (Flow.ID, RuleTemplate) -> Void
+        private let onDecryptHost: (String) -> Void
         private let onStopDecrypting: (String) -> Void
 
         private weak var table: NSTableView?
@@ -318,6 +332,7 @@ struct RequestTable: NSViewRepresentable {
             onReplay: @escaping (Flow.ID) -> Void,
             onCopyCurl: @escaping (Flow.ID) -> Void,
             onAddRule: @escaping (Flow.ID, RuleTemplate) -> Void,
+            onDecryptHost: @escaping (String) -> Void,
             onStopDecrypting: @escaping (String) -> Void
         ) {
             _selection = selection
@@ -325,6 +340,7 @@ struct RequestTable: NSViewRepresentable {
             self.onReplay = onReplay
             self.onCopyCurl = onCopyCurl
             self.onAddRule = onAddRule
+            self.onDecryptHost = onDecryptHost
             self.onStopDecrypting = onStopDecrypting
         }
 
@@ -1099,6 +1115,16 @@ struct RequestTable: NSViewRepresentable {
             let id = flow.id
             let host = MainView.host(flow.request.url)
 
+            // A tunnel row is not an exchange: there is no request to replay, no body to
+            // copy and no rule worth stamping from it. It has exactly one useful action,
+            // and it is the one that turns it into an exchange next time.
+            if case .tunnelled = FlowEncryption(flow) {
+                menu.addItem(item("Decrypt \(host)", image: "lock.open") { [onDecryptHost] in onDecryptHost(host) })
+                menu.addItem(.separator())
+                menu.addItem(item("Copy Host") { MainView.copy(host) })
+                return
+            }
+
             menu.addItem(item("Replay", image: "arrow.triangle.2.circlepath") { [onReplay] in onReplay(id) })
             menu.addItem(.separator())
 
@@ -1242,6 +1268,63 @@ enum RowDiff: Equatable {
 /// The cell bodies are unchanged from the `Table` this replaces — same views, fonts and
 /// tints — because what moved down a layer is who owns the rows, not what a row looks
 /// like. DESIGN.md governs this, and it should keep governing one idiom.
+
+/// Whether Loom read this exchange's contents, for the request table's lock column.
+///
+/// Derived from the flow, not stored: a `CONNECT` flow is one Loom only ever relayed
+/// (Loom never *proxies* a CONNECT it decrypted — the intercepted path replaces it with
+/// the requests inside), and a scheme says whether there was any TLS to read. Nothing in
+/// `Flow` had to grow for this, which matters because a field would then need a render,
+/// a census entry and a reason for every other consumer.
+enum FlowEncryption {
+    /// TLS Loom terminated: the request and response below are plaintext because Loom
+    /// decrypted them.
+    case decrypted
+    /// A relayed tunnel. The row is the whole record — there is no body, because these
+    /// bytes went past Loom encrypted.
+    case tunnelled
+    /// Plain HTTP. Nothing was encrypted, so nothing was decrypted; drawn differently
+    /// from `tunnelled` because "Loom read it" and "Loom couldn't" are opposite answers.
+    case plaintext
+
+    init(_ flow: Flow) {
+        if flow.request.method.uppercased() == "CONNECT" {
+            self = .tunnelled
+            return
+        }
+        let url = flow.request.url.lowercased()
+        self = url.hasPrefix("https://") || url.hasPrefix("wss://") ? .decrypted : .plaintext
+    }
+
+    var glyph: String {
+        switch self {
+        case .decrypted: "lock.open.fill"
+        case .tunnelled: "lock.fill"
+        case .plaintext: "lock.slash"
+        }
+    }
+
+    /// The lock is the *traffic's* state, not Loom's: a closed lock means these bytes
+    /// stayed encrypted to Loom, an open one means Loom opened them. Reading it the
+    /// other way round — a lock for "secure" — would put the reassuring glyph on the
+    /// row whose contents are missing.
+    var tint: AnyShapeStyle {
+        switch self {
+        case .decrypted: AnyShapeStyle(.tertiary)
+        case .tunnelled: AnyShapeStyle(LoomTheme.Palette.warning)
+        case .plaintext: AnyShapeStyle(.quaternary)
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .decrypted: "Decrypted — Loom read this exchange"
+        case .tunnelled: "Not decrypted — relayed encrypted. Right-click to decrypt this host, then run the client again."
+        case .plaintext: "Plain HTTP — nothing to decrypt"
+        }
+    }
+}
+
 private struct CellContent: View, Equatable {
     let column: RequestTable.Column
     let flow: Flow
@@ -1297,6 +1380,17 @@ private struct CellContent: View, Equatable {
         case .app:
             AppIconView(app: flow.sourceApp)
                 .help(flow.sourceApp?.name ?? "Unknown app")
+
+        case .lock:
+            // Three states, and the third is the reason this column exists: since the
+            // scope became a whitelist (0.0.27) most HTTPS origins are relayed
+            // untouched, and a CONNECT row is the only place the operator meets one.
+            let encryption = FlowEncryption(flow)
+            Image(systemName: encryption.glyph)
+                .font(LoomTheme.Icon.badge)
+                .foregroundStyle(encryption.tint)
+                .help(encryption.help)
+                .frame(maxWidth: .infinity, alignment: .center)
 
         case .proto:
             Text(MainView.protocolLabel(flow))

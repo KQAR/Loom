@@ -132,7 +132,13 @@ extension ProxyClient: DependencyKey {
             // wants it (a client that can only point at a SOCKS proxy is invisible
             // otherwise), while the engine defaults it off so an embedder isn't given
             // a second socket it never asked for.
-            start: { try await engine.start(port: $0, socksPort: $0 + 1) },
+            // `observeTunnels` is on for the app and off in the engine's own default,
+            // which is the right split: an embedder gets content flows only, while the
+            // app's request table is the operator's single list and has to show what it
+            // is *not* reading. Since the scope became a whitelist that is most HTTPS
+            // origins, and one CONNECT row per relayed connection is how the human sees
+            // a host at all — and right-clicks it to start decrypting.
+            start: { try await engine.start(port: $0, observeTunnels: true, socksPort: $0 + 1) },
             stop: { await engine.stop() },
             status: { await engine.status() },
             recentFlows: { await engine.recentFlows(limit: $0) },

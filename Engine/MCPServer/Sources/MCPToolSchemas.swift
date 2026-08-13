@@ -322,6 +322,11 @@ extension MCPToolExecutor {
             name: "get_recent_flows",
             description: """
             List captured HTTP flows, newest first, with method, url, status, timing and startedAt. \
+            A `CONNECT` entry is **not an exchange**: it is one HTTPS connection Loom relayed \
+            without decrypting (the scope is a whitelist, so this is the ordinary state of a host \
+            nobody named). It has no headers or body by construction — `intercept_host` that host \
+            and have the client run again to get real exchanges, or filter these out with \
+            `method: ["GET", "POST", ...]` when you only want content. \
             Filters (all optional, ANDed) are applied across every retained flow BEFORE `limit`, \
             so a match that isn't among the newest exchanges is still found — prefer filtering here \
             over pulling a big list and scanning it yourself. "Retained" means memory **and** the \

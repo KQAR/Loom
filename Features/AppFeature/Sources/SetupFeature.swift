@@ -193,10 +193,6 @@ public struct SetupFeature: Sendable {
         case task
         /// Cheap re-sync of all setup state when a window/panel appears.
         case refresh
-        /// Long-running: keep the tunnelled-host list current while the main window's
-        /// Not Decrypted panel is on screen. Scoped to that view's lifetime by the
-        /// caller, so nothing polls when nobody is looking.
-        case watchTunneledHosts
         /// Re-read only the state an *agent* can write: the SSL scope, what it left
         /// tunnelled, and the client identities. Deliberately narrower than
         /// `.refresh` — the helper state and the system-proxy snapshot cost an XPC
@@ -270,9 +266,6 @@ public struct SetupFeature: Sendable {
 
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.privilegedHelperClient) var privilegedHelperClient
-    /// The panel's watch sleeps on this rather than on `Task.sleep`, so a test can
-    /// prove it polls *again* instead of spending real seconds finding out.
-    @Dependency(\.continuousClock) var clock
 
     public init() {}
 
@@ -492,19 +485,6 @@ public struct SetupFeature: Sendable {
                     .cancellable(id: CancelID.tunneledHostPoll, cancelInFlight: true)
                 )
 
-            case .watchTunneledHosts:
-                // Slower than the console card's 2 s poll and for a different reason:
-                // this list is read while an app is being *driven*, so it has to catch
-                // up on its own, but a host appearing a few seconds late costs nothing
-                // — the operator's next step is to re-run the client anyway.
-                return .run { [clock] send in
-                    while !Task.isCancelled {
-                        await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
-                        try await clock.sleep(for: .seconds(3))
-                    }
-                }
-                .cancellable(id: CancelID.tunneledHostWatch, cancelInFlight: true)
-
             case .tunneledHostsTick:
                 return .run { send in await send(.tunneledHostsLoaded(proxyClient.tunneledHosts())) }
 
@@ -695,7 +675,7 @@ public struct SetupFeature: Sendable {
         }
     }
 
-    private enum CancelID: Hashable { case tunneledHostPoll, tunneledHostWatch }
+    private enum CancelID: Hashable { case tunneledHostPoll }
 
     /// Write an edited scope through and re-read the tunnelled list against it, so a
     /// host that just became intercepted stops being offered.

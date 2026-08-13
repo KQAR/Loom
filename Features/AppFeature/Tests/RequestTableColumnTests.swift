@@ -104,7 +104,7 @@ import Testing
             coordinator = RequestTable.Coordinator(
                 selection: .constant(nil), followTail: .constant(true),
                 onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in },
-                onStopDecrypting: { _ in }
+                onDecryptHost: { _ in }, onStopDecrypting: { _ in }
             )
             // Both matter to the arithmetic: `.inset` decides the edge insets and intercell
             // spacing the trailing edge is measured against, and the autoresizing style is
@@ -152,6 +152,26 @@ import Testing
         for width in [700.0, 1200.0, 1800.0, 2600.0] {
             harness.resize(to: width)
             #expect(abs(harness.trailingGap) <= 0.5, "gap of \(harness.trailingGap) at \(width)")
+        }
+    }
+
+    /// **Dead space and overflow are different failures**, and only one of them is this
+    /// layout's to prevent. A *positive* gap is the dead strip above — the columns fit
+    /// and nobody claimed the remainder — and it must never appear at any width. A
+    /// negative one means the columns want more than the viewport has, which is what
+    /// horizontal scrolling is for; asserting `abs(gap)` treated the two as one bug and
+    /// so turned "this window is narrow" into a test failure.
+    ///
+    /// The floor is real, though: every column costs ~17.5pt of `.inset` padding and
+    /// intercell spacing on top of its width, so a column set that overflows a viewport
+    /// someone can actually produce is a column set that is too wide. 640pt is below
+    /// anything the window offers (`defaultSize` is 1040 with a 300pt sidebar) and is
+    /// where scrolling is allowed to start.
+    @Test func noWidthLeavesDeadSpaceAtTheRight() {
+        let harness = WidthHarness()
+        for width in stride(from: 640.0, through: 3200.0, by: 40.0) {
+            harness.resize(to: width)
+            #expect(harness.trailingGap <= 0.5, "dead space of \(harness.trailingGap) at \(width)")
         }
     }
 
@@ -220,5 +240,35 @@ import Testing
         let withOld = RequestTable.fittingWidth(for: .path, rows: rows, capture: capture)
         let withoutOld = RequestTable.fittingWidth(for: .path, rows: recent, capture: capture)
         #expect(withOld == withoutOld)
+    }
+
+    // MARK: The Decrypted column
+
+    /// Three states, and the reading of the glyph is the part that is easy to get
+    /// backwards: the lock is the **traffic's** state, so a closed lock means these bytes
+    /// stayed encrypted to Loom and there is no body on the row. Putting the reassuring
+    /// glyph on the row whose contents are missing is the failure mode.
+    @Test func theLockColumnSaysWhetherLoomReadTheExchange() {
+        let decrypted = FlowEncryption(Fixtures.flow(url: "https://api.test/v1"))
+        let tunnelled = FlowEncryption(Fixtures.flow(method: "CONNECT", url: "https://api.test:443"))
+        let plaintext = FlowEncryption(Fixtures.flow(url: "http://api.test/v1"))
+
+        #expect(decrypted.glyph == "lock.open.fill")
+        #expect(tunnelled.glyph == "lock.fill")
+        #expect(plaintext.glyph == "lock.slash")
+
+        // Only the un-read one is tinted: it is the row that is missing something.
+        #expect(tunnelled.help.contains("Not decrypted"))
+        #expect(decrypted.help.contains("Loom read"))
+        #expect(plaintext.help.contains("nothing to decrypt"))
+    }
+
+    /// `wss://` is a TLS handshake Loom terminated like any other, and a lowercase check
+    /// must not depend on the client's spelling of the scheme.
+    @Test func theLockColumnCountsWebSocketsAndIgnoresSchemeCasing() {
+        #expect(FlowEncryption(Fixtures.flow(url: "wss://api.test/socket")).glyph == "lock.open.fill")
+        #expect(FlowEncryption(Fixtures.flow(url: "ws://api.test/socket")).glyph == "lock.slash")
+        #expect(FlowEncryption(Fixtures.flow(url: "HTTPS://api.test/v1")).glyph == "lock.open.fill")
+        #expect(FlowEncryption(Fixtures.flow(method: "connect", url: "https://a.test:443")).glyph == "lock.fill")
     }
 }

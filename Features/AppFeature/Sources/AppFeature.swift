@@ -17,11 +17,6 @@ public enum FlowCategory: Hashable, Sendable {
     /// Not a flow filter: swaps the detail area for held/armed breakpoints — the
     /// one write action that parks a live connection, so it needs a human surface.
     case breakpoints
-    /// Not a flow filter: swaps the detail area for the origins Loom saw and did not
-    /// decrypt. Since 0.0.27 that is the ordinary state of a host nobody named, so
-    /// this is not a warning surface — it is where the capture is *chosen*, and the
-    /// only place in this window a host becomes decrypted.
-    case notDecrypted
     case host(String)
     /// One app, **on one device**. The pair, not the app alone: the sidebar nests
     /// apps under the device they ran on, so a row there means "Safari, on the
@@ -37,7 +32,7 @@ public enum FlowCategory: Hashable, Sendable {
     /// compose, panels cannot, and a set holding both is meaningless.
     public var isPanel: Bool {
         switch self {
-        case .rules, .audit, .breakpoints, .notDecrypted: true
+        case .rules, .audit, .breakpoints: true
         case .all, .errors, .host, .app, .device: false
         }
     }
@@ -46,7 +41,7 @@ public enum FlowCategory: Hashable, Sendable {
     /// `.all`, which *is* the unnarrowed list rather than a filter on it.
     public var isFilter: Bool {
         switch self {
-        case .all, .rules, .audit, .breakpoints, .notDecrypted: false
+        case .all, .rules, .audit, .breakpoints: false
         case .errors, .host, .app, .device: true
         }
     }
@@ -72,7 +67,7 @@ public enum FlowCategory: Hashable, Sendable {
 
     public var dimension: Dimension? {
         switch self {
-        case .all, .rules, .audit, .breakpoints, .notDecrypted: nil
+        case .all, .rules, .audit, .breakpoints: nil
         case .errors: .errors
         case .host: .host
         case .app, .device: .origin
@@ -85,7 +80,7 @@ public enum FlowCategory: Hashable, Sendable {
     /// these coherent live here, in one place, rather than in the view. Three of
     /// them, each answering a state the list can genuinely be left in:
     ///
-    /// - **A panel is exclusive.** Rules / Audit / Breakpoints / Not Decrypted replace the table
+    /// - **A panel is exclusive.** Rules / Audit / Breakpoints replace the table
     ///   rather than filtering it, so they cannot compose with a filter or with
     ///   each other. Whichever side is *newly* added wins, which is what makes
     ///   ⌘-clicking a panel while filters are up do the obvious thing in both
@@ -420,11 +415,14 @@ public struct AppFeature: Sendable {
             case let .capture(.delegate(.replayFailed(message))):
                 return .send(.rules(.ruleWriteFailed(message)))
 
-            // The request table can drop a host from the decrypted set, which is the
-            // inverse of the Not Decrypted panel's Decrypt — one action through
-            // `SetupFeature`, so the two surfaces cannot drift on what it means.
+            // Both directions of the scope, from a row's context menu: a CONNECT row
+            // decrypts its host, a decrypted row stops. Routed through `SetupFeature`,
+            // so the table, the console card and an agent all make the same write.
             case let .capture(.delegate(.stopDecryptingHost(host))):
                 return .send(.setup(.stopInterceptHostTapped(host)))
+
+            case let .capture(.delegate(.decryptHost(host))):
+                return .send(.setup(.interceptHostTapped(host)))
 
             // Starting a replay clears the shared line, for the same reason.
             case .capture(.replayTapped):

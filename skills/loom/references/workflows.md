@@ -153,9 +153,11 @@ arguments; this file is about sequence and interpretation.
     session (yours or a human's) may have paused it;
   - otherwise nothing has been routed through the proxy yet — the client is not
     pointed at it. Say so.
-- No HTTPS flow at all for a host → it was passed through (nobody named it — the
-  common case, since the scope is a whitelist — or Loom can't read it), which
-  records **no flow whatsoever**, not an empty one. `get_ssl_scope`'s `tunneledHosts` is the only surface holding this fact;
+- Only a `CONNECT` entry for a host → it was passed through (nobody named it — the
+  common case, since the scope is a whitelist — or Loom can't read it). The CONNECT
+  row is the connection, not the request: no headers, no body. `intercept_host`
+  then re-run the client. A host Loom cannot read at any setting records no flow
+  whatsoever, not even that. `get_ssl_scope`'s `tunneledHosts` is the only surface holding this fact;
   check it before reporting that the client made no requests.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with

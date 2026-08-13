@@ -478,7 +478,7 @@ public struct CaptureFeature: Sendable {
         private func admits(_ category: FlowCategory, _ flow: Flow) -> Bool {
             switch category {
             case .all: true
-            case .rules, .audit, .breakpoints, .notDecrypted: false // the panel replaces the table
+            case .rules, .audit, .breakpoints: false // the panel replaces the table
             case .errors: Self.isError(flow)
             // A dictionary lookup, not a parse: the host was computed once when the flow
             // was recorded, and it is the value the sidebar's categories are keyed by.
@@ -655,6 +655,10 @@ public struct CaptureFeature: Sendable {
         /// `addRuleFromFlow`: the gesture is a row's context menu and the thing it
         /// writes (the SSL scope) belongs to `SetupFeature`, so it travels up.
         case stopDecryptingHost(String)
+        /// Start decrypting a host, picked off a CONNECT row — the table's answer to
+        /// "Loom relayed this and I want to read it". Same shape as its inverse; the
+        /// scope belongs to `SetupFeature`.
+        case decryptHostTapped(String)
         case flowReceived(Flow)
         /// The engine's counts landed (boot, and after each capture burst).
         case flowAggregatesRefreshed(FlowAggregates, coversHistory: Bool)
@@ -723,10 +727,14 @@ public struct CaptureFeature: Sendable {
             /// `RulesFeature`, which owns the message line both writes share.
             case replayFailed(String)
             /// Drop this host from the decrypted set. The parent routes it to
-            /// `SetupFeature`, which owns the scope; the host stays visible in the
-            /// sidebar's Not Decrypted panel afterwards, which is what makes it
-            /// reversible without hunting through a glob list.
+            /// `SetupFeature`, which owns the scope; the host goes back to appearing as
+            /// CONNECT rows afterwards, which is what makes it reversible without
+            /// hunting through a glob list.
             case stopDecryptingHost(String)
+            /// Start decrypting this host. Routed to `SetupFeature`, which writes it
+            /// atomically through the engine (`intercept_host`'s path), because the
+            /// console and an agent are independent writers of the same scope.
+            case decryptHost(String)
         }
     }
 
@@ -805,6 +813,9 @@ public struct CaptureFeature: Sendable {
 
             case let .stopDecryptingHost(host):
                 return .send(.delegate(.stopDecryptingHost(host)))
+
+            case let .decryptHostTapped(host):
+                return .send(.delegate(.decryptHost(host)))
 
             case let .flowAggregatesRefreshed(aggregates, coversHistory):
                 state.aggregates = aggregates
