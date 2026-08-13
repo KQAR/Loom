@@ -16,12 +16,26 @@ import LoomSharedModels
 /// hang it off. And it is filled *later still*, when the handshake completes, so
 /// even a stored property on the connection could not hold it.
 final class UpstreamTLSInfoBox: Sendable {
-    private let value = Mutex<UpstreamTLSInfo?>(nil)
+    private struct State {
+        var info: UpstreamTLSInfo?
+        var handshakeMS: Int?
+    }
 
-    var info: UpstreamTLSInfo? { value.withLock { $0 } }
+    private let value = Mutex(State())
+
+    var info: UpstreamTLSInfo? { value.withLock { $0.info } }
+    /// How long the handshake took. Held here rather than on `UpstreamTLSInfo`
+    /// because that type describes *what was negotiated* and is reported on every
+    /// exchange over the connection, while this is a setup cost the reusing
+    /// exchanges did not pay.
+    var handshakeMS: Int? { value.withLock { $0.handshakeMS } }
 
     func set(_ info: UpstreamTLSInfo) {
-        value.withLock { $0 = info }
+        value.withLock { $0.info = info }
+    }
+
+    func setHandshakeMilliseconds(_ milliseconds: Int) {
+        value.withLock { $0.handshakeMS = milliseconds }
     }
 }
 
@@ -46,11 +60,21 @@ final class UpstreamTLSObserver: ChannelInboundHandler, RemovableChannelHandler,
     private let box: UpstreamTLSInfoBox
     private let serverName: String?
     private let clientCertificate: String?
+    /// When the handshake could first have started. Taken at `channelActive`, not
+    /// at `handlerAdded`: the pipeline is built before the socket connects, so
+    /// timing from construction would fold the TCP connect into the handshake —
+    /// the two numbers this exists to keep apart.
+    private var handshakeStartedAt: NIODeadline?
 
     init(box: UpstreamTLSInfoBox, serverName: String?, clientCertificate: String?) {
         self.box = box
         self.serverName = serverName
         self.clientCertificate = clientCertificate
+    }
+
+    func channelActive(context: ChannelHandlerContext) {
+        handshakeStartedAt = .now()
+        context.fireChannelActive()
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
@@ -62,8 +86,19 @@ final class UpstreamTLSObserver: ChannelInboundHandler, RemovableChannelHandler,
                 clientCertificate: clientCertificate,
                 certificate: Self.summarize((try? sync.nioSSL_peerCertificate()) ?? nil)
             ))
+            if let handshakeStartedAt {
+                box.setHandshakeMilliseconds(Self.milliseconds(since: handshakeStartedAt))
+            }
         }
         context.fireUserInboundEventTriggered(event)
+    }
+
+    /// `NIODeadline` is a monotonic clock, which is what a duration needs — a
+    /// wall clock can step backwards mid-handshake and produce a negative one.
+    /// Rounded rather than truncated, for the reason `Flow.durationMS` states.
+    static func milliseconds(since start: NIODeadline) -> Int {
+        let nanos = (NIODeadline.now() - start).nanoseconds
+        return Int((Double(max(0, nanos)) / 1_000_000).rounded())
     }
 
     /// The spelling every TLS tool prints, rather than the enum's case name.

@@ -151,6 +151,45 @@ final class NIOStreamingForwarderTests {
         #expect(first.transport?.upstreamTLS == nil)
     }
 
+    @Test func transport_breaksTheConnectionSetupIntoPhases() async throws {
+        // The first request to an origin pays DNS + TCP (+ TLS, not here — this
+        // server is plaintext); the second pays none of it. Reporting the first
+        // connection's setup on the reuse would inflate exactly the number someone
+        // reads this to explain.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let first = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
+        let second = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
+
+        let setup = try #require(first.transport?.setup)
+        #expect(setup.tcpMS != nil, "a fresh connection measured its TCP connect")
+        #expect(setup.tcpMS ?? -1 >= 0)
+        // Loopback by IP literal: nothing to resolve, and 0 ms would suggest a
+        // lookup happened.
+        #expect(setup.dnsMS == nil)
+        // Plaintext upstream: no handshake to time.
+        #expect(setup.tlsHandshakeMS == nil)
+        #expect(setup.totalMS == setup.tcpMS)
+
+        #expect(second.transport?.setup == nil, "a reused connection paid none of it")
+        #expect(second.transport?.connectionReused == true)
+    }
+
+    @Test func transport_timesTheRequestSendPerExchange() async throws {
+        // Per-exchange, unlike the setup phases — a reused connection still writes
+        // its own request, and both of these are on a plaintext upstream, where the
+        // socket is writable the moment `connect()` returns.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let first = try await forwarder.forward(
+            method: "POST", url: baseURL, headers: [], body: Data("hello".utf8)
+        )
+        let second = try await forwarder.forward(
+            method: "POST", url: baseURL, headers: [], body: Data("hello".utf8)
+        )
+        #expect(first.transport?.requestSendMS != nil)
+        #expect(second.transport?.connectionReused == true)
+        #expect(second.transport?.requestSendMS != nil)
+    }
+
     @Test func transport_reportsTheWireSizeOfACompressedBody() async throws {
         // The encoded size exists nowhere else once the forwarder has inflated the
         // body and stripped the headers that described it, so this is the only

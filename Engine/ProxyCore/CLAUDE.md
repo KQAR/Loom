@@ -252,6 +252,21 @@ pipeline are load-bearing rather than convenient:
   mean owning trust evaluation for every upstream connection; reading the
   certificate after NIOSSL has validated it costs one DER parse *per connection*
   and risks nothing.
+- **`UpstreamTLSObserver` starts its handshake clock at `channelActive`, not at
+  `handlerAdded`.** The pipeline is built before the socket connects, so timing
+  from construction folds the TCP connect into the handshake — the two numbers
+  `ConnectionSetup` exists to keep apart. Durations use `NIODeadline` (monotonic):
+  a wall clock can step backwards mid-handshake and yield a negative one.
+- **DNS is timed by an extra resolution, and the connector is left alone.**
+  `measureResolution` runs one `getaddrinfo` off the loop (`@concurrent` — a
+  blocking syscall on a cooperative-pool thread is the defect `ProcessResolver`
+  documents), then the bootstrap resolves and connects exactly as before. Handing
+  the resolved address to `connect(to:)` would skip the second lookup and also
+  skip Happy Eyeballs across the A/AAAA answers, which changes how Loom behaves on
+  every dual-stack network to make a number prettier. The first resolve pays the
+  real cost, which is what is reported; the bootstrap's is served from the cache.
+  A resolver failure is swallowed — the bootstrap reports the real error a moment
+  later.
 - **The transport is evaluated when the head arrives, not when the exchange arms**
   (`UpstreamExchangeSlot.Armed.transport` is a closure). On a fresh connection the
   handshake has not finished at arm time — NIOSSL buffers the request write until

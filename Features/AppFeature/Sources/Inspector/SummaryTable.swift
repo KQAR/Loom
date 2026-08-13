@@ -151,9 +151,28 @@ struct SummaryTable: View {
                 // neighbours, and "no row" would leave that unanswered.
                 row("Connection", reused ? "reused" : "new (connect + handshake)")
             }
+            if let setup = transport.setup, let text = setupText(setup) { row("Setup", text) }
+            if let send = transport.requestSendMS, send > 0 { row("Request sent in", "\(send) ms") }
             if let version = transport.clientTLSVersion { row("Client TLS", version) }
             if let tls = transport.upstreamTLS { upstreamTLSRows(tls) }
         }
+    }
+
+    /// The connection's setup cost, phase by phase.
+    ///
+    /// One row rather than three: they are one answer to one question ("what did
+    /// opening this cost, and which part of it"), and three rows would push the
+    /// TLS details that follow off the first screen for a number that is usually
+    /// a footnote. The total leads because it is what a reader compares against
+    /// the duration above; the breakdown is what they read next if it is large.
+    private func setupText(_ setup: ConnectionSetup) -> String? {
+        var parts: [String] = []
+        if let dns = setup.dnsMS { parts.append("DNS \(dns) ms") }
+        if let tcp = setup.tcpMS { parts.append("connect \(tcp) ms") }
+        if let handshake = setup.tlsHandshakeMS { parts.append("TLS \(handshake) ms") }
+        guard !parts.isEmpty else { return nil }
+        guard let total = setup.totalMS, parts.count > 1 else { return parts.joined(separator: " · ") }
+        return "\(total) ms — " + parts.joined(separator: " · ")
     }
 
     @ViewBuilder private func upstreamTLSRows(_ tls: UpstreamTLSInfo) -> some View {

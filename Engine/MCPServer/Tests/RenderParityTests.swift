@@ -131,12 +131,20 @@ import Testing
         // one, and `Mirror` needs an instance to report properties from.
         let certificate = PeerCertificateInfo(subject: "CN=a.test")
         let tls = UpstreamTLSInfo(version: "TLSv1.3", certificate: certificate)
-        let transport = FlowTransport(remoteAddress: "127.0.0.1:443", upstreamTLS: tls)
+        let setup = ConnectionSetup(dnsMS: 12, tcpMS: 20, tlsHandshakeMS: 60)
+        let transport = FlowTransport(
+            remoteAddress: "127.0.0.1:443", upstreamTLS: tls, setup: setup
+        )
 
         check(Census(
             "FlowTransport → get_flow_detail.transport",
             model: transport,
             render: RenderedTransport(transport)!
+        ))
+        check(Census(
+            "ConnectionSetup → get_flow_detail.transport.setup",
+            model: setup,
+            render: RenderedConnectionSetup(setup)!
         ))
         check(Census(
             "UpstreamTLSInfo → get_flow_detail.transport.upstreamTLS",

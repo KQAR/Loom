@@ -70,6 +70,25 @@ import LoomSharedModels
         #expect(PeerCertificateInfo(subject: "CN=a.test").isValid(at: Date()))
     }
 
+    // MARK: - Connection setup
+
+    @Test func setupTotal_sumsOnlyWhatWasMeasured() {
+        #expect(ConnectionSetup(dnsMS: 12, tcpMS: 20, tlsHandshakeMS: 60).totalMS == 92)
+        // A phase that wasn't measured contributes nothing rather than zero — the
+        // total is a floor on what setup cost, not a claim to be complete.
+        #expect(ConnectionSetup(tcpMS: 20).totalMS == 20)
+        #expect(ConnectionSetup().totalMS == nil)
+        #expect(ConnectionSetup().isEmpty)
+    }
+
+    @Test func setupSurvivesMerging() {
+        // It rides the head instalment; the end instalment must not drop it.
+        let atHead = FlowTransport(setup: ConnectionSetup(tcpMS: 20))
+        let merged = atHead.merging(FlowTransport(requestSendMS: 3))
+        #expect(merged.setup?.tcpMS == 20)
+        #expect(merged.requestSendMS == 3)
+    }
+
     // MARK: - Body sizes
 
     @Test func bodyBytes_prefersTheWireSizeOverTheCapturedPrefix() {

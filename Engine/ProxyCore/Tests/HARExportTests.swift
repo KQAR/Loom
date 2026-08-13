@@ -109,6 +109,50 @@ import LoomSharedModels
         #expect(entry["serverIPAddress"] == nil)
     }
 
+    @Test func encode_mapsTheSetupPhasesOntoHARTimings() throws {
+        // HAR 1.2 defines `ssl` as a sub-interval of `connect`, while the model
+        // keeps them disjoint. The addition belongs at this boundary, and getting
+        // it wrong under-reports every TLS connection's setup by the handshake.
+        let flow = Flow(
+            request: CapturedRequest(method: "GET", url: "https://a.test/v1", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            outcome: .completed(
+                CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 1_001)
+            ),
+            firstByteAt: Date(timeIntervalSince1970: 1_000.4),
+            transport: FlowTransport(
+                setup: ConnectionSetup(dnsMS: 12, tcpMS: 20, tlsHandshakeMS: 60), requestSendMS: 3
+            )
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "9.9"))
+        let entry = try #require((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])[0]
+        let timings = try #require(entry["timings"] as? [String: Any])
+        #expect(timings["dns"] as? Int == 12)
+        #expect(timings["ssl"] as? Int == 60)
+        #expect(timings["connect"] as? Int == 80, "HAR's connect includes ssl")
+        #expect(timings["send"] as? Int == 3)
+        #expect(timings["wait"] as? Int == 400)
+    }
+
+    @Test func encode_unmeasuredPhasesStayMinusOne() throws {
+        // A reused connection genuinely paid no setup, and HAR's own spelling for
+        // "not measured" is -1 — a 0 would claim DNS was instant.
+        let flow = Flow(
+            request: CapturedRequest(method: "GET", url: "https://a.test/v1", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            outcome: .completed(
+                CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 1_001)
+            ),
+            transport: FlowTransport(connectionReused: true)
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "9.9"))
+        let entry = try #require((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])[0]
+        let timings = try #require(entry["timings"] as? [String: Any])
+        for key in ["dns", "connect", "ssl", "send", "blocked"] {
+            #expect(timings[key] as? Int == -1, "\(key) was not measured")
+        }
+    }
+
     @Test func encode_binaryBody_isBase64NotDropped() throws {
         // Regression: a non-UTF-8 body used to vanish from the export entirely.
         let binary = Data([0xFF, 0xD8, 0xFF, 0x00, 0x01, 0x02]) // not valid UTF-8
@@ -206,11 +250,14 @@ import LoomSharedModels
         let timings = try #require(entry["timings"] as? [String: Any])
         #expect(timings["wait"] as? Int == 500, "server think-time")
         #expect(timings["receive"] as? Int == 2_500, "body transfer")
-        #expect(timings["send"] as? Int == 0)
+        // `send` used to be a fabricated 0 ("Loom writes the request in one go").
+        // It is measured now — per exchange, on `FlowTransport` — and this flow has
+        // no transport at all, so the honest answer is HAR's "not measured".
+        #expect(timings["send"] as? Int == -1)
         // HAR: `time` is the sum of the measured phases.
         let measured = ["send", "wait", "receive"].compactMap { timings[$0] as? Int }.filter { $0 >= 0 }.reduce(0, +)
         #expect(entry["time"] as? Int == measured)
-        // Phases Loom doesn't measure are explicitly -1, not a fabricated 0.
+        // Phases this flow didn't measure are explicitly -1, not a fabricated 0.
         for phase in ["blocked", "dns", "connect", "ssl"] {
             #expect(timings[phase] as? Int == -1, "\(phase) must be reported as not measured")
         }

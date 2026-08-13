@@ -144,6 +144,11 @@ struct RenderedTransport: Encodable {
     var upstreamTLS: RenderedUpstreamTLS?
     var responseContentEncoding: String?
     var responseEncodedBodyBytes: Int?
+    /// Present only on the exchange that opened the connection — a reuse paid none
+    /// of it, and `connectionReused: true` is the same statement from the other
+    /// side. Do not read an absent `setup` as "setup was free".
+    var setup: RenderedConnectionSetup?
+    var requestSendMS: Int?
 
     init?(_ transport: FlowTransport?) {
         guard let transport, !transport.isEmpty else { return nil }
@@ -153,6 +158,29 @@ struct RenderedTransport: Encodable {
         upstreamTLS = transport.upstreamTLS.flatMap(RenderedUpstreamTLS.init)
         responseContentEncoding = transport.responseContentEncoding
         responseEncodedBodyBytes = transport.responseEncodedBodyBytes
+        setup = transport.setup.flatMap(RenderedConnectionSetup.init)
+        requestSendMS = transport.requestSendMS
+    }
+}
+
+/// The connection's setup cost, phase by phase — the half of "why is this slow"
+/// that TTFB folds into the server's think-time.
+struct RenderedConnectionSetup: Encodable {
+    var dnsMS: Int?
+    /// The TCP connect alone. Unlike HAR's `connect`, this does **not** include
+    /// the handshake; `tlsHandshakeMS` is reported beside it rather than inside it.
+    var tcpMS: Int?
+    var tlsHandshakeMS: Int?
+    /// The phases that were measured, summed — a floor on what the first request
+    /// to this origin paid before it could send a byte, not a guaranteed total.
+    var totalMS: Int?
+
+    init?(_ setup: ConnectionSetup) {
+        guard !setup.isEmpty else { return nil }
+        dnsMS = setup.dnsMS
+        tcpMS = setup.tcpMS
+        tlsHandshakeMS = setup.tlsHandshakeMS
+        totalMS = setup.totalMS
     }
 }
 
