@@ -215,22 +215,29 @@ public struct FlowComparison: Equatable, Sendable {
         /// Request-only: the URL.
         public var url: ValueChange<String>?
         public var headers: [HeaderChange]
+        /// Trailer-section differences, kept apart from `headers` because the two
+        /// are different claims: a field that moved from the head to the trailers
+        /// (or the reverse) is a real change, and merging them would report it as
+        /// no change at all.
+        public var trailers: [HeaderChange]
         public var body: BodyComparison?
 
         public init(
             method: ValueChange<String>? = nil,
             url: ValueChange<String>? = nil,
             headers: [HeaderChange] = [],
+            trailers: [HeaderChange] = [],
             body: BodyComparison? = nil
         ) {
             self.method = method
             self.url = url
             self.headers = headers
+            self.trailers = trailers
             self.body = body
         }
 
         public var isEmpty: Bool {
-            method == nil && url == nil && headers.isEmpty && body == nil
+            method == nil && url == nil && headers.isEmpty && trailers.isEmpty && body == nil
         }
     }
 
@@ -242,6 +249,11 @@ public struct FlowComparison: Equatable, Sendable {
         public var status: ValueChange<Int>?
         public var httpVersion: ValueChange<String>?
         public var headers: [HeaderChange]
+        /// Trailer-section differences. This is the one that carries a gRPC call's
+        /// verdict: two responses that both answered 200 with identical bodies and
+        /// differ only in `grpc-status` are not the same answer, and before trailers
+        /// were captured this diff called them identical.
+        public var trailers: [HeaderChange]
         public var body: BodyComparison?
 
         public init(
@@ -249,17 +261,20 @@ public struct FlowComparison: Equatable, Sendable {
             status: ValueChange<Int>? = nil,
             httpVersion: ValueChange<String>? = nil,
             headers: [HeaderChange] = [],
+            trailers: [HeaderChange] = [],
             body: BodyComparison? = nil
         ) {
             self.presence = presence
             self.status = status
             self.httpVersion = httpVersion
             self.headers = headers
+            self.trailers = trailers
             self.body = body
         }
 
         public var isEmpty: Bool {
-            presence == nil && status == nil && httpVersion == nil && headers.isEmpty && body == nil
+            presence == nil && status == nil && httpVersion == nil && headers.isEmpty
+                && trailers.isEmpty && body == nil
         }
     }
 }
@@ -307,6 +322,11 @@ public extension FlowComparison {
             method: change(base.method, compared.method),
             url: change(base.url, compared.url),
             headers: compareHeaders(base.headers, compared.headers),
+            // `?? []` on both sides: "no trailer section" and "an empty one" compare
+            // equal here on purpose. The distinction matters on the wire and in the
+            // capture; as a *difference* it would report every replay of a trailing
+            // request against a run that had none, which is noise.
+            trailers: compareHeaders(base.trailers ?? [], compared.trailers ?? []),
             body: compareBodies(
                 base.body, compared.body,
                 baseWireBytes: base.fullBodyBytes, comparedWireBytes: compared.fullBodyBytes
@@ -323,6 +343,7 @@ public extension FlowComparison {
                 status: change(base.statusCode, compared.statusCode),
                 httpVersion: change(base.httpVersion, compared.httpVersion),
                 headers: compareHeaders(base.headers, compared.headers),
+                trailers: compareHeaders(base.trailers ?? [], compared.trailers ?? []),
                 body: compareBodies(
                     base.body, compared.body,
                     baseWireBytes: base.fullBodyBytes, comparedWireBytes: compared.fullBodyBytes

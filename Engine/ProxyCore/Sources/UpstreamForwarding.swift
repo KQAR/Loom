@@ -10,6 +10,10 @@ struct ForwardResult: Sendable {
     var httpVersion: String?
     var headers: [HeaderPair]
     var body: Data
+    /// The origin's trailer field section, or nil when it sent none. This is where
+    /// gRPC returns its result (`grpc-status`), so a forwarder that drops it turns
+    /// every failed call into one that looks like it succeeded and then stopped.
+    var trailers: [HeaderPair]?
     /// How the exchange travelled, when it travelled at all. Nil for a response
     /// that never touched a socket — which is a fact worth keeping distinct from
     /// a zeroed-out transport, because "mocked" and "connected but unmeasured"
@@ -21,12 +25,14 @@ struct ForwardResult: Sendable {
         httpVersion: String? = nil,
         headers: [HeaderPair],
         body: Data,
+        trailers: [HeaderPair]? = nil,
         transport: FlowTransport? = nil
     ) {
         self.statusCode = statusCode
         self.httpVersion = httpVersion
         self.headers = headers
         self.body = body
+        self.trailers = trailers
         self.transport = transport
     }
 }
@@ -55,7 +61,54 @@ enum UpstreamResponseEvent: Sendable {
     case transport(FlowTransport)
     case head(statusCode: Int, httpVersion: String?, headers: [HeaderPair])
     case body(Data)
-    case end
+    /// The response finished, carrying the origin's trailer section when it sent
+    /// one. Nil and `[]` are different answers (no trailer section vs an empty
+    /// one), which is why this is not a plain array.
+    case end(trailers: [HeaderPair]?)
+}
+
+/// What the **client** spoke to Loom, as far as the upstream leg needs to care.
+///
+/// It exists because Loom re-originates every exchange, and re-originating an h2
+/// request as HTTP/1.1 is not a neutral translation: gRPC origins are h2-only, h2
+/// `cookie` crumbs have to be coalesced into a single line an origin's h1 front-end
+/// may then refuse, and response trailers only survive an h1 hop because that hop is
+/// chunked. So the client's protocol is carried down and the upstream leg matches it.
+///
+/// Deliberately **not** "negotiate h2 with every origin that offers it". An h1 client
+/// gets an h1 upstream: a proxy that upgraded on its own would make Loom's presence
+/// change which protocol the origin sees for traffic nobody asked it to change, and
+/// every h2-specific origin behaviour would then be Loom's to explain.
+enum ClientWireProtocol: Sendable {
+    case http1
+    /// HTTP/2 negotiated over TLS (ALPN `h2`).
+    case http2
+    /// HTTP/2 in cleartext, with prior knowledge (h2c).
+    ///
+    /// Kept apart from `http2` because the upstream decision differs, and getting
+    /// that wrong hangs the exchange. Over TLS, ALPN *asks* the origin and takes
+    /// `http/1.1` for an answer. In cleartext there is nothing to ask: sending the
+    /// connection preface is a commitment. The only evidence that an origin speaks
+    /// h2c is that the client just spoke it — so an h2c preface goes out **only** for
+    /// a client that itself arrived over h2c. An h2-over-TLS request that a
+    /// `mapRemote` rule retargets at an `http://` dev server gets a plain HTTP/1.1
+    /// leg, which is what that server can read.
+    case http2Cleartext
+
+    /// From what Loom recorded about the client's leg. A TLS version is what
+    /// separates the two h2 cases: an h2c connection has none, by definition.
+    ///
+    /// Anything not recognisably h2 is h1, which is the safe direction — the worst
+    /// case is exactly the behaviour Loom had before this existed.
+    init(httpVersion: String?, clientTLSVersion: String?) {
+        guard httpVersion?.hasPrefix("HTTP/2") == true else {
+            self = .http1
+            return
+        }
+        self = clientTLSVersion == nil ? .http2Cleartext : .http2
+    }
+
+    var isHTTP2: Bool { self != .http1 }
 }
 
 protocol UpstreamForwarding: Sendable {
@@ -79,6 +132,16 @@ protocol UpstreamForwarding: Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
 
+    /// Same again, plus what the client spoke. Every production caller uses this one;
+    /// the default below drops the protocol, so a test stub still only needs
+    /// `forward`. A decorator must override it to pass the value down — the compiler
+    /// cannot catch that, which is why `EngineInvariantTests` checks the h2 leg
+    /// survives the rules chain.
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
+
     /// Whether anything in this forwarding chain currently matches on the
     /// originating *app* — i.e. whether forwarding must wait for the libproc
     /// resolver before the first byte goes upstream. Device scoping doesn't
@@ -99,16 +162,24 @@ extension UpstreamForwarding {
         forwardStream(method: method, url: url, headers: headers, body: body)
     }
 
+    /// A forwarder with one upstream shape has no use for the client's protocol.
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        forwardStream(method: method, url: url, headers: headers, body: body, origin: origin)
+    }
+
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let collected = try await body.collect()
-                    let result = try await forward(method: method, url: url, headers: headers, body: collected)
+                    let result = try await forward(method: method, url: url, headers: headers, body: collected.body)
                     if let transport = result.transport { continuation.yield(.transport(transport)) }
                     continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
                     if !result.body.isEmpty { continuation.yield(.body(result.body)) }
-                    continuation.yield(.end)
+                    continuation.yield(.end(trailers: result.trailers))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -130,6 +201,7 @@ extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure ==
         var httpVersion: String?
         var headers: [HeaderPair] = []
         var body = Data()
+        var trailers: [HeaderPair]?
         var transport: FlowTransport?
         for try await event in self {
             switch event {
@@ -137,11 +209,12 @@ extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure ==
             case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
             case let .head(code, version, hdrs): statusCode = code; httpVersion = version; headers = hdrs
             case let .body(chunk): body.append(chunk)
-            case .end: break
+            case let .end(sectionTrailers): trailers = sectionTrailers
             }
         }
         return ForwardResult(
-            statusCode: statusCode, httpVersion: httpVersion, headers: headers, body: body, transport: transport
+            statusCode: statusCode, httpVersion: httpVersion, headers: headers, body: body,
+            trailers: trailers, transport: transport
         )
     }
 }

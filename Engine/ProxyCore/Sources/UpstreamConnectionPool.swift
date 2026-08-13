@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import NIOCore
 import NIOHTTP1
+import NIOHTTP2
 import LoomSharedModels
 
 /// Which upstream connections are interchangeable.
@@ -16,16 +17,39 @@ struct UpstreamPoolKey: Hashable, Sendable {
     let isTLS: Bool
     /// Label of the client identity presented on this connection, or nil for none.
     let identity: String?
+    /// Whether this exchange asked for HTTP/2 upstream. Part of the key because a
+    /// connection that offered `h2` in its ALPN list is not interchangeable with one
+    /// that did not — and, for cleartext, because an h2c connection carries a
+    /// connection preface an h1 request would land after.
+    var preferHTTP2: Bool = false
 }
 
-/// How one attempt on an upstream connection ended, from the pool's point of view.
-enum UpstreamAttemptEnd: Sendable {
-    /// The response completed and the connection is framed well enough to carry
-    /// another request (see `UpstreamExchangeSlot.responseIsReusable`).
-    case reusable
-    /// The response completed but this connection cannot be reused — `Connection:
-    /// close`, HTTP/1.0, or a body delimited by the close itself.
-    case mustClose
+/// What an upstream connection actually ended up speaking. Decided by ALPN for a
+/// TLS origin and by prior knowledge for a cleartext one — never assumed from the
+/// preference, because an origin is free to answer `http/1.1` to an `h2` offer.
+enum UpstreamWireProtocol: Sendable {
+    case http1
+    case http2
+}
+
+/// How one attempt on an upstream connection ended: what the pool must do with the
+/// socket, plus the last thing the origin said.
+struct UpstreamAttemptEnd: Sendable {
+    enum Disposition: Sendable {
+        /// The response completed and the connection is framed well enough to carry
+        /// another request (see `UpstreamExchangeSlot.responseIsReusable`).
+        case reusable
+        /// The response completed but this connection cannot be reused — `Connection:
+        /// close`, HTTP/1.0, or a body delimited by the close itself.
+        case mustClose
+    }
+
+    let disposition: Disposition
+    /// The origin's trailer field section, or nil when it sent none. It rides the
+    /// attempt's end rather than being yielded by the slot because the forwarder —
+    /// not the relay — terminates the caller's stream, and the trailers belong to
+    /// that terminal event.
+    let trailers: [HeaderPair]?
 }
 
 /// An attempt that failed before it produced a complete response.
@@ -184,8 +208,9 @@ final class UpstreamExchangeSlot: Sendable {
         continuation?.yield(.body(data))
     }
 
-    /// The response ended cleanly. Disarms and reports whether the connection survives.
-    func completeSuccessfully() {
+    /// The response ended cleanly. Disarms and reports whether the connection
+    /// survives, along with the trailer section the origin sent (nil for none).
+    func completeSuccessfully(trailers: [HeaderPair]? = nil) {
         // The end paired with an interim head belongs to the 1xx message, not to
         // the exchange — swallow it and keep waiting for the final response.
         let interim = armed.withLock { armed -> Bool in
@@ -202,7 +227,9 @@ final class UpstreamExchangeSlot: Sendable {
         if let encoded = current.encodedBodyBytes {
             current.continuation.yield(.transport(FlowTransport(responseEncodedBodyBytes: encoded)))
         }
-        current.completion(.success(current.reusable ? .reusable : .mustClose))
+        current.completion(.success(UpstreamAttemptEnd(
+            disposition: current.reusable ? .reusable : .mustClose, trailers: trailers
+        )))
     }
 
     /// The attempt failed. Disarms. With nothing armed the error is *held* rather
@@ -284,7 +311,15 @@ final class UpstreamConnection: @unchecked Sendable {
     let id = UUID()
     let key: UpstreamPoolKey
     let channel: Channel
+    /// The connection-wide exchange slot — **HTTP/1.1 only**, where one exchange at
+    /// a time owns the socket. An h2 connection multiplexes, so each stream channel
+    /// gets a slot of its own and this one is never armed (which is also what makes
+    /// `isBusy` correctly false for a shared connection).
     let slot: UpstreamExchangeSlot
+    /// What the connection speaks, once it is known. For h2, `multiplexer` is how a
+    /// new stream is opened.
+    let negotiated: UpstreamWireProtocol
+    let multiplexer: HTTP2StreamMultiplexer?
     /// The origin's address, snapshotted at connect time rather than read off the
     /// channel later. `Channel.remoteAddress` is safe to read off the loop, but a
     /// closed channel stops answering — and a transport reading nil for the one
@@ -313,12 +348,16 @@ final class UpstreamConnection: @unchecked Sendable {
         key: UpstreamPoolKey,
         channel: Channel,
         slot: UpstreamExchangeSlot,
+        negotiated: UpstreamWireProtocol = .http1,
+        multiplexer: HTTP2StreamMultiplexer? = nil,
         tlsInfo: UpstreamTLSInfoBox = UpstreamTLSInfoBox(),
         setup: ConnectionSetup = ConnectionSetup()
     ) {
         self.key = key
         self.channel = channel
         self.slot = slot
+        self.negotiated = negotiated
+        self.multiplexer = multiplexer
         self.tlsInfo = tlsInfo
         self.setup = setup
         remoteAddress = channel.remoteAddress.map(Self.describe)
@@ -394,6 +433,13 @@ final class UpstreamConnectionPool: Sendable {
     private struct State {
         var idle: [UpstreamPoolKey: [UpstreamConnection]] = [:]
         var totalIdle = 0
+        /// HTTP/2 connections, which are **shared rather than leased**: a stream is
+        /// not the socket, so many exchanges run on one connection at once. Keeping
+        /// them in their own map rather than reusing `idle` is what stops the h1
+        /// bookkeeping — take-on-lease, park-on-release, an idle timer per parking —
+        /// from being quietly wrong for a connection that is never idle between two
+        /// requests because it is carrying both.
+        var multiplexed: [UpstreamPoolKey: UpstreamConnection] = [:]
     }
 
     private let limits: Limits
@@ -410,6 +456,24 @@ final class UpstreamConnectionPool: Sendable {
     /// between the eviction and this call is exactly the race a liveness check
     /// costs nothing to lose.
     func lease(_ key: UpstreamPoolKey) -> UpstreamConnection? {
+        // A multiplexed connection is handed out *without being removed*: the next
+        // caller wants the same one, concurrently. A dead one is dropped here for
+        // the same reason the h1 path checks liveness — the notifier's eviction and
+        // an arriving FIN race, and losing that race costs nothing to check.
+        if key.preferHTTP2 {
+            let shared = state.withLock { state -> UpstreamConnection? in
+                guard let existing = state.multiplexed[key] else { return nil }
+                guard existing.isUsable else {
+                    state.multiplexed[key] = nil
+                    return nil
+                }
+                return existing
+            }
+            // Only ever an h2 connection: one that offered `h2` and was answered
+            // `http/1.1` is parked in `idle` like any other h1 socket, because that
+            // is what it is. So a miss here falls through to the ordinary path.
+            if let shared { return shared }
+        }
         let (leased, dead) = state.withLock { state -> (UpstreamConnection?, [UpstreamConnection]) in
             guard var bucket = state.idle[key] else { return (nil, []) }
             var dead: [UpstreamConnection] = []
@@ -434,6 +498,17 @@ final class UpstreamConnectionPool: Sendable {
     /// Park a connection whose exchange finished cleanly. Over a cap, or on a pool
     /// that has been drained, it is closed instead — a caller never has to ask.
     func release(_ connection: UpstreamConnection) {
+        // An h2 connection is not released, because it was never taken: it is
+        // registered on first use and stays until it dies or is drained. Closing it
+        // here would kill the streams other exchanges are still running on it.
+        if connection.negotiated == .http2 {
+            guard connection.isUsable else {
+                forget(connection)
+                return
+            }
+            state.withLock { $0.multiplexed[connection.key] = connection }
+            return
+        }
         guard connection.isUsable, !connection.slot.isBusy else {
             connection.close()
             return
@@ -459,11 +534,33 @@ final class UpstreamConnectionPool: Sendable {
         }
     }
 
+    /// Register a freshly-connected h2 connection, and say which one to actually
+    /// use. Called **before the first stream is opened on it**, which is what makes
+    /// the losing side safe to close: two exchanges that both missed the pool and
+    /// both connected have, at this moment, nothing running on either socket.
+    ///
+    /// Registering at connect time rather than at release is the difference between
+    /// a race window as wide as one `connect()` and one as wide as a whole exchange
+    /// — and, since a shared connection is never "released" in the h1 sense, the
+    /// only point at which the duplicate can still be closed harmlessly.
+    func registerMultiplexed(_ connection: UpstreamConnection) -> UpstreamConnection {
+        let winner = state.withLock { state -> UpstreamConnection in
+            if let incumbent = state.multiplexed[connection.key], incumbent.isUsable, incumbent !== connection {
+                return incumbent
+            }
+            state.multiplexed[connection.key] = connection
+            return connection
+        }
+        if winner !== connection { connection.close() }
+        return winner
+    }
+
     /// Drop a connection from the idle set without deciding whether to close it —
     /// called by the relay when a parked connection's socket goes away, where the
     /// close has already happened.
     func forget(_ connection: UpstreamConnection) {
         state.withLock { state in
+            if state.multiplexed[connection.key] === connection { state.multiplexed[connection.key] = nil }
             guard var bucket = state.idle[connection.key] else { return }
             guard let index = bucket.firstIndex(where: { $0 === connection }) else { return }
             bucket.remove(at: index)
@@ -488,6 +585,10 @@ final class UpstreamConnectionPool: Sendable {
                 state.totalIdle -= bucket.count
                 state.idle[key] = nil
             }
+            for (key, connection) in state.multiplexed where key.identity == identityLabel {
+                evicted.append(connection)
+                state.multiplexed[key] = nil
+            }
             return evicted
         }
         for connection in parked { connection.close() }
@@ -500,9 +601,10 @@ final class UpstreamConnectionPool: Sendable {
     /// usable again when it is switched back on.
     func drain() {
         let parked = state.withLock { state -> [UpstreamConnection] in
-            let all = state.idle.values.flatMap { $0 }
+            let all = state.idle.values.flatMap { $0 } + state.multiplexed.values
             state.idle = [:]
             state.totalIdle = 0
+            state.multiplexed = [:]
             return all
         }
         for connection in parked { connection.close() }

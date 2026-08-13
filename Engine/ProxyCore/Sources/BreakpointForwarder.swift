@@ -42,6 +42,19 @@ final class BreakpointForwarder: UpstreamForwarding {
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        forwardStream(
+            method: method, url: url, headers: headers, body: body,
+            origin: origin, clientProtocol: .http1
+        )
+    }
+
+    /// Passes the client's protocol through to the base forwarder. A hold changes
+    /// *when* the request goes out and possibly what it says — never which protocol
+    /// it travels on.
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         let originalMethod = method
         let originalURL = url.absoluteString
         let requestBP = store.firstMatch(method: originalMethod, url: originalURL, phase: .request, origin: origin)
@@ -50,7 +63,10 @@ final class BreakpointForwarder: UpstreamForwarding {
         // Fast path: no breakpoint touches this exchange — delegate untouched so the
         // request body (and streaming responses) keep streaming chunk-by-chunk.
         guard requestBP != nil || responseBP != nil else {
-            return base.forwardStream(method: method, url: url, headers: headers, body: body, origin: origin)
+            return base.forwardStream(
+                method: method, url: url, headers: headers, body: body,
+                origin: origin, clientProtocol: clientProtocol
+            )
         }
 
         // A held exchange is buffered (we may edit the request or the whole response),
@@ -62,7 +78,13 @@ final class BreakpointForwarder: UpstreamForwarding {
                     var method = method
                     var url = url
                     var headers = headers
-                    var body = try await body.collect()
+                    let collected = try await body.collect()
+                    var body = collected.body
+                    // Not editable at a breakpoint (the edit surface is method / URL /
+                    // headers / body), but carried through it: a hold that silently
+                    // dropped the client's trailer section would change the request in
+                    // a way the operator never asked for and cannot see.
+                    let requestTrailers = collected.trailers
 
                     // Request phase: hold the request as the client sent it, apply any edit.
                     if let bp = requestBP {
@@ -84,8 +106,13 @@ final class BreakpointForwarder: UpstreamForwarding {
                     var httpVersion: String?
                     var responseHeaders: [HeaderPair] = []
                     var responseBody = Data()
+                    var responseTrailers: [HeaderPair]?
                     var transport: FlowTransport?
-                    for try await event in base.forwardStream(method: method, url: url, headers: headers, body: .bytes(body), origin: origin) {
+                    for try await event in base.forwardStream(
+                        method: method, url: url, headers: headers,
+                        body: .bytes(body, trailers: requestTrailers),
+                        origin: origin, clientProtocol: clientProtocol
+                    ) {
                         switch event {
                         case let .metadata(rules): continuation.yield(.metadata(appliedRules: rules))
                         // Buffered like the rest of the response, not passed straight
@@ -95,12 +122,13 @@ final class BreakpointForwarder: UpstreamForwarding {
                         case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
                         case let .head(code, version, hdrs): statusCode = code; httpVersion = version; responseHeaders = hdrs
                         case let .body(chunk): responseBody.append(chunk)
-                        case .end: break
+                        case let .end(trailers): responseTrailers = trailers
                         }
                     }
                     var result = ForwardResult(
                         statusCode: statusCode, httpVersion: httpVersion,
-                        headers: responseHeaders, body: responseBody, transport: transport
+                        headers: responseHeaders, body: responseBody, trailers: responseTrailers,
+                        transport: transport
                     )
 
                     // Response phase: hold the final response before it reaches the client.
@@ -133,7 +161,7 @@ final class BreakpointForwarder: UpstreamForwarding {
         if let transport = result.transport { continuation.yield(.transport(transport)) }
         continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
-        continuation.yield(.end)
+        continuation.yield(.end(trailers: result.trailers))
         continuation.finish()
     }
 

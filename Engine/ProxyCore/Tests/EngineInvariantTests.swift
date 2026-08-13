@@ -22,6 +22,9 @@ import LoomSharedModels
 //   I4  Breakpoints release   — every exit path frees the held exchange exactly once.
 //   I5  Replay links its flow — every replay outcome records exactly one flow
 //                               pointing back at its source.
+//   I6  The chain keeps the   — the client's wire protocol reaches the base
+//       client's protocol       forwarder, so a rule or a hold can't silently put an
+//                               h2 exchange back on HTTP/1.1.
 //
 // Named here rather than in a doc so they fail, not rot.
 
@@ -501,6 +504,87 @@ struct ReplayLinkInvariantTests {
 
         await engine.stopForTest()
     }
+}
+
+// MARK: - I6 · The chain keeps the client's protocol
+
+/// The upstream leg is chosen from what the *client* spoke, and that fact is carried
+/// through the decorator chain by hand — `forwardStream(…, clientProtocol:)` has a
+/// default implementation that drops it, so a decorator that forgets to override it
+/// compiles cleanly and silently puts every ruled or held exchange back on HTTP/1.1.
+///
+/// Which, for a gRPC origin, means they stop working: h2-only servers do not answer
+/// HTTP/1.1 at all. The failure would look like "rules break gRPC" and point nowhere
+/// near the forwarder that dropped a parameter.
+@Suite("Invariant: the chain keeps the client's protocol", .timeLimit(.minutes(1)))
+struct ClientProtocolInvariantTests {
+    private func chain(_ base: UpstreamForwarding, rules: [TrafficRule] = []) -> UpstreamForwarding {
+        BreakpointForwarder(
+            base: RuleApplyingForwarder(
+                base: base,
+                rules: RulesConfig(state: RulesState(enabled: true, rules: rules), fileURL: nil)
+            ),
+            store: BreakpointStore()
+        )
+    }
+
+    @Test func theStreamingPathCarriesItToTheBase() async throws {
+        let base = ProtocolRecordingUpstream()
+        let stream = chain(base).forwardStream(
+            method: "POST", url: URL(string: "https://api.example.test/rpc")!,
+            headers: [], body: .bytes(Data("x".utf8)),
+            origin: nil, clientProtocol: .http2Cleartext
+        )
+        for try await _ in stream {}
+        #expect(await base.seen == .http2Cleartext)
+    }
+
+    /// And the buffered path too, which is the one a rule that must materialize the
+    /// body takes — i.e. the path an operator puts an exchange on by writing a rule.
+    @Test func theBufferedPathCarriesItToTheBase() async throws {
+        let base = ProtocolRecordingUpstream()
+        // A response-rewriting rule forces buffering; see `RuleApplyingForwarder`.
+        let stream = chain(base, rules: [
+            TrafficRule(
+                name: "buffer me",
+                match: RuleMatch(urlPattern: "*"),
+                actions: RuleActions(rewriteResponse: ResponseRewriteAction(
+                    setHeaders: [HeaderPair(name: "X-Seen", value: "1")]
+                ))
+            ),
+        ]).forwardStream(
+            method: "POST", url: URL(string: "https://api.example.test/rpc")!,
+            headers: [], body: .bytes(Data("x".utf8)),
+            origin: nil, clientProtocol: .http2
+        )
+        for try await _ in stream {}
+        #expect(await base.seen == .http2)
+    }
+}
+
+/// Records the protocol the chain handed down. Answers 200 so the stream completes.
+private actor ProtocolRecordingUpstream: UpstreamForwarding {
+    var seen: ClientWireProtocol?
+
+    func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
+        ForwardResult(statusCode: 200, headers: [], body: Data())
+    }
+
+    nonisolated func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.record(clientProtocol)
+                continuation.yield(.head(statusCode: 200, httpVersion: nil, headers: []))
+                continuation.yield(.end(trailers: nil))
+                continuation.finish()
+            }
+        }
+    }
+
+    private func record(_ clientProtocol: ClientWireProtocol) { seen = clientProtocol }
 }
 
 // MARK: - Shared stubs

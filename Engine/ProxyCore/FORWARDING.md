@@ -13,10 +13,15 @@ One proxied exchange is a single back-pressured event stream, and there is **one
 production path**:
 
 - The event type is **`UpstreamResponseEvent`**: a leading **`metadata(appliedRules:)`**
-  case, then `head` / `body` / `end`. `metadata` is the **single carrier of applied
-  rules**, emitted *before* the network call — so it survives a failure on every path
-  (live streaming, live buffered, replay, and held breakpoints). A map-remote rule
+  case, then `head` / `body` / `end(trailers:)`. `metadata` is the **single carrier of
+  applied rules**, emitted *before* the network call — so it survives a failure on every
+  path (live streaming, live buffered, replay, and held breakpoints). A map-remote rule
   pointing at a dead upstream still records its rule hit on the failed `Flow`.
+- **The terminal event carries the trailer section**, nil when the origin sent none —
+  and nil is not `[]`. It rides `end` rather than being yielded by the relay because
+  the *forwarder*, not the relay, terminates the caller's stream (see the retry note
+  below), and the trailers are the last thing the origin said. `ForwardResult.trailers`
+  is where the fold puts them.
 - `forward(...) -> ForwardResult` is a **fold** over `forwardStream` at every level of
   the decorator chain — never a second hand-synced implementation. The top-level
   buffered `forward` has no external consumer; it survives only as internal plumbing
@@ -26,7 +31,11 @@ production path**:
   `forwardStream` for `.metadata`.
 - Producers, in chain order:
   - **`NIOStreamingForwarder`** (base): `head` / `body` / `end`. Never `metadata` (no
-    rule knowledge).
+    rule knowledge). It is also the only level that knows about the wire protocol:
+    `forwardStream(…, clientProtocol:)` decides whether the upstream leg is HTTP/1.1
+    or HTTP/2, and **every decorator must pass that value through** — one that drops
+    it silently puts ruled or held exchanges back on HTTP/1.1, which for a gRPC origin
+    means they stop working.
   - **`RuleApplyingForwarder`**: emits `metadata(appliedRules:)` **first** — known
     synchronously from the plan, before the connection attempt — then forwards base
     events. That ordering is what makes `appliedRules` survive a connection failure.

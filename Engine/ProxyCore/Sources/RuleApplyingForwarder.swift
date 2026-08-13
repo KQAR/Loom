@@ -33,7 +33,11 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     /// Execute an already-computed plan. Taking the plan as a parameter (rather
     /// than re-planning) means the `touchesResponse` decision in `forwardStream`
     /// and the plan actually run can't disagree if rules mutate mid-request.
-    private func execute(plan: RuleEngine.RequestPlan) async throws -> ForwardResult {
+    private func execute(
+        plan: RuleEngine.RequestPlan,
+        requestTrailers: [HeaderPair]? = nil,
+        clientProtocol: ClientWireProtocol = .http1
+    ) async throws -> ForwardResult {
         if plan.delayMilliseconds > 0 {
             // `try await` (not `try?`) so a cancelled — client-gone — request
             // aborts here instead of sleeping then forwarding anyway.
@@ -43,9 +47,15 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         var result: ForwardResult
         switch plan.shortCircuit {
         case nil:
-            result = try await base.forward(
-                method: plan.method, url: plan.url, headers: plan.headers, body: plan.body
-            )
+            // Through `forwardStream` rather than the buffered `forward`, because
+            // that is the only entry point a request trailer section can travel on:
+            // `forward` takes bytes and nothing else, deliberately, since the bodies
+            // it exists for (a mock, a replay) have no client behind them.
+            result = try await base.forwardStream(
+                method: plan.method, url: plan.url, headers: plan.headers,
+                body: .bytes(plan.body, trailers: requestTrailers),
+                origin: nil, clientProtocol: clientProtocol
+            ).collect()
         case let .block(ruleName):
             result = ForwardResult(
                 statusCode: 403,
@@ -71,6 +81,17 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         forwardStream(method: method, url: url, headers: headers, body: body, origin: nil)
     }
 
+    /// Carries the client's protocol down to the base forwarder, which is what
+    /// decides the upstream leg. A decorator that dropped it would silently put every
+    /// ruled exchange back on HTTP/1.1 — including the gRPC calls this exists for.
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        plan(method: method, url: url, headers: headers, body: body,
+             origin: origin, clientProtocol: clientProtocol)
+    }
+
     /// Stream the request body straight through when no matched rule needs the whole
     /// body (or the whole response); otherwise buffer it. Buffering is required for a
     /// short-circuit (block/mock/mapLocal — the body is discarded but still drained +
@@ -80,6 +101,13 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     /// too.
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        plan(method: method, url: url, headers: headers, body: body, origin: origin, clientProtocol: .http1)
+    }
+
+    private func plan(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         // Matched once and threaded into the plan below: this used to filter here to
         // decide `needsBuffering` and then let `planRequest` filter the same rules
@@ -105,15 +133,20 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                 let task = Task {
                     do {
                         let collected = try await body.collect()
-                        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: collected)
+                        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: collected.body)
                         // Emit rule hits before running the plan so they survive an
                         // upstream failure (the exchange records what matched even if
                         // the connection never completes).
                         if !plan.appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: plan.appliedRules)) }
-                        let result = try await self.execute(plan: plan)
+                        // Draining the body is what made the client's trailer section
+                        // knowable; carrying it forward is what stops a rule that
+                        // merely rewrites a header from also eating it.
+                        let result = try await self.execute(
+                            plan: plan, requestTrailers: collected.trailers, clientProtocol: clientProtocol
+                        )
                         continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
                         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
-                        continuation.yield(.end)
+                        continuation.yield(.end(trailers: result.trailers))
                         continuation.finish()
                     } catch {
                         continuation.finish(throwing: error)
@@ -141,7 +174,10 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                     // Emit rule hits before touching the network so they survive an
                     // upstream failure that throws before any response head.
                     if !appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: appliedRules)) }
-                    for try await event in base.forwardStream(method: planMethod, url: planURL, headers: planHeaders, body: body, origin: origin) {
+                    for try await event in base.forwardStream(
+                        method: planMethod, url: planURL, headers: planHeaders, body: body,
+                        origin: origin, clientProtocol: clientProtocol
+                    ) {
                         // The base (NIO) forwarder carries no rules; forward its events
                         // untouched — the leading `.metadata` above is the rule carrier.
                         continuation.yield(event)

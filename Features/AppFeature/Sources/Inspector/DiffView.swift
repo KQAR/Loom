@@ -105,6 +105,7 @@ struct DiffView: View {
         if let method = request.method { rows.append(.change(label: "method", change: method.strings)) }
         if let url = request.url { rows.append(.change(label: "url", change: url.strings)) }
         rows.append(contentsOf: headerRows(request.headers))
+        rows.append(contentsOf: headerRows(request.trailers, kind: "trailer"))
         rows.append(contentsOf: bodyRows(request.body))
         return rows
     }
@@ -119,14 +120,17 @@ struct DiffView: View {
         if let status = response.status { rows.append(.change(label: "status", change: status.strings)) }
         if let version = response.httpVersion { rows.append(.change(label: "httpVersion", change: version.strings)) }
         rows.append(contentsOf: headerRows(response.headers))
+        rows.append(contentsOf: headerRows(response.trailers, kind: "trailer"))
         rows.append(contentsOf: bodyRows(response.body))
         return rows
     }
 
-    private func headerRows(_ headers: [FlowComparison.HeaderChange]) -> [Row] {
+    /// `kind` labels the row, because a field that moved between the head and the
+    /// trailers reads as two unrelated changes otherwise.
+    private func headerRows(_ headers: [FlowComparison.HeaderChange], kind: String = "header") -> [Row] {
         headers.map { header in
             .change(
-                label: "header \(header.name)",
+                label: "\(kind) \(header.name)",
                 change: (header.base?.joined(separator: ", "), header.compared?.joined(separator: ", "))
             )
         }

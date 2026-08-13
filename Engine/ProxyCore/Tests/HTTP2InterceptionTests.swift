@@ -509,7 +509,7 @@ private final class StreamingProgressForwarder: UpstreamForwarding, Sendable {
                 do {
                     self.progress.mark("upstream saw \(method) \(url.path)")
                     var collected = Data()
-                    switch body {
+                    switch body.source {
                     case let .bytes(data):
                         collected = data ?? Data()
                         self.progress.mark("upstream got a buffered body (\(collected.count) bytes)")
@@ -527,7 +527,7 @@ private final class StreamingProgressForwarder: UpstreamForwarding, Sendable {
                         headers: [HeaderPair(name: "Content-Type", value: "application/json")]
                     ))
                     if !self.body.isEmpty { continuation.yield(.body(self.body)) }
-                    continuation.yield(.end)
+                    continuation.yield(.end(trailers: nil))
                     continuation.finish()
                     self.progress.mark("upstream response emitted")
                 } catch {

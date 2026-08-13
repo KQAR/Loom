@@ -2,6 +2,7 @@ import Foundation
 import Testing
 import NIOCore
 @testable import LoomProxyCore
+import LoomSharedModels
 
 /// Contract for the request-body bridge + `RequestBody`: chunks yielded into the
 /// bridge come out of the consumed stream in order, a capped copy is captured, and
@@ -50,11 +51,34 @@ import NIOCore
 
     @Test func requestBody_collect() async throws {
         let bytes = try await RequestBody.bytes(Data("hi".utf8)).collect()
-        #expect(bytes == Data("hi".utf8))
+        #expect(bytes.body == Data("hi".utf8))
+        #expect(bytes.trailers == nil)
 
         let bridge = RequestBodyBridge(capture: RequestBodyCapture())
         bridge.yield(Data("a".utf8)); bridge.yield(Data("b".utf8)); bridge.finish()
         let streamed = try await RequestBody.stream(bridge.chunks, contentLength: 2).collect()
-        #expect(streamed == Data("ab".utf8))
+        #expect(streamed.body == Data("ab".utf8))
+    }
+
+    /// Draining is what makes a streamed request's trailer section knowable, so the
+    /// two have to come back together — a `collect()` that returned only bytes is
+    /// how every buffering path used to eat them.
+    @Test func requestBody_collect_carriesTheTrailerSectionOffAStream() async throws {
+        let bridge = RequestBodyBridge(capture: RequestBodyCapture())
+        bridge.yield(Data("payload".utf8))
+        bridge.finish(trailers: [HeaderPair(name: "grpc-status", value: "5")])
+
+        let collected = try await RequestBody
+            .stream(bridge.chunks, contentLength: nil, trailers: bridge.trailers)
+            .collect()
+        #expect(collected.body == Data("payload".utf8))
+        #expect(collected.trailers == [HeaderPair(name: "grpc-status", value: "5")])
+    }
+
+    /// Nil and empty are different answers: no trailer section at all, versus one
+    /// that arrived carrying no fields.
+    @Test func requestTrailers_distinguishAbsentFromEmpty() {
+        #expect(RequestTrailers().current == nil)
+        #expect(RequestTrailers([]).current == [])
     }
 }

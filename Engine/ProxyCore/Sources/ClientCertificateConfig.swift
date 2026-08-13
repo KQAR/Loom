@@ -12,7 +12,13 @@ import LoomSharedModels
 protocol ClientIdentityProviding: Sendable {
     /// Client context for `host`, or nil when no identity is configured for it.
     /// Throws only when an identity *is* configured and cannot be loaded.
-    func context(forHost host: String) throws -> NIOSSLContext?
+    ///
+    /// - Parameter offeringHTTP2: whether the context's ALPN list should offer `h2`
+    ///   ahead of `http/1.1`. It is a parameter rather than a property of the
+    ///   configuration because ALPN is fixed when a `NIOSSLContext` is built, and
+    ///   offering `h2` to an origin the caller cannot then *speak* h2 with is the one
+    ///   outcome that hangs an exchange. Contexts are cached per (identity, ALPN).
+    func context(forHost host: String, offeringHTTP2: Bool) throws -> NIOSSLContext?
     /// Context to use when no identity matches — same trust settings, no client
     /// certificate. Nil means "use the process-wide shared default".
     ///
@@ -23,7 +29,7 @@ protocol ClientIdentityProviding: Sendable {
     /// verification instead of where it claims to — which is exactly how
     /// `aRefusedHandshakeNamesWhetherAnIdentityWasPresented` passed while proving
     /// nothing.
-    func baseContext() throws -> NIOSSLContext?
+    func baseContext(offeringHTTP2: Bool) throws -> NIOSSLContext?
     /// Name of the identity that *would* be presented to `host`, for error context;
     /// nil when none matches.
     ///
@@ -52,10 +58,19 @@ protocol ClientIdentityProviding: Sendable {
 /// the same lock-and-enqueue discipline as `RulesConfig`: the write is queued while
 /// the lock is held so disk order can't diverge from mutation order.
 final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
+    /// A context is identified by *both* the identity it presents and the ALPN list
+    /// it offers, because the two produce different `NIOSSLContext`s and handing one
+    /// out for the other is how an origin gets offered a protocol Loom will not then
+    /// speak.
+    private struct ContextKey: Hashable {
+        let identity: UUID
+        let offeringHTTP2: Bool
+    }
+
     private struct State {
         var certificates: [ClientCertificate]
-        var contexts: [UUID: NIOSSLContext] = [:]
-        var cachedBaseContext: NIOSSLContext?
+        var contexts: [ContextKey: NIOSSLContext] = [:]
+        var cachedBaseContexts: [Bool: NIOSSLContext] = [:]
     }
 
     private let state: Mutex<State>
@@ -144,23 +159,37 @@ final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
     /// identity, and building one parses the trust store. `nil` when the base
     /// configuration is the stock client one, so production keeps using the shared
     /// context instead of holding a second identical copy.
-    func baseContext() throws -> NIOSSLContext? {
+    func baseContext(offeringHTTP2: Bool) throws -> NIOSSLContext? {
         guard isBaseConfigurationCustom else { return nil }
         // Two critical sections rather than one, deliberately: building the context
         // parses the trust store and must not happen under the lock.
-        if let cached = state.withLock({ $0.cachedBaseContext }) { return cached }
-        let context = try NIOSSLContext(configuration: baseConfiguration())
-        state.withLock { $0.cachedBaseContext = context }
+        if let cached = state.withLock({ $0.cachedBaseContexts[offeringHTTP2] }) { return cached }
+        let context = try NIOSSLContext(
+            configuration: Self.offering(http2: offeringHTTP2, in: baseConfiguration())
+        )
+        state.withLock { $0.cachedBaseContexts[offeringHTTP2] = context }
         return context
     }
 
-    func context(forHost host: String) throws -> NIOSSLContext? {
+    func context(forHost host: String, offeringHTTP2: Bool) throws -> NIOSSLContext? {
         guard let identity = identity(forHost: host) else { return nil }
         // Same two-section shape as `baseContext()`, and for the same reason.
-        if let cached = state.withLock({ $0.contexts[identity.id] }) { return cached }
-        let context = try makeContext(for: identity)
-        state.withLock { $0.contexts[identity.id] = context }
+        let cacheKey = ContextKey(identity: identity.id, offeringHTTP2: offeringHTTP2)
+        if let cached = state.withLock({ $0.contexts[cacheKey] }) { return cached }
+        let context = try makeContext(for: identity, offeringHTTP2: offeringHTTP2)
+        state.withLock { $0.contexts[cacheKey] = context }
         return context
+    }
+
+    /// ALPN is part of a context's identity, not of the operator's settings — so it
+    /// is applied here, at the one place a context is built, rather than being
+    /// threaded through `baseConfiguration`. `http/1.1` stays in the list: offering
+    /// `h2` is asking, and an origin is entitled to decline.
+    private static func offering(http2: Bool, in configuration: TLSConfiguration) -> TLSConfiguration {
+        guard http2 else { return configuration }
+        var offered = configuration
+        offered.applicationProtocols = ["h2", "http/1.1"]
+        return offered
     }
 
     // MARK: - Writes
@@ -233,9 +262,11 @@ final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
         return try Certificate(derEncoded: try first.toDERBytes())
     }
 
-    private func makeContext(for certificate: ClientCertificate) throws -> NIOSSLContext {
+    private func makeContext(
+        for certificate: ClientCertificate, offeringHTTP2: Bool
+    ) throws -> NIOSSLContext {
         let bundle = try Self.bundle(of: certificate)
-        var configuration = baseConfiguration()
+        var configuration = Self.offering(http2: offeringHTTP2, in: baseConfiguration())
         configuration.certificateChain = bundle.certificateChain.map { .certificate($0) }
         configuration.privateKey = .privateKey(bundle.privateKey)
         return try NIOSSLContext(configuration: configuration)

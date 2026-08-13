@@ -421,10 +421,20 @@ extension MCPToolExecutor {
                 bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A \
                 body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.
 
-                `request.httpVersion` and `response.httpVersion` are two different facts and \
-                routinely disagree: the first is what the client negotiated with Loom, the second is \
-                Loom's own hop to the origin, which is always HTTP/1.1. An h2 client showing \
-                `"HTTP/2"` in and `"HTTP/1.1"` out is normal, not a fault.
+                `request.httpVersion` and `response.httpVersion` are two different facts and can \
+                disagree: the first is what the client negotiated with Loom, the second is Loom's own \
+                hop to the origin. Loom now matches the client's protocol upstream where it can, so \
+                an h2 client usually reads `"HTTP/2"` on both — but `"HTTP/2"` in and `"HTTP/1.1"` \
+                out is still normal and not a fault: the origin may have declined `h2` over ALPN, a \
+                client certificate or a `mapRemote` rule may have retargeted the exchange, and an \
+                HTTP/1.1 client is never upgraded on its behalf.
+
+                `request.trailers` / `response.trailers` appear only when that side sent a trailer \
+                field section — the fields that arrive *after* the body. For gRPC this is where the \
+                call's actual result lives (`grpc-status`, `grpc-message`), so a call that reads 200 \
+                with an ordinary body may still have failed; read the trailers before concluding it \
+                succeeded. An absent key means there was no trailer section, which is not the same \
+                as an empty one.
 
                 `transport` describes the connection: `remoteAddress` (the origin's IP:port — what \
                 DNS actually resolved to), `connectionReused` (false means this exchange paid a TCP \
@@ -542,8 +552,11 @@ extension MCPToolExecutor {
             name: "diff_flows",
             description: """
             Diff two captured flows and report exactly what differs: request method/url, \
-            request+response headers (added/removed/changed), status code, and a line-level body \
-            diff for text payloads. Pass `base` alone to diff a replayed flow against the flow it \
+            request+response headers (added/removed/changed), **trailers** (the fields that \
+            arrive after the body — reported in their own `trailers` block, never merged into \
+            `headers`, so a field that moved between the two shows up as the change it is), \
+            status code, and a line-level body diff for text payloads. A gRPC pair that differs \
+            only in `grpc-status` is a success and a failure, and only the trailer block says so. Pass `base` alone to diff a replayed flow against the flow it \
             was replayed from. This closes the capture → modify → replay → diff loop.
 
             Read `identical` together with `captureTruncated`. When the latter is present, a body \
@@ -686,7 +699,7 @@ extension MCPToolExecutor {
             Loom relayed without reading, newest first, with `connections`, `lastSeen` and a \
             `reason`. A relayed connection records NO flow at all — not an empty one — so this is \
             the only surface holding the fact. `excluded`/`notInScope`/`interceptionDisabled` mean \
-            `intercept_host` would fix it (`interceptable: true`); `notTLSOrHTTP` (h2c, SSH, \
+            `intercept_host` would fix it (`interceptable: true`); `notTLSOrHTTP` (SSH, \
             SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
             scope change will. Two reasons mean the traffic did not merely go unread — the \
             request never happened and the operator's page is broken: `clientHandshakeFailed` \

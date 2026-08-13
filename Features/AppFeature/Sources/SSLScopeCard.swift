@@ -8,7 +8,7 @@ import SwiftUI
 /// decrypts **everything**, so what the human needs here is not "what is covered" —
 /// that is "all of it" — but the two ways an origin still ends up unread: something
 /// carved out of the scope, and something Loom cannot read whatever the scope says
-/// (h2c, SSH, a server-first protocol, a leaf that wouldn't mint). Both are invisible
+/// (SSH, a server-first protocol, a leaf that wouldn't mint). Both are invisible
 /// everywhere else, because an unread relay records no flow at all.
 ///
 /// A whitelist default was built and rejected: it makes the common case "traffic

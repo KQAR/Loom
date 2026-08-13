@@ -98,9 +98,9 @@ public enum TunnelReason: String, Codable, Sendable, CaseIterable {
     /// In scope with a CA, and minting the leaf failed. Fail-open: a host that
     /// stops loading would be worse than one Loom can't read.
     case leafMintFailed
-    /// The tunnel's first bytes were neither a TLS record nor an HTTP request
-    /// line — h2c prior knowledge, SSH, SMTP, a hand-rolled binary protocol — or
-    /// the connection is server-first and said nothing before the sniff deadline.
+    /// The tunnel's first bytes were neither a TLS record, an HTTP request line,
+    /// nor the h2c connection preface — SSH, SMTP, a hand-rolled binary protocol —
+    /// or the connection is server-first and said nothing before the sniff deadline.
     /// Being in the SSL scope does not make these readable.
     case notTLSOrHTTP
     /// Loom presented its leaf and the **client aborted the handshake** — a pinned

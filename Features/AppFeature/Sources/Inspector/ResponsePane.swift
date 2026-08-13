@@ -115,7 +115,7 @@ struct ResponsePane: View {
             switch tab {
             case .messages: EmptyView()
             case .raw: RawTab(flow: flow, pane: "resp", makeText: Self.rawText)
-            case .headers: Scrolled { HeadersList(headers: response.headers) }
+            case .headers: Scrolled { HeadersList(headers: response.headers, trailers: response.trailers) }
             case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
             case .body: BodyView(data: response.body, identity: "resp-body:\(flow.id)", fullBodyBytes: response.fullBodyBytes)
             }
@@ -133,6 +133,12 @@ struct ResponsePane: View {
         lines.append("")
         if let body = response.body, let string = String(data: body, encoding: .utf8) {
             lines.append(string)
+        }
+        // After the body, which is where they were on the wire — a raw pane that
+        // showed them among the headers would misreport when they arrived.
+        if let trailers = response.trailers, !trailers.isEmpty {
+            lines.append("")
+            lines += trailers.map { "\($0.name): \($0.value)" }
         }
         return lines.joined(separator: "\n")
     }

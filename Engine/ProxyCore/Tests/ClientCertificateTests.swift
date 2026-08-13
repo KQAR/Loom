@@ -38,7 +38,7 @@ struct ClientCertificateTests {
         identity.isEnabled = false
         let config = ClientCertificateConfig(certificates: [identity], fileURL: nil)
         #expect(config.identity(forHost: "api.corp.example") == nil)
-        #expect(try config.context(forHost: "api.corp.example") == nil)
+        #expect(try config.context(forHost: "api.corp.example", offeringHTTP2: false) == nil)
     }
 
     @Test func rejectsAnUnreadableBundleWhenItIsSetNotWhenItIsUsed() throws {
@@ -330,7 +330,11 @@ struct ClientCertificateTests {
 
 /// A throwaway CA, a server certificate and a client PKCS#12 bundle, minted with
 /// `/usr/bin/openssl` because no Swift TLS API writes PKCS#12.
-private struct TLSMaterial {
+///
+/// Internal rather than file-private: `H2UpstreamTests` needs the same throwaway
+/// trust root to stand up an ALPN-speaking origin, and minting a second identical
+/// one would cost two more `openssl` invocations per run to say the same thing.
+struct TLSMaterial {
     let caPEM: String
     let serverCertPEM: String
     let serverKeyPEM: String
@@ -412,7 +416,7 @@ private struct TLSMaterial {
     }
 }
 
-private enum TLSMaterialError: Error {
+enum TLSMaterialError: Error {
     case opensslFailed(String, String)
 }
 
