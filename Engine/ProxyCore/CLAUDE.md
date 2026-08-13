@@ -57,6 +57,49 @@ would surface as a corrupt body several requests later, nowhere near the cause.
 `ProxyEngine.stop()` drains the pool: the switch being off is a promise that Loom
 is not holding sockets open at anyone's origin.
 
+## The sniff deadline schedules a question, it never answers one
+
+`TunnelSniffHandler` classifies a tunnel from its first bytes. The 150 ms deadline
+exists only for server-first protocols (SSH, SMTP, IMAP, MySQL, PostgreSQL), which
+send nothing until the *server* greets. It used to **conclude** on expiry — declare
+the tunnel `.opaque` and relay it byte-for-byte, unread — and that was wrong for
+every case it could reach.
+
+The proof is in `ProtocolSniff.classify`: it returns `.opaque` on the **first byte**
+of anything unrecognised. So `.needMore`, the only state that survives to the
+deadline, means exactly one of two things, and the timer was a wrong answer to both:
+
+- **silence** — a server-first protocol, *or* a client that opened the tunnel ahead
+  of need (OkHttp and Chrome both pre-connect: `CONNECT`, take the ack, park it,
+  send the ClientHello seconds later);
+- **an unfinished prefix of something recognisable** — a lone `0x16`, part of the h2
+  preface, a method token with no space yet. Client-first by demonstration; merely
+  late. A ClientHello split across segments is ordinary on a lossy link.
+
+Expiry now starts a **speculative upstream connection** and lets whichever side
+speaks next settle it. Five rules:
+
+- **It writes nothing.** Anything the client already said stays buffered in the
+  sniffer; sending it would rule out the MITM the tunnel may still need.
+- **A server greeting reuses that connection** (`serverSpokeFirst`), because the
+  greeting has already arrived on it. `probe` is cleared *before* the handler is
+  removed — `handlerRemoved` closes a live probe, and this is the one path where the
+  probe is the connection being glued rather than one to discard.
+- **Client bytes drop it** and route normally. One wasted connect, only on a tunnel
+  that had already gone quiet past the deadline.
+- **A probe that can't connect is not a verdict.** The client may still be about to
+  send a ClientHello, and the real connection made for it reports its own failure
+  through `UpstreamConnectionError` rather than as a silently unread tunnel.
+- **Both ends pause reads across the splice.** Bytes reaching the end of a pipeline
+  with no glue in it yet are dropped without a sound, and the upstream side has by
+  definition already started talking — `UpstreamGreetingProbe` buffers *everything*,
+  not just the first read, for the same reason.
+
+Silence from both sides stays undecided and is deliberately **not** recorded in
+`TunneledHostLog`: nothing is being missed (no traffic has happened), and listing it
+would put every warm tunnel a browser holds in front of an operator asking why a
+host went unread.
+
 ## Response streaming
 
 - `forwardStream` yields head/body/end events; `StreamRelay` relays them to the client (chunked

@@ -309,7 +309,9 @@ struct SOCKSCaptureTests {
 /// Performs the client half of a SOCKS5 no-auth `CONNECT`, fulfilling `ready` once
 /// the server's success reply lands. Accumulates across reads on purpose: the
 /// server is free to split its two replies however it likes.
-private final class SOCKSHandshakeClient: ChannelInboundHandler, RemovableChannelHandler {
+/// Shared with `SniffDeadlineTests`, which drives the same handshake to reach the
+/// SOCKS entry point's sniffer — the same precedent as `CONNECTAckHandler`.
+final class SOCKSHandshakeClient: ChannelInboundHandler, RemovableChannelHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
