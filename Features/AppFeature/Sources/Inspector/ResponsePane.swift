@@ -24,17 +24,23 @@ struct ResponsePane: View {
 
     private var messages: [WebSocketMessage] { flow.webSocketMessages ?? [] }
 
-    private func tabs(_ derived: Derived) -> [(String, Tab)] {
+    private func tabs(_ derived: Derived) -> [InspectorTab<Tab>] {
+        let headerCount = flow.response?.headers.count ?? 0
         if flow.isWebSocket {
             // A WebSocket flow's payload is its frames, not a body.
-            return [("Messages(\(messages.count))", .messages), ("Headers(\(flow.response?.headers.count ?? 0))", .headers)]
+            return [
+                InspectorTab("Messages", count: messages.count, tab: .messages),
+                InspectorTab("Headers", count: headerCount, tab: .headers),
+            ]
         }
-        var t: [(String, Tab)] = [
-            ("Raw", .raw),
-            ("Headers(\(flow.response?.headers.count ?? 0))", .headers),
+        var t: [InspectorTab<Tab>] = [
+            InspectorTab("Raw", tab: .raw),
+            InspectorTab("Headers", count: headerCount, tab: .headers),
         ]
-        if !derived.cookies.isEmpty { t.append(("Cookies(\(derived.cookies.count))", .cookies)) }
-        t.append(("Body", .body))
+        if !derived.cookies.isEmpty {
+            t.append(InspectorTab("Cookies", count: derived.cookies.count, tab: .cookies))
+        }
+        t.append(InspectorTab("Body", tab: .body))
         return t
     }
 

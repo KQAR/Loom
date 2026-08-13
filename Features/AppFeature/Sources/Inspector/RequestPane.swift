@@ -41,17 +41,21 @@ struct RequestPane: View {
         )
     }
 
-    private func tabs(_ derived: Derived) -> [(String, Tab)] {
-        var t: [(String, Tab)] = [("Summary", .flowSummary)]
+    private func tabs(_ derived: Derived) -> [InspectorTab<Tab>] {
+        var t: [InspectorTab<Tab>] = [InspectorTab("Summary", tab: .flowSummary)]
         // Conditional and counted, the same rule Cookies follows: most requests
         // have no query, and a permanent empty tab is a tab people stop reading.
-        if !derived.query.isEmpty { t.append(("Query(\(derived.query.count))", .query)) }
-        if derived.graphQL != nil { t.append(("GraphQL", .graphQL)) }
-        t.append(("Raw", .raw))
-        t.append(("Headers(\(flow.request.headers.count))", .headers))
-        if !derived.cookies.isEmpty { t.append(("Cookies(\(derived.cookies.count))", .cookies)) }
-        t.append(("Body", .body))
-        if original != nil { t.append(("Diff", .diff)) }
+        if !derived.query.isEmpty {
+            t.append(InspectorTab("Query", count: derived.query.count, tab: .query))
+        }
+        if derived.graphQL != nil { t.append(InspectorTab("GraphQL", tab: .graphQL)) }
+        t.append(InspectorTab("Raw", tab: .raw))
+        t.append(InspectorTab("Headers", count: flow.request.headers.count, tab: .headers))
+        if !derived.cookies.isEmpty {
+            t.append(InspectorTab("Cookies", count: derived.cookies.count, tab: .cookies))
+        }
+        t.append(InspectorTab("Body", tab: .body))
+        if original != nil { t.append(InspectorTab("Diff", tab: .diff)) }
         return t
     }
 
