@@ -35,9 +35,15 @@ enum UpstreamAttemptEnd: Sendable {
 /// indistinguishable, from the caller's side, from never having been made — so it
 /// can be retried on a fresh socket. One that already yielded a head cannot,
 /// because the consumer has seen part of a response that will never finish.
+///
+/// `requestWritten` is the other half of the retry decision (RFC 9110 §9.2.2): a
+/// request whose final flush never succeeded cannot have been processed, so it is
+/// safe to re-send whatever its method; one that was fully written may have been
+/// acted on, and only an idempotent method may be retried past that point.
 struct UpstreamAttemptFailure: Error {
     let underlying: Error
     let didYield: Bool
+    let requestWritten: Bool
 }
 
 /// The handoff between the event-loop-confined response relay and the `Task` driving
@@ -59,9 +65,20 @@ final class UpstreamExchangeSlot: Sendable {
         let completion: @Sendable (Result<UpstreamAttemptEnd, UpstreamAttemptFailure>) -> Void
         var didYield = false
         var reusable = false
+        /// An interim (1xx) head was seen and its message-end is still owed. The
+        /// decoder delivers `100 Continue` as a complete head+end message, and
+        /// treating that end as *the* end released the connection into the pool
+        /// while the final response was still on the wire — the next lease could
+        /// then be handed the previous request's response.
+        var awaitingInterimEnd = false
     }
 
     private let armed = Mutex<Armed?>(nil)
+    /// A failure that arrived while nothing was armed — a fresh connection whose
+    /// TLS handshake ran to failure before `arm` — held so the arm that follows
+    /// fails with the *real* error (naming the alert, the identity) instead of a
+    /// bare `connectionClosed` reconstructed from `isActive`.
+    private let pendingFailure = Mutex<Error?>(nil)
 
     /// True while an exchange is in flight. Read by the pool to refuse pooling a
     /// connection that is somehow still busy.
@@ -75,11 +92,35 @@ final class UpstreamExchangeSlot: Sendable {
         armed.withLock {
             $0 = Armed(continuation: continuation, methodIsHead: methodIsHead, completion: completion)
         }
+        // A failure that beat the arm fails the exchange now, with its own words.
+        if let earlier = pendingFailure.withLock({ failure -> Error? in
+            let current = failure
+            failure = nil
+            return current
+        }) {
+            fail(earlier)
+        }
     }
 
     // MARK: - Called from the relay, on the event loop
 
     func receivedHead(_ head: HTTPResponseHead, headers: [HeaderPair], httpVersion: String) {
+        // An interim response (1xx, RFC 9110 §15.2) is not the response — it is
+        // swallowed here, never yielded, and its `.end` is swallowed too (see
+        // `completeSuccessfully`). 101 is deliberately not treated as interim:
+        // it terminates HTTP framing, and since the forwarder strips `Upgrade`
+        // as hop-by-hop an origin sending one is answering a request Loom never
+        // made — it falls through as a final head whose connection can't be
+        // reused (`responseIsReusable` has no case that accepts it).
+        let status = head.status.code
+        if (100..<200).contains(status), status != 101 {
+            armed.withLock {
+                guard var current = $0 else { return }
+                current.awaitingInterimEnd = true
+                $0 = current
+            }
+            return
+        }
         // Take the continuation out from under the lock before yielding: yielding
         // can run consumer code, and running it while holding this lock would put a
         // stranger's execution inside our critical section.
@@ -87,6 +128,9 @@ final class UpstreamExchangeSlot: Sendable {
             guard var current = $0 else { return nil }
             current.reusable = Self.responseIsReusable(head, methodIsHead: current.methodIsHead)
             current.didYield = true
+            // The final head arriving is what settles any owed interim end —
+            // whether or not the decoder delivered one.
+            current.awaitingInterimEnd = false
             $0 = current
             return current.continuation
         }
@@ -105,15 +149,35 @@ final class UpstreamExchangeSlot: Sendable {
 
     /// The response ended cleanly. Disarms and reports whether the connection survives.
     func completeSuccessfully() {
+        // The end paired with an interim head belongs to the 1xx message, not to
+        // the exchange — swallow it and keep waiting for the final response.
+        let interim = armed.withLock { armed -> Bool in
+            guard var current = armed, current.awaitingInterimEnd else { return false }
+            current.awaitingInterimEnd = false
+            armed = current
+            return true
+        }
+        if interim { return }
         guard let current = take() else { return }
         current.completion(.success(current.reusable ? .reusable : .mustClose))
     }
 
-    /// The attempt failed. Disarms; a no-op if nothing was armed, which is the
-    /// ordinary case for a connection that dies while sitting idle in the pool.
+    /// The attempt failed. Disarms. With nothing armed the error is *held* rather
+    /// than dropped — a fresh connection's TLS handshake can run to failure before
+    /// the exchange arms, and that error names what actually happened.
     func fail(_ error: Error) {
-        guard let current = take() else { return }
-        current.completion(.failure(UpstreamAttemptFailure(underlying: error, didYield: current.didYield)))
+        guard let current = take() else {
+            pendingFailure.withLock { failure in
+                if failure == nil { failure = error }
+            }
+            return
+        }
+        // `requestWritten` is conservative here — the slot never sees the write
+        // side. `attempt` re-stamps it with the measured value before the failure
+        // reaches the retry decision.
+        current.completion(.failure(UpstreamAttemptFailure(
+            underlying: error, didYield: current.didYield, requestWritten: true
+        )))
     }
 
     private func take() -> Armed? {
@@ -132,10 +196,15 @@ final class UpstreamExchangeSlot: Sendable {
     /// — pooling one of those hands the next request a socket that is already
     /// closing, which is the stale-connection failure this pool exists to avoid
     /// rather than cause.
+    ///
+    /// 1xx is deliberately absent from the bodyless set: interim responses are
+    /// swallowed in `receivedHead` and never reach this predicate, and a 101 that
+    /// does reach it must answer `false` — after Switching Protocols the bytes on
+    /// the wire are no longer HTTP/1.1 messages, so there is nothing to pool.
     static func responseIsReusable(_ head: HTTPResponseHead, methodIsHead: Bool) -> Bool {
         guard head.isKeepAlive else { return false }
         let status = head.status.code
-        let bodyless = methodIsHead || status == 204 || status == 304 || (100..<200).contains(status)
+        let bodyless = methodIsHead || status == 204 || status == 304
         if bodyless { return true }
         if head.headers.contains(name: "Content-Length") { return true }
         let encodings = head.headers[canonicalForm: "Transfer-Encoding"]
@@ -325,6 +394,27 @@ final class UpstreamConnectionPool: Sendable {
             state.totalIdle -= 1
             state.idle[connection.key] = bucket.isEmpty ? nil : bucket
         }
+    }
+
+    /// Close every parked connection presenting the named mTLS identity.
+    ///
+    /// The pool's key carries the identity's *label*, and an in-place edit of the
+    /// PKCS#12 behind a label changes neither the label nor the key — so without
+    /// this, a connection handshaken under the old certificate keeps being leased
+    /// for as long as traffic keeps it from idling out. `ClientCertificateConfig`
+    /// already drops its cached `NIOSSLContext` on mutation for exactly this
+    /// reason; the pool holds the other copy of the same stale state.
+    func drain(identityLabel: String) {
+        let parked = state.withLock { state -> [UpstreamConnection] in
+            var evicted: [UpstreamConnection] = []
+            for (key, bucket) in state.idle where key.identity == identityLabel {
+                evicted.append(contentsOf: bucket)
+                state.totalIdle -= bucket.count
+                state.idle[key] = nil
+            }
+            return evicted
+        }
+        for connection in parked { connection.close() }
     }
 
     /// Close every parked connection. Leased ones are untouched: they belong to an

@@ -64,6 +64,27 @@ final class TunneledHostLog: Sendable {
         }
     }
 
+    /// Drop a host's failure verdict once a client demonstrably trusts Loom again.
+    ///
+    /// `clientHandshakeFailed` and `protocolError` are the two reasons with no
+    /// scope-change recovery path: `pending()` keeps them forever (correctly — no
+    /// scope edit fixes them), so after the operator installs the CA into the
+    /// client, the "client refused" entry and the orange console icon would
+    /// outlive the problem until relaunch. A **completed** client handshake on an
+    /// intercepted tunnel to the same host:port is the evidence that clears both
+    /// — and if the codec still chokes on the next request, the failure re-records
+    /// itself immediately, so the window where a cleared entry hides a live
+    /// problem is one connection wide.
+    func clearClientVerdicts(host: String, port: Int) {
+        let key = "\(host.lowercased()):\(port)"
+        state.withLock {
+            guard let entry = $0.hosts[key],
+                  entry.reason == .clientHandshakeFailed || entry.reason == .protocolError
+            else { return }
+            $0.hosts.removeValue(forKey: key)
+        }
+    }
+
     /// Every entry, most recent activity first, plus how many were evicted.
     func snapshot() -> (hosts: [TunneledHost], evicted: Int) {
         state.withLock {

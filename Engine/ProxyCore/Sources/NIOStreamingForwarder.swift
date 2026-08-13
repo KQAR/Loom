@@ -149,6 +149,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 return
             } catch let failure as UpstreamAttemptFailure {
                 guard !failure.didYield else { throw failure.underlying }
+                // Bytes-in-hand makes the request *re-sendable*; it does not make
+                // it *re-executable*. RFC 9110 §9.2.2: an automatic retry is only
+                // allowed for an idempotent method, or when the request provably
+                // never reached the origin — here, when its final flush failed,
+                // so the origin cannot have read a complete request. A POST that
+                // was fully written and then went dark may have been acted on,
+                // and running it twice is the caller's decision, never the pool's.
+                guard Self.isIdempotent(method) || !failure.requestWritten else {
+                    throw failure.underlying
+                }
                 Log.forward.debug(
                     """
                     Pooled upstream connection to \(key.host, privacy: .public):\(key.port, privacy: .public) \
@@ -193,20 +203,23 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
 
         // A TLS handshake failure does not come back from `connect()` — the TCP
         // connection succeeds and the handshake fails later, inside the pipeline —
-        // so on a fresh connection it can land before the slot is armed, where
-        // `fail` is a no-op. If it already ran to completion the channel is
-        // inactive by now, and this is what turns that into a failed attempt
-        // instead of a promise nothing will ever complete. A failure still in
-        // flight arrives at the relay, which fails the slot we just armed.
+        // so on a fresh connection it can land before the slot is armed. The slot
+        // *holds* such a failure and `arm` above has already replayed it, with
+        // NIOSSL's own error intact for `UpstreamTLSError` to name. This check is
+        // the backstop for a channel that died before the slot ever heard why.
         if !connection.channel.isActive {
             connection.slot.fail(ForwarderError.connectionClosed)
         }
 
+        // Whether the request's final flush succeeded — the fact the retry
+        // decision (RFC 9110 §9.2.2) and the release decision below both need.
+        var requestWritten = false
         do {
             try await Self.writeRequest(
                 channel: connection.channel, method: method, url: url,
                 host: connection.key.host, port: connection.key.port, headers: headers, body: body
             )
+            requestWritten = true
         } catch {
             // Disarms and completes the promise; a no-op if the relay already saw
             // the failure first, which is the ordinary race on a dead socket.
@@ -216,6 +229,15 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let end: UpstreamAttemptEnd
         do {
             end = try await promise.futureResult.get()
+        } catch let failure as UpstreamAttemptFailure {
+            active.clear()
+            connection.close()
+            // Re-stamp with the measured write outcome: the slot fills this field
+            // conservatively because it never sees the write side.
+            throw UpstreamAttemptFailure(
+                underlying: failure.underlying, didYield: failure.didYield,
+                requestWritten: requestWritten
+            )
         } catch {
             active.clear()
             connection.close()
@@ -224,8 +246,17 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
 
         active.clear()
         switch end {
-        case .reusable: pool.release(connection)
-        case .mustClose: connection.close()
+        case .reusable where requestWritten:
+            pool.release(connection)
+        case .reusable:
+            // The response completed but this request's body never fully left —
+            // a server that answered early (413, an auth refusal) while the
+            // upload still had bytes owing. The response is fine to deliver; the
+            // connection is mid-request from the origin's point of view, and a
+            // next request written onto it would land inside the unfinished body.
+            connection.close()
+        case .mustClose:
+            connection.close()
         }
     }
 
@@ -357,6 +388,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let path = components.percentEncodedPath.isEmpty ? "/" : components.percentEncodedPath
         if let query = components.percentEncodedQuery { return "\(path)?\(query)" }
         return path
+    }
+
+    /// RFC 9110 §9.2.2's idempotent set. PUT and DELETE are in it by definition —
+    /// repeating them re-asserts the same state — and POST/PATCH are out, which is
+    /// the half that matters: those are the requests a retry can execute twice.
+    static func isIdempotent(_ method: String) -> Bool {
+        switch method.uppercased() {
+        case "GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE": return true
+        default: return false
+        }
     }
 
     private static func httpMethod(_ raw: String) -> HTTPMethod {

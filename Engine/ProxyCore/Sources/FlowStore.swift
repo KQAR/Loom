@@ -256,6 +256,14 @@ actor FlowStore {
     func upsert(_ flow: Flow, force: Bool = false) {
         var flow = flow
         if let idx = index(of: flow.id) {
+            // A completed exchange never regresses to pending. The head-parsed
+            // upsert (`CapturedExchange.observe`) and the exchange's own upserts
+            // run in separate unstructured Tasks, so nothing orders their arrival
+            // here — an extreme schedule can deliver the head-only pending record
+            // *after* the completion it precedes on the wire, which would leave a
+            // finished flow spinning in the window forever (the disk copy is
+            // right; the ring copy is what every read this session sees).
+            if flows[idx].completedAt != nil, flow.completedAt == nil { return }
             // Attribution, once known, sticks: the resolver may backfill the
             // source app concurrently with forwarding, and the relay's later
             // upserts (streaming updates, completion) carry whatever it knew at

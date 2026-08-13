@@ -531,8 +531,9 @@ struct TunneledHostRender: Encodable {
     var lastSeen: Date
     var reason: String
     var interceptable: Bool
-    /// Present only for `clientHandshakeFailed`, where the reason alone does not
-    /// separate "this host is pinned" from "your CA is not installed here".
+    /// Present for `clientHandshakeFailed` (the alert alone separates "this host
+    /// is pinned" from "your CA is not installed here") and `protocolError` (the
+    /// codec's own words separate "your client sent too much" from "Loom broke").
     var detail: String?
 
     init(_ entry: TunneledHost) {

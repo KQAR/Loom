@@ -95,6 +95,92 @@ struct HTTP2InterceptionTests {
         await engine.stopForTest()
     }
 
+    /// A header block past SwiftNIO's 16 KB HPACK default must decode once the peer
+    /// has acknowledged Loom's SETTINGS — this is the wiring test for
+    /// `MITMPipeline.maxHeaderListSize`, which no unit test can cover: the constant
+    /// can be right while `initialLocalSettings` is dropped, and everything else
+    /// stays green. Two requests on **one** connection, because the raised limit
+    /// only reaches the frame decoder when the client ACKs the SETTINGS
+    /// (RFC 9113 §6.5.3): the first, small request round-trips to prove the
+    /// connection is up (by which time the ACK — sent before any request — has
+    /// long landed), then the second carries a ~20 KB cookie, the measured shape
+    /// of the real failure (a phone's session cookies, 15–31 KB, hanging forever
+    /// against the default). If the setting is unwired the codec raises
+    /// `excessivelyLargeHeaderBlock` and the reporter closes the connection, so
+    /// this fails fast and loud rather than at the suite limit.
+    @Test func aHeaderBlockPastTheOldDefaultDecodesOnceSettingsAreAcked() async throws {
+        let progress = H2Progress()
+        let forwarder = StubForwarder(status: 200, body: Data(#"{"ok":true}"#.utf8))
+        let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
+
+        let port = try await engine.start(port: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
+        let caURL = try await engine.exportCACertificate()
+        let caPEM = try String(contentsOf: caURL)
+        progress.mark("engine listening on :\(port)")
+
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { shutdownBlocking(group) }
+
+        var clientConfig = TLSConfiguration.makeClientConfiguration()
+        clientConfig.trustRoots = .certificates([try NIOSSLCertificate(bytes: Array(caPEM.utf8), format: .pem)])
+        clientConfig.applicationProtocols = ["h2"]
+        let clientCtx = try NIOSSLContext(configuration: clientConfig)
+
+        let connected = group.next().makePromise(of: Void.self)
+        let sender = ConnectSender(connected: connected)
+        let client = try await ClientBootstrap(group: group)
+            .channelInitializer { $0.pipeline.addHandler(sender) }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
+
+        try await awaitOrReport(connected.futureResult, stage: "CONNECT ack",
+                                timeout: Self.connectTimeout, progress: progress)
+        try await client.pipeline.removeHandler(sender).get()
+
+        let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: "example.test")
+        try await client.pipeline.addHandler(HandshakeMarker(progress: progress), position: .first).get()
+        try await client.pipeline.addHandler(tls, position: .first).get()
+        let multiplexer = try await client.configureHTTP2Pipeline(mode: .client).get()
+        progress.mark("h2 pipeline configured")
+
+        // Request 1: small, proves the connection and carries the SETTINGS exchange.
+        let first = group.next().makePromise(of: H2Response.self)
+        multiplexer.createStreamChannel(promise: nil) { stream in
+            stream.pipeline.addHandler(HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: .https)).flatMap {
+                stream.pipeline.addHandler(H2RequestHandler(promise: first, path: "/h2/small"))
+            }
+        }
+        let smallResponse = try await awaitOrReport(first.futureResult, stage: "small-request response",
+                                                    timeout: Self.getTimeout, progress: progress)
+        #expect(smallResponse.status == 200)
+        progress.mark("small request round-tripped; SETTINGS long since acked")
+
+        // Request 2: a field section past the 16 KB default. 20 KB of cookie —
+        // within Loom's 1 MB, over SwiftNIO's default by a wide margin.
+        let bigCookie = String(repeating: "s", count: 20 * 1024)
+        let second = group.next().makePromise(of: H2Response.self)
+        multiplexer.createStreamChannel(promise: nil) { stream in
+            stream.pipeline.addHandler(HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: .https)).flatMap {
+                stream.pipeline.addHandler(H2RequestHandler(
+                    promise: second, path: "/h2/big-header", extraHeaders: [("cookie", bigCookie)]
+                ))
+            }
+        }
+        let bigResponse = try await awaitOrReport(second.futureResult, stage: "big-header response",
+                                                  timeout: Self.getTimeout, progress: progress)
+        #expect(bigResponse.status == 200,
+                "a 20 KB cookie answers fine without Loom in the path; it must answer through Loom too")
+
+        // The oversized header must arrive upstream intact, not truncated.
+        let flow = try #require(await awaitFlow(from: engine) {
+            $0.request.url.contains("/h2/big-header") && $0.response != nil
+        })
+        let cookie = flow.request.headers.first { $0.name.lowercased() == "cookie" }
+        #expect(cookie?.value.count == bigCookie.count)
+        await engine.stopForTest()
+    }
+
     /// An h2 POST body (DATA frames, no Content-Length) must stream through and be
     /// captured. The payload is larger than the default 64 KiB flow-control window,
     /// so the client can only finish sending if the MITM side replenishes the window
@@ -547,15 +633,22 @@ private final class H2RequestHandler: ChannelInboundHandler {
     typealias OutboundOut = HTTPClientRequestPart
 
     private let promise: EventLoopPromise<H2Response>
+    private let path: String
+    private let extraHeaders: [(String, String)]
     private var status = 0
     private var body = ""
 
-    init(promise: EventLoopPromise<H2Response>) { self.promise = promise }
+    init(promise: EventLoopPromise<H2Response>, path: String = "/h2/thing", extraHeaders: [(String, String)] = []) {
+        self.promise = promise
+        self.path = path
+        self.extraHeaders = extraHeaders
+    }
 
     func channelActive(context: ChannelHandlerContext) {
         var headers = HTTPHeaders()
         headers.add(name: "host", value: "example.test")
-        let head = HTTPRequestHead(version: .init(major: 1, minor: 1), method: .GET, uri: "/h2/thing", headers: headers)
+        for (name, value) in extraHeaders { headers.add(name: name, value: value) }
+        let head = HTTPRequestHead(version: .init(major: 1, minor: 1), method: .GET, uri: path, headers: headers)
         context.write(wrapOutboundOut(.head(head)), promise: nil)
         context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
     }

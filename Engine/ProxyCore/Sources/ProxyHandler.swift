@@ -146,6 +146,9 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         bodyBridge = nil
         requestHead = nil
         requestURL = nil
+        // The aborted request's identity goes with it — `startExchange`'s
+        // `?? observe(...)` fallback must never continue a dead request's flow.
+        observed = nil
         bridge.abort(reason: reason)
     }
 
