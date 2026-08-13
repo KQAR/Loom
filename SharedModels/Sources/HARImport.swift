@@ -83,7 +83,13 @@ public enum HARImport {
         let startedAt = date(entry["startedDateTime"]) ?? Date(timeIntervalSince1970: 0)
         let requestBody = postData(request["postData"])
         let captured = CapturedRequest(
-            method: method, url: url, headers: headers(request["headers"]), body: requestBody
+            method: method, url: url,
+            // HAR requires `httpVersion`, and plenty of exporters fill it with a
+            // placeholder ("HTTP/1.1" for an h2 capture, or the empty string).
+            // Nothing here can tell a stated version from a defaulted one, so it
+            // is taken as-is and only an empty one is dropped.
+            httpVersion: (request["httpVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            headers: headers(request["headers"]), body: requestBody
         )
 
         // Timings: `time` is the whole exchange, `timings.wait` the server think-time.
@@ -121,8 +127,27 @@ public enum HARImport {
             startedAt: startedAt,
             outcome: outcome,
             firstByteAt: firstByteAt,
-            importedFrom: label
+            importedFrom: label,
+            // Loom's own export ships the whole `FlowTransport` under `_transport`,
+            // so a round trip keeps it. A foreign HAR has no such key and at most a
+            // `serverIPAddress`, which is worth reading on its own — it is the one
+            // transport fact the format standardizes.
+            transport: transport(entry)
         ))
+    }
+
+    /// `_transport` when Loom wrote the file, otherwise whatever the standard
+    /// `serverIPAddress` field carries. Nil when neither is there, so an imported
+    /// flow doesn't claim a measured-and-empty transport.
+    private static func transport(_ entry: [String: Any]) -> FlowTransport? {
+        if let raw = entry["_transport"],
+           let data = try? JSONSerialization.data(withJSONObject: raw),
+           let decoded = try? JSONDecoder().decode(FlowTransport.self, from: data),
+           !decoded.isEmpty {
+            return decoded
+        }
+        guard let ip = entry["serverIPAddress"] as? String, !ip.isEmpty else { return nil }
+        return FlowTransport(remoteAddress: ip)
     }
 
     private static func headers(_ raw: Any?) -> [HeaderPair] {

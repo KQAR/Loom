@@ -28,6 +28,14 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     /// client believes it is on HTTPS); false for cleartext HTTP arriving over
     /// SOCKS, where re-fetching over `https://` would be a different request.
     private let upstreamTLS: Bool
+    /// What the client negotiated on the way in. Supplied by `MITMPipeline`,
+    /// which is the only place that knows it: ALPN decides the HTTP version (an
+    /// h2 request reaches this handler as an HTTP/1.1 head, built by the h2↔h1
+    /// codec), and the TLS handler that knows the version lives on the *parent*
+    /// of an h2 stream channel. Nil means "derive it from the head", which is
+    /// right for every plaintext path and wrong for both of those.
+    private let negotiatedProtocol: String?
+    private let clientTLSVersion: String?
 
     private var requestHead: HTTPRequestHead?
     private var requestURL: URL?
@@ -40,12 +48,24 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     private var bodyBridge: RequestBodyBridge?
     private var droppingRequest = false
 
-    init(host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool = true) {
+    init(
+        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding,
+        upstreamTLS: Bool = true, negotiatedProtocol: String? = nil, clientTLSVersion: String? = nil
+    ) {
         self.host = host
         self.port = port
         self.store = store
         self.forwarder = forwarder
         self.upstreamTLS = upstreamTLS
+        self.negotiatedProtocol = negotiatedProtocol
+        self.clientTLSVersion = clientTLSVersion
+    }
+
+    private func clientLeg(for head: HTTPRequestHead) -> CapturedExchange.ClientLeg {
+        CapturedExchange.ClientLeg(
+            httpVersion: negotiatedProtocol ?? HTTPUtil.clientProtocol(head.version),
+            tlsVersion: clientTLSVersion
+        )
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -67,7 +87,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
             // Recorded here, not at `.end`: a request that stalls after its head is
             // still a request, and used to leave no trace at all.
             observed = CapturedExchange.observe(
-                channel: context.channel, head: head, urlString: absolute, store: store
+                channel: context.channel, head: head, urlString: absolute, store: store,
+                clientLeg: clientLeg(for: head)
             )
         case var .body(chunk):
             if droppingRequest { return }
@@ -123,7 +144,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
 
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, absolute: String, body: RequestBody, capture: RequestBodyCapture?) {
         let observed = self.observed ?? CapturedExchange.observe(
-            channel: channel, head: head, urlString: absolute, store: store
+            channel: channel, head: head, urlString: absolute, store: store,
+            clientLeg: clientLeg(for: head)
         )
         // wss: keep the client's TLS handler in place, strip only the HTTP framing
         // + this handler; the upstream leg re-originates TLS.
@@ -141,7 +163,7 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                     MITMPipeline.encoderName, MITMPipeline.decoderName, MITMPipeline.interceptName,
                 ]
             ),
-            store: store, forwarder: forwarder, observed: observed
+            store: store, forwarder: forwarder, observed: observed, clientLeg: clientLeg(for: head)
         )
     }
 

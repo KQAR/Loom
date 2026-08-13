@@ -16,4 +16,21 @@ enum InspectorText {
     /// JSON deserialize `GraphQLParser` does, so opening a big POST's detail
     /// doesn't hang while building the tab strip.
     static let graphQLBodyLimit = 512_000
+
+    /// Hoisted formatter — a per-render `ByteCountFormatter` allocates, and both
+    /// callers sit on paths that re-render while a request is still streaming.
+    /// `@MainActor` rather than `nonisolated(unsafe)`: `ByteCountFormatter` is not
+    /// `Sendable`, and both callers are view bodies, so the isolation is a
+    /// statement of where it is already used rather than a constraint added.
+    @MainActor private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .binary
+        return formatter
+    }()
+
+    /// One spelling of a size across the inspector — the summary's rows and the
+    /// body pane's truncation strip quote the same numbers at each other.
+    @MainActor static func byteCount(_ bytes: Int) -> String {
+        byteFormatter.string(fromByteCount: Int64(bytes))
+    }
 }

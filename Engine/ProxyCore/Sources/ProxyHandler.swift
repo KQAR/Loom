@@ -90,7 +90,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             // still a request, and used to leave no trace at all.
             observed = CapturedExchange.observe(
                 channel: context.channel, head: resolved.head,
-                urlString: resolved.head.uri, store: store
+                urlString: resolved.head.uri, store: store,
+                clientLeg: Self.clientLeg(for: resolved.head)
             )
         case var .body(chunk):
             if droppingRequest { return }
@@ -291,7 +292,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     private func startExchange(channel: Channel, head: HTTPRequestHead, url: URL, body: RequestBody, capture: RequestBodyCapture?) {
         let observed = self.observed ?? CapturedExchange.observe(
-            channel: channel, head: head, urlString: head.uri, store: store
+            channel: channel, head: head, urlString: head.uri, store: store,
+            clientLeg: Self.clientLeg(for: head)
         )
         let ws = Self.webSocketRouting(for: url)
         CapturedExchange.handle(
@@ -305,8 +307,18 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 webSocketRequestPath: Self.originForm(url),
                 webSocketRemoveHandlerNames: ["loom.http.encoder", "loom.http.decoder", "loom.proxy"]
             ),
-            store: store, forwarder: forwarder, observed: observed
+            store: store, forwarder: forwarder, observed: observed,
+            clientLeg: Self.clientLeg(for: head)
         )
+    }
+
+    /// This entry point sees the request in the clear on the way in — an absolute
+    /// request URI on the proxy port, or a reverse-proxy endpoint's plain hop — so
+    /// the head's own version is the truth and there is no client-side TLS to
+    /// report. (An intercepted `CONNECT` never reaches here: it is swapped out to
+    /// `TLSInterceptHandler`, which states its own leg.)
+    private static func clientLeg(for head: HTTPRequestHead) -> CapturedExchange.ClientLeg {
+        CapturedExchange.ClientLeg(httpVersion: HTTPUtil.clientProtocol(head.version))
     }
 
     /// Origin-form request target (path + query) for an absolute proxied URL.

@@ -50,6 +50,65 @@ import LoomSharedModels
         #expect((response["content"] as? [String: Any])?["text"] as? String == #"{"ok":true}"#)
     }
 
+    @Test func encode_carriesTheClientProtocolAndTheConnectionFacts() throws {
+        // HAR's own `httpVersion` on the request used to be hard-coded "HTTP/1.1",
+        // so an h2 capture exported as an h1 one. And the connection facts had
+        // nowhere to go at all: `serverIPAddress` is standard, the rest rides one
+        // vendor extension rather than six keys that would drift apart.
+        let flow = Flow(
+            request: CapturedRequest(
+                method: "GET", url: "https://api.example.test/v1", httpVersion: "HTTP/2", headers: []
+            ),
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 1_001)),
+            transport: FlowTransport(
+                remoteAddress: "93.184.216.34:443",
+                connectionReused: true,
+                upstreamTLS: UpstreamTLSInfo(version: "TLSv1.3")
+            )
+        )
+
+        let json = try decode(HARExport.encode([flow], appVersion: "9.9"))
+        let entry = try #require((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])[0]
+        #expect((entry["request"] as? [String: Any])?["httpVersion"] as? String == "HTTP/2")
+        // The standard field is the address alone; the port lives on in `_transport`.
+        #expect(entry["serverIPAddress"] as? String == "93.184.216.34")
+        let transport = try #require(entry["_transport"] as? [String: Any])
+        #expect(transport["remoteAddress"] as? String == "93.184.216.34:443")
+        #expect(transport["connectionReused"] as? Bool == true)
+        #expect((transport["upstreamTLS"] as? [String: Any])?["version"] as? String == "TLSv1.3")
+    }
+
+    @Test func exportImport_roundTripsTheClientProtocolAndTransport() throws {
+        let flow = Flow(
+            request: CapturedRequest(
+                method: "GET", url: "https://api.example.test/v1", httpVersion: "HTTP/2", headers: []
+            ),
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 1_001)),
+            transport: FlowTransport(remoteAddress: "93.184.216.34:443", connectionReused: false)
+        )
+        let data = HARExport.encode([flow], appVersion: "9.9")
+        let imported = try #require(HARImport.decode(data, label: "t.har").flows.first)
+        #expect(imported.request.httpVersion == "HTTP/2")
+        #expect(imported.transport?.remoteAddress == "93.184.216.34:443")
+        #expect(imported.transport?.connectionReused == false)
+    }
+
+    @Test func encode_omitsTheTransportKeysWhenNothingWasMeasured() throws {
+        // A mocked exchange never touched a socket. An empty `_transport` object
+        // would read as "measured, and nothing there", which is a different claim.
+        let flow = Flow(
+            request: CapturedRequest(method: "GET", url: "https://a.test", headers: []),
+            startedAt: Date(timeIntervalSince1970: 0),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: 1))
+        )
+        let json = try decode(HARExport.encode([flow], appVersion: "9.9"))
+        let entry = try #require((json["log"] as? [String: Any])?["entries"] as? [[String: Any]])[0]
+        #expect(entry["_transport"] == nil)
+        #expect(entry["serverIPAddress"] == nil)
+    }
+
     @Test func encode_binaryBody_isBase64NotDropped() throws {
         // Regression: a non-UTF-8 body used to vanish from the export entirely.
         let binary = Data([0xFF, 0xD8, 0xFF, 0x00, 0x01, 0x02]) // not valid UTF-8

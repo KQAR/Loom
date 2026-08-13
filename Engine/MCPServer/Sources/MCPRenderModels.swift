@@ -117,11 +117,76 @@ struct FlowDetailRender: Encodable {
     var response: RenderedResponse?
     var graphQL: RenderedGraphQL?
     var webSocket: RenderedWebSocket?
+    /// How it travelled. Detail-only on purpose: `get_recent_flows` is the
+    /// most-used read and none of this changes what an agent picks *out* of a
+    /// list — it is what you ask once you have picked one.
+    var transport: RenderedTransport?
+}
+
+/// The connection facts. Every field optional and omitted when unmeasured, which
+/// is not the same as "no": a mocked response never touched a socket, and a
+/// connect failure has no TLS. An agent must not read a missing `upstreamTLS` as
+/// "the connection was plaintext".
+struct RenderedTransport: Encodable {
+    var clientTLSVersion: String?
+    var remoteAddress: String?
+    var connectionReused: Bool?
+    var upstreamTLS: RenderedUpstreamTLS?
+    var responseContentEncoding: String?
+    var responseEncodedBodyBytes: Int?
+
+    init?(_ transport: FlowTransport?) {
+        guard let transport, !transport.isEmpty else { return nil }
+        clientTLSVersion = transport.clientTLSVersion
+        remoteAddress = transport.remoteAddress
+        connectionReused = transport.connectionReused
+        upstreamTLS = transport.upstreamTLS.flatMap(RenderedUpstreamTLS.init)
+        responseContentEncoding = transport.responseContentEncoding
+        responseEncodedBodyBytes = transport.responseEncodedBodyBytes
+    }
+}
+
+struct RenderedUpstreamTLS: Encodable {
+    var version: String?
+    var serverName: String?
+    /// The mTLS identity Loom presented, absent when it presented none — which is
+    /// the reading that explains an unexpected 403 from a client-cert origin.
+    var clientCertificate: String?
+    var certificate: RenderedPeerCertificate?
+
+    init?(_ tls: UpstreamTLSInfo) {
+        guard tls != UpstreamTLSInfo() else { return nil }
+        version = tls.version
+        serverName = tls.serverName
+        clientCertificate = tls.clientCertificate
+        certificate = tls.certificate.flatMap(RenderedPeerCertificate.init)
+    }
+}
+
+struct RenderedPeerCertificate: Encodable {
+    var subject: String?
+    var issuer: String?
+    var notBefore: Date?
+    var notAfter: Date?
+    var serialNumber: String?
+
+    init?(_ certificate: PeerCertificateInfo) {
+        guard certificate != PeerCertificateInfo() else { return nil }
+        subject = certificate.subject
+        issuer = certificate.issuer
+        notBefore = certificate.notBefore
+        notAfter = certificate.notAfter
+        serialNumber = certificate.serialNumber
+    }
 }
 
 struct RenderedRequest: Encodable {
     var method: String
     var url: String
+    /// What the *client* spoke to Loom. Not the same fact as the response's
+    /// `httpVersion`, which is Loom's upstream hop — they disagree for every
+    /// intercepted h2 request, because Loom re-originates as HTTP/1.1.
+    var httpVersion: String?
     var headers: [RenderedHeader]
     var body: RenderedBody
     /// Capture truncation is a different fact from the render window in `body`: the
@@ -133,6 +198,7 @@ struct RenderedRequest: Encodable {
     init(_ request: CapturedRequest, body: RenderedBody) {
         method = request.method
         url = request.url
+        httpVersion = request.httpVersion
         headers = RenderedHeader.list(request.headers)
         self.body = body
         if let wireBytes = request.fullBodyBytes {

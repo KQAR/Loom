@@ -51,6 +51,18 @@ public extension [HeaderPair] {
 public struct CapturedRequest: Equatable, Codable, Sendable {
     public var method: String
     public var url: String
+    /// The HTTP version the **client** spoke to Loom (`HTTP/2`, `HTTP/1.1`,
+    /// `HTTP/1.0`), or nil for a flow captured before this was recorded and for a
+    /// request Loom synthesized rather than received.
+    ///
+    /// Deliberately a separate fact from `CapturedResponse.httpVersion`, which is
+    /// Loom's *upstream* hop — and the two routinely disagree, because
+    /// `NIOStreamingForwarder` re-originates every exchange as HTTP/1.1. A client
+    /// that negotiated h2 and an origin that answered HTTP/1.1 is the ordinary
+    /// case, and collapsing them into one field would make the h2 half of the
+    /// picture unreportable: the response version alone reads "HTTP/1.1" for an
+    /// h2 client, which is true of Loom's hop and a lie about the client's.
+    public var httpVersion: String?
     public var headers: [HeaderPair]
     public var body: Data?
     /// Total body bytes that crossed the wire, recorded **only** when `body` holds
@@ -63,9 +75,24 @@ public struct CapturedRequest: Equatable, Codable, Sendable {
     /// Whether `body` is a prefix of what actually flowed rather than the whole of it.
     public var isBodyTruncated: Bool { fullBodyBytes != nil }
 
-    public init(method: String, url: String, headers: [HeaderPair], body: Data? = nil, fullBodyBytes: Int? = nil) {
+    /// Bytes this request's body had on the wire — the captured length, or the
+    /// true length when the capture cap truncated it. Nil for a bodyless request.
+    public var bodyBytes: Int? {
+        if let fullBodyBytes { return fullBodyBytes }
+        return body?.count
+    }
+
+    public init(
+        method: String,
+        url: String,
+        httpVersion: String? = nil,
+        headers: [HeaderPair],
+        body: Data? = nil,
+        fullBodyBytes: Int? = nil
+    ) {
         self.method = method
         self.url = url
+        self.httpVersion = httpVersion
         self.headers = headers
         self.body = body
         self.fullBodyBytes = fullBodyBytes
@@ -86,6 +113,15 @@ public struct CapturedResponse: Equatable, Codable, Sendable {
 
     /// Whether `body` is a prefix of what actually flowed rather than the whole of it.
     public var isBodyTruncated: Bool { fullBodyBytes != nil }
+
+    /// Bytes this response's body had after decoding — the captured length, or
+    /// the true length when the capture cap truncated it. Not the wire size: the
+    /// forwarder decompresses, and what crossed the wire is
+    /// `FlowTransport.responseEncodedBodyBytes`.
+    public var bodyBytes: Int? {
+        if let fullBodyBytes { return fullBodyBytes }
+        return body?.count
+    }
 
     public init(
         statusCode: Int,
@@ -219,6 +255,11 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// way, so `isBodyTruncated` and every reader of it stay correct without knowing
     /// which happened.
     public var bodiesEvicted: Bool?
+    /// How the exchange travelled — upstream address, connection reuse, both
+    /// legs' TLS, the encoded response size. Nil for an exchange that never
+    /// reached the network (a mocked or blocked response, a request still pending
+    /// its head) and for flows captured before this was recorded.
+    public var transport: FlowTransport?
 
     public init(
         id: UUID = UUID(),
@@ -234,7 +275,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         webSocketDroppedMessages: Int? = nil,
         webSocketCaptureError: String? = nil,
         importedFrom: String? = nil,
-        bodiesEvicted: Bool? = nil
+        bodiesEvicted: Bool? = nil,
+        transport: FlowTransport? = nil
     ) {
         self.id = id
         self.request = request
@@ -250,6 +292,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.webSocketCaptureError = webSocketCaptureError
         self.importedFrom = importedFrom
         self.bodiesEvicted = bodiesEvicted
+        self.transport = transport
     }
 
     // MARK: Read accessors derived from `outcome` (keep call sites terse)

@@ -80,7 +80,8 @@ extension MCPToolExecutor {
                 )
             },
             graphQL: GraphQLParser.parse(flow.request).map(RenderedGraphQL.init),
-            webSocket: webSocket
+            webSocket: webSocket,
+            transport: RenderedTransport(flow.transport)
         )
         // Merged over the summary rather than restating it: the detail owns only the
         // keys it adds, and `webSocket` deliberately *replaces* the summary's bare

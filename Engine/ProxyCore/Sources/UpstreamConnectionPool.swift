@@ -62,8 +62,17 @@ final class UpstreamExchangeSlot: Sendable {
     private struct Armed {
         let continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation
         let methodIsHead: Bool
+        /// How this exchange is travelling, evaluated **lazily at head time**
+        /// rather than at arm time. On a fresh connection the TLS handshake has
+        /// not finished when the exchange arms — NIOSSL buffers the request write
+        /// until it has — so reading the negotiated version any earlier reads nil
+        /// on exactly the connections it is most interesting for.
+        let transport: @Sendable () -> FlowTransport
         let completion: @Sendable (Result<UpstreamAttemptEnd, UpstreamAttemptFailure>) -> Void
         var didYield = false
+        /// Response body bytes as they arrived from the socket, still encoded.
+        /// Counted upstream of the decompressor and reported once, with the end.
+        var encodedBodyBytes: Int?
         var reusable = false
         /// An interim (1xx) head was seen and its message-end is still owed. The
         /// decoder delivers `100 Continue` as a complete head+end message, and
@@ -87,10 +96,14 @@ final class UpstreamExchangeSlot: Sendable {
     func arm(
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         methodIsHead: Bool,
+        transport: @escaping @Sendable () -> FlowTransport = { FlowTransport() },
         completion: @escaping @Sendable (Result<UpstreamAttemptEnd, UpstreamAttemptFailure>) -> Void
     ) {
         armed.withLock {
-            $0 = Armed(continuation: continuation, methodIsHead: methodIsHead, completion: completion)
+            $0 = Armed(
+                continuation: continuation, methodIsHead: methodIsHead,
+                transport: transport, completion: completion
+            )
         }
         // A failure that beat the arm fails the exchange now, with its own words.
         if let earlier = pendingFailure.withLock({ failure -> Error? in
@@ -124,7 +137,8 @@ final class UpstreamExchangeSlot: Sendable {
         // Take the continuation out from under the lock before yielding: yielding
         // can run consumer code, and running it while holding this lock would put a
         // stranger's execution inside our critical section.
-        let continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation? = armed.withLock {
+        let armedNow: (continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
+                       transport: @Sendable () -> FlowTransport)? = armed.withLock {
             guard var current = $0 else { return nil }
             current.reusable = Self.responseIsReusable(head, methodIsHead: current.methodIsHead)
             current.didYield = true
@@ -132,9 +146,32 @@ final class UpstreamExchangeSlot: Sendable {
             // whether or not the decoder delivered one.
             current.awaitingInterimEnd = false
             $0 = current
-            return current.continuation
+            return (current.continuation, current.transport)
         }
-        continuation?.yield(.head(statusCode: Int(head.status.code), httpVersion: httpVersion, headers: headers))
+        guard let armedNow else { return }
+        // Before the head, so a consumer that records the head already has the
+        // connection's facts in hand. `Content-Encoding` is read off the *raw*
+        // head — `headers` has been sanitized, because the decompressor has
+        // already inflated the body and the header no longer describes it — and
+        // this is the only place the origin's own encoding is still visible.
+        var transport = armedNow.transport()
+        transport.responseContentEncoding = head.headers[canonicalForm: "Content-Encoding"]
+            .first.map { $0.lowercased() }
+        armedNow.continuation.yield(.transport(transport))
+        armedNow.continuation.yield(
+            .head(statusCode: Int(head.status.code), httpVersion: httpVersion, headers: headers)
+        )
+    }
+
+    /// The encoded size of the response body, counted on the socket side of the
+    /// decompressor. Recorded rather than yielded here: it is reported with the
+    /// end so it cannot land before a body chunk it is meant to describe.
+    func receivedEncodedBodyBytes(_ bytes: Int) {
+        armed.withLock {
+            guard var current = $0 else { return }
+            current.encodedBodyBytes = bytes
+            $0 = current
+        }
     }
 
     func receivedBody(_ data: Data) {
@@ -159,6 +196,12 @@ final class UpstreamExchangeSlot: Sendable {
         }
         if interim { return }
         guard let current = take() else { return }
+        // The second (and last) transport instalment: a byte count is only a
+        // number once the body has finished, so it could never have ridden the
+        // head. The consumer merges it over what the head carried.
+        if let encoded = current.encodedBodyBytes {
+            current.continuation.yield(.transport(FlowTransport(responseEncodedBodyBytes: encoded)))
+        }
         current.completion(.success(current.reusable ? .reusable : .mustClose))
     }
 
@@ -242,6 +285,16 @@ final class UpstreamConnection: @unchecked Sendable {
     let key: UpstreamPoolKey
     let channel: Channel
     let slot: UpstreamExchangeSlot
+    /// The origin's address, snapshotted at connect time rather than read off the
+    /// channel later. `Channel.remoteAddress` is safe to read off the loop, but a
+    /// closed channel stops answering — and a transport reading nil for the one
+    /// exchange that failed is the reading you most wanted.
+    let remoteAddress: String?
+    /// Filled in by `UpstreamTLSObserver` when the handshake completes. A box
+    /// rather than a `let` because the handler goes into the pipeline inside
+    /// `channelInitializer`, which runs before this object exists — the same
+    /// construction cycle `UpstreamInactiveNotifier` exists for.
+    let tlsInfo: UpstreamTLSInfoBox
 
     private struct State {
         var closed = false
@@ -252,10 +305,27 @@ final class UpstreamConnection: @unchecked Sendable {
 
     private let state = Mutex(State())
 
-    init(key: UpstreamPoolKey, channel: Channel, slot: UpstreamExchangeSlot) {
+    init(
+        key: UpstreamPoolKey,
+        channel: Channel,
+        slot: UpstreamExchangeSlot,
+        tlsInfo: UpstreamTLSInfoBox = UpstreamTLSInfoBox()
+    ) {
         self.key = key
         self.channel = channel
         self.slot = slot
+        self.tlsInfo = tlsInfo
+        remoteAddress = channel.remoteAddress.map(Self.describe)
+    }
+
+    /// `"93.184.216.34:443"` — `SocketAddress`'s own `description` wraps the
+    /// address in its type name (`[IPv4]93.184.216.34:443`), which is noise on a
+    /// surface where the reader wants to paste the address somewhere.
+    private static func describe(_ address: SocketAddress) -> String {
+        guard let ip = address.ipAddress else { return String(describing: address) }
+        guard let port = address.port else { return ip }
+        // Bracket an IPv6 literal, per RFC 3986 §3.2.2, or the colons run together.
+        return ip.contains(":") ? "[\(ip)]:\(port)" : "\(ip):\(port)"
     }
 
     var isUsable: Bool { state.withLock { !$0.closed } && channel.isActive }

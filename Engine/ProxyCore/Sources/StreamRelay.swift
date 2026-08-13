@@ -22,6 +22,10 @@ enum StreamRelay {
         sourceDevice: SourceDevice?,
         store: FlowStore,
         bodyCapture: RequestBodyCapture? = nil,
+        /// What the *client* leg already contributed (its TLS version) — the
+        /// upstream events only ever describe Loom's own hop, and a failure
+        /// before any head would otherwise lose the client half entirely.
+        clientTransport: FlowTransport? = nil,
         captureCap: Int = StreamRelay.captureCap
     ) async {
         // If the client disconnects mid-stream (closed SSE tab, aborted download),
@@ -32,7 +36,8 @@ enum StreamRelay {
         let work = Task { await relayInner(
             stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
             request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
-            store: store, bodyCapture: bodyCapture, captureCap: captureCap
+            store: store, bodyCapture: bodyCapture, clientTransport: clientTransport,
+            captureCap: captureCap
         ) }
         channel.closeFuture.whenComplete { _ in work.cancel() }
         await work.value
@@ -49,6 +54,7 @@ enum StreamRelay {
         sourceDevice: SourceDevice?,
         store: FlowStore,
         bodyCapture: RequestBodyCapture?,
+        clientTransport: FlowTransport?,
         captureCap: Int
     ) async {
         // For a streamed request body, fold the (by-now complete) captured copy into
@@ -70,6 +76,11 @@ enum StreamRelay {
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var appliedRules: [AppliedRule] = []
+        /// How the exchange travelled, folded from the (at most two) `.transport`
+        /// instalments — see `UpstreamResponseEvent.transport` for why it arrives
+        /// in pieces. Nil for a response that never reached a socket, which is a
+        /// different answer from one whose fields are all nil.
+        var transport: FlowTransport? = clientTransport
         var capturedBody = Data()
         /// Every response byte relayed, cap included — so a truncated capture can
         /// report the true size rather than looking like a body that ended at the cap.
@@ -96,6 +107,8 @@ enum StreamRelay {
                     // record them now — this is what lets a *failed* exchange still show
                     // its applied rules in the flow / UI.
                     appliedRules = rules
+                case let .transport(info):
+                    transport = (transport ?? FlowTransport()).merging(info)
                 case let .head(code, version, headers):
                     firstByteAt = Date()
                     statusCode = code
@@ -110,7 +123,8 @@ enum StreamRelay {
                         outcome: .streaming(CapturedResponse(statusCode: code, httpVersion: version, headers: headers, body: nil)),
                         firstByteAt: firstByteAt,
                         sourceApp: sourceApp, sourceDevice: sourceDevice,
-                        appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                        appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                        transport: transport
                     ))
                 case let .body(chunk):
                     // A bodyless response (HEAD / 204 / 304) must never carry body
@@ -130,7 +144,8 @@ enum StreamRelay {
                 outcome: .completed(response(body: capturedBody), at: Date()),
                 firstByteAt: firstByteAt,
                 sourceApp: sourceApp, sourceDevice: sourceDevice,
-                appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                transport: transport
             ))
         } catch {
             if headWritten {
@@ -143,14 +158,17 @@ enum StreamRelay {
                         partialResponse: response(body: capturedBody)
                     ),
                     firstByteAt: firstByteAt,
-                    sourceApp: sourceApp, sourceDevice: sourceDevice, appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                    sourceApp: sourceApp, sourceDevice: sourceDevice,
+                    appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                    transport: transport
                 ))
             } else {
                 await store.upsert(Flow(
                     id: flowID, request: request(), startedAt: startedAt,
                     outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
                     sourceApp: sourceApp, sourceDevice: sourceDevice,
-                    appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                    appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                    transport: transport
                 ))
                 HTTPUtil.writeResponse(
                     channel: channel, status: 502, headers: [],

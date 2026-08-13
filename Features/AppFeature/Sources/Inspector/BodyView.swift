@@ -78,15 +78,7 @@ struct BodyView: View {
         .background(.bar)
     }
 
-    /// Hoisted formatter — a per-render `ByteCountFormatter` would allocate on
-    /// every body open.
-    private static let byteFormatter: ByteCountFormatter = {
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .binary
-        return formatter
-    }()
-
     private static func byteCount(_ bytes: Int) -> String {
-        byteFormatter.string(fromByteCount: Int64(bytes))
+        InspectorText.byteCount(bytes)
     }
 }

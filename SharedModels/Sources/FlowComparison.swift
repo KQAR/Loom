@@ -295,6 +295,13 @@ public extension FlowComparison {
         )
     }
 
+    /// `CapturedRequest.httpVersion` is deliberately **not** compared, for the
+    /// same reason timing isn't: a replay is always issued by Loom's own HTTP/1.1
+    /// client, so diffing it against a captured h2 request would report a
+    /// difference on every single replay diff and make `isIdentical` useless —
+    /// the exact failure the timing exclusion exists to prevent. The response's
+    /// version *is* compared, because both sides of that one describe the origin's
+    /// answer. Same for `Flow.transport`: two runs never share a socket.
     private static func compareRequests(_ base: CapturedRequest, _ compared: CapturedRequest) -> MessageComparison {
         MessageComparison(
             method: change(base.method, compared.method),

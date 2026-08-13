@@ -269,6 +269,11 @@ actor FlowStore {
             // upserts (streaming updates, completion) carry whatever it knew at
             // start — a nil there must not erase an answer that already landed.
             if flow.sourceApp == nil { flow.sourceApp = flows[idx].sourceApp }
+            // Same rule for how the exchange travelled: it is learned once, when the
+            // response head arrives, and the head-parsed pending record carries none.
+            // Nothing orders those two Tasks' arrival here (see above), so a late
+            // pending upsert must not erase a transport that already landed.
+            if flow.transport == nil { flow.transport = flows[idx].transport }
             bodyBytes += bodySize(of: flow) - bodySize(of: flows[idx])
             // Same flow, new state: its error-ness and its attribution can both have
             // changed since it was counted (pending isn't an error; the 500 it becomes
