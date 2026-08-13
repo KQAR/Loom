@@ -17,6 +17,8 @@ the artwork, the right-margin guides and the name are ours.
 import math, pathlib, re, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
+import svgpath
+from glyphs import STATIC
 from mark import WEIGHTS, mark, X0, X1, Y0, Y1
 
 DONOR = pathlib.Path("/Applications/SF Symbols.app/Contents/Resources/badge.record.svg")
@@ -91,6 +93,40 @@ def flatten(d, seg=ARC_SEGMENTS):
     return " ".join(out)
 
 
+def build_static(symbol, path_data, cap_fraction):
+    """A fixed outline, identical in all three weights.
+
+    The same donor scaffolding and the same margins as `build` — only the
+    artwork differs, and it does not vary by weight because a solid glyph has no
+    stroke to vary (see `glyphs.py`). Emitting the same `d` three times is also
+    the strongest possible answer to the point-correspondence failure `flatten`
+    exists for.
+    """
+    placed = svgpath.fit(svgpath.subpaths(path_data), (X0, X1, Y0, Y1), cap_fraction)
+    body = f'<path d="{transform(svgpath.to_path_data(placed))}"/>'
+    svg = DONOR.read_text()
+    for name in WEIGHTS:
+        svg = re.sub(rf'(<g id="{name}-S"[^>]*>).*?(</g>)',
+                     lambda m: f"{m.group(1)}\n   {body}\n  {m.group(2)}",
+                     svg, count=1, flags=re.S)
+        left = float(re.search(rf'<g id="{name}-S" transform="matrix\(1 0 0 1 ([\d.]+)', svg).group(1))
+        svg = re.sub(rf'(<line id="right-margin-{name}-S"[^>]*?)x1="[\d.]+"([^>]*?)x2="[\d.]+"',
+                     rf'\g<1>x1="{left + WIDTH:.4f}"\g<2>x2="{left + WIDTH:.4f}"', svg)
+    svg = re.sub(r'(<text id="descriptive-name"[^>]*>)[^<]*(</text>)', rf'\g<1>{symbol}\g<2>', svg)
+    return svg.replace('<!--glyph: ""', f'<!--glyph: "{symbol}"')
+
+
+def write(symbol, svg):
+    d = ASSETS / f"{symbol}.symbolset"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{symbol}.svg").write_text(svg)
+    (d / "Contents.json").write_text(
+        '{\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  },\n'
+        f'  "symbols" : [\n    {{\n      "filename" : "{symbol}.svg",\n'
+        '      "idiom" : "universal"\n    }\n  ]\n}\n')
+    print("wrote", d.relative_to(ASSETS.parents[2]))
+
+
 def build(symbol, weft):
     svg = DONOR.read_text()
     for name, (sw, corner, node) in WEIGHTS.items():
@@ -108,12 +144,7 @@ if __name__ == "__main__":
     if not DONOR.exists():
         sys.exit(f"SF Symbols.app is required for the template scaffolding: {DONOR}")
     for symbol, weft in (("loom.mark", False), ("loom.mark.intercept", True)):
-        d = ASSETS / f"{symbol}.symbolset"
-        d.mkdir(parents=True, exist_ok=True)
-        (d / f"{symbol}.svg").write_text(build(symbol, weft))
-        (d / "Contents.json").write_text(
-            '{\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  },\n'
-            f'  "symbols" : [\n    {{\n      "filename" : "{symbol}.svg",\n'
-            '      "idiom" : "universal"\n    }\n  ]\n}\n')
-        print("wrote", d.relative_to(ASSETS.parents[2]))
+        write(symbol, build(symbol, weft))
+    for symbol, (path_data, cap_fraction) in STATIC.items():
+        write(symbol, build_static(symbol, path_data, cap_fraction))
     print(f"scale={SCALE:.5f} advance={WIDTH:.3f} cap={CAP} weights={list(WEIGHTS)}")

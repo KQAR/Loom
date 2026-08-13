@@ -27,15 +27,27 @@ public struct MainView: View {
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
     @State private var sidebarVisible = true
-    /// Collapse state of the three grouping sections. Persisted (`@AppStorage`) rather
+    /// Collapse state of the two grouping sections. Persisted (`@AppStorage`) rather
     /// than plain `@State`: these grow without bound during a capture — hosts especially,
     /// which is why they're the sections worth collapsing — so a human who folds Hosts
-    /// away to keep Devices and Apps in view would otherwise have it unfold on every
+    /// away to keep Devices in view would otherwise have it unfold on every
     /// relaunch. View-local chrome, so it stays out of `AppFeature.State`; unlike pins
     /// (`PinsStore`) nothing but this view ever reads it.
     @AppStorage("com.loom.sidebar.devicesExpanded") private var devicesExpanded = true
-    @AppStorage("com.loom.sidebar.appsExpanded") private var appsExpanded = true
     @AppStorage("com.loom.sidebar.hostsExpanded") private var hostsExpanded = true
+    /// Which devices have had their app list folded away, as a `\n`-joined list of
+    /// IPs.
+    ///
+    /// The **collapsed** set rather than the expanded one, which is the load-bearing
+    /// half: a device Loom has never seen before is not in it, so it arrives
+    /// expanded and its apps are visible the moment the phone starts talking. Storing
+    /// the expanded set would have every new device show up folded, which on the one
+    /// surface someone opens to watch a device they just connected is exactly wrong.
+    @AppStorage("com.loom.sidebar.collapsedDevices") private var collapsedDevicesRaw = ""
+    private var collapsedDevices: Set<String> {
+        get { Set(collapsedDevicesRaw.split(separator: "\n").map(String.init)) }
+        nonmutating set { collapsedDevicesRaw = newValue.sorted().joined(separator: "\n") }
+    }
     /// Inspector pane height, set by dragging its top edge. Persisted for the same reason
     /// the section states are: it is view-local chrome nothing else reads, and re-dragging
     /// it on every launch is the annoyance.
@@ -159,7 +171,12 @@ public struct MainView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $store.capture.selectedCategory.sending(\.capture.categorySelected)) {
+        // A `Set` selection, so ⌘-click and ⇧-click compose filters the way they do
+        // in every other Mac list. What a set of them *means* is Loom's
+        // (`FlowCategory.Dimension`); what is allowed in one is normalized in the
+        // reducer, not here — a view that filtered the set would be a second place
+        // the rules live.
+        List(selection: $store.capture.selection.sending(\.capture.categoriesSelected)) {
             countedRow(count: store.capture.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
                 .tag(FlowCategory.all)
             // The only tinted count in the sidebar: a non-zero Errors bucket is the one
@@ -176,54 +193,16 @@ public struct MainView: View {
 
             if !store.capture.devices.isEmpty {
                 Section {
-                    ForEach(devicesExpanded ? store.capture.devices : [], id: \.device.groupingKey) { entry in
-                        let ip = entry.device.groupingKey
-                        let alias = store.capture.deviceAliases[ip]
-                        countedRow(count: entry.count) {
-                            Text(alias ?? entry.device.displayName)
-                        } icon: {
-                            categoryIcon(entry.device.kind == .lan ? "iphone" : "desktopcomputer")
-                        }
-                        .tag(FlowCategory.device(ip))
-                        .help(entry.device.typeSummary.map { "\($0) · \(entry.device.ip)" } ?? entry.device.ip)
-                        .contextMenu {
-                            Button(alias == nil ? "Set Alias…" : "Rename…", systemImage: "pencil") {
-                                promptDeviceAlias(ip: ip, current: alias ?? "")
-                            }
-                            if alias != nil {
-                                Button("Clear Alias", systemImage: "xmark.circle") {
-                                    store.send(.capture(.setDeviceAlias(ip: ip, alias: nil)))
-                                }
-                            }
-                        }
+                    // The Devices and Apps sections used to sit side by side, and
+                    // that made the same flow appear in two unrelated buckets with
+                    // no way to say "this app, on this device". They are one tree
+                    // now: a device is a group, its apps are its children.
+                    ForEach(devicesExpanded ? store.capture.devices : []) { entry in
+                        deviceRows(entry)
                     }
                 } header: {
                     SidebarSectionHeader(
                         title: "Devices", count: store.capture.devices.count, expanded: $devicesExpanded
-                    )
-                }
-            }
-
-            if !store.capture.apps.isEmpty {
-                Section {
-                    ForEach(appsExpanded ? store.capture.apps : [], id: \.app.groupingKey) { entry in
-                        let key = entry.app.groupingKey
-                        let pinned = store.capture.pinnedApps.contains(key)
-                        countedRow(count: entry.count) {
-                            rowTitle(entry.app.name, pinned: pinned)
-                        } icon: {
-                            AppIconView(app: entry.app)
-                        }
-                        .tag(FlowCategory.app(key))
-                        .contextMenu {
-                            Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
-                                store.send(.capture(.pinAppToggled(key)))
-                            }
-                        }
-                    }
-                } header: {
-                    SidebarSectionHeader(
-                        title: "Apps", count: store.capture.apps.count, expanded: $appsExpanded
                     )
                 }
             }
@@ -256,12 +235,110 @@ public struct MainView: View {
         .frame(maxHeight: .infinity)
     }
 
+    /// One device and, folded under it, the apps seen on it.
+    ///
+    /// A flat pair of rows rather than a `DisclosureGroup`, and that is a
+    /// `List(selection:)` constraint rather than a style preference: a
+    /// `DisclosureGroup`'s label is not a selectable row, so the device itself
+    /// would stop being clickable — and selecting a device (all of its traffic) is
+    /// the more common of the two things this tree is for. The chevron lives in the
+    /// device row and the children are indented siblings, which is also how the
+    /// section headers here already work (see `SidebarSectionHeader`).
+    @ViewBuilder private func deviceRows(_ entry: CaptureFeature.State.DeviceRow) -> some View {
+        let ip = entry.device.groupingKey
+        let alias = store.capture.deviceAliases[ip]
+        let collapsed = collapsedDevices.contains(ip)
+        countedRow(count: entry.count) {
+            HStack(spacing: LoomTheme.Space.xs) {
+                Text(alias ?? entry.device.displayName)
+                // Same placement as a section header's: against the name it
+                // belongs to, not out in the count column.
+                if !entry.apps.isEmpty {
+                    deviceDisclosure(ip: ip, collapsed: collapsed, appCount: entry.apps.count)
+                }
+                Spacer(minLength: 0)
+            }
+        } icon: {
+            categoryIcon(Self.deviceGlyph(entry.device))
+        }
+        .tag(FlowCategory.device(ip))
+        .help(entry.device.typeSummary.map { "\($0) · \(entry.device.ip)" } ?? entry.device.ip)
+        .contextMenu {
+            Button(alias == nil ? "Set Alias…" : "Rename…", systemImage: "pencil") {
+                promptDeviceAlias(ip: ip, current: alias ?? "")
+            }
+            if alias != nil {
+                Button("Clear Alias", systemImage: "xmark.circle") {
+                    store.send(.capture(.setDeviceAlias(ip: ip, alias: nil)))
+                }
+            }
+        }
+
+        if !collapsed {
+            ForEach(entry.apps) { app in
+                let key = app.app.groupingKey
+                let pinned = store.capture.pinnedApps.contains(key)
+                countedRow(count: app.count) {
+                    rowTitle(app.app.name, pinned: pinned)
+                } icon: {
+                    AppIconView(app: app.app)
+                }
+                .tag(FlowCategory.app(device: ip, key: key))
+                // The indent is the only thing saying this row belongs to the
+                // device above it, since these are siblings in the list.
+                .padding(.leading, LoomTheme.Space.md)
+                .help(app.app.attribution == .userAgent
+                      ? "\(app.app.name) — identified from its User-Agent"
+                      : app.app.name)
+                .contextMenu {
+                    Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
+                        store.send(.capture(.pinAppToggled(key)))
+                    }
+                }
+            }
+        }
+    }
+
+    /// The fold control on a device row. A plain button rather than the row's own
+    /// tap, because the row already means "select this device's traffic" and one
+    /// gesture cannot honestly mean both.
+    private func deviceDisclosure(ip: String, collapsed: Bool, appCount: Int) -> some View {
+        Button {
+            var next = collapsedDevices
+            if collapsed { next.remove(ip) } else { next.insert(ip) }
+            collapsedDevices = next
+        } label: {
+            SidebarDisclosureChevron(expanded: !collapsed)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(collapsed ? "Show apps" : "Hide apps")
+        .help(collapsed ? "Show \(appCount) app\(appCount == 1 ? "" : "s")" : "Hide apps")
+    }
+
+    /// The glyph for a device row. Android gets Loom's own symbol — SF Symbols has
+    /// no Android mark, and drawing every non-Apple device as `iphone` is the kind
+    /// of small lie that makes a sidebar harder to scan, not easier.
+    static func deviceGlyph(_ device: SourceDevice) -> String {
+        guard device.kind == .lan else { return "desktopcomputer" }
+        switch device.platform {
+        case "Android": return "loom.device.android"
+        case "iPadOS": return "ipad"
+        case "iOS": return "iphone"
+        case "macOS": return "laptopcomputer"
+        case "Windows", "Linux", "ChromeOS": return "pc"
+        default: return "iphone"
+        }
+    }
+
     /// A sidebar category glyph. `.listStyle(.sidebar)` tints a `Label`'s symbol with the
     /// system accent, which reads as a highlight on every row at once — so these are drawn
     /// monochrome/secondary and selection is left to say what's selected. The only glyph
     /// allowed to carry color is the held-breakpoint one, which is an alert, not a category.
     @ViewBuilder private func categoryIcon(_ name: String) -> some View {
-        Image(systemName: name)
+        // A custom symbol lives in the asset catalog and is addressed by name, not
+        // through `systemName` — which does not fall back, it just yields nothing.
+        // One prefix decides it, so a caller passes a name and never a flag.
+        (name.hasPrefix("loom.") ? Image(name) : Image(systemName: name))
             .symbolRenderingMode(.monochrome)
             .foregroundStyle(.secondary)
     }
@@ -440,11 +517,11 @@ public struct MainView: View {
     // MARK: Content — table only, or table + inspector when a flow is selected
 
     @ViewBuilder private var content: some View {
-        if store.capture.selectedCategory == .rules {
+        if store.capture.panelCategory == .rules {
             RulesPanelView(store: store.scope(state: \.rules, action: \.rules))
-        } else if store.capture.selectedCategory == .audit {
+        } else if store.capture.panelCategory == .audit {
             AuditPanelView(store: store.scope(state: \.audit, action: \.audit))
-        } else if store.capture.selectedCategory == .breakpoints {
+        } else if store.capture.panelCategory == .breakpoints {
             BreakpointsPanelView(store: store.scope(state: \.breakpoints, action: \.breakpoints))
         } else {
             flowArea
@@ -790,6 +867,23 @@ public struct MainView: View {
             } actions: {
                 Button("Clear Filter") { store.send(.capture(.searchDismissed)) }
             }
+        } else if store.capture.allCount > 0 {
+            // The capture is not empty — the *selection* admits none of it. Saying
+            // "waiting for traffic" here is the same failure the search branch above
+            // exists to prevent, and multi-select makes it routine rather than rare:
+            // two rows from different groups intersect to nothing far more easily
+            // than one row ever did, and the honest message is the one that names
+            // what was picked and offers the way out.
+            ContentUnavailableView {
+                Label("No requests in this selection", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                Text(
+                    "Nothing captured matches \(selectionSummary). Picking more rows in the "
+                        + "same group widens the list; picking rows in different groups narrows it."
+                )
+            } actions: {
+                Button("Show All Flows") { store.send(.capture(.categoriesSelected([.all]))) }
+            }
         } else if store.status.isRunning {
             ContentUnavailableView {
                 Label("Waiting for traffic", systemImage: "dot.radiowaves.left.and.right")
@@ -803,6 +897,42 @@ public struct MainView: View {
                 Text("Start the proxy from the menu-bar console.")
             }
         }
+    }
+
+    /// The selected filters, named the way the sidebar names them.
+    ///
+    /// Resolved through the sidebar rows rather than printed from the category's
+    /// own payload: those carry an IP and a bundle key, and telling someone their
+    /// selection is `192.168.1.9 + com.example.wallet` when the rows they clicked
+    /// said `iOS .238` and `Wallet` is a worse answer than none.
+    private var selectionSummary: String {
+        let names = store.capture.selection.compactMap { category -> String? in
+            switch category {
+            case .errors: "Errors"
+            case let .host(host): host
+            case let .device(ip): deviceName(ip) ?? ip
+            case let .app(device, key): appName(device: device, key: key) ?? key
+            case .all, .rules, .audit, .breakpoints: nil
+            }
+        }
+        // Joined with "+" rather than "and"/"or": which one it is depends on whether
+        // the two rows share a group, and a summary that picked one word would be
+        // wrong half the time. The sentence after it explains the rule instead.
+        return names.sorted().joined(separator: " + ")
+    }
+
+    private func deviceName(_ ip: String) -> String? {
+        guard let row = store.capture.devices.first(where: { $0.device.groupingKey == ip }) else {
+            return nil
+        }
+        return store.capture.deviceAliases[ip] ?? row.device.displayName
+    }
+
+    private func appName(device: String, key: String) -> String? {
+        store.capture.devices
+            .first { $0.device.groupingKey == device }?
+            .apps.first { $0.app.groupingKey == key }?
+            .app.name
     }
 
     /// Both go through `URLHost`, which exists for exactly this call site: a row
@@ -853,6 +983,28 @@ public struct MainView: View {
 /// rules out. Expanded, each row carries its own badge and a total on the header is
 /// noise. It sits just inside the chevron rather than flush to the window edge, which
 /// is where `.badge()` on a header put it.
+/// The sidebar's one disclosure chevron — a section header's and a device row's.
+///
+/// Shared rather than written twice, because the two sat two rows apart and drew
+/// differently (a heavier `.secondary` down-chevron over a lighter `.tertiary`
+/// right-chevron), which read as two different kinds of control rather than one
+/// control at two levels of a tree.
+///
+/// One glyph rotated, never two glyphs swapped: the chevron turns through the
+/// state change instead of popping.
+struct SidebarDisclosureChevron: View {
+    let expanded: Bool
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+            // Fixed, so a row's other content does not shift as it turns.
+            .frame(width: 10)
+    }
+}
+
 private struct SidebarSectionHeader: View {
     let title: String
     let count: Int
@@ -868,22 +1020,18 @@ private struct SidebarSectionHeader: View {
     var body: some View {
         HStack(spacing: LoomTheme.Space.xs) {
             Text(title)
+            // Beside the label rather than out at the trailing edge. A chevron on
+            // the far right is a column of its own, reading as a per-row control
+            // like the counts it sits above; against the title it reads as part of
+            // the title, which is what it is. Always drawn, so which sections fold
+            // is visible without hunting with the cursor.
+            SidebarDisclosureChevron(expanded: expanded)
             Spacer(minLength: LoomTheme.Space.xxs)
             if !expanded {
                 Text(count, format: .number)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            // Trailing, where AppKit's own hover triangle sat — the position the
-            // native sidebar trains you to look at. Always drawn, so which sections
-            // fold is visible without hunting with the cursor.
-            Image(systemName: "chevron.down")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                // One glyph rotated, not two glyphs swapped: the chevron turns
-                // through the state change instead of popping.
-                .rotationEffect(.degrees(expanded ? 0 : -90))
-                .frame(width: 10)
         }
         .padding(.trailing, Self.trailingInset)
         // The hit target is the whole header, not just the glyph. `contentShape`

@@ -184,7 +184,7 @@ struct SummaryTable: View {
     }
 
     @ViewBuilder private var originRows: some View {
-        if let app = flow.sourceApp { row("App", "\(app.name) (pid \(app.pid))") }
+        if let app = flow.sourceApp { row("App", appText(app)) }
         if let device = flow.sourceDevice { row("Device", deviceText(device)) }
         if let replayedFrom = flow.replayedFrom {
             // The id, not just the word: it is what `diff_flows` and
@@ -195,6 +195,15 @@ struct SummaryTable: View {
         if let rules = flow.appliedRules, !rules.isEmpty {
             row("Rules", rules.map(\.name).joined(separator: ", "), color: LoomTheme.Palette.accent)
         }
+    }
+
+    /// The pid when there is one, and otherwise a plain statement of where the
+    /// name came from. A `User-Agent` attribution is a claim by the client, not a
+    /// measurement, and a row that read just `YqdCredmex` would invite it to be
+    /// taken for the same kind of answer as `Safari (pid 431)`.
+    private func appText(_ app: SourceApp) -> String {
+        if let pid = app.pid { return "\(app.name) (pid \(pid))" }
+        return "\(app.name) (from User-Agent)"
     }
 
     private func deviceText(_ device: SourceDevice) -> String {

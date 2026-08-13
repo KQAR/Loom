@@ -85,13 +85,23 @@ struct FlowSummaryRender: Encodable {
 
 struct SourceAppRender: Encodable {
     var name: String
-    var pid: Int
+    /// Absent for an app attributed from a `User-Agent` — a phone's app has no
+    /// process id on this machine, and a sentinel there would be a number an
+    /// agent could compare and filter on.
+    var pid: Int?
     var bundleID: String?
+    /// How the attribution was arrived at (`process` / `userAgent`). Reported
+    /// rather than left implicit in the absent `pid`: the two carry different
+    /// weight — a pid is a fact about a socket, a `User-Agent` is a claim by the
+    /// client — and an agent about to scope a rule to an app should know which
+    /// it is holding.
+    var attribution: String
 
     init(_ app: SourceApp) {
         name = app.name
-        pid = Int(app.pid)
+        pid = app.pid.map(Int.init)
         bundleID = app.bundleID
+        attribution = app.attribution.rawValue
     }
 }
 

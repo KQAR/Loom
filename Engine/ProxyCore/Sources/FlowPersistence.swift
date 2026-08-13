@@ -686,6 +686,21 @@ final class FlowPersistence: @unchecked Sendable {
                   let device = try? decoder.decode(SourceDevice.self, from: blob) else { return }
             aggregates.addDevice(device, count: Int(sqlite3_column_int64(stmt, 1)))
         }
+        // The joint count the nested sidebar needs. A fourth `GROUP BY` rather than
+        // something folded out of the two above: an app's total and a device's total
+        // overlap, and no arithmetic over them recovers how many of Safari's flows
+        // were the phone's. Keys only — both representatives are already decoded by
+        // the two statements above, so this reads no blob.
+        forEachRow("""
+        SELECT deviceKey, appKey, COUNT(*) FROM flows
+        WHERE deviceKey IS NOT NULL AND appKey IS NOT NULL
+        GROUP BY deviceKey, appKey;
+        """) { stmt in
+            guard let deviceKey = Self.text(stmt, 0), let appKey = Self.text(stmt, 1) else { return }
+            aggregates.addDeviceApp(
+                deviceKey: deviceKey, appKey: appKey, count: Int(sqlite3_column_int64(stmt, 2))
+            )
+        }
         forEachRow("SELECT COUNT(*) FROM flows WHERE isError = 1;") { stmt in
             aggregates.addErrors(Int(sqlite3_column_int64(stmt, 0)))
         }

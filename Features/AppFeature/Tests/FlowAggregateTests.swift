@@ -186,11 +186,55 @@ import Testing
     }
 
     @Test func apps_pinnedFloatToTop_thenMostActive() {
+        let device = SourceDevice(ip: "127.0.0.1", kind: .local)
         let pinned = SourceApp(name: "Pinned", bundleID: "com.pinned", pid: 1)
         let busy = SourceApp(name: "Busy", bundleID: "com.busy", pid: 2)
-        var state = state([flow(app: pinned)] + (0 ..< 5).map { _ in flow(app: busy) })
+        var state = state(
+            [flow(app: pinned, device: device)] + (0 ..< 5).map { _ in flow(app: busy, device: device) }
+        )
         state.pinnedApps = ["com.pinned"]
         #expect(state.apps.map(\.app.groupingKey) == ["com.pinned", "com.busy"])
+    }
+
+    /// Apps are nested under the device they ran on, so the same app on two devices
+    /// is two rows with two counts — the whole point of the joint count. Reading
+    /// them off `appCounts` would give each row the app's total on both.
+    @Test func apps_areCountedPerDevice() {
+        let phone = SourceDevice(ip: "192.168.1.9", kind: .lan, platform: "Android", client: nil)
+        let mac = SourceDevice(ip: "127.0.0.1", kind: .local)
+        let app = SourceApp(name: "Shared", bundleID: "com.shared", pid: 1)
+        let state = state(
+            (0 ..< 3).map { _ in flow(app: app, device: phone) } + [flow(app: app, device: mac)]
+        )
+
+        let phoneRow = state.devices.first { $0.device.ip == "192.168.1.9" }
+        let macRow = state.devices.first { $0.device.ip == "127.0.0.1" }
+        #expect(phoneRow?.apps.map(\.count) == [3])
+        #expect(macRow?.apps.map(\.count) == [1])
+        // …and each row selects only its own device's flows.
+        #expect(phoneRow?.apps.first?.deviceKey == "192.168.1.9")
+        #expect(macRow?.apps.first?.deviceKey == "127.0.0.1")
+    }
+
+    /// A device Loom could not attribute to any app has no children — an ordinary
+    /// state (a library-only `User-Agent`, or none at all), and it must not leave an
+    /// empty disclosure hanging under the row.
+    @Test func aDeviceWithNoAttributedApps_hasNoChildren() {
+        let device = SourceDevice(ip: "192.168.1.20", kind: .lan, platform: "Android", client: nil)
+        let state = state([flow(device: device)])
+        #expect(state.devices.first?.apps.isEmpty == true)
+    }
+
+    /// The joint count has to come back down as flows leave, or a quiet device keeps
+    /// a stale app list under it forever.
+    @Test func perDeviceAppCounts_retractWithTheirFlows() {
+        let device = SourceDevice(ip: "192.168.1.9", kind: .lan, platform: "Android", client: nil)
+        let app = SourceApp(name: "Solo", bundleID: "com.solo", pid: 1)
+        var state = state([flow(app: app, device: device)])
+        #expect(state.devices.first?.apps.count == 1)
+
+        state.forgetCapturedFlows()
+        #expect(state.devices.isEmpty)
     }
 
     /// The empty-state branch and the table must never disagree about emptiness, for
@@ -211,7 +255,9 @@ import Testing
 
         let categories: [FlowCategory?] = [
             nil, .all, .errors, .host("a.test"), .host("missing.test"),
-            .app("com.app"), .app("com.other"), .device("192.168.1.9"), .device("10.0.0.1"),
+            .app(device: "192.168.1.9", key: "com.app"),
+            .app(device: "192.168.1.9", key: "com.other"),
+            .device("192.168.1.9"), .device("10.0.0.1"),
             .rules, .audit, .breakpoints,
         ]
         for category in categories {

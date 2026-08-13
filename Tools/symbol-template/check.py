@@ -21,7 +21,12 @@ import pathlib, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ASSETS = ROOT / "App/Resources/Assets.xcassets"
-SYMBOLS = ["loom.mark", "loom.mark.intercept"]
+sys.path.insert(0, str(pathlib.Path(__file__).parent))
+from glyphs import STATIC
+
+# The generated marks plus every static glyph, so a name added to `glyphs.py`
+# is checked without anyone remembering to list it twice.
+SYMBOLS = ["loom.mark", "loom.mark.intercept"] + sorted(STATIC)
 
 PLIST = ('<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC '
          '"-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'

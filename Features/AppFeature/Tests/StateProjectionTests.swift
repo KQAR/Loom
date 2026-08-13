@@ -79,7 +79,12 @@ import Testing
 
     @Test func apps_pinnedFloatToTop_thenMostActive() {
         func f(_ bundle: String) -> Flow {
-            Fixtures.flow(sourceApp: SourceApp(name: bundle, bundleID: bundle, pid: 1))
+            // Apps hang off the device they ran on now, so an app row only exists
+            // once the flow has both halves.
+            Fixtures.flow(
+                sourceApp: SourceApp(name: bundle, bundleID: bundle, pid: 1),
+                sourceDevice: SourceDevice(ip: "127.0.0.1", kind: .local)
+            )
         }
         // com.busy has 2, com.quiet + com.pinned have 1 each.
         var s = state([f("com.busy"), f("com.busy"), f("com.quiet"), f("com.pinned")])

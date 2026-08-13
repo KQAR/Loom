@@ -35,7 +35,12 @@ import Testing
                 .completed(CapturedResponse(statusCode: $0, headers: []), at: Date(timeIntervalSince1970: TimeInterval(n) + 1))
             } ?? .pending
         )
-        if let app { flow.sourceApp = SourceApp(name: app, bundleID: app, pid: 1) }
+        if let app {
+            flow.sourceApp = SourceApp(name: app, bundleID: app, pid: 1)
+            // An app category is now the pair (device, app) — the sidebar nests them
+            // — so an attributed flow needs the device half too.
+            flow.sourceDevice = SourceDevice(ip: "127.0.0.1", kind: .local)
+        }
         return flow
     }
 
@@ -113,7 +118,7 @@ import Testing
         var state = CaptureFeature.State()
         let seed = (0 ..< 20).map { flow($0, app: $0 < 10 ? "com.known" : nil) }
         state.recordFlows(seed)
-        state.selectedCategory = .app("com.known")
+        state.selectedCategory = .app(device: "127.0.0.1", key: "com.known")
         #expect(state.displayFlows.count == 10)
 
         // Newer matching traffic first, so "at its own place" and "at the end" are
@@ -124,6 +129,7 @@ import Testing
 
         var attributed = seed[15]
         attributed.sourceApp = SourceApp(name: "com.known", bundleID: "com.known", pid: 1)
+        attributed.sourceDevice = SourceDevice(ip: "127.0.0.1", kind: .local)
         state.recordFlows([attributed])
         check(state, "attribution arriving for an older flow")
         #expect(state.displayFlows.count == 16)

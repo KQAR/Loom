@@ -122,14 +122,52 @@ import Testing
         search.isPresented = true
         search.scope = .body
         search.text = "order-42"
-        let query = search.engineQuery(category: .host("b.com"))
+        let query = search.engineQuery(selection: [.host("b.com")])
         #expect(query?.bodyContains == "order-42")
         #expect(query?.host == "b.com")
         #expect(query?.headerContains == nil)
 
         search.scope = .headers
-        #expect(search.engineQuery(category: .errors)?.headerContains == "order-42")
-        #expect(search.engineQuery(category: .errors)?.onlyErrors == true)
+        #expect(search.engineQuery(selection: [.errors])?.headerContains == "order-42")
+        #expect(search.engineQuery(selection: [.errors])?.onlyErrors == true)
+    }
+
+    /// A multi-selection within one dimension cannot be pushed into `FlowQuery`,
+    /// which holds one value per field — so it must **not** be pushed at all.
+    /// Sending one of the three hosts would drop the other two's matches on the
+    /// floor and report the result as complete; under-narrowing only costs the
+    /// engine a few extra body hydrations, and the window filters the rest.
+    @Test func aMultiHostSelectionDoesNotNarrowTheEngineQuery() {
+        var search = FlowSearch()
+        search.isPresented = true
+        search.scope = .body
+        search.text = "order-42"
+
+        let single = search.engineQuery(selection: [.host("b.com")])
+        #expect(single?.host == "b.com")
+
+        let multiple = search.engineQuery(selection: [.host("b.com"), .host("c.com")])
+        #expect(multiple?.bodyContains == "order-42", "the needle still goes down")
+        #expect(multiple?.host == nil, "neither host may be chosen over the other")
+    }
+
+    /// The two halves of an app row reach the engine together, and only when that
+    /// row is the whole origin selection.
+    @Test func anAppSelectionCarriesItsDeviceToo() {
+        var search = FlowSearch()
+        search.isPresented = true
+        search.scope = .body
+        search.text = "order-42"
+
+        let query = search.engineQuery(selection: [.app(device: "10.0.0.5", key: "com.example")])
+        #expect(query?.sourceApp == "com.example")
+        #expect(query?.deviceIP == "10.0.0.5")
+
+        let widened = search.engineQuery(
+            selection: [.app(device: "10.0.0.5", key: "com.example"), .device("10.0.0.6")]
+        )
+        #expect(widened?.sourceApp == nil)
+        #expect(widened?.deviceIP == nil, "two origins are a union the query cannot express")
     }
 
     /// The URL scope is answered locally, so it must never produce a query.
@@ -137,7 +175,7 @@ import Testing
         var search = FlowSearch()
         search.isPresented = true
         search.text = "orders"
-        #expect(search.engineQuery(category: .all) == nil)
+        #expect(search.engineQuery(selection: [.all]) == nil)
     }
 
     // MARK: Staleness — an engine answer is a snapshot
