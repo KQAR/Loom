@@ -27,27 +27,52 @@ measured against a real test API at ~96 ms on top of a 20 ms server round trip, 
 the proxy costing five times the thing it proxied. That is the entire reason Loom
 felt slow next to Charles, which pools; a phone on the same Wi-Fi saw it doubled.
 
-Five rules, each of which is a way to get this wrong rather than a preference:
+Seven rules, each of which is a way to get this wrong rather than a preference:
 
 - **Keep-alive is not enough to pool a connection.** `UpstreamExchangeSlot.responseIsReusable`
   also requires framing — a `Content-Length`, chunked, or a status/method that
   carries no body. A response delimited by the connection *closing* ends with the
   socket, so parking one hands the next request something already going away.
-- **A leased connection may be dead, so the retry is load-bearing.** An origin can
-  reap a parked socket at any moment, including between the lease and the write, so
-  a pooled attempt that fails **having yielded nothing** is retried once on a fresh
-  connection. That is what `UpstreamAttemptFailure.didYield` is for, and why the
-  relay reports the outcome instead of finishing the caller's stream itself — a
-  relay that had already finished it would have spent the choice.
+- **A 1xx is not the response** (RFC 9110 §15.2). The decoder delivers `100
+  Continue` as a complete head+end message, and completing the exchange on that
+  end released the connection into the pool **while the final response was still
+  on the wire** — the worst schedule then delivers one request's response to the
+  next. Interim heads and their ends are swallowed in the slot; 101 is deliberately
+  not interim (it ends HTTP framing; the forwarder strips `Upgrade`, so an origin
+  sending one is answering a request Loom never made) and can never pool.
+- **A leased connection may be dead, so the retry is load-bearing — and it is
+  gated on RFC 9110 §9.2.2.** A pooled attempt that fails **having yielded
+  nothing** is retried once on a fresh connection *if* the method is idempotent
+  or the request's final flush never succeeded (so the origin cannot have read a
+  complete request). A POST that was fully written and then went dark may have
+  been acted on; re-executing it is the caller's decision, never the pool's.
+  `UpstreamAttemptFailure` carries both facts (`didYield`, `requestWritten`), and
+  the relay reports the outcome instead of finishing the caller's stream itself —
+  a relay that had already finished it would have spent the choice.
 - **Only a `.bytes` body may lease.** The retry needs a request it can re-send; a
   `.stream` body is a live back-pressured pull from the client, consumed exactly
   once. Streamed requests connect fresh and still *release* into the pool.
 - **The final `end` flush is awaited.** With `promise: nil` a write to a socket the
   origin had already closed was swallowed and the exchange then waited forever on a
-  response that could not arrive. This is where staleness surfaces.
+  response that could not arrive. This is where staleness surfaces — and its result
+  is kept: a response that completed while the request's body never fully left
+  (a server answering 413 early) is delivered, but the connection is closed, not
+  released, because from the origin's side it is still mid-request.
 - **The stream's `onTermination` must not close a connection that was handed back.**
   `ActiveUpstreamBox` is cleared before the release, so a consumer walking away
   mid-response closes the socket and a consumer finishing normally does not.
+- **A client-certificate write drains the identity's parked connections**
+  (`UpstreamConnectionPool.drain(identityLabel:)`, called from the engine's
+  certificate writes). The pool key carries the identity's *label*, and an
+  in-place PKCS#12 edit changes neither — `ClientCertificateConfig` already drops
+  its cached `NIOSSLContext` on mutation, and connections handshaken under the
+  old certificate are the other copy of the same stale state; under steady
+  traffic they would never idle out.
+
+A failure that arrives **before the exchange arms** (a fresh connection whose TLS
+handshake runs to failure first) is *held* by the slot and replayed at `arm`, so
+`UpstreamTLSError` gets NIOSSL's real error to name instead of a bare
+`connectionClosed` reconstructed from `isActive`.
 
 `UpstreamResponseRelay` is plainly `Sendable` as a result: one relay serves many
 exchanges, and what used to be its per-exchange handler state is the slot's.
@@ -89,16 +114,25 @@ speaks next settle it. Five rules:
   that had already gone quiet past the deadline.
 - **A probe that can't connect is not a verdict.** The client may still be about to
   send a ClientHello, and the real connection made for it reports its own failure
-  through `UpstreamConnectionError` rather than as a silently unread tunnel.
+  through `UpstreamConnectionError` rather than as a silently unread tunnel. It is
+  logged at debug, though — in the one corner where nothing else ever reports (a
+  client that never speaks against an origin that is down), that line is the only
+  trace the connection existed. A probe that connects and then dies silently
+  clears itself (`probeDied`) without becoming a verdict either.
 - **Both ends pause reads across the splice.** Bytes reaching the end of a pipeline
   with no glue in it yet are dropped without a sound, and the upstream side has by
   definition already started talking — `UpstreamGreetingProbe` buffers *everything*,
-  not just the first read, for the same reason.
+  not just the first read, for the same reason. The whole guarantee currently rests
+  on the splice's future chain running synchronously on one loop;
+  `aBannerSplitAcrossTheSpliceArrivesWhole` pins the observable property so a
+  future asynchronous step fails a test instead of dropping banner bytes.
 
-Silence from both sides stays undecided and is deliberately **not** recorded in
-`TunneledHostLog`: nothing is being missed (no traffic has happened), and listing it
-would put every warm tunnel a browser holds in front of an operator asking why a
-host went unread.
+The host is recorded in `TunneledHostLog` only **after the splice stands** — on the
+failure path both ends are closed, and listing the host as "relayed" would claim
+activity the operator's client never got. Silence from both sides stays undecided
+and is deliberately **not** recorded: nothing is being missed (no traffic has
+happened), and listing it would put every warm tunnel a browser holds in front of
+an operator asking why a host went unread.
 
 ## An error SwiftNIO raises is Loom's to answer
 
@@ -116,11 +150,28 @@ same treatment.
   ordinary mid-stream hangup, and recording it as "the client refused Loom" would
   put noise on the one surface an operator reads to find a missing host.
 - **Intercepted HTTP/2** (`HTTP2ConnectionErrorReporter`, at the tail of the
-  *connection* channel). Records `.protocolError` and then **closes**, because HPACK
-  is per-connection state (RFC 7541 §2.3): a header block that could not be decoded
-  leaves the dynamic table desynchronised, so nothing after it can be read either.
-  RFC 9113 §5.4.1 — signal the connection error and close; carrying on is not an
-  option, and staying silent is what produced a phone spinning forever.
+  *connection* channel). For a connection-fatal codec error it records
+  `.protocolError` and then **closes**, because HPACK is per-connection state
+  (RFC 7541 §2.3): a header block that could not be decoded leaves the dynamic
+  table desynchronised, so nothing after it can be read either. RFC 9113 §5.4.1 —
+  signal the connection error and close; carrying on is not an option, and staying
+  silent is what produced a phone spinning forever. **Not every error reaching it
+  is that error**, and treating them alike was measured as a live defect within a
+  day of shipping (a fully-captured host listed as `protocolError` off a teardown
+  RST): `NIOHTTP2Errors.StreamError` passes through untouched (RST_STREAM already
+  answered it; closing would kill every other in-flight stream), and transport
+  teardown (`NIOSSLError`/`IOError`/`ChannelError`) closes without recording.
+  Anything unrecognised **fails closed into the fatal tier** — a wrongly-closed
+  connection is retried by the client, a wrongly-kept one hangs forever.
+
+Both reporters take a `TunneledHostLog` in their initialiser (defaulting to
+`.shared`) so tests assert against their own instance instead of resetting the
+process-wide one out from under a parallel suite. And the verdicts they record are
+**recoverable**: a completed client handshake on the same host:port clears
+`clientHandshakeFailed`/`protocolError` (`TunneledHostLog.clearClientVerdicts`) —
+the operator who just installed the CA sees the entry and the orange icon go,
+instead of haunting until relaunch; a still-broken codec re-records itself on the
+next failure, one connection later.
 
 ## A proxy must not be stricter than the origin
 
@@ -144,6 +195,15 @@ request without waiting (RFC 9113 §3.4 explicitly allows this) can still trip i
 Measured after the fix: the steady-state case answers 200, and the first-request
 case fails in 80 ms with a closed connection instead of hanging for 20 s. Closing
 that window needs a change in swift-nio-http2, not here.
+
+**One boundary this deliberately does not close.** Loom→origin is always
+HTTP/1.1, and the encoding direction has no limit (NIO's llhttp does not bound
+outgoing headers), so the 1 MB request head goes out — but an origin's *h1
+front-end* can refuse the coalesced giant Cookie line (nginx's
+`large_client_header_buffers` defaults to 8 KB) where the same client direct over
+h2, crumbs split per RFC 9113 §8.2.3, gets through. Unlike the hang this section
+fixed, that failure is visible — a 4xx, captured and forwarded — so it reads as
+what it is. A fix would mean speaking h2 upstream, which is its own project.
 
 ## Response streaming
 

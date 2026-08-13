@@ -35,7 +35,10 @@ public actor ProxyEngine: ProxyControlling {
     let forwarder: UpstreamForwarding
     /// Keeps upstream connections alive between requests. Nil when an embedder
     /// injected its own `upstream`, which owns whatever pooling it does.
-    private let upstreamPool: UpstreamConnectionPool?
+    /// Internal, not private: the client-certificate writes in `ProxyEngine+TLS`
+    /// drain it — a mutated identity's parked connections keep presenting the old
+    /// credential otherwise.
+    let upstreamPool: UpstreamConnectionPool?
     let caStore: CAStore
     let config: InterceptionConfig
     let rulesConfig: RulesConfig

@@ -116,12 +116,32 @@ extension ProxyEngine {
     }
 
     public func setClientCertificate(_ certificate: ClientCertificate) async throws {
+        // The label an existing record carried, before the write — an in-place
+        // edit can change the bundle *and* the label, and both the old and new
+        // labels' pooled connections were handshaken under credentials this write
+        // may have replaced.
+        let previousLabel = clientIdentities.summaries().first { $0.id == certificate.id }?.label
         try clientIdentities.set(certificate)
+        // `ClientCertificateConfig` drops its cached NIOSSLContexts on mutation;
+        // the pool holds the other copy of the same stale state — connections
+        // already handshaken under the old certificate, keyed by a label the edit
+        // did not change. Under steady traffic those never idle out.
+        drainPooledConnections(identityLabels: [previousLabel, certificate.label])
     }
 
     public func deleteClientCertificate(id: UUID) async throws {
+        let label = clientIdentities.summaries().first { $0.id == id }?.label
         guard clientIdentities.delete(id: id) else {
             throw ProxyControlError.clientCertificateNotFound(id)
+        }
+        // A deleted identity's parked connections would keep presenting it.
+        drainPooledConnections(identityLabels: [label])
+    }
+
+    private func drainPooledConnections(identityLabels: [String?]) {
+        guard let pool = upstreamPool else { return }
+        for label in Set(identityLabels.compactMap(\.self)) {
+            pool.drain(identityLabel: label)
         }
     }
 }

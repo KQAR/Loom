@@ -1,6 +1,7 @@
 import Foundation
 import Synchronization
 import NIOCore
+import NIOEmbedded
 import NIOHTTP1
 import NIOPosix
 import Testing
@@ -247,6 +248,128 @@ final class UpstreamConnectionPoolTests {
         #expect(acceptCount == 3)
     }
 
+    // MARK: - Interim responses
+
+    @Test func aHundredContinueDoesNotCompleteTheExchange_orPoisonThePool() async throws {
+        // RFC 9110 §15.2: a 1xx is interim, not the response. The decoder delivers
+        // it as a complete head+end message, and treating that end as *the* end
+        // released the connection while the final response was still on the wire —
+        // the worst schedule then hands the previous request's response to the
+        // next request. The raw server below speaks the exact byte sequence.
+        let group = self.group
+        let interimServer = try await ServerBootstrap(group: group)
+            .childChannelInitializer { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(RawInterimResponder())
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { interimServer.close(promise: nil) }
+        let interimPort = interimServer.localAddress!.port!
+
+        let pool = UpstreamConnectionPool()
+        let forwarder = NIOStreamingForwarder(group: group, pool: pool)
+
+        let first = try await forwarder.forward(
+            method: "POST", url: URL(string: "http://127.0.0.1:\(interimPort)/upload")!,
+            headers: [HeaderPair(name: "Expect", value: "100-continue")], body: Data("payload".utf8)
+        )
+        #expect(first.statusCode == 200, "the interim head must be swallowed, never delivered as the response")
+        #expect(String(decoding: first.body, as: UTF8.self) == "first")
+
+        // The second exchange is the actual assertion: on the poisoned pool it
+        // received the *first* request's dangling 200.
+        let second = try await forwarder.forward(
+            method: "POST", url: URL(string: "http://127.0.0.1:\(interimPort)/upload")!,
+            headers: [HeaderPair(name: "Expect", value: "100-continue")], body: Data("payload".utf8)
+        )
+        #expect(String(decoding: second.body, as: UTF8.self) == "second",
+                "a response crossing exchanges is the failure the interim fix exists to prevent")
+    }
+
+    // MARK: - Retry discipline
+
+    @Test func isIdempotent_isRFC9110sSet() {
+        for method in ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "get"] {
+            #expect(NIOStreamingForwarder.isIdempotent(method), Comment(rawValue: method))
+        }
+        for method in ["POST", "PATCH", "QUERY", "LOCK"] {
+            #expect(!NIOStreamingForwarder.isIdempotent(method), Comment(rawValue: method))
+        }
+    }
+
+    @Test func aStalePoolNeverFailsAPost_whoseWriteNeverLanded() async throws {
+        // The idempotency gate must not regress the stale-lease fix for POST-heavy
+        // clients: a FIN'd socket fails the request's *flush*, which proves the
+        // origin never read a complete request — so the retry is still allowed
+        // (RFC 9110 §9.2.2's "never reached the origin" branch), and every round
+        // here succeeds. What the gate forbids is retrying a POST that was fully
+        // written and then went dark, which no local server can stage honestly.
+        let forwarder = NIOStreamingForwarder(group: group)
+        for index in 0..<20 {
+            let result = try await forwarder.forward(
+                method: "POST", url: url("/reap?i=\(index)"), headers: [], body: Data("p".utf8)
+            )
+            #expect(result.statusCode == 200)
+        }
+    }
+
+    // MARK: - The slot's failure holding
+
+    @Test func aFailureBeforeArm_isHeldAndFailsTheArmWithItsOwnWords() {
+        // A fresh connection's TLS handshake can run to failure before the
+        // exchange arms. Dropping that error and reconstructing `connectionClosed`
+        // from `isActive` lost the alert — and with it the `UpstreamTLSError`
+        // naming which identity Loom presented.
+        struct HandshakeStory: Error {}
+        let slot = UpstreamExchangeSlot()
+        slot.fail(HandshakeStory())
+
+        let outcome = Mutex<Result<UpstreamAttemptEnd, UpstreamAttemptFailure>?>(nil)
+        let (_, continuation) = AsyncThrowingStream<UpstreamResponseEvent, Error>.makeStream()
+        slot.arm(continuation: continuation, methodIsHead: false) { result in
+            outcome.withLock { $0 = result }
+        }
+
+        let result = outcome.withLock { $0 }
+        guard case let .failure(failure)? = result else {
+            Issue.record("the held failure must fail the arm; got \(String(describing: result))")
+            return
+        }
+        #expect(failure.underlying is HandshakeStory)
+        #expect(!failure.didYield)
+    }
+
+    // MARK: - Identity-scoped drain
+
+    @Test func drainByIdentity_closesOnlyThatIdentitysParkedConnections() throws {
+        // An in-place PKCS#12 edit changes neither the label nor the pool key, so
+        // connections handshaken under the old certificate keep being leased for
+        // as long as traffic keeps them from idling out — unless the certificate
+        // write drains them.
+        let pool = UpstreamConnectionPool()
+        func park(_ identity: String?) throws -> UpstreamConnection {
+            let channel = EmbeddedChannel()
+            try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+            let connection = UpstreamConnection(
+                key: UpstreamPoolKey(host: "corp.example.test", port: 443, isTLS: true, identity: identity),
+                channel: channel, slot: UpstreamExchangeSlot()
+            )
+            pool.release(connection)
+            return connection
+        }
+        let corp = try park("corp-client")
+        let plain = try park(nil)
+        #expect(pool.idleCount == 2)
+
+        pool.drain(identityLabel: "corp-client")
+
+        #expect(pool.idleCount == 1, "the identity's connections go; everyone else's stay")
+        #expect(!corp.isUsable)
+        #expect(plain.isUsable)
+        plain.close()
+    }
+
     // MARK: - The reuse predicate, directly
 
     @Test func responseIsReusable_readsFramingNotJustKeepAlive() {
@@ -266,6 +389,8 @@ final class UpstreamConnectionPoolTests {
         #expect(!reusable(head(.ok, [("Content-Length", "3"), ("Connection", "close")]), false))
         #expect(!reusable(head(.ok, [("Content-Length", "3")], version: .http1_0), false))
         #expect(!reusable(head(.ok, []), false), "close-delimited: the body ends when the socket does")
+        #expect(!reusable(head(.switchingProtocols, []), false),
+                "after 101 the wire is no longer HTTP/1.1 messages; there is nothing to pool")
     }
 }
 
@@ -276,6 +401,42 @@ final class AcceptCounter: Sendable {
     private let count = Mutex(0)
     func increment() { count.withLock { $0 += 1 } }
     var value: Int { count.withLock { $0 } }
+}
+
+/// A raw-bytes server speaking the `Expect: 100-continue` exchange verbatim:
+/// `100 Continue` as its own head+end message, then the final response — the
+/// sequence the HTTP-shaped responder above cannot produce (the server pipeline
+/// owns response framing and does not write informational heads).
+private final class RawInterimResponder: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+    typealias OutboundOut = ByteBuffer
+
+    /// "payload".utf8.count — what the test's requests carry.
+    private static let expectedBodyBytes = 7
+
+    private var pending = ""
+    private var served = 0
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var buffer = unwrapInboundIn(data)
+        pending += buffer.readString(length: buffer.readableBytes) ?? ""
+        while let headerEnd = pending.range(of: "\r\n\r\n") {
+            let afterHeaders = pending[headerEnd.upperBound...]
+            guard afterHeaders.utf8.count >= Self.expectedBodyBytes else { return }
+            let consumedThrough = pending.index(headerEnd.upperBound, offsetBy: Self.expectedBodyBytes)
+            pending = String(pending[consumedThrough...])
+            served += 1
+            let body = served == 1 ? "first" : "second"
+            write(context: context, "HTTP/1.1 100 Continue\r\n\r\n")
+            write(context: context, "HTTP/1.1 200 OK\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)")
+        }
+    }
+
+    private func write(context: ChannelHandlerContext, _ text: String) {
+        var buffer = context.channel.allocator.buffer(capacity: text.utf8.count)
+        buffer.writeString(text)
+        context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
+    }
 }
 
 /// Answers by path, with the framing each test needs.

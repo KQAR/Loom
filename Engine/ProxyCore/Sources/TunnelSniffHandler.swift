@@ -211,22 +211,49 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         let bootstrap = ClientBootstrap(group: context.eventLoop)
             .channelInitializer { [weak self] upstream in
                 upstream.eventLoop.makeCompletedFuture {
-                    let probe = UpstreamGreetingProbe { [weak self] in
-                        // Fired on the upstream channel's loop, which is the client's.
-                        self?.serverSpokeFirst()
-                    }
+                    let probe = UpstreamGreetingProbe(
+                        onGreeting: { [weak self] in
+                            // Fired on the upstream channel's loop, which is the client's.
+                            self?.serverSpokeFirst()
+                        },
+                        onClosedSilent: { [weak self] in
+                            self?.probeDied()
+                        }
+                    )
                     self?.probeHandler = probe
                     try upstream.pipeline.syncOperations.addHandler(probe)
                 }
             }
         bootstrap.connect(host: host, port: port).assumeIsolated().whenComplete { [weak self] result in
-            guard case let .success(upstream) = result else { return }
-            guard let self, !self.routed else {
-                upstream.close(promise: nil)
-                return
+            switch result {
+            case let .success(upstream):
+                guard let self, !self.routed else {
+                    upstream.close(promise: nil)
+                    return
+                }
+                self.probe = upstream
+            case let .failure(error):
+                // Not a verdict (see the note above) — but not silent either. In
+                // the one corner where nothing else will ever report (a client
+                // that never speaks against an origin that is down), this line is
+                // the only trace the connection existed.
+                Log.proxy.debug("""
+                Speculative upstream probe to \(host, privacy: .public):\(port, privacy: .public) \
+                failed: \(String(describing: error), privacy: .public). Not a verdict — the tunnel \
+                stays undecided; the client's own connection will report if it ever speaks.
+                """)
             }
-            self.probe = upstream
         }
+    }
+
+    /// The probe's channel went away without ever greeting — an origin that
+    /// accepted and then hung up, or an RST. Clear the dead reference so nothing
+    /// later touches a closed channel; deliberately *not* a verdict and *not* a
+    /// re-probe, for the same reason silence isn't: the client's own connection
+    /// reports if it ever speaks.
+    private func probeDied() {
+        probe = nil
+        probeHandler = nil
     }
 
     /// The upstream greeted us before the client said anything decisive: this is a
@@ -243,10 +270,6 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         self.probeHandler = nil
 
         let startedAt = Date()
-        TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
-        if observeTunnels {
-            TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
-        }
 
         var clientSaid = client.allocator.buffer(capacity: pending.count)
         clientSaid.writeBytes(pending)
@@ -263,6 +286,8 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         _ = client.setOption(ChannelOptions.autoRead, value: false)
         _ = upstream.setOption(ChannelOptions.autoRead, value: false)
 
+        let observeTunnels = self.observeTunnels
+        let store = self.store
         upstream.pipeline.removeHandler(probeHandler)
             .flatMap { client.pipeline.removeHandler(self) }
             .flatMap { TunnelFlow.glue(client: client, upstream: upstream) }
@@ -276,6 +301,13 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                     client.close(promise: nil)
                     upstream.close(promise: nil)
                     return
+                }
+                // Recorded only once the splice actually stands: on the failure
+                // path above both ends are closed, and listing the host as
+                // "relayed" would claim activity the operator's client never got.
+                TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
+                if observeTunnels {
+                    TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
                 }
                 // Order matters: whatever the client managed to say before the
                 // greeting has to reach the server ahead of anything it says next,
@@ -440,11 +472,16 @@ final class UpstreamGreetingProbe: ChannelInboundHandler, RemovableChannelHandle
     typealias InboundOut = ByteBuffer
 
     private let onGreeting: @Sendable () -> Void
+    /// The channel died having never greeted — the sniffer's reference to it is
+    /// dead and must be dropped. Not fired after a greeting: from that point the
+    /// connection belongs to the splice, whose own paths own its lifetime.
+    private let onClosedSilent: @Sendable () -> Void
     private var buffered: ByteBuffer?
     private var announced = false
 
-    init(onGreeting: @escaping @Sendable () -> Void) {
+    init(onGreeting: @escaping @Sendable () -> Void, onClosedSilent: @escaping @Sendable () -> Void = {}) {
         self.onGreeting = onGreeting
+        self.onClosedSilent = onClosedSilent
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -457,6 +494,19 @@ final class UpstreamGreetingProbe: ChannelInboundHandler, RemovableChannelHandle
         guard !announced else { return }
         announced = true
         onGreeting()
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        if !announced { onClosedSilent() }
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        if !announced {
+            onClosedSilent()
+            context.close(promise: nil)
+        }
+        context.fireErrorCaught(error)
     }
 
     /// Hand over everything the server said. Called once, after this handler has

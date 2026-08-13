@@ -218,6 +218,59 @@ struct SniffDeadlineTests {
         await engine.stopForTest()
     }
 
+    @Test func aBannerSplitAcrossTheSpliceArrivesWhole() async throws {
+        // The no-lost-bytes guarantee of the server-first path currently rests on
+        // the splice's future chain (remove probe → remove sniffer → glue) running
+        // synchronously on one loop. This pins the *observable* property — a
+        // greeting whose tail trails its head by a network-jitter delay reaches
+        // the client complete — so any future change that makes a step of that
+        // chain asynchronous fails here instead of dropping banner bytes silently.
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { shutdownBlocking(group) }
+        let head = "220 loom-split-banner"
+        let tail = " ready and still whole\r\n"
+        let heard = SpokenBytes()
+        let server = try await ServerBootstrap(group: group)
+            .childChannelInitializer { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(
+                        BannerThenRecord(segments: [head, tail], heard: heard)
+                    )
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { server.close(promise: nil) }
+        let bannerPort = try #require(server.localAddress?.port)
+
+        let engine = ProxyEngine(forwarder: StubForwarder(status: 200, body: Data()), caStore: InMemoryCAStore())
+        let port = try await engine.start(port: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
+
+        let loop = group.next()
+        let acked = loop.makePromise(of: Void.self)
+        let received = loop.makePromise(of: String.self)
+
+        let connect = CONNECTAckHandler(
+            request: "CONNECT 127.0.0.1:\(bannerPort) HTTP/1.1\r\nHost: 127.0.0.1:\(bannerPort)\r\n\r\n",
+            acked: acked
+        )
+        let client = try await ClientBootstrap(group: group)
+            .channelInitializer { $0.pipeline.addHandler(connect) }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
+
+        try await acked.futureResult.get()
+        try await client.pipeline.removeHandler(connect).get()
+        try await client.pipeline.addHandler(
+            SniffTextCollector(sentinel: "ready and still whole", promise: received)
+        ).get()
+
+        let banner = try await received.futureResult.get()
+        #expect(banner.contains(head + tail),
+                "the tail of a split banner lands mid-splice and must not be dropped")
+        await engine.stopForTest()
+    }
+
     @Test func anIdleTunnelOverSOCKSIsStillCaptured() async throws {
         // Both entry points install the same sniffer, so the fix has to hold on the
         // SOCKS side too — and a SOCKS client is *more* likely to hit this, since the
@@ -307,22 +360,44 @@ final class SpokenBytes: Sendable {
 }
 
 /// Greets on connect like SMTP/SSH, and records everything the client sends.
+///
+/// The greeting goes out as one flush per segment, each a separate event-loop
+/// tick — one segment is the ordinary case, several is the split-banner case the
+/// probe must not lose (the segments after the first land while the sniffer is
+/// mid-splice, where an unbuffered pipeline would drop them without a sound).
 private final class BannerThenRecord: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
     typealias OutboundOut = ByteBuffer
 
-    private let banner: String
+    private let segments: [String]
     private let heard: SpokenBytes
 
     init(banner: String, heard: SpokenBytes) {
-        self.banner = banner
+        self.segments = [banner]
+        self.heard = heard
+    }
+
+    init(segments: [String], heard: SpokenBytes) {
+        self.segments = segments
         self.heard = heard
     }
 
     func channelActive(context: ChannelHandlerContext) {
-        var buffer = context.channel.allocator.buffer(capacity: banner.utf8.count)
-        buffer.writeString(banner)
+        writeSegment(0, context: context)
+    }
+
+    private func writeSegment(_ index: Int, context: ChannelHandlerContext) {
+        guard index < segments.count else { return }
+        var buffer = context.channel.allocator.buffer(capacity: segments[index].utf8.count)
+        buffer.writeString(segments[index])
         context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
+        let next = index + 1
+        guard next < segments.count else { return }
+        // A real banner's tail trails its head by network jitter; 20 ms is enough
+        // to land the remainder squarely inside the splice's handler swaps.
+        context.eventLoop.assumeIsolated().scheduleTask(in: .milliseconds(20)) { [weak self] in
+            self?.writeSegment(next, context: context)
+        }
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {

@@ -649,12 +649,14 @@ extension MCPToolExecutor {
             the only surface holding the fact. `excluded`/`notInScope`/`interceptionDisabled` mean \
             `intercept_host` would fix it (`interceptable: true`); `notTLSOrHTTP` (h2c, SSH, \
             SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
-            scope change will. `clientHandshakeFailed` is the one entry where the traffic did not \
-            merely go unread — the client refused Loom's leaf and hung up before sending anything, \
-            so that request never happened and the operator's page is broken; `detail` carries the \
-            handshake error, and the fix is an `exclude` entry (the host works again, relayed) or \
-            trusting Loom's CA in that client. Read this before concluding a client made no \
-            requests. \
+            scope change will. Two reasons mean the traffic did not merely go unread — the \
+            request never happened and the operator's page is broken: `clientHandshakeFailed` \
+            (the client refused Loom's leaf and hung up before sending anything; fix is an \
+            `exclude` entry or trusting Loom's CA in that client) and `protocolError` (Loom's \
+            HTTP/2 codec could not read the connection and closed it; `detail` carries the \
+            codec's own error). Both carry `detail`, and both clear themselves once a client \
+            completes a handshake against Loom's leaf on that host. Read this before concluding \
+            a client made no requests. \
             `tunneledHostsEvicted` counts entries dropped past the 256-host cap.
             """,
             inputSchema: .object(),

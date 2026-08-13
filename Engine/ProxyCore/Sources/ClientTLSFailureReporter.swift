@@ -34,6 +34,7 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
 
     private let host: String
     private let port: Int
+    private let log: TunneledHostLog
     /// Set by NIOSSL's own handshake event. After it, an error is something else —
     /// a broken request, a dropped connection — and belongs to whatever is
     /// handling the decrypted exchange, not here.
@@ -43,13 +44,21 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
     /// were refused, not how many errors BoringSSL emitted.
     private var reported = false
 
-    init(host: String, port: Int) {
+    init(host: String, port: Int, log: TunneledHostLog = .shared) {
         self.host = host
         self.port = port
+        self.log = log
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
-        if case TLSUserEvent.handshakeCompleted = event { handshakeCompleted = true }
+        if case TLSUserEvent.handshakeCompleted = event {
+            handshakeCompleted = true
+            // Recovery is symmetric with failure: the same host that was recorded
+            // as refusing Loom stops being listed the moment a client completes a
+            // handshake — the operator who just installed the CA sees the entry
+            // (and the orange icon it feeds) go, not haunt until relaunch.
+            log.clearClientVerdicts(host: host, port: port)
+        }
         context.fireUserInboundEventTriggered(event)
     }
 
@@ -63,13 +72,18 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
         guard Self.isHandshakeFailure(error) else { return }
         reported = true
         let detail = Self.describe(error)
-        TunneledHostLog.shared.record(
+        log.record(
             host: host, port: port, reason: .clientHandshakeFailed, detail: detail
         )
+        // NIOSSL maps an EOF *during* the handshake to `handshakeFailed` too
+        // (a pre-connected tunnel abandoned before its ClientHello finishes looks
+        // like this), so the log names the likely causes rather than asserting one
+        // — the alert in `detail` is what actually separates them.
         Log.tls.error("""
-        Client refused Loom's certificate for \(self.host, privacy: .public):\(self.port, privacy: .public) \
-        — \(detail, privacy: .public). The host is pinned or Loom's CA is not in that client's \
-        trust store; add it to the SSL scope's exclude list to let it through unread.
+        Client TLS handshake failed for \(self.host, privacy: .public):\(self.port, privacy: .public) \
+        — \(detail, privacy: .public). A refused certificate means the host is pinned or Loom's CA \
+        is not in that client's trust store (exclude it from the SSL scope to let it through unread); \
+        eofDuringHandshake means the client hung up mid-handshake.
         """)
     }
 
