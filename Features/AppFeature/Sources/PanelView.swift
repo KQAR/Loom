@@ -441,7 +441,8 @@ public struct PanelView: View {
             PanelRow(
                 kind: .expand(isExpanded: store.setup.sslScopeExpanded),
                 icon: "list.bullet.rectangle",
-                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty ? nil : LoomTheme.Palette.warning,
+                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty
+                    && store.setup.brokenHosts.isEmpty ? nil : LoomTheme.Palette.warning,
                 title: "SSL Scope",
                 detail: sslScopeDetail,
                 help: "Hosts Loom passes through instead of decrypting, and what it saw but couldn't read"
@@ -456,14 +457,21 @@ public struct PanelView: View {
         }
     }
 
-    /// The scope in one phrase, plus anything unread that nobody asked for.
+    /// The scope in one phrase, plus anything unread that nobody asked for, plus
+    /// anything Loom outright broke.
     ///
-    /// That second number is the load-bearing half — it is the only hint on a collapsed
-    /// console that a capture is thinner than it looks — and it deliberately counts
-    /// only the *unexpected* ones: with the default scope covering everything, an
-    /// excluded pass-through is the configuration working, and counting it here would
-    /// teach the human to ignore the number.
+    /// Those trailing numbers are the load-bearing half — they are the only hint on a
+    /// collapsed console that a capture is thinner than it looks — and `unread`
+    /// deliberately counts only the *unexpected* ones: with the default scope covering
+    /// everything, an excluded pass-through is the configuration working, and counting
+    /// it here would teach the human to ignore the number.
+    ///
+    /// `refused` is a separate word from `unread` because it is a separate event: an
+    /// unread origin's request still reached it, a refused one's never left the
+    /// client. Collapsing them would make the console say "3 unread" about traffic
+    /// that did not happen. It comes first for the same reason.
     private var sslScopeDetail: String {
+        let broken = store.setup.brokenHosts.count
         let unread = store.setup.unexpectedlyUnreadHosts.count
         let head: String
         if store.setup.interceptsEverything {
@@ -473,7 +481,10 @@ public struct PanelView: View {
             let covered = store.setup.sslScope.include.count
             head = covered == 0 ? "none" : "\(covered) host\(covered == 1 ? "" : "s")"
         }
-        return unread > 0 ? "\(head) · \(unread) unread" : head
+        var flags: [String] = [head]
+        if broken > 0 { flags.append("\(broken) refused") }
+        if unread > 0 { flags.append("\(unread) unread") }
+        return flags.joined(separator: " · ")
     }
 
     /// Mutual TLS — the identity Loom presents *to* an origin, the mirror of the root

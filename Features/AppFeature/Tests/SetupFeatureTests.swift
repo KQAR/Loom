@@ -620,4 +620,117 @@ import Testing
             $0.helperMessage = nil
         }
     }
+
+    // MARK: Broken origins
+
+    /// Every reason, so a new `TunnelReason` has to decide which side it is on here
+    /// rather than defaulting into silence — which is how `brokeTheClient` came to be
+    /// declared, documented and called from nowhere.
+    private static func host(_ name: String, _ reason: TunnelReason) -> TunneledHost {
+        TunneledHost(
+            host: name, port: 443, connections: 2,
+            firstSeen: Date(timeIntervalSince1970: 0), lastSeen: Date(timeIntervalSince1970: 1),
+            reason: reason
+        )
+    }
+
+    private static let everyReason: [TunneledHost] = [
+        host("off.example.com", .interceptionDisabled),
+        host("out.example.com", .notInScope),
+        host("skipped.example.com", .excluded),
+        host("noca.example.com", .noCertificateAuthority),
+        host("mint.example.com", .leafMintFailed),
+        host("ssh.example.com", .notTLSOrHTTP),
+        host("refused.example.com", .clientHandshakeFailed),
+        host("h2.example.com", .protocolError),
+    ]
+
+    /// The two reasons where the request never happened, and only those. An unread
+    /// pass-through reached its origin; counting it here would put "your client is
+    /// failing" on traffic that succeeded.
+    @Test func brokenHosts_areTheTwoFailureReasons() {
+        var state = SetupFeature.State()
+        state.tunneledHosts = Self.everyReason
+        #expect(state.brokenHosts.map(\.host) == ["refused.example.com", "h2.example.com"])
+        // Disjoint from the unread list by construction — a broken origin is
+        // `interceptable == false`, which is exactly why it went uncounted before.
+        #expect(state.brokenHosts.allSatisfy { !state.unexpectedlyUnreadHosts.contains($0) })
+    }
+
+    /// The ordering must be a permutation: it is what both the console card and the
+    /// main-window banner render, so a bucket that overlaps duplicates a row and one
+    /// that misses drops an origin the operator is looking for. The old card ordering
+    /// listed broken hosts twice (once as `!interceptable`) had they not been last.
+    @Test func urgencyOrder_isAPartitionOfTheWholeList() {
+        var state = SetupFeature.State()
+        state.tunneledHosts = Self.everyReason
+        let ordered = state.tunneledHostsByUrgency
+        #expect(ordered.count == Self.everyReason.count)
+        #expect(Set(ordered.map(\.id)) == Set(Self.everyReason.map(\.id)))
+    }
+
+    /// Broken first — the console card renders only 6 rows against a 256-host log, so
+    /// sorted anywhere else this is the row that gets folded into "+N more".
+    @Test func urgencyOrder_putsBrokenFirst() {
+        var state = SetupFeature.State()
+        state.tunneledHosts = Self.everyReason
+        let leading = state.tunneledHostsByUrgency.prefix(2).map(\.host)
+        #expect(leading == ["refused.example.com", "h2.example.com"])
+    }
+
+    /// "Pass through" is the repair for a broken origin, and it used to be reachable
+    /// only for `interceptable` rows — i.e. never for the one state where it fixes
+    /// something, leaving a warning with no action beside it.
+    @Test func excludeIsOfferedForBrokenOrigins() {
+        #expect(SSLScopeCard.offersExclude(Self.host("a", .clientHandshakeFailed)))
+        #expect(SSLScopeCard.offersExclude(Self.host("b", .protocolError)))
+        #expect(SSLScopeCard.offersExclude(Self.host("c", .notInScope)))
+        // Already passed through: nothing to add to the exclude list.
+        #expect(!SSLScopeCard.offersExclude(Self.host("d", .excluded)))
+    }
+
+    /// A broken origin gets its own glyph: `lock.slash` reads as "not locked", true of
+    /// a pass-through and misleading about a refused handshake.
+    @Test func brokenOriginsGetTheirOwnGlyph() {
+        #expect(SSLScopeCard.glyph(for: Self.host("a", .clientHandshakeFailed)) == "exclamationmark.triangle")
+        #expect(SSLScopeCard.glyph(for: Self.host("b", .notInScope)) == "lock.slash")
+        #expect(SSLScopeCard.glyph(for: Self.host("c", .notTLSOrHTTP)) == "questionmark.circle")
+    }
+
+    /// The banner names the symptom, not just the cause: the operator is staring at an
+    /// empty request table, and "never left the client" is what connects the two.
+    @Test func bannerSummaryNamesTheSymptom() {
+        let one = MainView.tlsFailureSummary([Self.host("a", .clientHandshakeFailed)])
+        #expect(one.hasPrefix("1 origin refused"))
+        #expect(one.contains("never left the client"))
+        let two = MainView.tlsFailureSummary(Array(Self.everyReason.suffix(2)))
+        #expect(two.hasPrefix("2 origins refused"))
+    }
+
+    /// The window's watch is a live poll, not a one-shot: activation can't cover this
+    /// writer (live traffic on another device), so with Loom already focused the
+    /// banner would otherwise stay absent while the phone kept failing.
+    @Test func watchTunneledHosts_pollsUntilCancelled() async {
+        let clock = TestClock()
+        let refused = Self.host("refused.example.com", .clientHandshakeFailed)
+        let calls = LockIsolated(0)
+        let store = TestStore(initialState: SetupFeature.State()) {
+            SetupFeature()
+        } withDependencies: {
+            $0.continuousClock = clock
+            $0.proxyClient.tunneledHosts = {
+                calls.withValue { $0 += 1 }
+                return TunneledHostReport(hosts: calls.value > 1 ? [refused] : [], evicted: 0)
+            }
+        }
+        await store.send(.watchTunneledHosts)
+        await store.receive(\.tunneledHostsLoaded)
+        await clock.advance(by: .seconds(5))
+        await store.receive(\.tunneledHostsLoaded) {
+            $0.tunneledHosts = [refused]
+        }
+        #expect(store.state.brokenHosts.count == 1)
+        // The poll only ends with the window; nothing here should assert it finished.
+        store.exhaustivity = .off
+    }
 }

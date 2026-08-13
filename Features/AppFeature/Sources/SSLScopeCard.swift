@@ -79,12 +79,12 @@ struct SSLScopeCard: View {
         } else {
             // Capped like `ReverseProxyCard`'s list: the remainder is counted rather
             // than rendered, so a busy session can't grow the console panel without
-            // bound. Ordered by how much attention the row deserves — something unread
-            // that nobody asked for, then the deliberate pass-throughs, then what Loom
-            // can't read at any setting.
-            let ordered = store.unexpectedlyUnreadHosts
-                + store.tunneledHosts.filter { $0.reason == .excluded }
-                + store.tunneledHosts.filter { !$0.interceptable }
+            // bound. Ordered by how much attention the row deserves
+            // (`tunneledHostsByUrgency`) — and a broken origin has to lead, because the
+            // cap is 6 against a 256-host log: sorted last, the one entry saying "your
+            // client is failing because Loom is in the path" was reliably the one folded
+            // into "+N more".
+            let ordered = store.tunneledHostsByUrgency
             ForEach(ordered.prefix(Self.visibleTunneledHosts)) { entry in
                 tunneledRow(entry)
             }
@@ -103,9 +103,12 @@ struct SSLScopeCard: View {
 
     private func tunneledRow(_ entry: TunneledHost) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
-            Image(systemName: entry.interceptable ? "lock.slash" : "questionmark.circle")
+            Image(systemName: Self.glyph(for: entry))
                 .font(LoomTheme.Icon.badge)
-                .foregroundStyle(.secondary)
+                // Tinted only for a broken origin. The other three states are
+                // "Loom read less than it could", which the caption says and a
+                // colour would over-state; this one is "the client got nothing".
+                .foregroundStyle(entry.brokeTheClient ? LoomTheme.Palette.warning : .secondary)
                 .frame(width: 14)
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.host)
@@ -123,22 +126,41 @@ struct SSLScopeCard: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Decrypt \(entry.host) from now on")
-                // Only for something unread that *wasn't* asked for: an already-excluded
-                // row has nothing to add to the exclude list, and offering it would
-                // imply the row is unfinished business when it is the configuration
-                // working.
-                if entry.reason != .excluded {
-                    Button {
-                        store.send(.excludeHostTapped(entry.host))
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("Never decrypt \(entry.host)")
+            }
+            if Self.offersExclude(entry) {
+                Button {
+                    store.send(.excludeHostTapped(entry.host))
+                } label: {
+                    Image(systemName: "xmark")
                 }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("Never decrypt \(entry.host)")
             }
         }
+    }
+
+    /// Whether "never decrypt this" is worth offering.
+    ///
+    /// Two groups, and the second was the gap. **Something unread that wasn't asked
+    /// for**: an already-excluded row has nothing to add to the exclude list, and
+    /// offering it would imply unfinished business when it is the configuration
+    /// working. **And every broken origin** — for those, excluding is not a
+    /// preference, it is the repair: the connection is relayed untouched, so a
+    /// pinned client or one that doesn't trust Loom's CA starts working again on the
+    /// next attempt. It used to be reachable only for `interceptable` rows, i.e.
+    /// never for the one state where it fixes something, which left a warning with
+    /// no action beside it — the dead end DESIGN.md's alert channel exists to avoid.
+    static func offersExclude(_ entry: TunneledHost) -> Bool {
+        if entry.brokeTheClient { return true }
+        return entry.interceptable && entry.reason != .excluded
+    }
+
+    /// Broken states get their own glyph: `lock.slash` reads as "not locked", which
+    /// is right for a pass-through and wrong for a refused handshake.
+    static func glyph(for entry: TunneledHost) -> String {
+        if entry.brokeTheClient { return "exclamationmark.triangle" }
+        return entry.interceptable ? "lock.slash" : "questionmark.circle"
     }
 
     /// One line saying why the origin is unread and how much of it there is. Reason
