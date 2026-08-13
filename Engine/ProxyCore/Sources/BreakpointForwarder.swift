@@ -84,15 +84,24 @@ final class BreakpointForwarder: UpstreamForwarding {
                     var httpVersion: String?
                     var responseHeaders: [HeaderPair] = []
                     var responseBody = Data()
+                    var transport: FlowTransport?
                     for try await event in base.forwardStream(method: method, url: url, headers: headers, body: .bytes(body), origin: origin) {
                         switch event {
                         case let .metadata(rules): continuation.yield(.metadata(appliedRules: rules))
+                        // Buffered like the rest of the response, not passed straight
+                        // through: a held exchange emits nothing until the human
+                        // releases it, and a transport arriving ahead of its own head
+                        // would describe a response the consumer has not been given.
+                        case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
                         case let .head(code, version, hdrs): statusCode = code; httpVersion = version; responseHeaders = hdrs
                         case let .body(chunk): responseBody.append(chunk)
                         case .end: break
                         }
                     }
-                    var result = ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody)
+                    var result = ForwardResult(
+                        statusCode: statusCode, httpVersion: httpVersion,
+                        headers: responseHeaders, body: responseBody, transport: transport
+                    )
 
                     // Response phase: hold the final response before it reaches the client.
                     // Matched off the *original* request so a request-phase URL edit can't
@@ -121,6 +130,7 @@ final class BreakpointForwarder: UpstreamForwarding {
 
     /// Yield a buffered result to the client stream as head/body/end, then finish.
     private static func emit(_ result: ForwardResult, into continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation) {
+        if let transport = result.transport { continuation.yield(.transport(transport)) }
         continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
         continuation.yield(.end)

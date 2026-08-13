@@ -114,6 +114,14 @@ enum MITMPipeline {
         channel: Channel, negotiated: ALPNResult,
         host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding
     ) -> EventLoopFuture<Void> {
+        // Read once, here, and handed down. This runs on the connection channel
+        // after the handshake — the only point where both facts are available:
+        // ALPN has settled, and the `NIOSSLServerHandler` the version comes from
+        // is in *this* pipeline. An h2 stream channel is a child with no TLS
+        // handler of its own, so a per-request read there answers nil.
+        let tlsVersion = UpstreamTLSObserver.versionName(
+            (try? channel.pipeline.syncOperations.nioSSL_tlsVersion()) ?? nil
+        )
         if case .negotiated("h2") = negotiated {
             return channel.configureHTTP2Pipeline(
                 mode: .server, initialLocalSettings: h2ServerSettings
@@ -121,8 +129,15 @@ enum MITMPipeline {
                 streamChannel.eventLoop.makeCompletedFuture {
                     let sync = streamChannel.pipeline.syncOperations
                     try sync.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
+                    // The codec hands the request over as an HTTP/1.1 head, so the
+                    // negotiated protocol has to be stated rather than derived —
+                    // otherwise every h2 exchange records itself as HTTP/1.1, which
+                    // is true of the shape and false about the client.
                     try sync.addHandler(
-                        TLSInterceptHandler(host: host, port: port, store: store, forwarder: forwarder)
+                        TLSInterceptHandler(
+                            host: host, port: port, store: store, forwarder: forwarder,
+                            negotiatedProtocol: "HTTP/2", clientTLSVersion: tlsVersion
+                        )
                     )
                 }
             }.flatMap { _ in
@@ -137,12 +152,16 @@ enum MITMPipeline {
                 }
             }
         }
-        return installHTTP1(channel: channel, host: host, port: port, store: store, forwarder: forwarder, upstreamTLS: true)
+        return installHTTP1(
+            channel: channel, host: host, port: port, store: store, forwarder: forwarder,
+            upstreamTLS: true, clientTLSVersion: tlsVersion
+        )
     }
 
     private static func installHTTP1(
         channel: Channel, host: String, port: Int,
-        store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool
+        store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool,
+        clientTLSVersion: String? = nil
     ) -> EventLoopFuture<Void> {
         channel.eventLoop.makeCompletedFuture {
             let sync = channel.pipeline.syncOperations
@@ -153,7 +172,8 @@ enum MITMPipeline {
             )
             try sync.addHandler(
                 TLSInterceptHandler(
-                    host: host, port: port, store: store, forwarder: forwarder, upstreamTLS: upstreamTLS
+                    host: host, port: port, store: store, forwarder: forwarder,
+                    upstreamTLS: upstreamTLS, clientTLSVersion: clientTLSVersion
                 ),
                 name: interceptName
             )

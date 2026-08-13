@@ -88,6 +88,13 @@ struct HTTP2InterceptionTests {
         #expect(flow.request.method == "GET")
         #expect(flow.request.url.hasPrefix("https://"))
         #expect(flow.response?.statusCode == 200)
+        // The whole reason the client's version is stated rather than derived:
+        // the h2↔h1 codec hands the capture path an HTTP/1.1 head, so a derived
+        // reading would record every h2 exchange as HTTP/1.1 — which is what
+        // every Loom surface showed before this was threaded through.
+        #expect(flow.request.httpVersion == "HTTP/2")
+        #expect(flow.transport?.clientTLSVersion?.hasPrefix("TLSv1.") == true,
+                "the client leg's handshake is known on the connection channel and must reach the flow")
         #expect(forwarder.lastURL?.absoluteString == "https://example.test/h2/thing")
         // Terminal, at the end of the body rather than in a `defer`, for the
         // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the

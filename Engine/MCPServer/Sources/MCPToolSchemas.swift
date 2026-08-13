@@ -408,7 +408,30 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "get_flow_detail",
-            description: "Get full request and response detail for one flow by id, including headers and body. Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.",
+            description: """
+                Get full request and response detail for one flow by id, including headers and body. \
+                Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, \
+                bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A \
+                body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.
+
+                `request.httpVersion` and `response.httpVersion` are two different facts and \
+                routinely disagree: the first is what the client negotiated with Loom, the second is \
+                Loom's own hop to the origin, which is always HTTP/1.1. An h2 client showing \
+                `"HTTP/2"` in and `"HTTP/1.1"` out is normal, not a fault.
+
+                `transport` describes the connection: `remoteAddress` (the origin's IP:port — what \
+                DNS actually resolved to), `connectionReused` (false means this exchange paid a TCP \
+                connect plus a TLS handshake, which is usually the explanation for a TTFB that looks \
+                anomalous next to its neighbours), `clientTLSVersion` / `upstreamTLS` (two separate \
+                handshakes, including the origin's certificate issuer and expiry and any mutual-TLS \
+                identity Loom presented), and `responseContentEncoding` / `responseEncodedBodyBytes` \
+                (the compressed size that crossed the wire — the body itself is reported decompressed, \
+                so this is the only reading of what the response cost in bandwidth).
+
+                Every one of those is **omitted when unmeasured, which is not the same as "no"**: an \
+                absent `transport` means the exchange never reached a socket (mocked, blocked, or \
+                still pending), and an absent `upstreamTLS` does not mean the hop was plaintext.
+                """,
             inputSchema: .object(
                 [
                     "id": .string("Flow UUID."),

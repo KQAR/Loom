@@ -14,6 +14,15 @@ enum HTTPUtil {
         hopByHop.contains(name.lowercased())
     }
 
+    /// How a request head's version is spelled on a captured flow — `HTTP/1.1`,
+    /// `HTTP/1.0`. **Not** usable for an intercepted h2 request: the h2↔h1 codec
+    /// hands the decrypted request over as an HTTP/1.1 head, so this would report
+    /// the shape the codec built rather than what the client negotiated. That path
+    /// passes the ALPN result down explicitly instead (`MITMPipeline`).
+    static func clientProtocol(_ version: HTTPVersion) -> String {
+        "HTTP/\(version.major).\(version.minor)"
+    }
+
     static func headerPairs(_ headers: HTTPHeaders) -> [HeaderPair] {
         headers.map { HeaderPair(name: $0.name, value: $0.value) }
     }

@@ -52,13 +52,21 @@ public enum HARExport {
         let sourceApp: String?
         let appliedRules: [String]?
         let error: String?
+        let serverIPAddress: String?
+        /// How the exchange travelled. `FlowTransport` is `Encodable` with exactly
+        /// the shape wanted here, so it ships whole rather than being flattened
+        /// into six `_`-prefixed keys that would then have to be kept in step.
+        let transport: FlowTransport?
 
         enum CodingKeys: String, CodingKey {
             case startedDateTime, time, request, response, cache, timings
+            // Standard HAR 1.2 optional fields, not extensions.
+            case serverIPAddress
             // HAR permits `_`-prefixed vendor extensions.
             case sourceApp = "_sourceApp"
             case appliedRules = "_appliedRules"
             case error = "_error"
+            case transport = "_transport"
         }
 
         init(flow: Flow) {
@@ -68,10 +76,17 @@ public enum HARExport {
             response = Response(flow)
             cache = Cache()
             timings = Timings(flow: flow)
+
             sourceApp = flow.sourceApp?.name
             let rules = flow.appliedRules?.map(\.name)
             appliedRules = (rules?.isEmpty ?? true) ? nil : rules
             error = flow.error
+            // HAR 1.2 has a standard slot for the origin's address and none for
+            // anything else here, so the address goes in it — stripped of the port,
+            // which the field is defined as not carrying — and the rest travels as
+            // one vendor extension rather than six.
+            serverIPAddress = flow.transport?.remoteAddress.map(HARExport.ipOnly)
+            transport = flow.transport
         }
     }
 
@@ -139,7 +154,10 @@ public enum HARExport {
         init(_ request: CapturedRequest) {
             method = request.method
             url = request.url
-            httpVersion = "HTTP/1.1"
+            // What the client spoke, when Loom recorded it. The fallback is for a
+            // flow captured before that was recorded, and for an imported HAR that
+            // omitted it — HAR requires the key, so there is no way to say nothing.
+            httpVersion = request.httpVersion ?? "HTTP/1.1"
             headers = HARExport.nameValues(request.headers)
             queryString = HARExport.queryString(request.url)
             cookies = []
@@ -239,6 +257,18 @@ public enum HARExport {
     }
 
     // MARK: - Helpers
+
+    /// HAR's `serverIPAddress` is the address alone. `FlowTransport.remoteAddress`
+    /// carries the port too (`93.184.216.34:443`, `[::1]:8080`), which is the more
+    /// useful reading everywhere else — so it is trimmed here rather than stored
+    /// twice.
+    private static func ipOnly(_ address: String) -> String {
+        if address.hasPrefix("["), let close = address.firstIndex(of: "]") {
+            return String(address[address.index(after: address.startIndex) ..< close])
+        }
+        guard let colon = address.lastIndex(of: ":") else { return address }
+        return String(address[address.startIndex ..< colon])
+    }
 
     private static func nameValues(_ pairs: [HeaderPair]) -> [NameValue] {
         pairs.map { NameValue(name: $0.name, value: $0.value) }

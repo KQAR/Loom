@@ -1240,6 +1240,17 @@ private struct CellContent: View, Equatable {
             && lhs.flow.appliedRules?.count == rhs.flow.appliedRules?.count
             && lhs.flow.webSocketMessages?.count == rhs.flow.webSocketMessages?.count
             && lhs.flow.response?.httpVersion == rhs.flow.response?.httpVersion
+            && lhs.flow.request.httpVersion == rhs.flow.request.httpVersion
+    }
+
+    /// Both HTTP versions, labelled. They routinely disagree — Loom re-originates
+    /// every exchange as HTTP/1.1 — and the tooltip used to give only the upstream
+    /// one, which reads as a flat contradiction of an h2 client.
+    private static func protocolHelp(_ flow: Flow) -> String {
+        var parts: [String] = []
+        if let client = flow.request.httpVersion { parts.append("Client: \(client)") }
+        if let upstream = flow.response?.httpVersion { parts.append("Upstream: \(upstream)") }
+        return parts.joined(separator: " · ")
     }
 
     var body: some View {
@@ -1261,9 +1272,10 @@ private struct CellContent: View, Equatable {
             Text(MainView.protocolLabel(flow))
                 .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
-                // The upstream version is the honest place to state it: it describes
-                // Loom's own hop, not the client's (see `protocolLabel`).
-                .help(flow.response?.httpVersion.map { "Upstream: \($0)" } ?? "")
+                // The column is the scheme; the tooltip is the two HTTP versions,
+                // which are two different facts (see `protocolLabel`) — what the
+                // client negotiated, and what Loom's own upstream hop spoke.
+                .help(Self.protocolHelp(flow))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
         case .method:

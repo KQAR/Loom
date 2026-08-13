@@ -121,7 +121,32 @@ import Testing
                 "webSocketMessages": "folded into `webSocket` — a bare `true` + `wsMessageCount` in the summary, the frame log in the detail",
                 "webSocketDroppedMessages": "folded into `captureTruncated` (summary) and `webSocket.framesNotRecorded` (detail)",
                 "webSocketCaptureError": "folded into `captureTruncated` (summary) and `webSocket.captureStopped` (detail)",
+                "transport": "get_flow_detail renders it as `transport` (FlowDetailRender); kept off the summary, which is a list read that no connection fact helps you filter",
             ]
+        ))
+    }
+
+    @Test func transport_carriesEveryModelField() {
+        // Non-empty values: the render's initializer returns nil for an empty
+        // one, and `Mirror` needs an instance to report properties from.
+        let certificate = PeerCertificateInfo(subject: "CN=a.test")
+        let tls = UpstreamTLSInfo(version: "TLSv1.3", certificate: certificate)
+        let transport = FlowTransport(remoteAddress: "127.0.0.1:443", upstreamTLS: tls)
+
+        check(Census(
+            "FlowTransport → get_flow_detail.transport",
+            model: transport,
+            render: RenderedTransport(transport)!
+        ))
+        check(Census(
+            "UpstreamTLSInfo → get_flow_detail.transport.upstreamTLS",
+            model: tls,
+            render: RenderedUpstreamTLS(tls)!
+        ))
+        check(Census(
+            "PeerCertificateInfo → get_flow_detail.transport.upstreamTLS.certificate",
+            model: certificate,
+            render: RenderedPeerCertificate(certificate)!
         ))
     }
 
@@ -175,6 +200,53 @@ import Testing
                 "variablesJSON": "renamed to `variables` — it is already JSON text, and the suffix said so twice",
             ]
         ))
+    }
+
+    @Test func flowDetail_showsTheAgentBothProtocolsAndTheConnection() throws {
+        // The end-to-end reading, not just the census: a census proves a field
+        // exists on a render type, and what matters is that `get_flow_detail`'s
+        // JSON carries it. The two `httpVersion`s in particular have to sit on
+        // opposite sides — an agent reading only the response's would conclude an
+        // h2 client spoke HTTP/1.1.
+        let flow = Flow(
+            request: CapturedRequest(
+                method: "GET", url: "https://api.example.test/v1", httpVersion: "HTTP/2", headers: []
+            ),
+            startedAt: Date(timeIntervalSince1970: 0),
+            outcome: .completed(
+                CapturedResponse(statusCode: 200, httpVersion: "HTTP/1.1", headers: []),
+                at: Date(timeIntervalSince1970: 1)
+            ),
+            transport: FlowTransport(
+                remoteAddress: "93.184.216.34:443",
+                connectionReused: true,
+                upstreamTLS: UpstreamTLSInfo(
+                    version: "TLSv1.3", serverName: "api.example.test",
+                    certificate: PeerCertificateInfo(issuer: "CN=Test CA")
+                ),
+                responseContentEncoding: "gzip",
+                responseEncodedBodyBytes: 640
+            )
+        )
+        let rendered = MCPToolExecutor.flowDetail(flow, offset: 0, maxBytes: 4_096)
+
+        #expect((rendered["request"] as? [String: Any])?["httpVersion"] as? String == "HTTP/2")
+        #expect((rendered["response"] as? [String: Any])?["httpVersion"] as? String == "HTTP/1.1")
+        let transport = try #require(rendered["transport"] as? [String: Any])
+        #expect(transport["remoteAddress"] as? String == "93.184.216.34:443")
+        #expect(transport["connectionReused"] as? Bool == true)
+        #expect(transport["responseEncodedBodyBytes"] as? Int == 640)
+        let tls = try #require(transport["upstreamTLS"] as? [String: Any])
+        #expect(tls["version"] as? String == "TLSv1.3")
+        #expect((tls["certificate"] as? [String: Any])?["issuer"] as? String == "CN=Test CA")
+    }
+
+    @Test func flowDetail_omitsTheTransportWhenNothingTouchedASocket() {
+        // A mocked or blocked exchange. An empty `transport` object would tell an
+        // agent the connection was measured and had nothing to report, which is a
+        // different (and wrong) answer from "there was no connection".
+        let rendered = MCPToolExecutor.flowDetail(flow, offset: 0, maxBytes: 4_096)
+        #expect(rendered["transport"] == nil)
     }
 
     // MARK: - Flow diff

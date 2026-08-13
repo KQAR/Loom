@@ -1,0 +1,154 @@
+import Foundation
+
+/// How an exchange actually travelled — the facts about the *connection* rather
+/// than about the message.
+///
+/// This is the half of an exchange a capture proxy is uniquely placed to answer
+/// and that no amount of reading headers can recover: which origin IP the bytes
+/// went to, whether the socket was already open, what TLS was negotiated on
+/// Loom's own upstream leg, and how many bytes crossed the wire *before* Loom
+/// decompressed them. Without it a slow request and a fast one look identical in
+/// the capture, and "why did TTFB jump" has no answer on any surface.
+///
+/// Every field is optional, and absent means **not measured**, never "no". Two
+/// separate reasons a field can be nil, both real: the exchange never reached the
+/// point where it is known (a connect failure has no TLS version), or the path
+/// that produced it does not measure it at all (a mocked response never touched a
+/// socket). A renderer must say "—", never "none".
+public struct FlowTransport: Equatable, Codable, Sendable {
+    /// TLS version the **client** negotiated with Loom's minted leaf, on the
+    /// client↔Loom leg. Nil for a plaintext request, and for a client whose
+    /// handshake Loom never terminated.
+    public var clientTLSVersion: String?
+    /// The origin's address as Loom connected to it — `"93.184.216.34:443"`. The
+    /// thing a DNS answer resolves to, which the URL does not tell you and which
+    /// is the whole diagnosis for a request reaching the wrong CDN edge or a
+    /// stale `/etc/hosts` entry.
+    public var remoteAddress: String?
+    /// Whether this exchange ran on a connection that was already open (leased
+    /// from `UpstreamConnectionPool`) rather than one it opened itself. The
+    /// difference is a TCP connect plus a TLS handshake — measured at ~96 ms — and
+    /// it is the reason two otherwise identical requests report different TTFBs.
+    public var connectionReused: Bool?
+    /// TLS on the Loom↔origin leg. Distinct from `clientTLSVersion` on purpose:
+    /// they are two independent handshakes and they routinely disagree, which is
+    /// exactly what an operator debugging a pinning or protocol issue needs to see.
+    public var upstreamTLS: UpstreamTLSInfo?
+    /// `Content-Encoding` the origin actually sent, captured **before**
+    /// `NIOHTTPResponseDecompressor` inflated the body and
+    /// `HTTPUtil.sanitizeDecodedResponseHeaders` stripped the header. Without it
+    /// the captured flow gives no hint that the response was compressed at all.
+    public var responseContentEncoding: String?
+    /// Response body bytes as they crossed the wire — still encoded, so this is
+    /// the number a bandwidth question is about. Compare with the captured body's
+    /// length (or `CapturedResponse.fullBodyBytes`) for the compression ratio.
+    public var responseEncodedBodyBytes: Int?
+
+    public init(
+        clientTLSVersion: String? = nil,
+        remoteAddress: String? = nil,
+        connectionReused: Bool? = nil,
+        upstreamTLS: UpstreamTLSInfo? = nil,
+        responseContentEncoding: String? = nil,
+        responseEncodedBodyBytes: Int? = nil
+    ) {
+        self.clientTLSVersion = clientTLSVersion
+        self.remoteAddress = remoteAddress
+        self.connectionReused = connectionReused
+        self.upstreamTLS = upstreamTLS
+        self.responseContentEncoding = responseContentEncoding
+        self.responseEncodedBodyBytes = responseEncodedBodyBytes
+    }
+
+    public var isEmpty: Bool { self == FlowTransport() }
+
+    /// Fold a later, partial reading over this one. The transport of one exchange
+    /// is learned in two instalments — most of it when the response head arrives,
+    /// the encoded byte count only once the body has finished — so the relay
+    /// merges rather than replaces. A nil field in `other` leaves this one's value
+    /// alone, which is what makes the second instalment able to carry one field.
+    public func merging(_ other: FlowTransport) -> FlowTransport {
+        FlowTransport(
+            clientTLSVersion: other.clientTLSVersion ?? clientTLSVersion,
+            remoteAddress: other.remoteAddress ?? remoteAddress,
+            connectionReused: other.connectionReused ?? connectionReused,
+            upstreamTLS: other.upstreamTLS ?? upstreamTLS,
+            responseContentEncoding: other.responseContentEncoding ?? responseContentEncoding,
+            responseEncodedBodyBytes: other.responseEncodedBodyBytes ?? responseEncodedBodyBytes
+        )
+    }
+}
+
+/// What Loom's own TLS handshake with the origin settled on.
+///
+/// Deliberately **not** carrying the negotiated cipher suite: NIOSSL exposes the
+/// version and the peer certificate off a live connection and nothing else, so a
+/// cipher field could only ever be a guess reconstructed from the configured
+/// suite list. A field that is right most of the time is worse than an absent one
+/// on a surface an operator uses to decide whether a handshake behaved.
+public struct UpstreamTLSInfo: Equatable, Codable, Sendable {
+    /// `"TLSv1.3"` / `"TLSv1.2"` — as negotiated, not as configured.
+    public var version: String?
+    /// The SNI Loom sent. Nil for an IP-literal origin, which cannot take one —
+    /// and that nil is informative, because a server matching on SNI will serve
+    /// its default vhost instead.
+    public var serverName: String?
+    /// Label of the mutual-TLS client identity Loom presented, or nil for none.
+    /// Stating the absence is the point: an mTLS origin that answers 403 looks
+    /// exactly like an authorization bug until you can see that no certificate
+    /// went with the request.
+    public var clientCertificate: String?
+    /// The leaf the origin presented. Loom validates it normally; this records
+    /// what it saw, which is how an unexpected interception (a corporate MITM in
+    /// front of Loom) becomes visible rather than merely working.
+    public var certificate: PeerCertificateInfo?
+
+    public init(
+        version: String? = nil,
+        serverName: String? = nil,
+        clientCertificate: String? = nil,
+        certificate: PeerCertificateInfo? = nil
+    ) {
+        self.version = version
+        self.serverName = serverName
+        self.clientCertificate = clientCertificate
+        self.certificate = certificate
+    }
+}
+
+/// A summary of the origin's leaf certificate — enough to answer "who signed
+/// this and when does it expire", which is the question an expiring certificate
+/// or an unexpected issuer poses. Not the certificate itself: the DER is large,
+/// it would be recorded once per connection, and nothing downstream re-verifies.
+public struct PeerCertificateInfo: Equatable, Codable, Sendable {
+    public var subject: String?
+    public var issuer: String?
+    public var notBefore: Date?
+    public var notAfter: Date?
+    /// Hex, uppercase, no separators — the spelling `openssl x509 -serial` prints.
+    public var serialNumber: String?
+
+    public init(
+        subject: String? = nil,
+        issuer: String? = nil,
+        notBefore: Date? = nil,
+        notAfter: Date? = nil,
+        serialNumber: String? = nil
+    ) {
+        self.subject = subject
+        self.issuer = issuer
+        self.notBefore = notBefore
+        self.notAfter = notAfter
+        self.serialNumber = serialNumber
+    }
+
+    /// Whether the certificate was already expired (or not yet valid) at the
+    /// moment the exchange ran. Computed against the exchange's own clock rather
+    /// than "now", because a flow read out of the store a week later must not
+    /// re-answer a question about a connection that already happened.
+    public func isValid(at date: Date) -> Bool {
+        if let notBefore, date < notBefore { return false }
+        if let notAfter, date > notAfter { return false }
+        return true
+    }
+}

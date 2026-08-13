@@ -33,6 +33,35 @@ enum CapturedExchange {
         let startedAt: Date
     }
 
+    /// What the client↔Loom hop was, which only the entry point knows.
+    ///
+    /// Both facts are per-connection and neither is derivable here: the HTTP
+    /// version because an intercepted h2 request reaches this code as an HTTP/1.1
+    /// head (the h2↔h1 codec built it), and the TLS version because on an h2
+    /// stream channel the handler that knows it is on the *parent*. So the caller
+    /// that terminated the connection states them, once, rather than every layer
+    /// below guessing.
+    struct ClientLeg {
+        /// `HTTP/2` / `HTTP/1.1` / `HTTP/1.0` — what the client actually spoke.
+        let httpVersion: String
+        /// TLS the client negotiated with Loom's leaf, or nil for cleartext.
+        let tlsVersion: String?
+
+        init(httpVersion: String, tlsVersion: String? = nil) {
+            self.httpVersion = httpVersion
+            self.tlsVersion = tlsVersion
+        }
+
+        /// The client leg as a transport reading. Never empty — the HTTP version
+        /// alone is on the request, so this carries only the TLS half; nil when
+        /// there is nothing to say, so a plaintext exchange doesn't get an empty
+        /// transport that reads as "measured, and nothing there".
+        var transport: FlowTransport? {
+            guard let tlsVersion else { return nil }
+            return FlowTransport(clientTLSVersion: tlsVersion)
+        }
+    }
+
     /// Record the request as soon as its **head** is parsed.
     ///
     /// The flow used to be created on the first body chunk (or on `.end` for a
@@ -48,16 +77,19 @@ enum CapturedExchange {
     /// response, and the capture showed no flow — so "the proxy lost it" and "the
     /// app never asked" could not be told apart, by a human or an agent.
     static func observe(
-        channel: Channel, head: HTTPRequestHead, urlString: String, store: FlowStore
+        channel: Channel, head: HTTPRequestHead, urlString: String, store: FlowStore,
+        clientLeg: ClientLeg
     ) -> Observed {
         let observed = Observed(id: UUID(), startedAt: Date())
         let headers = HTTPUtil.headerPairs(head.headers)
         let request = CapturedRequest(
-            method: head.method.rawValue, url: urlString, headers: headers, body: nil
+            method: head.method.rawValue, url: urlString,
+            httpVersion: clientLeg.httpVersion, headers: headers, body: nil
         )
         let device = device(channel: channel, headers: headers)
         let flow = Flow(
-            id: observed.id, request: request, startedAt: observed.startedAt, sourceDevice: device
+            id: observed.id, request: request, startedAt: observed.startedAt, sourceDevice: device,
+            transport: clientLeg.transport
         )
         Task { await store.upsert(flow) }
         return observed
@@ -71,7 +103,8 @@ enum CapturedExchange {
         routing: Routing,
         store: FlowStore,
         forwarder: UpstreamForwarding,
-        observed: Observed
+        observed: Observed,
+        clientLeg: ClientLeg
     ) {
         let headers = HTTPUtil.headerPairs(head.headers)
         // For a streamed body the bytes aren't known yet; `bodyCapture` fills them in
@@ -83,7 +116,8 @@ enum CapturedExchange {
         case .stream: initialBody = nil
         }
         let capturedRequest = CapturedRequest(
-            method: head.method.rawValue, url: routing.urlString, headers: headers, body: initialBody
+            method: head.method.rawValue, url: routing.urlString,
+            httpVersion: clientLeg.httpVersion, headers: headers, body: initialBody
         )
         // Identity and clock come from `observe`, which already put this request in
         // the capture: an exchange must continue that flow, never open a second one.
@@ -146,7 +180,10 @@ enum CapturedExchange {
             // the row (and its in-flight spinner) appears the instant the request
             // head is parsed rather than after `ProcessResolver.resolve` returns.
             // This also keeps the synchronous scan off the before-first-paint path.
-            await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceDevice: sourceDevice))
+            await store.upsert(Flow(
+                id: flowID, request: capturedRequest, startedAt: startedAt,
+                sourceDevice: sourceDevice, transport: clientLeg.transport
+            ))
 
             // Whether forwarding must wait for the resolver: only when something
             // in the chain matches on the source app (an app-scoped rule or
@@ -169,7 +206,10 @@ enum CapturedExchange {
                 if sourceApp != nil {
                     // Safe as a whole-flow re-upsert: forwarding hasn't started,
                     // so no response upsert can interleave.
-                    await store.upsert(Flow(id: flowID, request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice))
+                    await store.upsert(Flow(
+                        id: flowID, request: capturedRequest, startedAt: startedAt,
+                        sourceApp: sourceApp, sourceDevice: sourceDevice, transport: clientLeg.transport
+                    ))
                 }
             } else {
                 sourceApp = nil
@@ -199,7 +239,7 @@ enum CapturedExchange {
                 ),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
                 request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
-                store: store, bodyCapture: bodyCapture
+                store: store, bodyCapture: bodyCapture, clientTransport: clientLeg.transport
             )
         }
     }

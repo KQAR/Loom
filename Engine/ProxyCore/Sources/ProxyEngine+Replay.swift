@@ -41,7 +41,13 @@ extension ProxyEngine {
         case .clear: body = nil
         case let .replace(data): body = data
         }
-        let capturedRequest = CapturedRequest(method: method, url: urlString, headers: headers, body: body)
+        // Stated, not inherited: a replay is issued by Loom's own NIO client, which
+        // speaks HTTP/1.1 whatever the original client negotiated. Copying the
+        // source flow's version across would make a replayed h2 request claim an h2
+        // hop that never happened.
+        let capturedRequest = CapturedRequest(
+            method: method, url: urlString, httpVersion: "HTTP/1.1", headers: headers, body: body
+        )
 
         let newID = UUID()
         let startedAt = Date()
@@ -54,6 +60,7 @@ extension ProxyEngine {
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var responseBody = Data()
+        var transport: FlowTransport?
         do {
             // A replay inherits the origin of the flow it re-sends: replaying an app's
             // request should behave like that app's request, including for rules and
@@ -64,6 +71,7 @@ extension ProxyEngine {
             ) {
                 switch event {
                 case let .metadata(rules): appliedRules = rules
+                case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
                 case let .head(code, version, headers):
                     firstByteAt = Date()
                     statusCode = code; httpVersion = version; responseHeaders = headers
@@ -81,7 +89,8 @@ extension ProxyEngine {
                 ),
                 firstByteAt: firstByteAt,
                 replayedFrom: id,
-                appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                transport: transport
             )
             await store.upsert(flow, force: true) // explicit action: record even when capture is paused
             return flow
@@ -92,7 +101,8 @@ extension ProxyEngine {
                 startedAt: startedAt,
                 outcome: .failed(FlowError(error.localizedDescription), at: Date(), partialResponse: nil),
                 replayedFrom: id,
-                appliedRules: appliedRules.isEmpty ? nil : appliedRules
+                appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                transport: transport
             )
             await store.upsert(flow, force: true)
             throw ProxyControlError.replayFailed(error.localizedDescription)

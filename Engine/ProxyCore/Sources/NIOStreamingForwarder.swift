@@ -143,7 +143,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         if replayable, let pooled = pool.lease(key) {
             do {
                 try await attempt(
-                    on: pooled, method: method, url: url, headers: headers, body: body,
+                    on: pooled, reused: true, method: method, url: url, headers: headers, body: body,
                     continuation: continuation, active: active
                 )
                 return
@@ -171,7 +171,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let fresh = try await connect(key: key, clientTLS: clientTLS)
         do {
             try await attempt(
-                on: fresh, method: method, url: url, headers: headers, body: body,
+                on: fresh, reused: false, method: method, url: url, headers: headers, body: body,
                 continuation: continuation, active: active
             )
         } catch let failure as UpstreamAttemptFailure {
@@ -183,6 +183,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// then either park the connection or close it.
     private func attempt(
         on connection: UpstreamConnection,
+        reused: Bool,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox
@@ -194,9 +195,21 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         }
 
         let promise = connection.channel.eventLoop.makePromise(of: UpstreamAttemptEnd.self)
+        // Evaluated by the slot when the head arrives, not now: on a fresh
+        // connection the handshake has not finished at arm time, so reading the
+        // TLS box here would report nil for every first request on an origin.
+        let remoteAddress = connection.remoteAddress
+        let tlsBox = connection.tlsInfo
         connection.slot.arm(
             continuation: continuation,
-            methodIsHead: method.uppercased() == "HEAD"
+            methodIsHead: method.uppercased() == "HEAD",
+            transport: {
+                FlowTransport(
+                    remoteAddress: remoteAddress,
+                    connectionReused: reused,
+                    upstreamTLS: tlsBox.info
+                )
+            }
         ) { result in
             promise.completeWith(result.mapError { $0 as Error })
         }
@@ -266,6 +279,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     ) async throws -> UpstreamConnection {
         let slot = UpstreamExchangeSlot()
         let notifier = UpstreamInactiveNotifier()
+        let tlsInfo = UpstreamTLSInfoBox()
+        let identity = key.identity
         let bootstrap = ClientBootstrap(group: group)
             .connectTimeout(connectTimeout)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -276,8 +291,18 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                         try sync.addHandler(NIOSSLClientHandler(
                             context: clientTLS.context, serverHostname: clientTLS.serverName
                         ))
+                        // Directly after the TLS handler, which is both where the
+                        // completion event is raised and where NIOSSL's accessors
+                        // look for it. Observation only — it does not verify.
+                        try sync.addHandler(UpstreamTLSObserver(
+                            box: tlsInfo, serverName: clientTLS.serverName, clientCertificate: identity
+                        ))
                     }
                     try sync.addHTTPClientHandlers()
+                    // Between the framing and the decompressor: the last point at
+                    // which the body is both parsed into parts and still encoded,
+                    // which is the only place its wire size still exists.
+                    try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
                     // Decompress gzip/deflate so relayed/captured bytes are plaintext;
                     // the now-wrong Content-Encoding/Length are stripped on `.head`.
                     // The ratio cap is a decompression-bomb guard: bodies come from
@@ -296,7 +321,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 }
             }
         let channel = try await bootstrap.connect(host: key.host, port: key.port).get()
-        let connection = UpstreamConnection(key: key, channel: channel, slot: slot)
+        let connection = UpstreamConnection(key: key, channel: channel, slot: slot, tlsInfo: tlsInfo)
         // Weak: while the connection is parked the pool holds it, and once it is
         // neither parked nor in flight there is nothing left to evict.
         notifier.onInactive { [pool, weak connection] in

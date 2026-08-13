@@ -132,6 +132,64 @@ final class NIOStreamingForwarderTests {
         #expect(length?.value == "5")
     }
 
+    // MARK: - Transport
+
+    @Test func transport_namesTheOriginAndWhetherTheSocketWasNew() async throws {
+        // Two requests through one forwarder: the first opens a connection, the
+        // second leases it back. Without the second reading `reused == true` the
+        // pool could stop working and nothing on any surface would say so.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let first = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
+        let second = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
+
+        let port = server.localAddress!.port!
+        #expect(first.transport?.remoteAddress == "127.0.0.1:\(port)")
+        #expect(first.transport?.connectionReused == false)
+        #expect(second.transport?.connectionReused == true)
+        // Plaintext upstream: there is no handshake to describe, and an empty
+        // reading here would read as "measured, and nothing negotiated".
+        #expect(first.transport?.upstreamTLS == nil)
+    }
+
+    @Test func transport_reportsTheWireSizeOfACompressedBody() async throws {
+        // The encoded size exists nowhere else once the forwarder has inflated the
+        // body and stripped the headers that described it, so this is the only
+        // reading of "how much bandwidth did this response cost".
+        let plaintext = String(repeating: "hello compressed world, ", count: 40)
+        let deflateGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { shutdownBlocking(deflateGroup) }
+        let deflateServer = try await ServerBootstrap(group: deflateGroup)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { ch in
+                ch.pipeline.configureHTTPServerPipeline().flatMap {
+                    ch.pipeline.addHandler(DeflateResponder(plaintext: plaintext))
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { deflateServer.close(promise: nil) }
+        let url = URL(string: "http://127.0.0.1:\(deflateServer.localAddress!.port!)/compressed")!
+
+        let forwarder = NIOStreamingForwarder(group: group)
+        let result = try await forwarder.forward(method: "GET", url: url, headers: [], body: nil)
+
+        #expect(result.transport?.responseContentEncoding == "deflate")
+        let encoded = try #require(result.transport?.responseEncodedBodyBytes)
+        #expect(encoded > 0)
+        #expect(encoded < result.body.count, "the point of the field is that it differs from the decoded size")
+    }
+
+    @Test func transport_countsAnUnencodedBodyAtItsOwnSize() async throws {
+        // No compression: the wire size and the decoded size agree, and the
+        // counter must still report rather than stay silent — a nil here would be
+        // indistinguishable from a body it failed to observe.
+        let forwarder = NIOStreamingForwarder(group: group)
+        let result = try await forwarder.forward(
+            method: "POST", url: baseURL, headers: [], body: Data("hello".utf8)
+        )
+        #expect(result.transport?.responseEncodedBodyBytes == result.body.count)
+        #expect(result.transport?.responseContentEncoding == nil)
+    }
+
     @Test func forwardStream_deliversChunksInOrder() async throws {
         // A chunked server that emits three body parts with small gaps, so they
         // arrive as distinct reads and prove the response streams (not buffers).
@@ -153,7 +211,7 @@ final class NIOStreamingForwarderTests {
         var bodies: [String] = []
         for try await event in forwarder.forwardStream(method: "GET", url: url, headers: [], body: .bytes(nil)) {
             switch event {
-            case .metadata: break
+            case .metadata, .transport: break
             case .head: order.append("head")
             case let .body(data): order.append("body"); bodies.append(String(decoding: data, as: UTF8.self))
             case .end: order.append("end")

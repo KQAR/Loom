@@ -10,6 +10,25 @@ struct ForwardResult: Sendable {
     var httpVersion: String?
     var headers: [HeaderPair]
     var body: Data
+    /// How the exchange travelled, when it travelled at all. Nil for a response
+    /// that never touched a socket — which is a fact worth keeping distinct from
+    /// a zeroed-out transport, because "mocked" and "connected but unmeasured"
+    /// are different answers.
+    var transport: FlowTransport?
+
+    init(
+        statusCode: Int,
+        httpVersion: String? = nil,
+        headers: [HeaderPair],
+        body: Data,
+        transport: FlowTransport? = nil
+    ) {
+        self.statusCode = statusCode
+        self.httpVersion = httpVersion
+        self.headers = headers
+        self.body = body
+        self.transport = transport
+    }
 }
 
 /// The lifecycle of one proxied exchange, so the proxy can relay a response to the
@@ -23,6 +42,17 @@ enum UpstreamResponseEvent: Sendable {
     /// extra event). Because it precedes the network call, it is the reason a failed
     /// exchange can still record its rule hits: it arrives before any `head` or error.
     case metadata(appliedRules: [AppliedRule])
+    /// How this exchange travelled. Emitted by the NIO client at most twice and
+    /// **merged**, never replaced (`FlowTransport.merging`): once with the head,
+    /// carrying everything the connection already knows (peer address, reuse, both
+    /// TLS legs, the origin's `Content-Encoding`), and once before `end` carrying
+    /// the encoded body size, which is only a number once the body has finished.
+    ///
+    /// Optional in practice: a forwarder that synthesizes a response emits none,
+    /// and a consumer that doesn't care ignores the case. It is deliberately not
+    /// folded into `.head` — the second instalment has no head to ride on, and a
+    /// head that had to wait for the body would stop the relay streaming.
+    case transport(FlowTransport)
     case head(statusCode: Int, httpVersion: String?, headers: [HeaderPair])
     case body(Data)
     case end
@@ -75,6 +105,7 @@ extension UpstreamForwarding {
                 do {
                     let collected = try await body.collect()
                     let result = try await forward(method: method, url: url, headers: headers, body: collected)
+                    if let transport = result.transport { continuation.yield(.transport(transport)) }
                     continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
                     if !result.body.isEmpty { continuation.yield(.body(result.body)) }
                     continuation.yield(.end)
@@ -99,14 +130,18 @@ extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure ==
         var httpVersion: String?
         var headers: [HeaderPair] = []
         var body = Data()
+        var transport: FlowTransport?
         for try await event in self {
             switch event {
             case .metadata: break
+            case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
             case let .head(code, version, hdrs): statusCode = code; httpVersion = version; headers = hdrs
             case let .body(chunk): body.append(chunk)
             case .end: break
             }
         }
-        return ForwardResult(statusCode: statusCode, httpVersion: httpVersion, headers: headers, body: body)
+        return ForwardResult(
+            statusCode: statusCode, httpVersion: httpVersion, headers: headers, body: body, transport: transport
+        )
     }
 }

@@ -234,6 +234,36 @@ what it is. A fix would mean speaking h2 upstream, which is its own project.
 - A rule that mutates the request body or short-circuits (mock/block/mapLocal), or a breakpoint that
   matches, **forces buffering** (`RequestBody.collect()`). Pure passthrough streams.
 
+## The connection is recorded, not just the message
+
+`FlowTransport` carries what the exchange travelled over — origin address, pool
+reuse, both TLS legs, the response's encoded size — and three positions in the
+pipeline are load-bearing rather than convenient:
+
+- **`UpstreamEncodedBodyCounter` sits between `addHTTPClientHandlers()` and
+  `NIOHTTPResponseDecompressor`.** That is the only point where the body is both
+  framed into parts and still encoded. Below the decompressor it would be a
+  second, worse copy of the captured length; the response's own `Content-Length`
+  is not an alternative, because it is stripped on the way out *and* absent on
+  every chunked response.
+- **`UpstreamTLSObserver` sits directly after `NIOSSLClientHandler`**, records on
+  `TLSUserEvent.handshakeCompleted`, and **verifies nothing**. NIOSSL's custom
+  verification callback is the other route to the peer chain and taking it would
+  mean owning trust evaluation for every upstream connection; reading the
+  certificate after NIOSSL has validated it costs one DER parse *per connection*
+  and risks nothing.
+- **The transport is evaluated when the head arrives, not when the exchange arms**
+  (`UpstreamExchangeSlot.Armed.transport` is a closure). On a fresh connection the
+  handshake has not finished at arm time — NIOSSL buffers the request write until
+  it has — so an earlier read reports nil on exactly the connections it matters
+  for.
+
+It is emitted as **at most two `.transport` events, merged not replaced**: the
+head instalment carries everything the connection knows, the end instalment
+carries the byte count, which is not a number until the body finishes. Every
+consumer folds (`StreamRelay`, `collect()`, `BreakpointForwarder`, replay); a
+consumer that assigned would keep only whichever arrived last.
+
 ## A capped capture is never silent
 
 - `CapturedRequest`/`CapturedResponse.fullBodyBytes` records the true wire size whenever `body` is
