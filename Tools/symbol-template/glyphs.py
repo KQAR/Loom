@@ -47,9 +47,12 @@ ANDROID = (
 
 # symbol name -> (path data, how much of the design box's height to fill)
 #
-# The cap fraction is a per-glyph optical call, not a constant: the Android mark
-# is a compact figure with antennae and reads small next to `iphone` at a full
-# cap, so it is given the whole box. A wider glyph would want less.
+# The cap fraction is a per-glyph optical call, not a constant, and it is allowed
+# to exceed 1: the design box is the *cap* height, and Apple's own device glyphs
+# (`iphone`, `desktopcomputer`) overshoot it — a figure held to the capline sits
+# visibly small beside them in the same row. The Android mark is narrow enough to
+# take it; `fit` still clamps to the box's width, so the practical ceiling here is
+# ~1.23 and past that the number stops doing anything.
 STATIC = {
-    "loom.device.android": (ANDROID, 1.0),
+    "loom.device.android": (ANDROID, 1.2),
 }

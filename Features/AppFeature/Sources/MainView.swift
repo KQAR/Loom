@@ -249,12 +249,14 @@ public struct MainView: View {
         let alias = store.capture.deviceAliases[ip]
         let collapsed = collapsedDevices.contains(ip)
         countedRow(count: entry.count) {
-            HStack(spacing: LoomTheme.Space.xxs) {
+            HStack(spacing: LoomTheme.Space.xs) {
                 Text(alias ?? entry.device.displayName)
-                Spacer(minLength: 0)
+                // Same placement as a section header's: against the name it
+                // belongs to, not out in the count column.
                 if !entry.apps.isEmpty {
                     deviceDisclosure(ip: ip, collapsed: collapsed, appCount: entry.apps.count)
                 }
+                Spacer(minLength: 0)
             }
         } icon: {
             categoryIcon(Self.deviceGlyph(entry.device))
@@ -1018,16 +1020,18 @@ private struct SidebarSectionHeader: View {
     var body: some View {
         HStack(spacing: LoomTheme.Space.xs) {
             Text(title)
+            // Beside the label rather than out at the trailing edge. A chevron on
+            // the far right is a column of its own, reading as a per-row control
+            // like the counts it sits above; against the title it reads as part of
+            // the title, which is what it is. Always drawn, so which sections fold
+            // is visible without hunting with the cursor.
+            SidebarDisclosureChevron(expanded: expanded)
             Spacer(minLength: LoomTheme.Space.xxs)
             if !expanded {
                 Text(count, format: .number)
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            // Trailing, where AppKit's own hover triangle sat — the position the
-            // native sidebar trains you to look at. Always drawn, so which sections
-            // fold is visible without hunting with the cursor.
-            SidebarDisclosureChevron(expanded: expanded)
         }
         .padding(.trailing, Self.trailingInset)
         // The hit target is the whole header, not just the glyph. `contentShape`
