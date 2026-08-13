@@ -119,7 +119,14 @@ extension MCPToolExecutor {
         "since_seconds": .number("Only flows started within the last N seconds — the usual way to isolate \"what I just triggered\"."),
         "since": .string("Only flows started at/after this ISO-8601 timestamp (alternative to `since_seconds`)."),
         "device_ip": .string("Only traffic from this device IP (see list_devices)."),
-        "source_app": .string("Only traffic from this local app, by bundle id or display name."),
+        "source_app": .string(
+            """
+            Only traffic from this app, by bundle id or display name (see a flow's \
+            `sourceApp`). Covers a LAN device's apps too, where the name comes from the \
+            request's `User-Agent` rather than from a process — `sourceApp.attribution` \
+            says which (`process` / `userAgent`).
+            """
+        ),
     ]
 
     /// The shared filter as an object node, for the tools that take it plus a few
@@ -942,7 +949,16 @@ extension MCPToolExecutor {
                 "Optional query predicates, order-independent: each key must be present and equal its value, or \"*\" to require the key with any value. To require a value that is literally `*`, use the explicit form {\"key\": {\"equals\": \"*\"}} — {\"key\": {\"present\": true}} is the long spelling of \"*\". Read back in the same spelling."
             ),
             "source_app": .string(
-                "Optional originating-app predicate: bundle id or display name (see list_devices / a flow's sourceApp), case-insensitive. This is how you scope a rule to one client — mock it for the app under test and leave the browser alone. Traffic Loom can't attribute to a local process (a LAN device has no local pid) never matches an app-scoped rule."
+                """
+                Optional originating-app predicate: bundle id or display name (see a flow's \
+                `sourceApp`), case-insensitive. This is how you scope a rule to one client — \
+                mock it for the app under test and leave the browser alone. A LAN device's \
+                apps work here too, but their name comes from the `User-Agent` the client \
+                sent (`sourceApp.attribution: "userAgent"`), which is a claim and is \
+                spoofable, where a local app's is a fact about the socket \
+                (`"process"`). Traffic Loom could attribute to no app at all never matches \
+                an app-scoped rule — the scope fails closed rather than leaking.
+                """
             ),
             "device_ip": .string(
                 "Optional originating-device predicate: the device's IP as seen by the proxy (see list_devices). Scopes a rule to one phone/machine; unattributed traffic never matches."

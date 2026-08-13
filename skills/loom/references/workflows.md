@@ -32,6 +32,16 @@ arguments; this file is about sequence and interpretation.
   error rate and the TTFB p95 — high TTFB is server think-time, high receive is
   payload transfer — then `get_flow_detail` on an id from `slowest`. Don't page
   through summaries computing averages.
+  On that one flow, read `transport` before blaming the server: a
+  `connectionReused: false` exchange also paid the connection's opening cost, and
+  `transport.setup` splits it into `dnsMS` / `tcpMS` / `tlsHandshakeMS` — TTFB
+  folds all three into what looks like think-time, and a slow DNS answer, a slow
+  connect and a slow handshake are three different bugs. Compare it with a
+  neighbouring flow to the same host that reused the socket (no `setup`, and
+  `connectionReused: true`): if that one is fast, the endpoint isn't slow, the
+  first connection was. `responseEncodedBodyBytes` is what actually crossed the
+  wire (bodies are reported decompressed), which is the reading for "is this
+  slow because it's big". An absent field means unmeasured, never zero.
 - **"Which request carried this order id / token?"** → `get_recent_flows` with
   `body_contains` (or `header_contains` for an auth token / trace header) instead
   of paging `get_flow_detail` over candidates. Narrow it with
@@ -41,7 +51,11 @@ arguments; this file is about sequence and interpretation.
   `list_devices`) in the rule's `match`. Both also work on `arm_breakpoint`.
   Traffic Loom can't attribute to a client never matches a scoped rule, so a
   scope can't leak — and a replay inherits the origin of the flow it re-sends, so
-  a scoped rule still applies on replay.
+  a scoped rule still applies on replay. A **phone's** app is scopeable too, but
+  read `sourceApp.attribution` first: `process` is a fact about the socket (a
+  local app, resolved by pid), `userAgent` is what the client claimed about
+  itself, so an app-scoped rule on a LAN device is only as trustworthy as that
+  header. When it must not be guessed at, scope by `device_ip` instead.
 - **"Point this API at staging."** → `set_rule` map-remote (set `keepHostHeader`
   only if the upstream needs the original Host). Group related redirects so
   `set_group_enabled` flips the whole scenario at once.
@@ -58,14 +72,23 @@ arguments; this file is about sequence and interpretation.
   `tunneledHosts` is the only place the fact exists. `excluded` (someone carved the
   host out to keep a client working), `notInScope` and `interceptionDisabled` are
   one `intercept_host` away; `notTLSOrHTTP` (h2c, SSH, SMTP, a server-first
-  protocol), `noCertificateAuthority` and `leafMintFailed` are not. Say which it is
-  rather than adding globs and hoping.
+  protocol), `noCertificateAuthority` and `leafMintFailed` are not. Two more mean
+  the request never happened at all — the client is broken with Loom in the path,
+  not merely unread: `clientHandshakeFailed` (it refused Loom's leaf and hung up
+  before sending anything — it carries its own trust store or pins the host; the
+  fix is an `exclude` entry, or trusting Loom's CA in *that* client) and
+  `protocolError` (Loom's HTTP/2 codec could not read the connection and closed
+  it — `detail` carries the codec's own error, and it is worth filing). Say which
+  it is rather than adding globs and hoping.
 - **"Stop decrypting this host / it broke with Loom on."** → `set_ssl_scope` with
   the host added to `exclude` — pass the existing `exclude` plus the new entry, the
   call replaces the lists. This is the answer for a client carrying its own trust
   store (a JVM, Python, Go — a Gradle build or a `pip install` is the usual one)
   and for a pinned host: Loom's leaf can't satisfy it, and the failure surfaces at
-  the client as a certificate error, not in Loom.
+  the client as a certificate error. Loom does see the refusal, though — that host
+  appears in `get_ssl_scope`'s `tunneledHosts` as `clientHandshakeFailed` with the
+  handshake error in `detail`, so you can name the host instead of asking the user
+  which one broke.
 - **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
   filter; return the path. If it's going into a ticket or a chat, pass **both**
   `redact: true` and `redact_bodies: true` — headers alone leave every payload

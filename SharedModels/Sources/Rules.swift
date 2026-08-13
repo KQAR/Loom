@@ -86,9 +86,16 @@ public struct RuleMatch: Equatable, Codable, Sendable {
     /// case-insensitively (same vocabulary as `FlowQuery.sourceApp`). This is what
     /// makes "mock it for my app only, leave the browser alone" expressible.
     ///
-    /// **Fails closed.** Traffic Loom couldn't attribute to a local process — a LAN
-    /// device has no local pid — does *not* match an app-scoped rule. A rule that
-    /// says "only this app" must never leak onto traffic that might be another.
+    /// **Fails closed.** Traffic Loom couldn't attribute to *any* app does not match
+    /// an app-scoped rule. A rule that says "only this app" must never leak onto
+    /// traffic that might be another.
+    ///
+    /// A LAN device's traffic *is* in scope: it has no local pid, so its app comes
+    /// from the request's `User-Agent` (`SourceApp.attribution == .userAgent`) —
+    /// a claim by the client rather than a fact about a socket, and spoofable.
+    /// Matching does not distinguish the two, because a rule scoped to a phone's
+    /// app that silently matched nothing was the worse failure; read
+    /// `sourceApp.attribution` on a flow when it matters which one is in hand.
     public var sourceApp: String?
     /// Optional originating-device predicate: the remote IP as seen by the proxy
     /// (`SourceDevice.groupingKey`, from `list_devices`). Also fails closed.
