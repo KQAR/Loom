@@ -73,6 +73,18 @@ public enum LoomTheme {
             public static let string = success
             public static let number = redirect
             public static let bool = Color(.loomSyntaxBool)
+            /// The name half of a name/value pair — a header, a cookie, a query
+            /// parameter — wherever one is rendered: the Raw panes' message head
+            /// and the Headers / Cookies / Query grids.
+            ///
+            /// The same violet as `bool`, and shared on purpose rather than by
+            /// accident: it is the one hue in this palette that is *not* a status
+            /// voice, which is precisely why the syntax channel was allowed to
+            /// have it. Both uses are that channel — an editor tinting the
+            /// keyword-ish token of a line — so one name would have been a
+            /// coincidence to re-derive at every call site and two hues would have
+            /// spent a second non-status colour Loom does not have.
+            public static let name = bool
         }
     }
 

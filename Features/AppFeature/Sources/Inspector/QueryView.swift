@@ -18,7 +18,7 @@ struct QueryView: View {
                 ForEach(items) { item in
                     GridRow(alignment: .firstTextBaseline) {
                         Text(item.name)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LoomTheme.Palette.Syntax.name)
                             .textSelection(.enabled)
                         // A flag (`?debug`, no `=`) is not an empty value, and the
                         // two mean different things to plenty of servers — so the

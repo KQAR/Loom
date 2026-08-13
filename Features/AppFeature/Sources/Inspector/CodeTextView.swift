@@ -50,11 +50,31 @@ struct CodeTextView: NSViewRepresentable {
         context.coordinator.applied = identity
     }
 
-    /// Set the whole string in one shot with the fixed monospaced attributes.
+    /// Set the whole string in one shot with the fixed monospaced attributes, then
+    /// tint the message head.
+    ///
+    /// Attributes are added over the head's ranges rather than by building an
+    /// `NSAttributedString` for the whole document: this view exists for payloads
+    /// measured in megabytes, and attributing all of them to colour a few hundred
+    /// bytes would undo the reason it is an `NSTextView` at all.
     private func apply(_ text: String, to textView: NSTextView) {
         textView.string = text
         textView.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         textView.textColor = .textColor
+        highlightHead(of: text, in: textView)
         textView.scroll(.zero)
+    }
+
+    private func highlightHead(of text: String, in textView: NSTextView) {
+        guard let storage = textView.textStorage else { return }
+        for span in HTTPHeadHighlight.spans(in: text) {
+            let range = NSRange(span.range, in: text)
+            guard range.location != NSNotFound, NSMaxRange(range) <= storage.length else { continue }
+            storage.addAttribute(
+                .foregroundColor,
+                value: NSColor(SmallRawText.color(for: span.role)),
+                range: range
+            )
+        }
     }
 }

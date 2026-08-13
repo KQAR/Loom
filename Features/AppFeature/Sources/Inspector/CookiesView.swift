@@ -23,7 +23,9 @@ struct CookiesView: View {
                 ForEach(cookies) { cookie in
                     GridRow(alignment: .firstTextBaseline) {
                         Text(cookie.name)
-                            .foregroundStyle(.secondary)
+                            // Same token as a header name and a query parameter's:
+                            // all three are the name half of a name/value pair.
+                            .foregroundStyle(LoomTheme.Palette.Syntax.name)
                             .textSelection(.enabled)
                             .font(.callout.monospaced())
                         VStack(alignment: .leading, spacing: 2) {
