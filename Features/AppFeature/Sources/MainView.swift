@@ -306,10 +306,7 @@ public struct MainView: View {
             if collapsed { next.remove(ip) } else { next.insert(ip) }
             collapsedDevices = next
         } label: {
-            Image(systemName: "chevron.right")
-                .font(.caption2.weight(.semibold))
-                .rotationEffect(.degrees(collapsed ? 0 : 90))
-                .foregroundStyle(.tertiary)
+            SidebarDisclosureChevron(expanded: !collapsed)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(collapsed ? "Show apps" : "Hide apps")
@@ -868,6 +865,23 @@ public struct MainView: View {
             } actions: {
                 Button("Clear Filter") { store.send(.capture(.searchDismissed)) }
             }
+        } else if store.capture.allCount > 0 {
+            // The capture is not empty — the *selection* admits none of it. Saying
+            // "waiting for traffic" here is the same failure the search branch above
+            // exists to prevent, and multi-select makes it routine rather than rare:
+            // two rows from different groups intersect to nothing far more easily
+            // than one row ever did, and the honest message is the one that names
+            // what was picked and offers the way out.
+            ContentUnavailableView {
+                Label("No requests in this selection", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                Text(
+                    "Nothing captured matches \(selectionSummary). Picking more rows in the "
+                        + "same group widens the list; picking rows in different groups narrows it."
+                )
+            } actions: {
+                Button("Show All Flows") { store.send(.capture(.categoriesSelected([.all]))) }
+            }
         } else if store.status.isRunning {
             ContentUnavailableView {
                 Label("Waiting for traffic", systemImage: "dot.radiowaves.left.and.right")
@@ -881,6 +895,42 @@ public struct MainView: View {
                 Text("Start the proxy from the menu-bar console.")
             }
         }
+    }
+
+    /// The selected filters, named the way the sidebar names them.
+    ///
+    /// Resolved through the sidebar rows rather than printed from the category's
+    /// own payload: those carry an IP and a bundle key, and telling someone their
+    /// selection is `192.168.1.9 + com.example.wallet` when the rows they clicked
+    /// said `iOS .238` and `Wallet` is a worse answer than none.
+    private var selectionSummary: String {
+        let names = store.capture.selection.compactMap { category -> String? in
+            switch category {
+            case .errors: "Errors"
+            case let .host(host): host
+            case let .device(ip): deviceName(ip) ?? ip
+            case let .app(device, key): appName(device: device, key: key) ?? key
+            case .all, .rules, .audit, .breakpoints: nil
+            }
+        }
+        // Joined with "+" rather than "and"/"or": which one it is depends on whether
+        // the two rows share a group, and a summary that picked one word would be
+        // wrong half the time. The sentence after it explains the rule instead.
+        return names.sorted().joined(separator: " + ")
+    }
+
+    private func deviceName(_ ip: String) -> String? {
+        guard let row = store.capture.devices.first(where: { $0.device.groupingKey == ip }) else {
+            return nil
+        }
+        return store.capture.deviceAliases[ip] ?? row.device.displayName
+    }
+
+    private func appName(device: String, key: String) -> String? {
+        store.capture.devices
+            .first { $0.device.groupingKey == device }?
+            .apps.first { $0.app.groupingKey == key }?
+            .app.name
     }
 
     /// Both go through `URLHost`, which exists for exactly this call site: a row
@@ -931,6 +981,28 @@ public struct MainView: View {
 /// rules out. Expanded, each row carries its own badge and a total on the header is
 /// noise. It sits just inside the chevron rather than flush to the window edge, which
 /// is where `.badge()` on a header put it.
+/// The sidebar's one disclosure chevron — a section header's and a device row's.
+///
+/// Shared rather than written twice, because the two sat two rows apart and drew
+/// differently (a heavier `.secondary` down-chevron over a lighter `.tertiary`
+/// right-chevron), which read as two different kinds of control rather than one
+/// control at two levels of a tree.
+///
+/// One glyph rotated, never two glyphs swapped: the chevron turns through the
+/// state change instead of popping.
+struct SidebarDisclosureChevron: View {
+    let expanded: Bool
+
+    var body: some View {
+        Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+            // Fixed, so a row's other content does not shift as it turns.
+            .frame(width: 10)
+    }
+}
+
 private struct SidebarSectionHeader: View {
     let title: String
     let count: Int
@@ -955,13 +1027,7 @@ private struct SidebarSectionHeader: View {
             // Trailing, where AppKit's own hover triangle sat — the position the
             // native sidebar trains you to look at. Always drawn, so which sections
             // fold is visible without hunting with the cursor.
-            Image(systemName: "chevron.down")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                // One glyph rotated, not two glyphs swapped: the chevron turns
-                // through the state change instead of popping.
-                .rotationEffect(.degrees(expanded ? 0 : -90))
-                .frame(width: 10)
+            SidebarDisclosureChevron(expanded: expanded)
         }
         .padding(.trailing, Self.trailingInset)
         // The hit target is the whole header, not just the glyph. `contentShape`
