@@ -200,15 +200,27 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // TLS box here would report nil for every first request on an origin.
         let remoteAddress = connection.remoteAddress
         let tlsBox = connection.tlsInfo
+        // Setup costs go only to the exchange that opened the connection. A reuse
+        // paid none of them, and charging it the original handshake would inflate
+        // exactly the number someone is reading this to explain.
+        let setup = reused ? nil : connection.setup
         connection.slot.arm(
             continuation: continuation,
             methodIsHead: method.uppercased() == "HEAD",
             transport: {
-                FlowTransport(
+                var transport = FlowTransport(
                     remoteAddress: remoteAddress,
                     connectionReused: reused,
                     upstreamTLS: tlsBox.info
                 )
+                if var setup {
+                    // Read at head time like the rest: the handshake finishes after
+                    // `connect()` returns, so it is not known when the connection
+                    // object is built.
+                    setup.tlsHandshakeMS = tlsBox.handshakeMS
+                    transport.setup = setup.isEmpty ? nil : setup
+                }
+                return transport
             }
         ) { result in
             promise.completeWith(result.mapError { $0 as Error })
@@ -227,12 +239,33 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // Whether the request's final flush succeeded — the fact the retry
         // decision (RFC 9110 §9.2.2) and the release decision below both need.
         var requestWritten = false
+        var requestSendMS: Int?
+        let sendStartedAt = NIODeadline.now()
         do {
             try await Self.writeRequest(
                 channel: connection.channel, method: method, url: url,
                 host: connection.key.host, port: connection.key.port, headers: headers, body: body
             )
             requestWritten = true
+            // **Not reported when this exchange waited for a handshake.** NIOSSL
+            // buffers writes until the handshake completes, and the handshake runs
+            // concurrently with this `attempt`, so on a fresh TLS connection the
+            // clock above measures the handshake and not the send. Measured, not
+            // reasoned: against a real origin it came back as 702 ms, digit for
+            // digit the same number as `tlsHandshakeMS`, which is a wrong answer
+            // dressed as a precise one. A reused connection has no handshake left
+            // to wait for, and a fresh plaintext one was already writable when
+            // `connect()` returned.
+            let waitedForHandshake = !reused && connection.tlsInfo.handshakeMS != nil
+            if !waitedForHandshake {
+                let measured = UpstreamTLSObserver.milliseconds(since: sendStartedAt)
+                requestSendMS = measured
+                // Its own instalment, yielded straight to the consumer: the
+                // head-time closure was captured before the write and cannot see
+                // this. Order against the other instalments does not matter — they
+                // are *merged*, and nothing else sets this field.
+                continuation.yield(.transport(FlowTransport(requestSendMS: measured)))
+            }
         } catch {
             // Disarms and completes the promise; a no-op if the relay already saw
             // the failure first, which is the ordinary race on a dead socket.
@@ -320,8 +353,30 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     try sync.addHandler(UpstreamResponseRelay(slot: slot, notifier: notifier))
                 }
             }
+        // DNS is timed by resolving here, *for measurement only* — the bootstrap
+        // then resolves again and connects exactly as before.
+        //
+        // The obvious alternative is to hand the resolved address to
+        // `connect(to:)` and skip the second lookup, and it is rejected on
+        // purpose: `connect(host:port:)` runs NIO's Happy Eyeballs across the A
+        // and AAAA answers, and replacing it with "the first address getaddrinfo
+        // returned" changes how Loom behaves on every dual-stack network to make a
+        // number prettier. The duplicate lookup is the *cheap* one — the first
+        // resolve pays the real cost, which is what gets reported, and the
+        // bootstrap's is served from the OS cache.
+        //
+        // A resolver failure here is not the connection's problem: it is swallowed,
+        // `dnsMS` stays nil, and the bootstrap reports the real error a moment later.
+        let dnsMS = await Self.measureResolution(host: key.host, port: key.port)
+        let connectStartedAt = NIODeadline.now()
         let channel = try await bootstrap.connect(host: key.host, port: key.port).get()
-        let connection = UpstreamConnection(key: key, channel: channel, slot: slot, tlsInfo: tlsInfo)
+        let setup = ConnectionSetup(
+            dnsMS: dnsMS,
+            tcpMS: UpstreamTLSObserver.milliseconds(since: connectStartedAt)
+        )
+        let connection = UpstreamConnection(
+            key: key, channel: channel, slot: slot, tlsInfo: tlsInfo, setup: setup
+        )
         // Weak: while the connection is parked the pool holds it, and once it is
         // neither parked nor in flight there is nothing left to evict.
         notifier.onInactive { [pool, weak connection] in
@@ -329,6 +384,21 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             pool.forget(connection)
         }
         return connection
+    }
+
+    /// Time one name resolution, off the event loop.
+    ///
+    /// `SocketAddress.makeAddressResolvingHost` is a synchronous `getaddrinfo`, so
+    /// it gets `@concurrent` rather than being run inline — a blocking syscall on a
+    /// cooperative-pool thread is the defect `ProcessResolver` documents.
+    ///
+    /// Nil for an IP literal (nothing to resolve, and reporting 0 ms would suggest
+    /// a lookup happened) and nil for a failure.
+    @concurrent private static func measureResolution(host: String, port: Int) async -> Int? {
+        guard !SharedTLS.isIPLiteral(host) else { return nil }
+        let startedAt = NIODeadline.now()
+        guard (try? SocketAddress.makeAddressResolvingHost(host, port: port)) != nil else { return nil }
+        return UpstreamTLSObserver.milliseconds(since: startedAt)
     }
 
     // MARK: - Request

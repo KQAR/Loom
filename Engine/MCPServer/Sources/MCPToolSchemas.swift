@@ -428,9 +428,18 @@ extension MCPToolExecutor {
                 (the compressed size that crossed the wire — the body itself is reported decompressed, \
                 so this is the only reading of what the response cost in bandwidth).
 
+                `transport.setup` breaks the connection's opening cost into `dnsMS` / `tcpMS` / \
+                `tlsHandshakeMS` (+ `totalMS`), which is the half of "why is this slow" that TTFB \
+                cannot answer — a 900 ms first request is a different bug depending on which of the \
+                three it was. It is present **only on the exchange that opened the connection**; a \
+                reused one paid none of it, which is what `connectionReused: true` says. Note `tcpMS` \
+                excludes the handshake (they are reported side by side, not nested — HAR's `connect` \
+                nests them, and the HAR export adds them back).
+
                 Every one of those is **omitted when unmeasured, which is not the same as "no"**: an \
                 absent `transport` means the exchange never reached a socket (mocked, blocked, or \
-                still pending), and an absent `upstreamTLS` does not mean the hop was plaintext.
+                still pending), an absent `upstreamTLS` does not mean the hop was plaintext, and an \
+                absent `setup` does not mean setup was free.
                 """,
             inputSchema: .object(
                 [

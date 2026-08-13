@@ -43,6 +43,26 @@ public struct FlowTransport: Equatable, Codable, Sendable {
     /// the number a bandwidth question is about. Compare with the captured body's
     /// length (or `CapturedResponse.fullBodyBytes`) for the compression ratio.
     public var responseEncodedBodyBytes: Int?
+    /// What opening this connection cost, broken into phases.
+    ///
+    /// **Present only on the exchange that actually opened it** — a reused
+    /// connection paid none of this, and attributing the original setup to a later
+    /// request would inflate exactly the number someone is trying to explain.
+    /// `connectionReused == true` and a nil `setup` are the same statement seen
+    /// from two sides.
+    public var setup: ConnectionSetup?
+    /// Writing the request out: first byte handed to the socket → final flush
+    /// acknowledged. Per exchange, so a reused connection has one too.
+    ///
+    /// Usually ~0 and worth having anyway: a large upload against a slow link is
+    /// the one case where the client's own send is the answer to "why is this
+    /// slow", and TTFB alone reports it as the server thinking.
+    ///
+    /// **Absent on the exchange that opened a TLS connection**, and that is a
+    /// refusal rather than a gap: NIOSSL buffers writes until the handshake
+    /// completes, so the clock there measures the handshake — which
+    /// `setup.tlsHandshakeMS` already reports, correctly and once.
+    public var requestSendMS: Int?
 
     public init(
         clientTLSVersion: String? = nil,
@@ -50,7 +70,9 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         connectionReused: Bool? = nil,
         upstreamTLS: UpstreamTLSInfo? = nil,
         responseContentEncoding: String? = nil,
-        responseEncodedBodyBytes: Int? = nil
+        responseEncodedBodyBytes: Int? = nil,
+        setup: ConnectionSetup? = nil,
+        requestSendMS: Int? = nil
     ) {
         self.clientTLSVersion = clientTLSVersion
         self.remoteAddress = remoteAddress
@@ -58,6 +80,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         self.upstreamTLS = upstreamTLS
         self.responseContentEncoding = responseContentEncoding
         self.responseEncodedBodyBytes = responseEncodedBodyBytes
+        self.setup = setup
+        self.requestSendMS = requestSendMS
     }
 
     public var isEmpty: Bool { self == FlowTransport() }
@@ -74,8 +98,51 @@ public struct FlowTransport: Equatable, Codable, Sendable {
             connectionReused: other.connectionReused ?? connectionReused,
             upstreamTLS: other.upstreamTLS ?? upstreamTLS,
             responseContentEncoding: other.responseContentEncoding ?? responseContentEncoding,
-            responseEncodedBodyBytes: other.responseEncodedBodyBytes ?? responseEncodedBodyBytes
+            responseEncodedBodyBytes: other.responseEncodedBodyBytes ?? responseEncodedBodyBytes,
+            setup: other.setup ?? setup,
+            requestSendMS: other.requestSendMS ?? requestSendMS
         )
+    }
+}
+
+/// What it cost to open the upstream connection, phase by phase.
+///
+/// The half of "why is this slow" that a single TTFB cannot answer: a 900 ms
+/// first request to an origin is a completely different bug depending on whether
+/// it was DNS, the TCP round trips or a TLS handshake — and until this existed,
+/// all three were folded into the server's think-time and read as "the API is
+/// slow". Every field is optional and absent means *not measured*.
+public struct ConnectionSetup: Equatable, Codable, Sendable {
+    /// Resolving the origin's name. Absent for an IP-literal origin, which has
+    /// nothing to resolve, and for a resolution that failed (the connection then
+    /// fails on its own and says so).
+    public var dnsMS: Int?
+    /// The TCP connect alone — `connect()` to the socket being writable. Does
+    /// **not** include DNS (that is `dnsMS`) and does not include the TLS
+    /// handshake (that is `tlsHandshakeMS`), which is a deliberate departure from
+    /// HAR's `connect`, where `ssl` is a sub-interval. Two numbers that overlap
+    /// are two numbers a reader has to be told about; the HAR exporter adds them
+    /// back together, because that is the format's contract, not the model's.
+    public var tcpMS: Int?
+    /// ClientHello → handshake complete on Loom's leg to the origin. Absent for a
+    /// plaintext upstream.
+    public var tlsHandshakeMS: Int?
+
+    public init(dnsMS: Int? = nil, tcpMS: Int? = nil, tlsHandshakeMS: Int? = nil) {
+        self.dnsMS = dnsMS
+        self.tcpMS = tcpMS
+        self.tlsHandshakeMS = tlsHandshakeMS
+    }
+
+    public var isEmpty: Bool { self == ConnectionSetup() }
+
+    /// Everything measured here, summed — what the first request to an origin paid
+    /// before it could send a byte. Nil when nothing was measured; a phase that
+    /// wasn't measured simply doesn't contribute, which is why this is a floor
+    /// rather than a total.
+    public var totalMS: Int? {
+        let parts = [dnsMS, tcpMS, tlsHandshakeMS].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.reduce(0, +)
     }
 }
 

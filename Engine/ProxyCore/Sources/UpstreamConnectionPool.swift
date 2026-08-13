@@ -295,6 +295,10 @@ final class UpstreamConnection: @unchecked Sendable {
     /// `channelInitializer`, which runs before this object exists — the same
     /// construction cycle `UpstreamInactiveNotifier` exists for.
     let tlsInfo: UpstreamTLSInfoBox
+    /// What opening this connection cost. A property of the *connection*, so a
+    /// reuse can be told it paid none of it — which is why the exchange, not this
+    /// type, decides whether to report it.
+    let setup: ConnectionSetup
 
     private struct State {
         var closed = false
@@ -309,12 +313,14 @@ final class UpstreamConnection: @unchecked Sendable {
         key: UpstreamPoolKey,
         channel: Channel,
         slot: UpstreamExchangeSlot,
-        tlsInfo: UpstreamTLSInfoBox = UpstreamTLSInfoBox()
+        tlsInfo: UpstreamTLSInfoBox = UpstreamTLSInfoBox(),
+        setup: ConnectionSetup = ConnectionSetup()
     ) {
         self.key = key
         self.channel = channel
         self.slot = slot
         self.tlsInfo = tlsInfo
+        self.setup = setup
         remoteAddress = channel.remoteAddress.map(Self.describe)
     }
 

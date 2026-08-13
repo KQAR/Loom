@@ -95,10 +95,17 @@ public enum HARExport {
     /// HAR `timings`. `wait` is server think-time (request sent → response head)
     /// and `receive` is body transfer; previously the whole duration was reported
     /// as `wait` with `receive: 0`, which told a reader "the server is slow" even
-    /// for a fast endpoint streaming a large payload. `-1` is HAR's "not measured",
-    /// used for the phases Loom doesn't time (`blocked`/`dns`/`connect`/`ssl`) and
-    /// for `wait`/`receive` on a flow captured before TTFB was recorded — better an
+    /// for a fast endpoint streaming a large payload. `-1` is HAR's "not measured"
+    /// — still used for `blocked` (Loom does not model queueing), for the setup
+    /// phases on a **reused** connection, which genuinely paid none of them, and
+    /// for `wait`/`receive` on a flow captured before TTFB was recorded. Better an
     /// explicit "unknown" than a plausible wrong number.
+    ///
+    /// **`connect` includes `ssl` here, and does not in the model.** HAR 1.2 defines
+    /// `ssl` as a sub-interval of `connect` ("the time is also included in the
+    /// connect field"), while `ConnectionSetup` keeps `tcpMS` and `tlsHandshakeMS`
+    /// disjoint because two overlapping numbers on one surface need explaining. The
+    /// addition happens here, at the format boundary, rather than in the model.
     private struct Timings: Encodable {
         let blocked: Int
         let dns: Int
@@ -110,11 +117,15 @@ public enum HARExport {
 
         init(flow: Flow) {
             blocked = -1
-            dns = -1
-            connect = -1
-            ssl = -1
-            // Loom writes the request in one go and doesn't time it separately.
-            send = 0
+            let setup = flow.transport?.setup
+            dns = setup?.dnsMS ?? -1
+            ssl = setup?.tlsHandshakeMS ?? -1
+            switch (setup?.tcpMS, setup?.tlsHandshakeMS) {
+            case let (tcp?, handshake?): connect = tcp + handshake
+            case let (tcp?, nil): connect = tcp
+            case (nil, _): connect = -1
+            }
+            send = flow.transport?.requestSendMS ?? -1
             if let ttfb = flow.ttfbMS {
                 wait = ttfb
                 receive = flow.receiveMS ?? -1
