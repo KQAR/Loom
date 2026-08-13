@@ -17,7 +17,7 @@ import Foundation
 /// render was four separate O(n) passes — hosts, apps, devices, errors — and the host
 /// pass parsed 2000 URLs through `URLComponents` every time.
 ///
-/// **Why one type**: the six fields are not six independent counters, they are one
+/// **Why one type**: the seven fields are not seven independent counters, they are one
 /// projection of the flow list, and three operations have to agree about them.
 /// `contribute` and `retract` must stay exact mirror images or a replaced flow leaks a
 /// count; `removeAll` must clear exactly this set or a cleared capture leaves a
@@ -35,6 +35,15 @@ public struct FlowAggregates: Equatable, Sendable {
     public private(set) var hostCounts: [String: Int] = [:]
     public private(set) var appCounts: [String: Int] = [:]
     public private(set) var appReps: [String: SourceApp] = [:]
+    /// `device key → app key → count`. The sidebar nests apps under the device
+    /// they ran on, and that needs a *joint* count: `appCounts` alone cannot say
+    /// how many of Safari's flows came from the phone rather than this Mac, and
+    /// splitting it after the fact would need the flows back.
+    ///
+    /// Bounded by devices × distinct apps, not by flows — the same shape as the
+    /// counters beside it, which is the property that let these move to the engine
+    /// (see the note on `hostByRow` below).
+    public private(set) var deviceAppCounts: [String: [String: Int]] = [:]
     public private(set) var deviceCounts: [String: Int] = [:]
     public private(set) var deviceReps: [String: SourceDevice] = [:]
     /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge.
@@ -72,6 +81,9 @@ public struct FlowAggregates: Equatable, Sendable {
         if let app = flow.sourceApp {
             appCounts[app.groupingKey, default: 0] += 1
             appReps[app.groupingKey] = app
+            if let deviceKey = flow.sourceDevice?.groupingKey {
+                deviceAppCounts[deviceKey, default: [:]][app.groupingKey, default: 0] += 1
+            }
         }
         if let device = flow.sourceDevice {
             let key = device.groupingKey
@@ -107,6 +119,14 @@ public struct FlowAggregates: Equatable, Sendable {
         appReps[app.groupingKey] = app
     }
 
+    /// The joint count, which the store hands back as its own `GROUP BY` rather
+    /// than as something derivable from the two single-field ones — an app's flows
+    /// and a device's flows overlap in a way neither total records.
+    public mutating func addDeviceApp(deviceKey: String, appKey: String, count: Int) {
+        guard count > 0 else { return }
+        deviceAppCounts[deviceKey, default: [:]][appKey, default: 0] += count
+    }
+
     public mutating func addDevice(_ device: SourceDevice, count: Int) {
         guard count > 0 else { return }
         let key = device.groupingKey
@@ -134,8 +154,18 @@ public struct FlowAggregates: Equatable, Sendable {
         if let host = flow.host {
             _ = Self.decrement(&hostCounts, key: host)
         }
-        if let app = flow.sourceApp, Self.decrement(&appCounts, key: app.groupingKey) {
-            appReps[app.groupingKey] = nil
+        if let app = flow.sourceApp {
+            if Self.decrement(&appCounts, key: app.groupingKey) {
+                appReps[app.groupingKey] = nil
+            }
+            if let deviceKey = flow.sourceDevice?.groupingKey,
+               var apps = deviceAppCounts[deviceKey] {
+                // An emptied pair drops out, and an emptied device's map with it —
+                // otherwise a device that has gone quiet keeps an empty disclosure
+                // group open under it forever.
+                _ = Self.decrement(&apps, key: app.groupingKey)
+                deviceAppCounts[deviceKey] = apps.isEmpty ? nil : apps
+            }
         }
         if let device = flow.sourceDevice, Self.decrement(&deviceCounts, key: device.groupingKey) {
             deviceReps[device.groupingKey] = nil

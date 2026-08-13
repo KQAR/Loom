@@ -62,8 +62,34 @@ public struct CaptureFeature: Sendable {
         /// a cached list whose staleness depends on every mutation site remembering is
         /// a list that renders wrongly and silently. (Mutating a field of `search`
         /// fires this too: a struct property's `didSet` runs on member mutation.)
-        public var selectedCategory: FlowCategory? = .all {
+        /// What the sidebar has selected.
+        ///
+        /// A **set**, because the two groupings people actually combine — "these
+        /// three hosts" and "this host, from the phone" — were two separate trips
+        /// through the list before, with no way to express either. What a set of
+        /// these means is `FlowCategory.Dimension`: OR within a dimension, AND
+        /// across. `FlowCategory.normalizeSelection` is what keeps the set to
+        /// states that mean something.
+        ///
+        /// Never empty: an empty set would mean "show nothing", which no click
+        /// intends, so the normalizer folds it to `[.all]`.
+        public var selection: Set<FlowCategory> = [.all] {
             didSet { refreshVisibleFlows() }
+        }
+
+        /// The panel category, when one is selected — Rules / Audit / Breakpoints
+        /// replace the table rather than filtering it, and the normalizer keeps
+        /// them exclusive, so there is at most one.
+        public var panelCategory: FlowCategory? {
+            selection.first(where: \.isPanel)
+        }
+
+        /// The single selected category, for the callers (and tests) that only ever
+        /// deal in one. Setting it replaces the whole selection, which is what a
+        /// programmatic "show me this" means; multi-select comes from the list.
+        public var selectedCategory: FlowCategory? {
+            get { selection.count == 1 ? selection.first : nil }
+            set { selection = FlowCategory.normalizeSelection(newValue.map { [$0] } ?? [], previous: []) }
         }
         public var selectedFlowID: Flow.ID?
         /// The filter bar above the request table. Composes with `selectedCategory`
@@ -343,17 +369,19 @@ public struct CaptureFeature: Sendable {
         /// replaced, so the projection is empty). False exactly when a rebuild is a scan
         /// of the window — which is the case the incremental path exists for.
         private var projectionIsCheapToRebuild: Bool {
-            switch selectedCategory ?? .all {
-            case .rules, .audit, .breakpoints: true
-            case .all: !search.isActive
-            case .errors, .host, .app, .device: false
-            }
+            if panelCategory != nil { return true }
+            if selection == [.all] { return !search.isActive }
+            return false
         }
 
         /// Recompute the projection. Called by every mutation that can change it —
         /// a display-cap trim, a clear, a category change and every search action — and
         /// by `recordFlows` whenever the incremental path declines the batch.
         mutating func refreshVisibleFlows() {
+            selectionByDimension = Dictionary(
+                grouping: selection.compactMap { category in category.dimension.map { ($0, category) } },
+                by: \.0
+            ).mapValues { $0.map(\.1) }
             visibleFlows = computeVisibleFlows()
             visiblePositions = projectionIsCheapToRebuild
                 ? [:]
@@ -431,11 +459,24 @@ public struct CaptureFeature: Sendable {
             return true
         }
 
-        /// Whether the sidebar's selected category admits this flow. One definition,
-        /// shared by the full rebuild and the incremental fold — two copies of a
-        /// membership rule is two lists that disagree.
+        /// Whether the sidebar's selection admits this flow. One definition, shared
+        /// by the full rebuild and the incremental fold — two copies of a membership
+        /// rule is two lists that disagree.
+        ///
+        /// Grouped by dimension and evaluated as OR-within / AND-across (see
+        /// `FlowCategory.Dimension`). The grouping is done once per rebuild, not per
+        /// row: `selectionByDimension` is cached alongside the projection, because
+        /// this runs for every flow in the window on every capture batch.
         private func categoryMatches(_ flow: Flow) -> Bool {
-            switch selectedCategory ?? .all {
+            for (_, members) in selectionByDimension where !members.contains(where: { admits($0, flow) }) {
+                return false
+            }
+            return true
+        }
+
+        /// One category against one flow.
+        private func admits(_ category: FlowCategory, _ flow: Flow) -> Bool {
+            switch category {
             case .all: true
             case .rules, .audit, .breakpoints: false // the panel replaces the table
             case .errors: Self.isError(flow)
@@ -443,26 +484,33 @@ public struct CaptureFeature: Sendable {
             // was recorded, and it is the value the sidebar's categories are keyed by.
             // Scanning the URL string here instead cost 3.2 ms per render over a full ring.
             case let .host(host): hostByRow[flow.id] == host
-            case let .app(key): flow.sourceApp?.groupingKey == key
+            // Both halves, because the row means "this app, on this device" — see
+            // `FlowCategory.app`. An app running on two devices has a row under
+            // each, and they must not select each other's flows.
+            case let .app(device, key):
+                flow.sourceApp?.groupingKey == key && flow.sourceDevice?.groupingKey == device
             case let .device(ip): flow.sourceDevice?.groupingKey == ip
             }
         }
+
+        /// The selection's filters, bucketed by axis. Derived from `selection` on
+        /// assignment for the same reason the projection itself is cached: without
+        /// it, every row of every rebuild would re-bucket the whole selection.
+        private var selectionByDimension: [FlowCategory.Dimension: [FlowCategory]] = [:]
 
         private func computeVisibleFlows() -> [Flow] {
             // Built once for the whole scan, never per row — the needle is trimmed and
             // prepared here (`FlowSearch.predicate`), which is the difference between
             // 84 ms and 0.8 ms over a full window.
             let matches = search.predicate()
-            switch selectedCategory ?? .all {
-            case .all:
-                // The whole list, handed over without copying (`elements` is the
-                // backing array) — this is the common case. A needle is the one thing
-                // that makes it cost a scan.
-                return search.isActive ? flows.elements.filter(matches) : flows.elements
-            case .rules, .audit, .breakpoints:
+            if panelCategory != nil {
                 return [] // the rules / audit / breakpoints panel replaces the table
-            default:
-                break
+            }
+            if selectionByDimension.isEmpty {
+                // No filter at all: the whole list, handed over without copying
+                // (`elements` is the backing array) — this is the common case. A
+                // needle is the one thing that makes it cost a scan.
+                return search.isActive ? flows.elements.filter(matches) : flows.elements
             }
             // The needle applies *after* the category, which is also the order the
             // engine query is built in (`FlowSearch.engineQuery`) — so the two paths
@@ -483,30 +531,48 @@ public struct CaptureFeature: Sendable {
             public let count: Int
         }
 
-        public struct AppRow: Equatable, Sendable {
+        public struct AppRow: Equatable, Sendable, Identifiable {
             public let app: SourceApp
             public let count: Int
+            /// The device this row sits under. Part of the row rather than implied
+            /// by where it is drawn, because it is half of what the row *selects*
+            /// (`FlowCategory.app(device:key:)`) — a view that had to remember to
+            /// pair them is a view that can pair them wrongly.
+            public let deviceKey: String
+
+            /// Unique across the whole sidebar, not just within one device: two
+            /// devices running the same app would otherwise collide in a `ForEach`
+            /// and SwiftUI would reuse one row's identity for the other's content.
+            public var id: String { "\(deviceKey)\u{1F}\(app.groupingKey)" }
         }
 
-        public struct DeviceRow: Equatable, Sendable {
+        public struct DeviceRow: Equatable, Sendable, Identifiable {
             public let device: SourceDevice
             public let count: Int
+            /// The apps seen on this device, most-active first — the rows nested
+            /// under it. Empty for a device whose traffic Loom could not attribute
+            /// to any app, which is an ordinary state (a library-only `User-Agent`,
+            /// or none at all) and reads as a device with no disclosure triangle.
+            public let apps: [AppRow]
+
+            public var id: String { device.groupingKey }
         }
 
         /// Distinct devices with counts — LAN devices first (the phone you just
-        /// connected), then by most flows.
+        /// connected), then by most flows. Each carries its own apps.
         public var devices: [DeviceRow] { sidebarDevices }
 
         /// Distinct hosts with counts — pinned first, then alphabetical.
         public var hosts: [HostRow] { sidebarHosts }
 
-        /// Distinct source apps with counts — pinned first, then most-active.
-        /// Keyed by `groupingKey` (bundle id or name); the representative carries the
-        /// display name + icon path.
-        public var apps: [AppRow] { sidebarApps }
+        /// Every app row across every device, flattened.
+        ///
+        /// Kept only for callers that ask "how many distinct apps has the capture
+        /// seen" — the sidebar itself reads `devices` and never this, because an
+        /// app is only meaningful there paired with the device it ran on.
+        public var apps: [AppRow] { sidebarDevices.flatMap(\.apps) }
 
         private var sidebarHosts: [HostRow] = []
-        private var sidebarApps: [AppRow] = []
         private var sidebarDevices: [DeviceRow] = []
 
         /// Re-sort the three grouping lists.
@@ -533,24 +599,32 @@ public struct CaptureFeature: Sendable {
                 return a.key < b.key
             }.map { HostRow(host: $0.key, count: $0.value) }
 
-            sidebarApps = aggregates.appCounts
-                .sorted { a, b in
-                    let pa = pinnedApps.contains(a.key), pb = pinnedApps.contains(b.key)
-                    if pa != pb { return pa }    // pinned rows float to the top
-                    return a.value != b.value ? a.value > b.value : (a.key < b.key)
-                }
-                .compactMap { key, count in
-                    aggregates.appReps[key].map { AppRow(app: $0, count: count) }
-                }
-
             sidebarDevices = aggregates.deviceCounts.sorted { a, b in
                 let da = aggregates.deviceReps[a.key], db = aggregates.deviceReps[b.key]
                 let la = da?.kind == .lan, lb = db?.kind == .lan
                 if la != lb { return la }        // LAN devices float to the top
                 return a.value != b.value ? a.value > b.value : a.key < b.key
             }.compactMap { key, count in
-                aggregates.deviceReps[key].map { DeviceRow(device: $0, count: count) }
+                aggregates.deviceReps[key].map { device in
+                    DeviceRow(device: device, count: count, apps: appRows(forDevice: key))
+                }
             }
+        }
+
+        /// One device's apps, pinned first then most-active — the same ordering the
+        /// flat Apps section used, applied within each device now that the two
+        /// groupings are one.
+        private func appRows(forDevice deviceKey: String) -> [AppRow] {
+            guard let counts = aggregates.deviceAppCounts[deviceKey] else { return [] }
+            return counts
+                .sorted { a, b in
+                    let pa = pinnedApps.contains(a.key), pb = pinnedApps.contains(b.key)
+                    if pa != pb { return pa }    // pinned rows float to the top
+                    return a.value != b.value ? a.value > b.value : (a.key < b.key)
+                }
+                .compactMap { key, count in
+                    aggregates.appReps[key].map { AppRow(app: $0, count: count, deviceKey: deviceKey) }
+                }
         }
 
         public var allCount: Int { flows.count }
@@ -585,7 +659,10 @@ public struct CaptureFeature: Sendable {
         /// streaming, once per WebSocket frame), and each action drove a full reducer
         /// run plus a SwiftUI invalidation of the table and sidebar.
         case flowsReceived([Flow])
-        case categorySelected(FlowCategory?)
+        /// The sidebar's whole selection, as the list hands it back. Raw — the
+        /// reducer normalizes it (`FlowCategory.normalizeSelection`), because the
+        /// rules for what a set of these may contain are Loom's, not SwiftUI's.
+        case categoriesSelected(Set<FlowCategory>)
         case flowSelected(Flow.ID?)
 
         // MARK: Filter bar (⌘F)
@@ -746,8 +823,8 @@ public struct CaptureFeature: Sendable {
                 }
                 return refreshAggregates()
 
-            case let .categorySelected(category):
-                state.selectedCategory = category
+            case let .categoriesSelected(selection):
+                state.selection = FlowCategory.normalizeSelection(selection, previous: state.selection)
                 // The category is part of the engine query (it narrows the scan before
                 // any body is hydrated), so switching it invalidates the answer.
                 return runSearch(&state)
@@ -905,7 +982,7 @@ public struct CaptureFeature: Sendable {
     /// longer needs one. The single entry point for every input that can change the
     /// answer — needle, scope, and the sidebar category the query is built from.
     private func runSearch(_ state: inout State) -> Effect<Action> {
-        guard let query = state.search.engineQuery(category: state.selectedCategory) else {
+        guard let query = state.search.engineQuery(selection: state.selection) else {
             // Either the URL scope (answered locally, per keystroke, no hop) or an
             // empty needle. Both mean any parked answer is now noise.
             state.search.engineMatches = nil

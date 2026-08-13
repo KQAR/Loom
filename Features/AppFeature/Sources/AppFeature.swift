@@ -18,9 +18,87 @@ public enum FlowCategory: Hashable, Sendable {
     /// one write action that parks a live connection, so it needs a human surface.
     case breakpoints
     case host(String)
-    case app(String)
+    /// One app, **on one device**. The pair, not the app alone: the sidebar nests
+    /// apps under the device they ran on, so a row there means "Safari, on the
+    /// phone" — and Safari on this Mac is a different row two groups up. Filtering
+    /// by the app key alone would make those two rows do the same thing, which is
+    /// the one behaviour nesting them is supposed to rule out.
+    case app(device: String, key: String)
     /// Group by originating device (keyed on remote IP): this Mac or a LAN device.
     case device(String)
+
+    /// Whether selecting this replaces the request table with a panel rather than
+    /// filtering it. The distinction is what lets the sidebar multi-select: filters
+    /// compose, panels cannot, and a set holding both is meaningless.
+    public var isPanel: Bool {
+        switch self {
+        case .rules, .audit, .breakpoints: true
+        case .all, .errors, .host, .app, .device: false
+        }
+    }
+
+    /// Whether this narrows the flow list — i.e. everything except the panels and
+    /// `.all`, which *is* the unnarrowed list rather than a filter on it.
+    public var isFilter: Bool {
+        switch self {
+        case .all, .rules, .audit, .breakpoints: false
+        case .errors, .host, .app, .device: true
+        }
+    }
+
+    /// Which axis a filter narrows on. Selections **within** one dimension are
+    /// OR'd and **across** dimensions are AND'd — two hosts means either host, a
+    /// host plus a device means that host's traffic from that device.
+    ///
+    /// Devices and apps share one dimension on purpose, and it is the one call
+    /// here that could reasonably have gone the other way. They are a tree: an app
+    /// row is drawn *inside* the device it ran on, so selecting a device and one of
+    /// its apps reads as "these two rows", and AND-ing them would silently answer
+    /// with the app alone — the smaller of the two things the human clicked. OR
+    /// makes the device win, which is what picking a superset should do.
+    public enum Dimension: Hashable, Sendable {
+        /// Devices and the apps nested under them.
+        case origin
+        case host
+        /// Not really an axis — a modifier that ANDs with whatever else is picked,
+        /// so "errors, on this host" is one selection rather than two steps.
+        case errors
+    }
+
+    public var dimension: Dimension? {
+        switch self {
+        case .all, .rules, .audit, .breakpoints: nil
+        case .errors: .errors
+        case .host: .host
+        case .app, .device: .origin
+        }
+    }
+
+    /// Resolve a raw `List` selection into one Loom can act on.
+    ///
+    /// SwiftUI hands back whatever the click produced; the rules that make a set of
+    /// these coherent live here, in one place, rather than in the view. Three of
+    /// them, each answering a state the list can genuinely be left in:
+    ///
+    /// - **A panel is exclusive.** Rules / Audit / Breakpoints replace the table
+    ///   rather than filtering it, so they cannot compose with a filter or with
+    ///   each other. Whichever side is *newly* added wins, which is what makes
+    ///   ⌘-clicking a panel while filters are up do the obvious thing in both
+    ///   directions.
+    /// - **`.all` is exclusive the same way** — it is the absence of a filter, not
+    ///   a filter, so holding it alongside one is a contradiction.
+    /// - **An empty selection is `.all`.** Clicking the sidebar's background
+    ///   deselects everything, and an empty set would mean "show nothing", which no
+    ///   click ever intends.
+    public static func normalizeSelection(
+        _ selection: Set<FlowCategory>, previous: Set<FlowCategory>
+    ) -> Set<FlowCategory> {
+        guard !selection.isEmpty else { return [.all] }
+        let added = selection.subtracting(previous)
+        if let panel = added.first(where: { $0.isPanel || $0 == .all }) { return [panel] }
+        let filters = selection.filter(\.isFilter)
+        return filters.isEmpty ? [.all] : filters
+    }
 }
 
 /// Which surface opened the phone-onboarding popover. The panel and the main

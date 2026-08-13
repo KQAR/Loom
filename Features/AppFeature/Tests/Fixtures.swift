@@ -17,7 +17,8 @@ enum Fixtures {
         responseBody: Data? = Data(#"{"ok":true}"#.utf8),
         error: String? = nil,
         replayedFrom: UUID? = nil,
-        sourceApp: SourceApp? = nil
+        sourceApp: SourceApp? = nil,
+        sourceDevice: SourceDevice? = nil
     ) -> Flow {
         let response = status.map { code in
             CapturedResponse(statusCode: code, headers: responseHeaders, body: responseBody)
@@ -37,7 +38,8 @@ enum Fixtures {
             startedAt: epoch,
             outcome: outcome,
             replayedFrom: replayedFrom,
-            sourceApp: sourceApp
+            sourceApp: sourceApp,
+            sourceDevice: sourceDevice
         )
     }
 

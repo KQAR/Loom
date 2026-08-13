@@ -88,7 +88,8 @@ enum CapturedExchange {
         )
         let device = device(channel: channel, headers: headers)
         let flow = Flow(
-            id: observed.id, request: request, startedAt: observed.startedAt, sourceDevice: device,
+            id: observed.id, request: request, startedAt: observed.startedAt,
+            sourceApp: remoteApp(headers: headers, device: device), sourceDevice: device,
             transport: clientLeg.transport
         )
         Task { await store.upsert(flow) }
@@ -134,6 +135,10 @@ enum CapturedExchange {
         // can't succeed, and its remote ephemeral port could collide with a local
         // socket's local port and mis-attribute a phone's traffic to a Mac app.
         let isLoopbackPeer = sourceDevice?.kind == .local
+        // …which is exactly why a LAN device needs the other kind of attribution.
+        // Known here and now (it is a header, already parsed), so unlike the
+        // libproc path there is nothing to wait for and nothing to backfill.
+        let remoteApp = remoteApp(headers: headers, device: sourceDevice)
 
         // A WebSocket upgrade is spliced (frames captured) rather than fetched.
         if WebSocketRelay.isUpgrade(head) {
@@ -146,7 +151,7 @@ enum CapturedExchange {
                     upstreamTLS: routing.webSocketUpstreamTLS,
                     removeHandlerNames: routing.webSocketRemoveHandlerNames,
                     flowID: flowID, request: capturedRequest, startedAt: startedAt,
-                    sourceApp: nil, sourceDevice: sourceDevice, store: store
+                    sourceApp: remoteApp, sourceDevice: sourceDevice, store: store
                 )
                 return
             }
@@ -182,7 +187,7 @@ enum CapturedExchange {
             // This also keeps the synchronous scan off the before-first-paint path.
             await store.upsert(Flow(
                 id: flowID, request: capturedRequest, startedAt: startedAt,
-                sourceDevice: sourceDevice, transport: clientLeg.transport
+                sourceApp: remoteApp, sourceDevice: sourceDevice, transport: clientLeg.transport
             ))
 
             // Whether forwarding must wait for the resolver: only when something
@@ -193,7 +198,11 @@ enum CapturedExchange {
             // serialized across a burst — was added to every request's TTFB for
             // attribution the UI is happy to backfill.
             let sourceApp: SourceApp?
-            if forwarder.requiresSourceAppResolution {
+            if let remoteApp {
+                // A LAN device: there is no process to resolve and no resolver to
+                // wait for, so the attribution the headers already gave is final.
+                sourceApp = remoteApp
+            } else if forwarder.requiresSourceAppResolution {
                 // `startedAt` stands in for the connection's open time: for a new
                 // connection they are milliseconds apart, and for a keep-alive one it
                 // is *later*, which only ever costs an extra sweep the port cache
@@ -242,6 +251,24 @@ enum CapturedExchange {
                 store: store, bodyCapture: bodyCapture, clientTransport: clientLeg.transport
             )
         }
+    }
+
+    /// The app behind a request that has no local process to resolve — i.e. every
+    /// request from a LAN device.
+    ///
+    /// Scoped to LAN peers on purpose. A loopback request has a pid, and libproc's
+    /// answer is a fact where a `User-Agent` is a claim; falling back to the header
+    /// when the resolver comes up empty would quietly mix the two kinds of
+    /// attribution on the surface where the exact one is available. A local flow
+    /// the resolver could not attribute stays unattributed, as before.
+    ///
+    /// Pure and synchronous — it reads a header this code has already parsed — so
+    /// unlike the libproc sweep it adds nothing to the exchange's latency and needs
+    /// no backfill.
+    private static func remoteApp(headers: [HeaderPair], device: SourceDevice?) -> SourceApp? {
+        guard device?.kind == .lan else { return nil }
+        let userAgent = headers.first { $0.name.lowercased() == "user-agent" }?.value
+        return UserAgentParser.app(userAgent).map(SourceApp.fromUserAgent)
     }
 
     /// Identify the originating device from the connection's remote IP, typed by

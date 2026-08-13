@@ -138,26 +138,89 @@ public struct CapturedResponse: Equatable, Codable, Sendable {
     }
 }
 
-/// The local process that originated a captured request, resolved from the
-/// proxy connection's source port. Icon is not stored here (a UI concern derived
-/// from `bundlePath`); the model stays AppKit-free so engine modules can build it.
+/// The app that originated a captured request.
+///
+/// **Two ways this is known, and they are not interchangeable** — which is why
+/// `attribution` is a stored field rather than something inferred from a nil
+/// `pid`. A local process is resolved through libproc from the connection's
+/// source port: exact, and it yields a bundle id and an icon. A LAN device's app
+/// has no local pid to find, so the only evidence is what the app says about
+/// itself in `User-Agent`: a name, no bundle id, and only as truthful as the
+/// header.
+///
+/// Before this existed, `sourceApp` was nil for every phone request, so the
+/// sidebar's Apps section listed Mac apps only and a device's traffic was one
+/// undifferentiated bucket — the very case Loom is pointed at a phone to look at.
+///
+/// Icon is not stored here (a UI concern derived from `bundlePath`); the model
+/// stays AppKit-free so engine modules can build it.
 public struct SourceApp: Equatable, Codable, Sendable, Hashable {
-    /// Display name — bundle display/name if it's an app, else the executable's basename.
+    /// How this attribution was arrived at. A reader must be able to tell, because
+    /// the two carry different weight: a pid is a fact about a socket, a
+    /// `User-Agent` is a claim by the client and any app can send any string.
+    public enum Attribution: String, Codable, Sendable, Hashable {
+        /// libproc resolved the connection's source port to a running process.
+        case process
+        /// Parsed from the request's `User-Agent` — the only signal available for
+        /// a device that is not this Mac.
+        case userAgent
+    }
+
+    /// Display name — bundle display/name if it's an app, else the executable's
+    /// basename; for a `userAgent` attribution, the product token the client sent.
     public var name: String
     public var bundleID: String?
     /// Path to the `.app` bundle when the origin is a bundled app; the UI resolves
-    /// the icon from this. Nil for CLI tools / daemons.
+    /// the icon from this. Nil for CLI tools / daemons, and always nil for a
+    /// `userAgent` attribution — the binary is on another device.
     public var bundlePath: String?
-    public var pid: Int32
+    /// The local process id. **Nil for a `userAgent` attribution**, and optional
+    /// rather than a sentinel: a phone's app has no pid on this machine, and `0`
+    /// or `-1` there would be a number a reader could compare, filter and print.
+    public var pid: Int32?
+    public var attribution: Attribution
 
-    public init(name: String, bundleID: String? = nil, bundlePath: String? = nil, pid: Int32) {
+    public init(
+        name: String,
+        bundleID: String? = nil,
+        bundlePath: String? = nil,
+        pid: Int32? = nil,
+        attribution: Attribution = .process
+    ) {
         self.name = name
         self.bundleID = bundleID
         self.bundlePath = bundlePath
         self.pid = pid
+        self.attribution = attribution
+    }
+
+    /// An app known only by what it called itself in `User-Agent`.
+    public static func fromUserAgent(name: String) -> SourceApp {
+        SourceApp(name: name, attribution: .userAgent)
+    }
+
+    /// Hand-written so a flow persisted before `attribution` existed still
+    /// decodes. Every one of those was resolved through libproc — that was the
+    /// only path there was — so the absent key means `.process`, and the synthesized
+    /// decoder's alternative is a store full of rows that fail to load at launch.
+    /// `pid` needs no such care: it went from required to optional, and `decodeIfPresent`
+    /// reads an old row's number and a new row's absence alike.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        bundleID = try container.decodeIfPresent(String.self, forKey: .bundleID)
+        bundlePath = try container.decodeIfPresent(String.self, forKey: .bundlePath)
+        pid = try container.decodeIfPresent(Int32.self, forKey: .pid)
+        attribution = try container.decodeIfPresent(Attribution.self, forKey: .attribution) ?? .process
     }
 
     /// Stable grouping key: bundle id when available, else the display name.
+    ///
+    /// Deliberately **not** scoped by device, even though the sidebar now nests
+    /// apps under the device they ran on. Two devices running the same app share a
+    /// key on purpose — that is what makes "the same app, on the phone and on this
+    /// Mac" a comparable thing rather than two unrelated buckets — and the sidebar
+    /// scopes by pairing the key with the device it drew it under.
     public var groupingKey: String { bundleID ?? name }
 }
 

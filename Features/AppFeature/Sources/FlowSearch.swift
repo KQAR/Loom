@@ -146,7 +146,16 @@ public struct FlowSearch: Equatable, Sendable {
     /// specific to `body`: `FlowStore` only hydrates a flow that has passed every
     /// cheap predicate, so a host-scoped search reads a handful of payloads off disk
     /// instead of the whole ring.
-    func engineQuery(category: FlowCategory?) -> FlowQuery? {
+    /// The query to ask the engine, scoped by the sidebar selection.
+    ///
+    /// **Narrowing here is an optimisation, and it is allowed to under-narrow but
+    /// never to over-narrow.** `FlowQuery` holds one value per field, so a
+    /// selection of three hosts cannot be expressed — and asking for any one of
+    /// them would drop the other two's matches on the floor. So a multi-selection
+    /// within a dimension simply doesn't push that dimension down; the window's own
+    /// predicate (`CaptureFeature.State.categoryMatches`) still applies it, and the
+    /// only cost is that the engine hydrates a few more bodies than it had to.
+    func engineQuery(selection: Set<FlowCategory>) -> FlowQuery? {
         guard isActive, let needle, scope.needsEngine else { return nil }
         var query = FlowQuery()
         switch scope {
@@ -154,12 +163,27 @@ public struct FlowSearch: Equatable, Sendable {
         case .headers: query.headerContains = needle
         case .body: query.bodyContains = needle
         }
-        switch category ?? .all {
-        case .all, .rules, .audit, .breakpoints: break
-        case .errors: query.onlyErrors = true
-        case let .host(host): query.host = host
-        case let .app(key): query.sourceApp = key
-        case let .device(ip): query.deviceIP = ip
+        let filters = selection.filter(\.isFilter)
+        if filters.contains(.errors) { query.onlyErrors = true }
+        let hosts = filters.compactMap { category -> String? in
+            if case let .host(host) = category { return host }
+            return nil
+        }
+        if hosts.count == 1 { query.host = hosts[0] }
+        // Devices and apps share a dimension, so an app row already implies its
+        // device — pushing both down is only sound when the whole origin selection
+        // is that one row.
+        let origins = filters.filter { $0.dimension == .origin }
+        if origins.count == 1, let origin = origins.first {
+            switch origin {
+            case let .device(ip): query.deviceIP = ip
+            case let .app(device, key):
+                // Both halves: narrowing on the app alone would hydrate the same
+                // app's bodies from every device to answer about one of them.
+                query.sourceApp = key
+                query.deviceIP = device
+            default: break
+            }
         }
         return query
     }
