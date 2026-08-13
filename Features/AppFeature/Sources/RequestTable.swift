@@ -52,6 +52,9 @@ struct RequestTable: NSViewRepresentable {
     let onReplay: (Flow.ID) -> Void
     let onCopyCurl: (Flow.ID) -> Void
     let onAddRule: (Flow.ID, RuleTemplate) -> Void
+    /// Stop decrypting a host, by its name rather than the flow's id: the scope is
+    /// keyed on the host and the row is only how the operator picked one.
+    let onExcludeHost: (String) -> Void
 
     /// Fixed, not automatic: `usesAutomaticRowHeights` measures every row it draws, and
     /// every row here is one line of text by construction.
@@ -59,7 +62,8 @@ struct RequestTable: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(selection: $selection, followTail: $followTail,
-                    onReplay: onReplay, onCopyCurl: onCopyCurl, onAddRule: onAddRule)
+                    onReplay: onReplay, onCopyCurl: onCopyCurl, onAddRule: onAddRule,
+                    onExcludeHost: onExcludeHost)
     }
 
     func makeNSView(context: Context) -> RequestScrollView {
@@ -297,6 +301,7 @@ struct RequestTable: NSViewRepresentable {
         private let onReplay: (Flow.ID) -> Void
         private let onCopyCurl: (Flow.ID) -> Void
         private let onAddRule: (Flow.ID, RuleTemplate) -> Void
+        private let onExcludeHost: (String) -> Void
 
         private weak var table: NSTableView?
         private weak var scrollView: NSScrollView?
@@ -312,13 +317,15 @@ struct RequestTable: NSViewRepresentable {
             followTail: Binding<Bool>,
             onReplay: @escaping (Flow.ID) -> Void,
             onCopyCurl: @escaping (Flow.ID) -> Void,
-            onAddRule: @escaping (Flow.ID, RuleTemplate) -> Void
+            onAddRule: @escaping (Flow.ID, RuleTemplate) -> Void,
+            onExcludeHost: @escaping (String) -> Void
         ) {
             _selection = selection
             _followTail = followTail
             self.onReplay = onReplay
             self.onCopyCurl = onCopyCurl
             self.onAddRule = onAddRule
+            self.onExcludeHost = onExcludeHost
         }
 
         func attach(scrollView: NSScrollView, table: NSTableView) {
@@ -1115,6 +1122,27 @@ struct RequestTable: NSViewRepresentable {
             let rulesItem = NSMenuItem(title: "Add Rule", action: nil, keyEquivalent: "")
             rulesItem.submenu = rules
             menu.addItem(rulesItem)
+
+            // Only where it would do something. The SSL scope decides whether Loom
+            // terminates TLS, so on a plain `http://` exchange this entry would be a
+            // control that silently changes nothing.
+            if Self.hostIsDecrypted(flow.request.url) {
+                menu.addItem(.separator())
+                menu.addItem(item("Stop Decrypting \(host)") { [onExcludeHost] in onExcludeHost(host) })
+            }
+        }
+
+        /// Whether this exchange only exists because Loom decrypted it — i.e. whether
+        /// excluding its host would change anything.
+        ///
+        /// Answered from the scheme rather than from `FlowTransport`: an absent
+        /// transport means unmeasured, not plaintext (see AGENTS.md § FlowTransport),
+        /// so reading it here would hide the entry on a flow that was mocked or is
+        /// still in flight. `wss://` counts — it is a TLS handshake Loom terminated
+        /// like any other.
+        static func hostIsDecrypted(_ url: String) -> Bool {
+            let lower = url.lowercased()
+            return lower.hasPrefix("https://") || lower.hasPrefix("wss://")
         }
 
         /// A menu item carrying its own action. `NSMenuItem` predates closures and

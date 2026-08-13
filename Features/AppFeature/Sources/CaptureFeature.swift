@@ -651,6 +651,10 @@ public struct CaptureFeature: Sendable {
         /// gesture is here (it is a row's context menu) and the editor is the parent's,
         /// so the rule travels up as a delegate.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
+        /// Stop decrypting a host, picked off a captured row. Same shape as
+        /// `addRuleFromFlow`: the gesture is a row's context menu and the thing it
+        /// writes (the SSL scope) belongs to `SetupFeature`, so it travels up.
+        case excludeHostFromDecryption(String)
         case flowReceived(Flow)
         /// The engine's counts landed (boot, and after each capture burst).
         case flowAggregatesRefreshed(FlowAggregates, coversHistory: Bool)
@@ -718,6 +722,10 @@ public struct CaptureFeature: Sendable {
             /// A replay this feature started failed. The parent routes it to
             /// `RulesFeature`, which owns the message line both writes share.
             case replayFailed(String)
+            /// Never decrypt this host again. The parent routes it to `SetupFeature`,
+            /// which owns the scope — and which is also where the write becomes
+            /// visible, since the console's card is the only rendering of it.
+            case excludeHost(String)
         }
     }
 
@@ -793,6 +801,9 @@ public struct CaptureFeature: Sendable {
                     else { return }
                     await send(.delegate(.stampedRule(rule)))
                 }
+
+            case let .excludeHostFromDecryption(host):
+                return .send(.delegate(.excludeHost(host)))
 
             case let .flowAggregatesRefreshed(aggregates, coversHistory):
                 state.aggregates = aggregates

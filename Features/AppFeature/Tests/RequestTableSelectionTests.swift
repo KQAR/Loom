@@ -48,7 +48,8 @@ import Testing
             coordinator = RequestTable.Coordinator(
                 selection: Binding(get: { state.selection }, set: { state.selection = $0 }),
                 followTail: Binding(get: { state.followTail }, set: { state.followTail = $0 }),
-                onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in }
+                onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in },
+                onExcludeHost: { _ in }
             )
             table.rowHeight = RequestTable.rowHeight
             table.addTableColumn(NSTableColumn(identifier: RequestTable.Column.path.identifier))

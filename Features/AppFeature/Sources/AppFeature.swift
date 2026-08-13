@@ -415,6 +415,12 @@ public struct AppFeature: Sendable {
             case let .capture(.delegate(.replayFailed(message))):
                 return .send(.rules(.ruleWriteFailed(message)))
 
+            // The request table can now carve a host out of the decrypted scope, which
+            // is the same write the console's SSL Scope card makes — one action, so the
+            // two surfaces cannot drift on what "stop decrypting" means.
+            case let .capture(.delegate(.excludeHost(host))):
+                return .send(.setup(.excludeHostTapped(host)))
+
             // Starting a replay clears the shared line, for the same reason.
             case .capture(.replayTapped):
                 state.rules.rulesMessage = nil

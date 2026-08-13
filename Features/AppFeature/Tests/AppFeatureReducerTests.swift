@@ -463,4 +463,33 @@ import Testing
         }
         #expect(store.state.phone?.info?.provisioningURL.absoluteString == "http://10.0.0.7:9500/")
     }
+
+    /// The request table can carve a host out of the decrypted scope, and it makes the
+    /// *same* write the console's SSL Scope card makes — one action through
+    /// `SetupFeature`, so the two surfaces cannot drift on what "stop decrypting"
+    /// means, and the console's card is where it becomes visible afterwards.
+    ///
+    /// This is the main window's answer to a host Loom shouldn't be terminating TLS
+    /// for. It is a menu entry rather than a banner on purpose: under the wide default
+    /// a phone contributes dozens of origins that will never trust Loom's CA, so
+    /// anything persistent enough to be noticed is also persistent enough to be
+    /// ignored (AGENTS.md § "A pass-through is recorded").
+    @Test func aRowCarvingItsHostOut_writesTheScopeThroughSetup() async {
+        let written = LockIsolated<SSLScope?>(nil)
+        var state = AppFeature.State()
+        state.setup.sslEnabled = true
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*"])
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.setSSLScope = { written.setValue($0) }
+            $0.proxyClient.sslScope = { SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"]) }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.capture(.excludeHostFromDecryption("pinned.example.com")))
+        await store.receive(\.capture.delegate.excludeHost)
+        await store.receive(\.setup.excludeHostTapped)
+        await store.receive(\.setup.sslScopeLoaded)
+        #expect(written.value?.exclude == ["pinned.example.com"])
+    }
 }

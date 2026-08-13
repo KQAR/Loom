@@ -23,10 +23,6 @@ public struct MainView: View {
     @State private var clearHovering = false
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
-    /// Whether the broken-origin banner is showing its host list. Purely
-    /// presentational and per-window, like `followTail` — the state it reports on
-    /// lives in the engine.
-    @State private var tlsFailuresExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
@@ -131,9 +127,6 @@ public struct MainView: View {
         // `.toolbarBackground` nor AppKit's own titlebar fill does the job here.
         .background(WindowChrome())
         .task { store.send(.viewAppeared) }
-        // `.finish()` ties the effect to this view's lifetime: the poll behind the
-        // broken-origin banner lives exactly as long as the window it draws in.
-        .task { await store.send(.setup(.watchTunneledHosts)).finish() }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
             RuleEditorView(store: editorStore)
         }
@@ -416,7 +409,6 @@ public struct MainView: View {
                 FlowFilterBar(store: captureStore)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-            tlsFailureBanner
             Group {
                 // O(1) aggregate probe — `displayFlows.isEmpty` would filter the whole
                 // window a second time per render just to pick the empty state.
@@ -442,111 +434,6 @@ public struct MainView: View {
         // The bar slides out of the toolbar band it hangs from; without this it
         // paints over the band on the way in.
         .clipped()
-    }
-
-    /// Origins whose clients Loom broke, on the surface the operator is actually
-    /// looking at.
-    ///
-    /// This is the main window's *only* rendering of `TunneledHostLog`, and it exists
-    /// because the log had none. A refused handshake records no flow — nothing was
-    /// decrypted, so there is no exchange to put in the table — and the only human
-    /// surface was the menu-bar console, behind the SSL Scope row, inside a
-    /// disclosure, past a 6-row cap. So the observable behaviour was: a phone shows a
-    /// network error, the request table shows nothing, and nothing anywhere says why.
-    /// Which is indistinguishable from the client never having run — the exact
-    /// failure `TunneledHostLog` was built to remove, left open on the working
-    /// surface.
-    ///
-    /// Deliberately **not** rows in the request table (the shape the question
-    /// "shouldn't Loom list CONNECT?" leads to): `observeTunnels` already does that
-    /// and is off by design, because a browser or a pooling HTTP client opens tunnels
-    /// it may never speak on, and a row with no method, status or body is one that
-    /// can't be opened. What is worth surfacing is not the connection, it is the
-    /// verdict — one line per origin, which is what `TunneledHost` already is.
-    ///
-    /// Above the table rather than below it (the reverse of `capBanner`) and outside
-    /// the empty-state branch: the empty capture *is* the symptom here, so a strip
-    /// that only appears once there are rows would hide in the one case it is for.
-    @ViewBuilder private var tlsFailureBanner: some View {
-        let broken = store.setup.brokenHosts
-        if !broken.isEmpty {
-            VStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
-                Button {
-                    tlsFailuresExpanded.toggle()
-                } label: {
-                    HStack(spacing: LoomTheme.Space.xs) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundStyle(LoomTheme.Palette.warning)
-                        Text(Self.tlsFailureSummary(broken))
-                            .font(.caption)
-                            .foregroundStyle(.primary)
-                        Spacer(minLength: LoomTheme.Space.xs)
-                        Image(systemName: tlsFailuresExpanded ? "chevron.up" : "chevron.down")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .buttonStyle(.plain)
-                .help("Origins whose TLS Loom terminated and the client refused")
-
-                if tlsFailuresExpanded {
-                    // Bounded like every other list in the app. The log itself caps at
-                    // 256 origins; this shows the busiest few and counts the rest.
-                    ForEach(broken.prefix(Self.visibleBrokenHosts)) { entry in
-                        brokenHostRow(entry)
-                    }
-                    if broken.count > Self.visibleBrokenHosts {
-                        Text("+\(broken.count - Self.visibleBrokenHosts) more in the console's SSL Scope panel")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(.horizontal, LoomTheme.Space.sm)
-            .padding(.vertical, LoomTheme.Space.xxs)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.bar)
-            .overlay(alignment: .bottom) { Divider() }
-        }
-    }
-
-    private static let visibleBrokenHosts = 5
-
-    /// One phrase saying what happened, in the operator's terms rather than TLS's.
-    /// "Refused Loom's certificate" is the cause; "never left" is the symptom they
-    /// are staring at, and naming it is what connects this strip to the empty table
-    /// underneath it.
-    static func tlsFailureSummary(_ broken: [TunneledHost]) -> String {
-        let origins = broken.count == 1 ? "1 origin" : "\(broken.count) origins"
-        return "\(origins) refused Loom's certificate — those requests never left the client"
-    }
-
-    /// A broken origin and the one action that repairs it.
-    ///
-    /// Pass it through: the connection is relayed untouched, so the client works on
-    /// its next attempt and Loom stops being the reason it failed. The alternative
-    /// repair — trusting Loom's CA on that device, or accepting that the host is
-    /// pinned and cannot be read — is not a button, so this offers the one that is.
-    private func brokenHostRow(_ entry: TunneledHost) -> some View {
-        HStack(spacing: LoomTheme.Space.xs) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(entry.host)
-                    .font(.caption.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(SSLScopeCard.caption(for: entry))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: LoomTheme.Space.xs)
-            Button("Pass through") { store.send(.setup(.excludeHostTapped(entry.host))) }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Relay \(entry.host) untouched so its client works again")
-        }
-        .padding(.leading, LoomTheme.Space.md)
     }
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped
@@ -1222,7 +1109,8 @@ private struct RequestTableView: View {
             followTail: $followTail,
             onReplay: { store.send(.replayTapped($0)) },
             onCopyCurl: { store.send(.copyCurlTapped($0)) },
-            onAddRule: { store.send(.addRuleFromFlow($0, $1)) }
+            onAddRule: { store.send(.addRuleFromFlow($0, $1)) },
+            onExcludeHost: { store.send(.excludeHostFromDecryption($0)) }
         )
         // Selection is an interactive signal, so it is the accent's job (DESIGN.md
         // § Colors) — untinted, `NSTableView` fills the row with the *system* accent, a

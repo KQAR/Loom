@@ -697,40 +697,15 @@ import Testing
         #expect(SSLScopeCard.glyph(for: Self.host("c", .notTLSOrHTTP)) == "questionmark.circle")
     }
 
-    /// The banner names the symptom, not just the cause: the operator is staring at an
-    /// empty request table, and "never left the client" is what connects the two.
-    @Test func bannerSummaryNamesTheSymptom() {
-        let one = MainView.tlsFailureSummary([Self.host("a", .clientHandshakeFailed)])
-        #expect(one.hasPrefix("1 origin refused"))
-        #expect(one.contains("never left the client"))
-        let two = MainView.tlsFailureSummary(Array(Self.everyReason.suffix(2)))
-        #expect(two.hasPrefix("2 origins refused"))
-    }
-
-    /// The window's watch is a live poll, not a one-shot: activation can't cover this
-    /// writer (live traffic on another device), so with Loom already focused the
-    /// banner would otherwise stay absent while the phone kept failing.
-    @Test func watchTunneledHosts_pollsUntilCancelled() async {
-        let clock = TestClock()
-        let refused = Self.host("refused.example.com", .clientHandshakeFailed)
-        let calls = LockIsolated(0)
-        let store = TestStore(initialState: SetupFeature.State()) {
-            SetupFeature()
-        } withDependencies: {
-            $0.continuousClock = clock
-            $0.proxyClient.tunneledHosts = {
-                calls.withValue { $0 += 1 }
-                return TunneledHostReport(hosts: calls.value > 1 ? [refused] : [], evicted: 0)
-            }
-        }
-        await store.send(.watchTunneledHosts)
-        await store.receive(\.tunneledHostsLoaded)
-        await clock.advance(by: .seconds(5))
-        await store.receive(\.tunneledHostsLoaded) {
-            $0.tunneledHosts = [refused]
-        }
-        #expect(store.state.brokenHosts.count == 1)
-        // The poll only ends with the window; nothing here should assert it finished.
-        store.exhaustivity = .off
+    /// The row menu offers it only where the SSL scope decides anything. On a plain
+    /// `http://` exchange, excluding the host would change nothing — a control that
+    /// silently does nothing is worse than an absent one.
+    @Test func stopDecryptingIsOfferedOnlyForTLSExchanges() {
+        #expect(RequestTable.Coordinator.hostIsDecrypted("https://api.example.com/v1"))
+        #expect(RequestTable.Coordinator.hostIsDecrypted("wss://api.example.com/socket"))
+        #expect(!RequestTable.Coordinator.hostIsDecrypted("http://api.example.com/v1"))
+        #expect(!RequestTable.Coordinator.hostIsDecrypted("ws://api.example.com/socket"))
+        // Scheme casing is the client's business, not a reason to hide the entry.
+        #expect(RequestTable.Coordinator.hostIsDecrypted("HTTPS://api.example.com/v1"))
     }
 }

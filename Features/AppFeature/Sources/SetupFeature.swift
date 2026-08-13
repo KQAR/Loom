@@ -107,8 +107,9 @@ public struct SetupFeature: Sendable {
         /// attention: broken first, then unread-but-fixable, then the deliberate
         /// pass-throughs, then what no setting can read.
         ///
-        /// One definition, so the console card and the main window can't disagree
-        /// about which origin matters most. The four buckets partition
+        /// One definition rather than an ordering written at the render site, so a
+        /// second reader of this list can't disagree about which origin matters most.
+        /// The four buckets partition
         /// `tunneledHosts` — broken implies `!interceptable`, so the last bucket
         /// subtracts it rather than listing it twice.
         public var tunneledHostsByUrgency: [TunneledHost] {
@@ -154,10 +155,6 @@ public struct SetupFeature: Sendable {
         case task
         /// Cheap re-sync of all setup state when a window/panel appears.
         case refresh
-        /// Long-running: keep the tunnelled-host list current for as long as the main
-        /// window is open, so a broken origin surfaces without waiting for the app to
-        /// be activated. Scoped to the window's lifetime by the view.
-        case watchTunneledHosts
         /// Re-read only the state an *agent* can write: the SSL scope, what it left
         /// tunnelled, and the client identities. Deliberately narrower than
         /// `.refresh` — the helper state and the system-proxy snapshot cost an XPC
@@ -222,11 +219,6 @@ public struct SetupFeature: Sendable {
 
     @Dependency(\.proxyClient) var proxyClient
     @Dependency(\.privilegedHelperClient) var privilegedHelperClient
-    /// The window's tunnelled-host watch sleeps on this rather than on `Task.sleep`,
-    /// so a test can prove it polls *again* instead of spending five real seconds
-    /// finding out. (The card's older 2 s poll still sleeps directly; it is only ever
-    /// exercised through its first read.)
-    @Dependency(\.continuousClock) var clock
 
     public init() {}
 
@@ -445,28 +437,6 @@ public struct SetupFeature: Sendable {
             case .tunneledHostsTick:
                 return .run { send in await send(.tunneledHostsLoaded(proxyClient.tunneledHosts())) }
 
-            case .watchTunneledHosts:
-                // Slower than the card's 2 s poll and for a different reason. The card
-                // is a list someone is reading; this feeds the main window's broken-
-                // origin banner, which has to appear while nobody is looking at Loom
-                // at all — the operator is holding the phone that just failed.
-                //
-                // `.viewAppeared` (which `AppActivation` also fires on app activation)
-                // covers coming back to the Mac, and for CA trust and helper approval
-                // that is enough, because the human performs those changes themselves.
-                // This writer is live traffic on another device, so there is nothing to
-                // come back *from*: with Loom already focused, activation never fires
-                // and the banner would stay absent while the phone kept failing. Tied
-                // to the window's lifetime by the caller, so a closed window polls
-                // nothing.
-                return .run { [clock] send in
-                    while !Task.isCancelled {
-                        await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
-                        try await clock.sleep(for: .seconds(5))
-                    }
-                }
-                .cancellable(id: CancelID.tunneledHostWatch, cancelInFlight: true)
-
             case let .tunneledHostsLoaded(report):
                 state.tunneledHosts = report.hosts
                 state.tunneledHostsEvicted = report.evicted
@@ -645,7 +615,7 @@ public struct SetupFeature: Sendable {
         }
     }
 
-    private enum CancelID: Hashable { case tunneledHostPoll, tunneledHostWatch }
+    private enum CancelID: Hashable { case tunneledHostPoll }
 
     /// Write an edited scope through and re-read the tunnelled list against it, so a
     /// host that just became intercepted stops being offered.

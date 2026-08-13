@@ -103,7 +103,8 @@ import Testing
         init(hiding hidden: Set<RequestTable.Column> = []) {
             coordinator = RequestTable.Coordinator(
                 selection: .constant(nil), followTail: .constant(true),
-                onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in }
+                onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in },
+                onExcludeHost: { _ in }
             )
             // Both matter to the arithmetic: `.inset` decides the edge insets and intercell
             // spacing the trailing edge is measured against, and the autoresizing style is
