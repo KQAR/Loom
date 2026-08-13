@@ -224,9 +224,13 @@ def subpaths(d):
 def fit(paths, box, cap_fraction=1.0):
     """Scale + centre `paths` (SVG coordinates, y down) into a design box.
 
-    `box` is `(x0, x1, y0, y1)` in the same 100-unit space `mark.py` draws in,
-    with y **up** — the builder's `transform` expects that orientation, so the
-    flip happens here rather than being smuggled into a negative scale.
+    `box` is `(x0, x1, y0, y1)` in the same 100-unit space `mark.py` draws in.
+    That space is y-**down**, like SVG's — `build.py.transform` maps `y - Y1`, so
+    `Y0` lands on the capline and `Y1` on the baseline — which means the artwork's
+    own orientation carries straight through and there is **no flip here**.
+    Flipping (the obvious thing to write, on the assumption that a design box is
+    y-up) renders the glyph upside down, which is a thing `check.py` cannot catch:
+    an inverted symbol resolves perfectly well.
     """
     x0, x1, y0, y1 = box
     points = [p for path in paths for p in path]
@@ -244,7 +248,7 @@ def fit(paths, box, cap_fraction=1.0):
     out = []
     for path in paths:
         placed = [
-            (offset_x + (px - min_x) * scale, offset_y + (max_y - py) * scale)
+            (offset_x + (px - min_x) * scale, offset_y + (py - min_y) * scale)
             for px, py in path
         ]
         out.append(placed)
