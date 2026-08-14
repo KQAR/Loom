@@ -18,7 +18,8 @@ extension ProxyEngine {
             socksPort: boundSOCKSPort,
             recentRefusals: refusals.recent,
             refusedConnections: refusals.total,
-            reverseProxies: reverseProxyConfig.snapshot()
+            reverseProxies: reverseProxyConfig.snapshot(),
+            droppedByRules: await store.droppedFlowCount
         )
     }
 

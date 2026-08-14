@@ -11,6 +11,10 @@ public enum RuleTemplate: Equatable, Sendable {
     case blockURL
     /// Block every request to this host.
     case blockHost
+    /// Stop *recording* this host — the noise filter. Deliberately a different
+    /// template from `blockHost` even though both are host-scoped: block stops the
+    /// request from happening, this only stops it being kept.
+    case dropCaptureHost
 }
 
 enum RuleFactory {
@@ -42,17 +46,30 @@ enum RuleFactory {
                 actions: RuleActions(route: .block)
             )
 
+        case .dropCaptureHost:
+            guard let host = flow.host else { return nil }
+            return TrafficRule(
+                name: "Don't capture \(host)",
+                comment: "Traffic still flows; Loom stops recording it",
+                match: RuleMatch(urlPattern: Self.hostPattern(host), style: .regex),
+                actions: RuleActions(dropFromCapture: true)
+            )
+
         case .blockHost:
             guard let host = flow.host else { return nil }
-            // Regex instead of a `*host*` glob so `api.example.com` can't also
-            // match `api.example.com.evil.io`.
-            let pattern = "://" + NSRegularExpression.escapedPattern(for: host) + #"(:\d+)?(/|$)"#
             return TrafficRule(
                 name: "Block \(host)",
-                match: RuleMatch(urlPattern: pattern, style: .regex),
+                match: RuleMatch(urlPattern: Self.hostPattern(host), style: .regex),
                 actions: RuleActions(route: .block)
             )
         }
+    }
+
+    /// Regex instead of a `*host*` glob so `api.example.com` can't also match
+    /// `api.example.com.evil.io`. Shared by the two host-scoped templates, which used
+    /// to build it separately — one copy is one place for that escaping to be right.
+    static func hostPattern(_ host: String) -> String {
+        "://" + NSRegularExpression.escapedPattern(for: host) + #"(:\d+)?(/|$)"#
     }
 
     /// The URL with query + fragment stripped — as a prefix pattern it matches

@@ -68,6 +68,7 @@ public struct SetupFeature: Sendable {
         /// domain gets read in one go rather than one sub-domain per click.
         public var sslScopeDraftDecrypts = true
         public var sslScopeMessage: String?
+
         /// Hosts worth offering a one-click "decrypt" for — the rest are unread for
         /// reasons a scope change can't fix (`notTLSOrHTTP`, a failed leaf mint).
         public var interceptableTunneledHosts: [TunneledHost] {
@@ -207,6 +208,7 @@ public struct SetupFeature: Sendable {
         case addIncludeGlobTapped
         case sslScopeDraftTargetChanged(Bool)
         case removeIncludeGlobTapped(String)
+
         case removeExcludeGlobTapped(String)
         case exportCATapped
         case caExported(URL?)
@@ -685,6 +687,9 @@ public struct SetupFeature: Sendable {
         }
     }
 
+    /// Write the ignore list and re-read it, for the same reason the scope's writes
+    /// do: the other writer is an agent (`set_ignored_hosts`), so a surface that
+    /// predicted the result would disagree with the engine after a concurrent write.
     /// What a typed include glob will and won't cover.
     ///
     /// The one case worth a sentence is a wildcard `exclude` that still shadows it —

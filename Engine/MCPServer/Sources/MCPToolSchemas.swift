@@ -1068,6 +1068,17 @@ extension MCPToolExecutor {
             "response_substitutions": Self.substitutionsSchema(
                 "Find/replace substitutions on the returned response (\"modify response\"). Applied in order."),
             "delay_ms": .integer("Hold the response back this many milliseconds (crude throttle)."),
+            "drop_from_capture": .boolean("""
+                Do not RECORD matching exchanges. The request is forwarded and answered exactly \
+                as it would be without the rule — this is the noise filter, not `block`, which \
+                stops the request from happening. Matching flows never enter the store, so this \
+                read, get_recent_flows, the main window and the on-disk capture agree by \
+                construction; nothing arriving while the rule is on can be recovered, and \
+                disabling it affects the next request, never the last one. `list_rules` reports \
+                what each such rule has dropped, and `get_proxy_status.droppedByRules` the total \
+                — that count is the only trace, so read it before concluding a host made no \
+                requests. Obeys the rules master switch like every other action.
+                """),
         ],
         description: "What to do with matching traffic. Set any combination. block beats mock_response beats map_local when several short-circuits match; request rewrites compose in rule order."
     )

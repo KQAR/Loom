@@ -422,7 +422,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             let sslContext = try ca.serverContext(for: host)
             return MITMPipeline.installTLS(
                 channel: channel, host: host, port: port, sslContext: sslContext,
-                store: store, forwarder: forwarder
+                store: store, forwarder: forwarder, certificateAuthority: ca
             )
         } catch {
             Log.tls.error("""

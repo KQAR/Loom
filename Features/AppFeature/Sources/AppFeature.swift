@@ -152,7 +152,9 @@ public struct AppFeature: Sendable {
             }
             set {
                 // The projected fields are the parent's to own; whatever the child
-                // hands back for them is ignored on the next read.
+                // hands back for them is ignored on the next read. Cleared rather than
+                // merely ignored, so two `State` values can't compare unequal over a
+                // list neither of them is the source of.
                 setupState = newValue
             }
         }

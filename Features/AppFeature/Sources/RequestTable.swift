@@ -1152,6 +1152,10 @@ struct RequestTable: NSViewRepresentable {
             case .tunnelled, .decryptionFailed:
                 for entry in scopeItems(for: flow, host: host) { menu.addItem(entry) }
                 menu.addItem(.separator())
+                menu.addItem(item("Don't Capture \(host)", image: "eye.slash") { [onAddRule] in
+                    onAddRule(id, .dropCaptureHost)
+                })
+                menu.addItem(.separator())
                 menu.addItem(item("Copy Host") { MainView.copy(host) })
                 return
             case .decrypted, .plaintext:
@@ -1178,6 +1182,11 @@ struct RequestTable: NSViewRepresentable {
             rules.addItem(.separator())
             rules.addItem(item("Block This URL") { [onAddRule] in onAddRule(id, .blockURL) })
             rules.addItem(item("Block Host \(host)") { [onAddRule] in onAddRule(id, .blockHost) })
+            rules.addItem(.separator())
+            // Beside the blocks because it is a rule like they are, and separated from
+            // them because it is the one that does *not* touch the traffic: the request
+            // still happens, Loom just stops keeping it.
+            rules.addItem(item("Don't Capture \(host)") { [onAddRule] in onAddRule(id, .dropCaptureHost) })
             let rulesItem = NSMenuItem(title: "Add Rule", action: nil, keyEquivalent: "")
             rulesItem.submenu = rules
             menu.addItem(rulesItem)

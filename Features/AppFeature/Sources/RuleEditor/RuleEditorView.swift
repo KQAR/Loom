@@ -386,6 +386,15 @@ struct RuleEditorView: View {
             }
             .padding(.top, LoomTheme.Space.xxs)
             EditorHint("Holds the response back to reproduce a slow network. Blank is no delay.")
+
+            Toggle("Don't capture matching traffic", isOn: $draft.dropFromCapture)
+                .controlSize(.small)
+                .padding(.top, LoomTheme.Space.xs)
+            EditorHint(
+                "The request still goes out and is answered normally — Loom just stops recording it. "
+                + "Use it to keep a chatty SDK out of the capture. Nothing arriving while this is on "
+                + "can be recovered, and it disappears from every surface, including an agent's reads."
+            )
         }
     }
 

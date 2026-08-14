@@ -889,6 +889,26 @@ public struct RuleActions: Equatable, Codable, Sendable {
     public var responseSubstitutions: [SubstitutionRule]
     /// Delay before the response is released to the client (crude throttle).
     public var delayMilliseconds: Int?
+    /// **Don't record matching exchanges** — the noise filter, and the one action that
+    /// is not about traffic.
+    ///
+    /// Everything else here changes what the client or the origin sees. This changes
+    /// what *Loom* keeps: the request is forwarded and answered exactly as it would be
+    /// without the rule, and no flow is stored. So it is deliberately **not** a `Route`
+    /// case beside `.block`: block stops the request from happening, this only stops
+    /// the recording, and a mistyped word between the two costs real traffic.
+    ///
+    /// Evaluated at a second choke point — `FlowStore.upsert`, where every producer
+    /// arrives (a content exchange, a relayed `CONNECT`, a failed interception, a
+    /// replay) — rather than in the forwarder with the rest. That is what "rules have
+    /// stages" buys: the same matcher, the same list, the same master switch, applied
+    /// where the decision belongs.
+    ///
+    /// Dropping rather than hiding on read is what keeps the window and an agent's
+    /// reads agreeing without a filter on every read path. The cost is that traffic
+    /// arriving while the rule is on is gone; disabling the rule affects the next
+    /// request, never the last one, and `RulesState.droppedCounts` says what it cost.
+    public var dropFromCapture: Bool
 
     public init(
         route: Route = .passthrough,
@@ -896,7 +916,8 @@ public struct RuleActions: Equatable, Codable, Sendable {
         rewriteResponse: ResponseRewriteAction? = nil,
         requestSubstitutions: [SubstitutionRule] = [],
         responseSubstitutions: [SubstitutionRule] = [],
-        delayMilliseconds: Int? = nil
+        delayMilliseconds: Int? = nil,
+        dropFromCapture: Bool = false
     ) {
         self.route = route
         self.rewriteRequest = rewriteRequest
@@ -904,6 +925,7 @@ public struct RuleActions: Equatable, Codable, Sendable {
         self.requestSubstitutions = requestSubstitutions
         self.responseSubstitutions = responseSubstitutions
         self.delayMilliseconds = delayMilliseconds
+        self.dropFromCapture = dropFromCapture
     }
 
     // Tolerant decode: a missing route defaults to passthrough.
@@ -915,17 +937,25 @@ public struct RuleActions: Equatable, Codable, Sendable {
         requestSubstitutions = try c.decodeIfPresent([SubstitutionRule].self, forKey: .requestSubstitutions) ?? []
         responseSubstitutions = try c.decodeIfPresent([SubstitutionRule].self, forKey: .responseSubstitutions) ?? []
         delayMilliseconds = try c.decodeIfPresent(Int.self, forKey: .delayMilliseconds)
+        // Absent means false: a rule written before this action existed does not
+        // start dropping traffic on the launch that adds it.
+        dropFromCapture = try c.decodeIfPresent(Bool.self, forKey: .dropFromCapture) ?? false
     }
 
     /// Substitutions that actually carry a match string (empty rows are ignored).
     public var activeRequestSubstitutions: [SubstitutionRule] { requestSubstitutions.filter { !$0.isEmpty } }
     public var activeResponseSubstitutions: [SubstitutionRule] { responseSubstitutions.filter { !$0.isEmpty } }
 
+    /// Whether the rule would do nothing. `dropFromCapture` counts as *something* —
+    /// it is the one action that leaves the traffic alone, so a rule carrying only it
+    /// looks empty to anything that asks "does this change the request", and the
+    /// validator rejecting it was measured within a minute of the action existing.
     public var isEmpty: Bool {
         guard case .passthrough = route else { return false }
         return (rewriteRequest?.isEmpty ?? true) && (rewriteResponse?.isEmpty ?? true)
             && activeRequestSubstitutions.isEmpty && activeResponseSubstitutions.isEmpty
             && delayMilliseconds == nil
+            && !dropFromCapture
     }
 }
 
@@ -980,7 +1010,7 @@ public struct TrafficRule: Equatable, Codable, Sendable, Identifiable {
             return "match.urlPattern is not a valid regular expression"
         }
         if actions.isEmpty {
-            return "rule has no actions — set a route (block/mock/mapRemote/mapLocal) or a rewrite/substitution/delay"
+            return "rule has no actions — set a route (block/mock/mapRemote/mapLocal), a rewrite/substitution/delay, or drop_from_capture"
         }
         if let rewrite = actions.rewriteRequest {
             if let url = rewrite.url, URL(string: url) == nil || URL(string: url)?.scheme == nil {
@@ -1026,6 +1056,12 @@ public struct RulesState: Equatable, Codable, Sendable {
     /// Master switch; when false no rule is applied regardless of per-rule flags.
     public var enabled: Bool
     public var rules: [TrafficRule]
+    /// What each `dropFromCapture` rule has cost this session, keyed by rule id.
+    ///
+    /// A dropped exchange carries no `appliedRules` — it has no flow — so this is the
+    /// only place a capture rule can be seen to have done anything. Session-scoped,
+    /// like the flows it counts.
+    public var droppedCounts: [UUID: Int] = [:]
     /// Groups currently switched off as a unit — `nil` is the ungrouped bucket,
     /// which the UI toggles like any other group.
     ///
@@ -1038,10 +1074,14 @@ public struct RulesState: Equatable, Codable, Sendable {
     /// (`activeRules`) and neither can destroy the other.
     public var disabledGroups: Set<String?>
 
-    public init(enabled: Bool = true, rules: [TrafficRule] = [], disabledGroups: Set<String?> = []) {
+    public init(
+        enabled: Bool = true, rules: [TrafficRule] = [], disabledGroups: Set<String?> = [],
+        droppedCounts: [UUID: Int] = [:]
+    ) {
         self.enabled = enabled
         self.rules = rules
         self.disabledGroups = disabledGroups
+        self.droppedCounts = droppedCounts
     }
 
     // Tolerant decode: a rules file written before groups had a state of their own

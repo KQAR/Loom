@@ -36,6 +36,11 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     /// right for every plaintext path and wrong for both of those.
     private let negotiatedProtocol: String?
     private let clientTLSVersion: String?
+    /// Whether this leg is HTTP/1.1 only because Loom withheld ALPN `h2` from the
+    /// host. Stated by the entry point for the same reason `negotiatedProtocol` is:
+    /// once the request is in hand a downgraded leg is indistinguishable from a
+    /// genuine h1 client, and the difference is what an operator is measuring.
+    private let clientProtocolDowngraded: Bool
 
     private var requestHead: HTTPRequestHead?
     private var requestURL: URL?
@@ -50,7 +55,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
 
     init(
         host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding,
-        upstreamTLS: Bool = true, negotiatedProtocol: String? = nil, clientTLSVersion: String? = nil
+        upstreamTLS: Bool = true, negotiatedProtocol: String? = nil, clientTLSVersion: String? = nil,
+        clientProtocolDowngraded: Bool = false
     ) {
         self.host = host
         self.port = port
@@ -59,12 +65,14 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
         self.upstreamTLS = upstreamTLS
         self.negotiatedProtocol = negotiatedProtocol
         self.clientTLSVersion = clientTLSVersion
+        self.clientProtocolDowngraded = clientProtocolDowngraded
     }
 
     private func clientLeg(for head: HTTPRequestHead) -> CapturedExchange.ClientLeg {
         CapturedExchange.ClientLeg(
             httpVersion: negotiatedProtocol ?? HTTPUtil.clientProtocol(head.version),
-            tlsVersion: clientTLSVersion
+            tlsVersion: clientTLSVersion,
+            downgraded: clientProtocolDowngraded
         )
     }
 

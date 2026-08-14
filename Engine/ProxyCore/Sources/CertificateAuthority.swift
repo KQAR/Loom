@@ -57,6 +57,9 @@ final class CertificateAuthority: Sendable {
     }
 
     private let cache = Mutex(ContextCache())
+    /// Which hosts must be served HTTP/1.1. Injected so a test can drive the decision
+    /// without touching the process-wide registry a parallel suite also reads.
+    private let downgrades: HTTP2DowngradeRegistry
     /// Above this many hosts the least-recently-used context is dropped. A
     /// `NIOSSLContext` wraps BoringSSL state, so this is heavier per entry than a
     /// typical cache row, and a long session across thousands of distinct MITM'd
@@ -82,7 +85,8 @@ final class CertificateAuthority: Sendable {
         return try CertificateAuthority(material: material)
     }
 
-    private init(material: CAMaterial) throws {
+    private init(material: CAMaterial, downgrades: HTTP2DowngradeRegistry = .shared) throws {
+        self.downgrades = downgrades
         let cert = try Certificate(pemEncoded: material.certificatePEM)
         certificate = cert
         privateKey = try Certificate.PrivateKey(pemEncoded: material.privateKeyPEM)
@@ -155,12 +159,34 @@ final class CertificateAuthority: Sendable {
             // Advertise HTTP/2 so h2 clients negotiate it (we demux + capture per
             // stream); http/1.1 stays the fallback. A client that offers neither just
             // gets http/1.1.
-            config.applicationProtocols = ["h2", "http/1.1"]
+            //
+            // **Unless this host has been downgraded** — then h2 is withheld and the
+            // client negotiates HTTP/1.1 by itself, which is the only lever Loom has
+            // against SwiftNIO's pre-ACK 16 KB HPACK limit (see
+            // `HTTP2DowngradeRegistry`). Withholding it here rather than tearing the
+            // stack down later is what makes the client's own ALPN do the work: it
+            // never speaks h2 to Loom, so there is no header block to refuse.
+            config.applicationProtocols =
+                downgrades.isDowngraded(host: host) ? ["http/1.1"] : ["h2", "http/1.1"]
             let context = try NIOSSLContext(configuration: config)
             cache.contexts[host] = context
             cache.order.append(host)
             cache.evict(capacity: Self.contextCacheCapacity)
             return context
+        }
+    }
+
+    /// Drop the cached context for one host, so the next connection is built with a
+    /// fresh ALPN list.
+    ///
+    /// The cache is keyed on the host alone, so a downgrade decided *after* a context
+    /// was built would otherwise keep offering `h2` for as long as that entry lived —
+    /// the same stale-context trap `ClientCertificateConfig` documents for an edited
+    /// identity, and here it would make the workaround silently not work.
+    func invalidateContext(for host: String) {
+        cache.withLock { cache in
+            cache.contexts.removeValue(forKey: host)
+            cache.order.removeAll { $0 == host }
         }
     }
 

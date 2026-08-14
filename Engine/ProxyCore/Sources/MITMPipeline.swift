@@ -63,9 +63,14 @@ enum MITMPipeline {
         ]
     }
 
+    /// - Parameter certificateAuthority: whose per-host TLS context cache has to be
+    ///   dropped if this connection turns out to need an HTTP/1.1 downgrade — that
+    ///   cached context is what still advertises `h2`. Optional so the pipeline can be
+    ///   installed in a test without one; production always has it.
     static func installTLS(
         channel: Channel, host: String, port: Int, sslContext: NIOSSLContext,
-        store: FlowStore, forwarder: UpstreamForwarding
+        store: FlowStore, forwarder: UpstreamForwarding,
+        certificateAuthority: CertificateAuthority? = nil
     ) -> EventLoopFuture<Void> {
         // Every `addHandler` here goes through `syncOperations` inside a
         // `makeCompletedFuture` body, which — unlike `EventLoopFuture.flatMap`'s — is
@@ -103,7 +108,8 @@ enum MITMPipeline {
                 ApplicationProtocolNegotiationHandler { negotiated in
                     configureIntercepted(
                         channel: channel, negotiated: negotiated,
-                        host: host, port: port, store: store, forwarder: forwarder
+                        host: host, port: port, store: store, forwarder: forwarder,
+                        certificateAuthority: certificateAuthority
                     )
                 }
             )
@@ -157,7 +163,8 @@ enum MITMPipeline {
     /// stack (kept removable so a WebSocket upgrade can splice a raw relay).
     static func configureIntercepted(
         channel: Channel, negotiated: ALPNResult,
-        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding
+        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding,
+        certificateAuthority: CertificateAuthority? = nil
     ) -> EventLoopFuture<Void> {
         // Read once, here, and handed down. This runs on the connection channel
         // after the handshake — the only point where both facts are available:
@@ -170,7 +177,8 @@ enum MITMPipeline {
         if case .negotiated("h2") = negotiated {
             return installHTTP2(
                 channel: channel, host: host, port: port, store: store, forwarder: forwarder,
-                upstreamTLS: true, clientTLSVersion: tlsVersion
+                upstreamTLS: true, clientTLSVersion: tlsVersion,
+                certificateAuthority: certificateAuthority
             )
         }
         return installHTTP1(
@@ -185,8 +193,18 @@ enum MITMPipeline {
     private static func installHTTP2(
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding,
-        upstreamTLS: Bool, clientTLSVersion: String?
+        upstreamTLS: Bool, clientTLSVersion: String?,
+        certificateAuthority: CertificateAuthority? = nil
     ) -> EventLoopFuture<Void> {
+        // Added *before* the codec, so it sits head-side of it: `NIOHTTP2Handler`
+        // writes its GOAWAY outbound from its own position, which travels toward the
+        // head and never reaches the tail where `HTTP2Frame` values exist. See
+        // `HTTP2GoAwayObserver` — the code in that frame is the entire diagnosis for
+        // an `unableToParseFrame`, and nothing else carries it.
+        let goAway = HTTP2GoAwayCode()
+        return channel.eventLoop.makeCompletedFuture {
+            try channel.pipeline.syncOperations.addHandler(HTTP2GoAwayObserver(box: goAway))
+        }.flatMap {
         channel.configureHTTP2Pipeline(
             mode: .server, initialLocalSettings: h2ServerSettings
         ) { streamChannel in
@@ -212,16 +230,24 @@ enum MITMPipeline {
             // wait on a request that would never be answered.
             channel.eventLoop.makeCompletedFuture {
                 try channel.pipeline.syncOperations.addHandler(
-                    HTTP2ConnectionErrorReporter(host: host, port: port, store: store)
+                    HTTP2ConnectionErrorReporter(
+                        host: host, port: port, store: store, goAway: goAway,
+                        certificateAuthority: certificateAuthority
+                    )
                 )
             }
         }
+        }
     }
 
+    /// - Parameter downgrades: whose verdict decides whether an HTTP/1.1 client leg
+    ///   here is the client's choice or Loom's. Injected for tests; production reads
+    ///   the process-wide registry.
     private static func installHTTP1(
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool,
-        clientTLSVersion: String? = nil
+        clientTLSVersion: String? = nil,
+        downgrades: HTTP2DowngradeRegistry = .shared
     ) -> EventLoopFuture<Void> {
         channel.eventLoop.makeCompletedFuture {
             let sync = channel.pipeline.syncOperations
@@ -233,7 +259,11 @@ enum MITMPipeline {
             try sync.addHandler(
                 TLSInterceptHandler(
                     host: host, port: port, store: store, forwarder: forwarder,
-                    upstreamTLS: upstreamTLS, clientTLSVersion: clientTLSVersion
+                    upstreamTLS: upstreamTLS, clientTLSVersion: clientTLSVersion,
+                    // Only an *intercepted TLS* leg can have been downgraded: the
+                    // cleartext installer reaches here too, and h2 was never on
+                    // offer there, so an h1 request over it is the client's choice.
+                    clientProtocolDowngraded: upstreamTLS && downgrades.isDowngraded(host: host)
                 ),
                 name: interceptName
             )

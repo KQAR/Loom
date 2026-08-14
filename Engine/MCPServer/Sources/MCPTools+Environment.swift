@@ -80,6 +80,10 @@ extension MCPToolExecutor {
         if !status.reverseProxies.isEmpty {
             render.reverseProxies = status.reverseProxies.map(ReverseProxyRender.init)
         }
+        // Same rule again, and the most important instance of it: a dropped exchange is
+        // invisible on every surface *by design*, so the count is the only thing
+        // standing between "a rule told Loom to drop this" and "the client never ran".
+        if status.droppedByRules > 0 { render.droppedByRules = status.droppedByRules }
         return prettyJSON(MCPRender.dict(render))
     }
 

@@ -5,6 +5,10 @@ import LoomSharedModels
 /// Actor-isolated so the NIO handlers and the UI/MCP readers stay race-free.
 actor FlowStore {
     private var flows: [Flow] = []
+    /// The rules, for the **capture stage**: a rule carrying `dropFromCapture` drops
+    /// matching exchanges here instead of changing what the client sees. Nil in an
+    /// embedder that runs without rules.
+    private let rules: RulesConfig?
     /// `id -> absolute position`, so an upsert is a dictionary lookup instead of a
     /// linear scan. An exchange upserts at least twice (pending → completed), a
     /// streaming one more, a WebSocket once per frame — at ring capacity that was a
@@ -75,7 +79,35 @@ actor FlowStore {
     /// with. Reported so a surface can tell "no traffic" from "not counted yet".
     private var aggregatesCoverHistory = false
 
-    init(capacity: Int = FlowLimits.memoryRing, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil, observer: FlowObserving? = nil) {
+    /// Flows dropped by a capture rule, counted **per exchange, not per upsert**.
+    ///
+    /// One exchange upserts several times (head-parsed, streaming, completion), and a
+    /// dropped one is never stored, so every one of those looks like a first sighting.
+    /// The bounded id set is what makes the number mean "requests you are not seeing"
+    /// rather than "times Loom declined to store something"; it is small because the
+    /// upserts of one exchange arrive close together, and it is bounded because a
+    /// session's worth of ignored ids would otherwise be the leak the feature exists
+    /// to prevent.
+    private(set) var droppedFlowCount = 0
+    /// Per rule, because a dropped flow carries no `appliedRules` — this counter is
+    /// the only place a capture rule can be seen to have done anything.
+    private(set) var droppedCountsByRule: [UUID: Int] = [:]
+    private var recentlyDropped: [UUID] = []
+    private var recentlyDroppedSet: Set<UUID> = []
+    private static let recentlyDroppedCapacity = 512
+
+    private func noteDropped(_ id: UUID, by ruleID: UUID) {
+        guard recentlyDroppedSet.insert(id).inserted else { return }
+        recentlyDropped.append(id)
+        droppedFlowCount += 1
+        droppedCountsByRule[ruleID, default: 0] += 1
+        if recentlyDropped.count > Self.recentlyDroppedCapacity {
+            recentlyDroppedSet.remove(recentlyDropped.removeFirst())
+        }
+    }
+
+    init(capacity: Int = FlowLimits.memoryRing, bodyBudget: Int = 64_000_000, persistence: FlowPersistence? = nil, observer: FlowObserving? = nil, rules: RulesConfig? = nil) {
+        self.rules = rules
         self.capacity = capacity
         self.bodyBudget = bodyBudget
         self.persistence = persistence
@@ -254,6 +286,15 @@ actor FlowStore {
     /// `force` bypasses a capture pause — explicit actions like replay always
     /// record their result.
     func upsert(_ flow: Flow, force: Bool = false) {
+        // **The one choke point every flow enters through**, which is why the ignore
+        // list is applied here rather than at the dozen sites that produce one: a
+        // content exchange, a relayed `CONNECT`, a failed interception and a replay
+        // all arrive through this call, and a producer that skipped the check would be
+        // an ignored host that shows up anyway from one path only.
+        if let rules, let dropped = RuleEngine.captureDropRule(state: rules.snapshot(), flow: flow) {
+            noteDropped(flow.id, by: dropped.id)
+            return
+        }
         var flow = flow
         if let idx = index(of: flow.id) {
             // A completed exchange never regresses to pending. The head-parsed

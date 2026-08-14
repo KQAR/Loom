@@ -425,6 +425,7 @@ public struct MainView: View {
                         // the table keeps full height and the row stripes fill it.
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             if store.capture.droppedFlowCount > 0 { capBanner }
+                            if store.status.droppedByRules > 0 { droppedBanner }
                         }
                         .overlay(alignment: .bottomTrailing) { clearFAB }
                 }
@@ -437,6 +438,26 @@ public struct MainView: View {
         // The bar slides out of the toolbar band it hangs from; without this it
         // paints over the band on the way in.
         .clipped()
+    }
+
+    /// The other honest "you're not seeing everything" strip, and the one the
+    /// operator caused: a `dropFromCapture` rule drops matching exchanges on arrival,
+    /// so they leave no row anywhere — this count is their only trace. Without it a
+    /// dropped exchange is indistinguishable from a client that never ran, which is
+    /// the failure `TunneledHostLog` and `RefusalLog` exist to prevent, arrived at
+    /// deliberately. Which rule, and what each cost, is in the Rules panel.
+    private var droppedBanner: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            Image(systemName: "eye.slash").font(.caption2)
+            Text("\(store.status.droppedByRules) not captured — a rule is dropping them")
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, LoomTheme.Space.sm)
+        .padding(.vertical, LoomTheme.Space.xxs)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+        .help("A rule is dropping these on arrival — they appear on no surface, including MCP reads")
     }
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped
