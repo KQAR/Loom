@@ -177,6 +177,17 @@ extension MCPToolExecutor {
             "scope": Self.scope(await engine.sslScope()),
         ]
         if !outcome.removedExcludes.isEmpty { payload["removedExcludes"] = outcome.removedExcludes }
+        // Only when it happened. A scope write that also ended live connections is a
+        // consequence worth naming — and it is what makes "re-run the client"
+        // unnecessary, so an agent that sees it can go straight to reading traffic.
+        if outcome.closedTunnels > 0 {
+            payload["closedTunnels"] = outcome.closedTunnels
+            payload["detail"] = """
+            Closed \(outcome.closedTunnels) open relayed connection\(outcome.closedTunnels == 1 ? "" : "s") \
+            to \(host) so the client reconnects into an intercepted one. A request in flight on those is \
+            retried by the client or fails; new requests are captured without restarting anything.
+            """
+        }
         // The one case where the write landed and the host still isn't decrypted.
         // Said out loud, because "include contains it" reads as done.
         if let shadow = outcome.shadowedByExclude {

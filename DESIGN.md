@@ -151,7 +151,7 @@ components:
     disclosure-chevron: "ONE chevron for the section headers and the device rows — `chevron.right`, .caption2 semibold, .tertiary, rotated 90° when open, sitting BESIDE THE LABEL with one {spacing.xs} gap rather than out at the trailing edge (out there it becomes a column of its own and reads as a per-row control, like the counts it would sit above; against the label it reads as part of the label, which is what it is). They were written twice and drew differently (a heavier .secondary down-chevron over a lighter .tertiary right-chevron), which read as two kinds of control rather than one control at two levels of a tree. One glyph rotated, never two swapped."
     device-glyph: "by platform — 'iphone' / 'ipad' / 'desktopcomputer' for this Mac, and Loom's own {components.android-glyph} for Android, drawn to 1.2x the cap height so it matches Apple's device glyphs, which overshoot the capline themselves. Drawing every non-Apple device as 'iphone' is the kind of small lie that makes a sidebar harder to scan, not easier."
   request-table:   # top of the split — a multi-column NSTableView this app owns (see main-window.structure)
-    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the window caps at {FlowLimits.windowRows} = 20 000 rows and every extra point comes off Path, which is never wide enough) · App (icon) · Decrypted (26, glyph only, header blank, named 'Decrypted' in the column menu: `lock.open.fill` .tertiary = Loom read this exchange · `lock.fill` {colors.status-waiting} = a relayed CONNECT, encrypted past Loom, no body on the row · `lock.slash` .quaternary = plain HTTP, nothing to decrypt. The lock is the TRAFFIC's state, not Loom's — reading it the other way round puts the reassuring glyph on the row whose contents are missing. It is the only tinted glyph of the three, because it is the only one that is missing something) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono, tinted only when mutating — see `method-column`) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed, min 120 — the floor came down from 160 when Decrypted was added: every column costs ~17.5pt of .inset padding and intercell spacing BEYOND its width, and Path is the slack sink so it is back above 300 the moment the window has room) · Time (numeric)"
+    columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the window caps at {FlowLimits.windowRows} = 20 000 rows and every extra point comes off Path, which is never wide enough) · App (icon) · Decrypted (72, headed 'Decrypted' — sized to the WORD, not the glyph, because four states of one symbol are not guessable from the symbol: `lock.open.fill` .tertiary = Loom read this exchange · `lock.trianglebadge.exclamationmark` {colors.status-waiting} = Loom tried and the connection FAILED, so the request never reached the origin · `lock.fill` .secondary = a relayed CONNECT, encrypted past Loom by decision, no body on the row but the request worked · `lock.slash` .quaternary = plain HTTP, nothing to decrypt. The lock is the TRAFFIC's state, not Loom's — reading it the other way round puts the reassuring glyph on the row whose contents are missing. Failed and not-attempted are drawn APART, which the first version did not: a deliberate pass-through is the configuration working and a refused handshake is a broken request, and the failure is the only tinted one — tinting the pass-through too, as an earlier version did, spends the colour on the state that needs it least) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono, tinted only when mutating — see `method-column`) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed, min 120 — the floor came down from 160 when Decrypted was added: every column costs ~17.5pt of .inset padding and intercell spacing BEYOND its width, and Path is the slack sink so it is back above 300 the moment the window has room) · Time (numeric)"
     column-widths: "the columns ALWAYS fill the viewport — the rightmost one sits on the trailing edge at every window width, and spare width goes to HOST and PATH in the ratio of their ideal widths (180:320), Host stopping at its cap because a host name has a length and a path does not. NOT AppKit's default (.lastColumnOnlyAutoresizingStyle): that hands every extra point to the RIGHTMOST column, which is Time, capped at 100 — so widening the window grew Time to its cap and then left a dead strip, while Path, the one column never wide enough, never moved. Path is the SINK (Host when Path is hidden, and as the sink it ignores its own cap — a cap on the sink IS the dead strip). Narrowing reverses it: Path down to its minimum first, then Host down to its minimum, then the table scrolls horizontally — a window too narrow for its columns is not a reason to crush the column whose content is unbounded. A width the operator DRAGGED is theirs and the spare space goes around it (not persisted: an invisible column is unexplainable after a relaunch, a width is self-evident). The gap is MEASURED off rect(ofColumn:), never summed and never read from table.frame.width — a scroll view stretches its document view to the viewport, so the frame reports the width the table was given and a check written against it reads zero while the strip is still on screen."
     order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
     tail-follow: "a GLIDE toward the newest row as the list grows — a display link closing a fixed fraction of the REMAINING distance per unit time, so a batch landing mid-glide moves the target instead of restarting the motion. Whether to follow is measured from the VIEWPORT'S GEOMETRY a moment before the edit lands, never from a 'user scrolled' flag: a flag can only be cleared by a scroll notification, and those miss momentum, scroller drags, keyboard scrolls and the table's own head-trim shift, so it stays armed and yanks the list down under a reader. An in-flight glide COUNTS as being at the bottom (it is behind the bottom by construction), and nothing programmatic touches the offset during a gesture or for half a second after it — the glide and a live scroll write the same clip view, and interleaved boundsOrigin writes shake the list. No row-edit animation: a batch that fades rows in AND jumps the viewport ten times a second reads as blinking, not as movement."
@@ -209,7 +209,7 @@ components:
     why: "the system pop-up button brings its own bezel and metrics, visibly foreign beside Loom's own text field; the field well was consistent but heavy — a menu is not somewhere you type, and the enterable surface said it was. The chevron alone is the same 'there is more behind this' vocabulary the console's config-row already uses."
     used-by: "the rule editor and the find bar's scope picker — the picker LEADS the field there, so the line reads 'search in URL for …' left to right."
   sidebar-panel:   # Rules / Audit / Breakpoints — the content pane, not the flow list
-    what: "selecting Rules / Audit / Breakpoints in the sidebar replaces the request table with a full-pane list. Each is the human's SUPERVISION view of a surface the agent writes over MCP — read-mostly, never a second authoring path (editing a held breakpoint stays agent-only; see INTERACTION.md). A fourth pane for un-decrypted origins was built and deleted: under a whitelist those are one CONNECT row each in the request table (see main-window.columns), and a second aggregated rendering of the same origins is a second place to look."
+    what: "selecting Rules / Audit / Breakpoints in the sidebar replaces the request table with a full-pane list. Each is the human's SUPERVISION view of a surface the agent writes over MCP — read-mostly, never a second authoring path (editing a held breakpoint stays agent-only; see INTERACTION.md). A fourth pane for un-decrypted origins was built and deleted: under a whitelist those are one CONNECT row each in the request table (see main-window.columns) and one line each in the console's SSL Scope card, and a third rendering of the same origins is a third place to look."
     header: "one line: a {typography.callout} .secondary summary phrase on the left ('4 of 7 active', '12 entries'), the panel's single action as a {components.glyph-button} (`compact`) on the right. Glyph-only for the same reason the console's cards are: a panel whose whole content is one list can't have a header button that adds something else. Audit's Clear stays visible when disabled."
     master-switches: "live on the TOOLBAR CHIP (the wand for rules), not in the panel header — the panel is one rendering of state the chip already owns."
   button-primary:
@@ -521,38 +521,51 @@ connection refused, and Loom cannot undo that from here.
 
 **SSL Scope** is a `config-row` under the HTTPS tile, for the same reason Reverse Proxies
 is one: there is nothing to toggle — the tile above already carries on/off — and what
-this row holds is two lists. The scope is a **whitelist** (0.0.27) — nothing is decrypted
-until a host is named — so the trailing detail leads with what *is* being read
-(`3 hosts`, or `all hosts` when someone has set a wildcard), then `· N refused` for
-origins whose clients rejected Loom's certificate, then `· N unread` for origins going
-unread that nobody asked for. Those trailing numbers are the load-bearing ones — the only
-hint on a collapsed console that a capture is thinner than it looks — and each excludes
-the state that is simply the configuration working: an un-named host is not "unread"
-under a whitelist, any more than a deliberate pass-through was under the old wide
-default. Only an unexpected state takes the icon orange. A row that flagged the
-configuration working would train the reader to ignore it.
+this row holds is two lists. The scope is a **whitelist** — nothing is decrypted until a
+host is named — so the trailing detail leads with what *is* being read (`3 hosts`, or
+`all hosts` when someone has set a wildcard), then `· N refused` for origins whose
+clients rejected Loom's certificate, then `· N unread` for origins going unread that
+nobody asked for. Those trailing numbers are the load-bearing ones — the only hint on a
+collapsed console that a capture is thinner than it looks — and each excludes the state
+that is simply the configuration working: a deliberate pass-through is not "unread", and
+neither is a host nobody has named yet. Only an unexpected state takes the icon orange;
+a row that flagged the configuration working would train the reader to ignore it.
+`refused` is worded apart from `unread` because it is a different event: an unread
+origin's request still reached it, a refused one's never left the client.
 
-Its card leads with the seen-not-decrypted list (host, then reason · connections · port
-in a caption, with **Decrypt**, and a `xmark` for "never" only on rows that weren't
-already excluded), capped at 6 like Reverse Proxies with the same accounting for what the
-engine's 256-host bound dropped. The two glob lists sit **behind one disclosure line**
-(`2 hosts passed through · everything else decrypted`), because they grow while the list
-above them shrinks: an intercepted host drops out of the tunnelled list, whereas the
-pass-through list gains an entry every time something breaks. Collapsed, never absent —
-removing an entry is the only way to start decrypting a carved-out host, and this card is
-the only surface on which an agent's scope write becomes visible to the human as a *list*
-— the main window shows the same origins one CONNECT row at a time, with the Decrypted
-column and a right-click Decrypt (see § main-window). Opened, the lists are capped at 10 and drop from the *front*:
-newest is written last, so the end is what someone who just changed something is looking
-for. The text field is preceded by a `{components.dropdown}` choosing what the glob does —
-**Decrypt** (default) or **Pass through** — and reads left to right as
-`Decrypt *.corp.example`, the same construction as the find bar's scope picker. Decrypt
-leads because under a whitelist it is the primary write: one glob covers a project's
-whole domain, where the per-row Decrypt is one click *and* one client re-run per
-sub-domain. (The field wrote `exclude` unconditionally before 0.0.27, which was right
-when an include entry was a no-op against a wildcard scope and is exactly backwards now.)
-The include list itself is shown only when it says something a reader can't already infer
-(i.e. not while it is the bare `*`).
+Its card holds the **whitelist and one control that adds to it**, and nothing else —
+the seen-not-decrypted list it used to lead with is gone, because the request table now
+shows those origins one CONNECT row at a time with the action on the row (see
+§ main-window). Keeping it here made the console a second, aggregated rendering of the
+same origins: a 256-host log showing 6 at a time, in a 300pt panel, above the two lines
+someone opened the card to edit. The add control is a trailing-edge **glyph-only `+`**
+(`{components.button-glyph}` — the same affordance and the same reasoning as Reverse
+Proxies: the card's whole content is one list, so the button on it can't be adding
+anything else) that reveals a Decrypt/Pass-through picker, a field and Cancel/Add.
+What that costs, stated rather than discovered: a refused origin is no longer one click
+from a pass-through here — the row still counts it as `N refused`, and the repair is on
+its row in the window.
+
+**Both lists are open**, in the order the scope reads them — `Decrypting` decides what
+Loom decrypts, `Passed through` is the hole punched in it — with the add control under
+both, because it writes to whichever one its picker names and under just one of them it
+would read as belonging to that one. `Passed through` is **absent while empty**, which
+under a whitelist is the usual state: stopping decryption of a host removes its include
+entry rather than adding a carve-out, so an exclude only exists to punch a hole in a
+glob. Two headings where the scope has one list would teach the reader that the second
+is always blank. Neither is folded: this card is the only surface on
+which an agent's scope write becomes visible to the human as a *list*, and the disclosure
+`Passed through` used to sit behind was one line saying "1 host passed through" — a count
+of a list nobody could see, on a card whose whole job is to show the two lists. Both are
+capped at 10 and drop from the *front*: newest is written last, so the end is what someone
+who just changed something is looking for. In the add form the field is preceded by a
+`{components.dropdown}` choosing what the glob does — **Decrypt** (default) or **Pass
+through** — reading left to right as `Decrypt *.corp.example`, the same construction as
+the find bar's scope picker; Decrypt leads because it is the primary write, one glob
+covering a project's whole domain where the per-row Decrypt is one click AND one client
+re-run per sub-domain. Each list is drawn in exactly ONE place — an earlier version drew
+"Decrypting" both above the disclosure and inside it, and a wildcard scope satisfied both
+conditions at once.
 
 Rows marked **conditional** are absent rather than empty (tiles never are — a switch that
 vanishes is a switch you cannot turn on): Breakpoints appears only

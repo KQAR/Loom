@@ -464,32 +464,103 @@ import Testing
         #expect(store.state.phone?.info?.provisioningURL.absoluteString == "http://10.0.0.7:9500/")
     }
 
-    /// A row's `Stop Decrypting` is the inverse of the Not Decrypted panel's Decrypt,
-    /// and it goes through the same `SetupFeature` write, so the two surfaces cannot
-    /// drift on what it means.
-    ///
-    /// Under a whitelist the inverse is **dropping the include entry**, not adding an
-    /// exclude: an exclude would be a standing carve-out that outlives the entry it
-    /// answered and would silently beat a later re-add. The host returns to where
-    /// every un-named host already is — listed under Not Decrypted, one click from
-    /// being decrypted again.
-    @Test func aRowStoppingDecryption_dropsTheIncludeEntry() async {
+    /// A row's `Pass Through` goes through the same `SetupFeature` write the console
+    /// card makes, so the two surfaces cannot drift on what it means. The stale include
+    /// entry for the same host is dropped in the same write, or the two lists would
+    /// disagree about it.
+    @Test func aRowPassingAHostThrough_writesAnExclude() async {
         let written = LockIsolated<SSLScope?>(nil)
+        let expected = SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"])
         var state = AppFeature.State()
         state.setup.sslEnabled = true
-        state.setup.sslScope = SSLScope(enabled: true, include: ["api.test", "pinned.example.com"])
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*"])
         let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
             $0.proxyClient.setSSLScope = { written.setValue($0) }
-            $0.proxyClient.sslScope = { SSLScope(enabled: true, include: ["api.test"]) }
+            $0.proxyClient.sslScope = { expected }
             $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
         store.exhaustivity = .off
 
-        await store.send(.capture(.stopDecryptingHost("pinned.example.com")))
-        await store.receive(\.capture.delegate.stopDecryptingHost)
-        await store.receive(\.setup.stopInterceptHostTapped)
+        await store.send(.capture(.excludeHostTapped("pinned.example.com")))
+        await store.receive(\.capture.delegate.excludeHost)
+        await store.receive(\.setup.excludeHostTapped)
         await store.receive(\.setup.sslScopeLoaded)
-        #expect(written.value?.include == ["api.test"])
-        #expect(written.value?.exclude == [], "no standing carve-out when removing the entry was enough")
+        #expect(written.value?.exclude == ["pinned.example.com"])
+        #expect(written.value?.include == ["*"], "the wildcard is untouched — one host is carved out of it")
+    }
+
+    /// **Decrypting a host must not empty the request table.** The rows already in the
+    /// window are a record of what happened; a scope write decides how the *next*
+    /// connection is treated and has no claim on them. This is the one direction the
+    /// whitelist makes easy to get wrong, because the console's tunnelled list *is*
+    /// filtered against the current scope (`TunneledHostLog.pending`) and the table
+    /// deliberately is not.
+    @Test func decryptingAHost_leavesTheCapturedRowsAlone() async {
+        let relayed = Fixtures.flow(method: "CONNECT", url: "https://unnamed.example.com:443")
+        let other = Fixtures.flow(url: "https://kept.example.com/v1")
+        var state = AppFeature.State(flows: [relayed, other])
+        state.setup.sslEnabled = true
+        state.setup.sslScope = SSLScope(enabled: true, include: [])
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.interceptHost = { _ in InterceptOutcome() }
+            $0.proxyClient.sslScope = { SSLScope(enabled: true, include: ["unnamed.example.com"]) }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        store.exhaustivity = .off
+
+        #expect(store.state.capture.displayFlowsAreEmpty == false)
+        await store.send(.capture(.decryptHostTapped("unnamed.example.com")))
+        await store.receive(\.setup.sslScopeLoaded)
+
+        #expect(store.state.capture.flows.count == 2)
+        #expect(store.state.capture.displayFlowsAreEmpty == false,
+                "the table shows what happened; the scope decides what happens next")
+        #expect(store.state.capture.displayFlows.map(\.id) == [relayed.id, other.id])
+    }
+
+    /// And the other direction, which is the primary one under a whitelist: a relayed
+    /// `CONNECT` row is how the operator meets an un-named origin at all, so its
+    /// Decrypt has to reach the same scope. It routes to `interceptHostTapped`, which
+    /// writes **atomically through the engine** — the console and an agent are
+    /// independent writers, and a read-modify-write here would lose one of them.
+    @Test func aRowDecryptingAHost_goesThroughTheEnginesAtomicWrite() async {
+        let asked = LockIsolated<String?>(nil)
+        let after = SSLScope(enabled: true, include: ["unnamed.example.com"])
+        var state = AppFeature.State()
+        state.setup.sslEnabled = true
+        state.setup.sslScope = SSLScope(enabled: true, include: [])
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.interceptHost = { host in
+                asked.setValue(host)
+                return InterceptOutcome()
+            }
+            $0.proxyClient.sslScope = { after }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.capture(.decryptHostTapped("unnamed.example.com")))
+        await store.receive(\.capture.delegate.decryptHost)
+        await store.receive(\.setup.interceptHostTapped)
+        await store.receive(\.setup.sslScopeLoaded)
+        #expect(asked.value == "unnamed.example.com")
+        #expect(store.state.setup.sslScope.include == ["unnamed.example.com"])
+    }
+
+    /// And a second click on the same host reports that it changed nothing, rather
+    /// than repeating the success sentence: the window's row menu can reach a host the
+    /// console excluded minutes ago.
+    @Test func aRowPassingAnAlreadyExcludedHostThrough_saysSo() async {
+        var state = AppFeature.State()
+        state.setup.sslEnabled = true
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"])
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in Issue.record("nothing to write") }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.capture(.excludeHostTapped("pinned.example.com")))
+        await store.receive(\.setup.excludeHostTapped)
+        #expect(store.state.setup.sslScopeMessage == "pinned.example.com is already passed through.")
     }
 }

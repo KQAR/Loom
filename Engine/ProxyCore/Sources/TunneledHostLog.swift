@@ -107,7 +107,9 @@ final class TunneledHostLog: Sendable {
         }
     }
 
-    /// For tests, and for an embedder that restarts the engine in one process.
+    /// Forget everything seen. Three callers: `clearFlows` (the session's capture and
+    /// this log are one answer — see there), tests, and an embedder that restarts the
+    /// engine in one process.
     func reset() {
         state.withLock { $0 = State() }
     }

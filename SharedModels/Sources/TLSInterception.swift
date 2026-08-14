@@ -217,6 +217,14 @@ public struct InterceptOutcome: Equatable, Codable, Sendable {
     /// A wildcard `exclude` that still shadows the host: it is *not* intercepted
     /// despite the include. Whoever wrote that glob has to be the one to narrow it.
     public var shadowedByExclude: String?
+    /// Live relayed tunnels to this host that were **closed**, so the client
+    /// reconnects into an intercepted connection instead of keeping an opaque one.
+    ///
+    /// Reported rather than done silently: a scope write that also ends N live
+    /// connections is a consequence the caller should learn about — a request in
+    /// flight on one of them is retried by the client or fails. Zero is the ordinary
+    /// case, meaning nothing was open to that host.
+    public var closedTunnels = 0
 
     public init() {}
 
@@ -325,10 +333,13 @@ public struct SSLScope: Equatable, Codable, Sendable {
     /// Stop decrypting `host`, and say what that took.
     ///
     /// The inverse of `intercept(host:)`, and under a whitelist scope the inverse is
-    /// **removing the include entry**, not adding an exclude: an exclude would be a
-    /// standing carve-out that outlives the entry it was answering, so re-adding the
-    /// host later would silently do nothing. Dropping the entry returns the host to
-    /// where every un-named host already is — observed, tunnelled, one click from
+    /// **removing the include entry**, not adding an exclude. Three reasons, and the
+    /// first is the one that bites: an exclude is a standing carve-out that outlives
+    /// the entry it was answering, so a later `intercept(host:)` would appear to
+    /// succeed and change nothing. It is also redundant — an un-named host is already
+    /// relayed — and it is a second row on the console describing a state the first
+    /// list already describes by omission. Dropping the entry returns the host to
+    /// where every un-named host already is: observed, tunnelled, one click from
     /// being decrypted again.
     ///
     /// An `exclude` is still added in the one case where removing cannot finish the

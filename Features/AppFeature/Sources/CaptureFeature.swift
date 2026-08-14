@@ -651,13 +651,14 @@ public struct CaptureFeature: Sendable {
         /// gesture is here (it is a row's context menu) and the editor is the parent's,
         /// so the rule travels up as a delegate.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
-        /// Stop decrypting a host, picked off a captured row. Same shape as
-        /// `addRuleFromFlow`: the gesture is a row's context menu and the thing it
-        /// writes (the SSL scope) belongs to `SetupFeature`, so it travels up.
-        case stopDecryptingHost(String)
-        /// Start decrypting a host, picked off a CONNECT row — the table's answer to
-        /// "Loom relayed this and I want to read it". Same shape as its inverse; the
-        /// scope belongs to `SetupFeature`.
+        /// Pass a host (or a `*.parent` glob) through instead of decrypting it, picked
+        /// off a captured row. Same shape as `addRuleFromFlow`: the gesture is a row's
+        /// context menu and the thing it writes (the SSL scope) belongs to
+        /// `SetupFeature`, so it travels up.
+        case excludeHostTapped(String)
+        /// The opposite write, off a relayed `CONNECT` row — the table's answer to
+        /// "Loom passed this through and I want to read it", and the primary one under
+        /// a whitelist scope.
         case decryptHostTapped(String)
         case flowReceived(Flow)
         /// The engine's counts landed (boot, and after each capture burst).
@@ -726,13 +727,13 @@ public struct CaptureFeature: Sendable {
             /// A replay this feature started failed. The parent routes it to
             /// `RulesFeature`, which owns the message line both writes share.
             case replayFailed(String)
-            /// Drop this host from the decrypted set. The parent routes it to
-            /// `SetupFeature`, which owns the scope; the host goes back to appearing as
-            /// CONNECT rows afterwards, which is what makes it reversible without
-            /// hunting through a glob list.
-            case stopDecryptingHost(String)
-            /// Start decrypting this host. Routed to `SetupFeature`, which writes it
-            /// atomically through the engine (`intercept_host`'s path), because the
+            /// Carve this host out of the scope. The parent routes it to
+            /// `SetupFeature`, which owns the scope; the host shows up as CONNECT rows
+            /// afterwards, which is what makes the write visible without going to the
+            /// console to read a glob list.
+            case excludeHost(String)
+            /// Add this host to the whitelist. Routed to `SetupFeature`, which writes
+            /// it atomically through the engine (`intercept_host`'s path), because the
             /// console and an agent are independent writers of the same scope.
             case decryptHost(String)
         }
@@ -811,8 +812,8 @@ public struct CaptureFeature: Sendable {
                     await send(.delegate(.stampedRule(rule)))
                 }
 
-            case let .stopDecryptingHost(host):
-                return .send(.delegate(.stopDecryptingHost(host)))
+            case let .excludeHostTapped(host):
+                return .send(.delegate(.excludeHost(host)))
 
             case let .decryptHostTapped(host):
                 return .send(.delegate(.decryptHost(host)))

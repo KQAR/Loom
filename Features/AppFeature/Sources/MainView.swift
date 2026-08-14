@@ -415,7 +415,10 @@ public struct MainView: View {
                 if store.capture.displayFlowsAreEmpty {
                     emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    RequestTableView(store: captureStore, followTail: $followTail)
+                    RequestTableView(
+                        store: captureStore, followTail: $followTail,
+                        sslScope: store.setup.sslScope
+                    )
                         // The clear control floats over the table (bottom-right): a small red
                         // dot at rest, expanding to the full hold-to-clear button on hover, so
                         // it barely covers content until you reach for it. No reserved gap —
@@ -1094,6 +1097,12 @@ private struct RequestTableView: View {
     /// Tail-follow lives in `MainView`, alongside the empty state and clear button
     /// that share it; the table below consumes it.
     @Binding var followTail: Bool
+    /// The SSL scope, passed down as a value from the parent that owns it
+    /// (`SetupFeature`) rather than projected into `CaptureFeature.State`. The row
+    /// menu needs it to decide whether "pass this through" would write anything, and
+    /// a projection through capture state would mean rebuilding a struct holding the
+    /// whole 20 000-row window on every read of it.
+    let sslScope: SSLScope
 
     var body: some View {
         // Both read once here, not per row: a cell body that touches `store.flows`
@@ -1111,7 +1120,8 @@ private struct RequestTableView: View {
             onCopyCurl: { store.send(.copyCurlTapped($0)) },
             onAddRule: { store.send(.addRuleFromFlow($0, $1)) },
             onDecryptHost: { store.send(.decryptHostTapped($0)) },
-            onStopDecrypting: { store.send(.stopDecryptingHost($0)) }
+            onExcludeHost: { store.send(.excludeHostTapped($0)) },
+            sslScope: sslScope
         )
         // Selection is an interactive signal, so it is the accent's job (DESIGN.md
         // § Colors) — untinted, `NSTableView` fills the row with the *system* accent, a

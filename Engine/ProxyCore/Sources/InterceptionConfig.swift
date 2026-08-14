@@ -32,55 +32,11 @@ final class InterceptionConfig: Sendable {
     ///   `scope` argument.
     init(scope: SSLScope = .disabled, defaults: UserDefaults? = .standard) {
         self.defaults = defaults
-        if let defaults, var saved = Self.load(from: defaults, key: storageKey) {
-            // Before the lock exists, and before the listeners are up: an install
-            // carrying the old seeded wildcard must not decrypt even one connection
-            // under it. Doing this from the app's first refresh instead would leave a
-            // window in which whatever the client sent first got terminated by a
-            // certificate it may not trust — the failure this migration exists to stop.
-            if Self.migrateSeededWildcard(&saved, defaults: defaults) {
-                self.scope = Mutex(saved)
-                Self.persist(saved, to: defaults, key: storageKey)
-                return
-            }
+        if let defaults, let saved = Self.load(from: defaults, key: storageKey) {
             self.scope = Mutex(saved)
         } else {
             self.scope = Mutex(scope)
         }
-    }
-
-    /// Marks the migration as *attempted*, so it runs once per install whatever the
-    /// outcome — a fresh install included, or the wildcard would come back the first
-    /// time someone deliberately typed one and relaunched.
-    static let whitelistMigrationKey = "com.loom.sslScopeWhitelistMigrated"
-    /// Marks it as having *changed something*. Two keys rather than one because the
-    /// app announces from this one: a fresh install attempts the migration and
-    /// changes nothing, and telling that user their scope was rewritten would be a
-    /// notice about an event that never happened.
-    static let whitelistMigrationAppliedKey = "com.loom.sslScopeWhitelistMigrationApplied"
-
-    /// Drop an `include` that is *exactly* the seeded wildcard, once.
-    ///
-    /// `["*"]` was never a choice — `toggleSSLTapped` wrote it the first time anyone
-    /// switched HTTPS interception on, and the stored value cannot tell a seed from a
-    /// decision. So the migration is deliberately narrow: only that exact shape, and
-    /// only while the marker is absent. `["*", "api.example.com"]`, `["*.corp"]` or a
-    /// hand-typed `*` re-added *after* the migration all stand — someone who types a
-    /// wildcard into a whitelist means it.
-    ///
-    /// Returns whether it changed anything, so the caller persists exactly once.
-    private static func migrateSeededWildcard(_ scope: inout SSLScope, defaults: UserDefaults) -> Bool {
-        guard !defaults.bool(forKey: whitelistMigrationKey) else { return false }
-        defaults.set(true, forKey: whitelistMigrationKey)
-        guard scope.include == ["*"] else { return false }
-        scope.include = []
-        defaults.set(true, forKey: whitelistMigrationAppliedKey)
-        Log.tls.error("""
-        SSL scope migrated to a whitelist: the seeded include "*" was dropped, so \
-        nothing is decrypted until a host is added. Traffic is still observed and \
-        listed as tunnelled.
-        """)
-        return true
     }
 
     func snapshot() -> SSLScope {
@@ -126,13 +82,8 @@ final class InterceptionConfig: Sendable {
 
     private func persist(_ scope: SSLScope) {
         guard let defaults else { return }
-        Self.persist(scope, to: defaults, key: storageKey)
-    }
-
-    /// Static so the migration can write before `self` is fully initialized.
-    private static func persist(_ scope: SSLScope, to defaults: UserDefaults, key: String) {
         do {
-            defaults.set(try JSONEncoder().encode(scope), forKey: key)
+            defaults.set(try JSONEncoder().encode(scope), forKey: storageKey)
         } catch {
             Log.tls.error("SSL scope persist failed; interception settings may not survive relaunch: \(String(describing: error))")
         }

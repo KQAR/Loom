@@ -415,11 +415,11 @@ public struct AppFeature: Sendable {
             case let .capture(.delegate(.replayFailed(message))):
                 return .send(.rules(.ruleWriteFailed(message)))
 
-            // Both directions of the scope, from a row's context menu: a CONNECT row
-            // decrypts its host, a decrypted row stops. Routed through `SetupFeature`,
-            // so the table, the console card and an agent all make the same write.
-            case let .capture(.delegate(.stopDecryptingHost(host))):
-                return .send(.setup(.stopInterceptHostTapped(host)))
+            // Both directions of the scope, picked off a row in the request table.
+            // Routed through `SetupFeature` rather than written here, so the table and
+            // the console card cannot disagree about what either one does.
+            case let .capture(.delegate(.excludeHost(host))):
+                return .send(.setup(.excludeHostTapped(host)))
 
             case let .capture(.delegate(.decryptHost(host))):
                 return .send(.setup(.interceptHostTapped(host)))

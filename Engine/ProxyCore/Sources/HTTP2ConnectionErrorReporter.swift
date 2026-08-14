@@ -60,13 +60,19 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
     private let host: String
     private let port: Int
     private let log: TunneledHostLog
+    /// Where the failed connection is recorded as a flow. Optional so the reporter
+    /// can be exercised on its own — every production path supplies one.
+    private let store: FlowStore?
+    /// When the connection reached this handler, so the row carries a duration.
+    private let startedAt = Date()
     /// One record per connection, not per raised error.
     private var reported = false
 
-    init(host: String, port: Int, log: TunneledHostLog = .shared) {
+    init(host: String, port: Int, log: TunneledHostLog = .shared, store: FlowStore? = nil) {
         self.host = host
         self.port = port
         self.log = log
+        self.store = store
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -89,6 +95,15 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
                 reported = true
                 let detail = Self.describe(error)
                 log.record(host: host, port: port, reason: .protocolError, detail: detail)
+                // And as a row, for the same reason `ClientTLSFailureReporter`
+                // records one: the console holds the aggregate, the request table is
+                // where the operator is looking when a request produced nothing.
+                if let store {
+                    TunnelFlow.recordFailure(
+                        host: host, port: port, startedAt: startedAt, client: context.channel,
+                        error: "Loom could not read the HTTP/2 connection — \(detail)", store: store
+                    )
+                }
                 Log.proxy.error("""
                 HTTP/2 codec error on the intercepted connection to \
                 \(self.host, privacy: .public):\(self.port, privacy: .public) — \(detail, privacy: .public). \

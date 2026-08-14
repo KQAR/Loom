@@ -285,11 +285,11 @@ public struct PanelView: View {
     }
 
     /// Three ways for HTTPS to be unread, and the tile's fill can only say two of
-    /// them, so this says all three. The one added in 0.0.27 is the ordinary state of
-    /// a fresh install: the switch is on, the CA is fine, and nothing is named — this
-    /// switch permits decryption, the whitelist decides what gets decrypted, and both
-    /// have to be satisfied. Saying "decrypting" there was true only while the scope
-    /// seeded itself with `*`.
+    /// them, so this says all three. The third is the **ordinary state of a fresh
+    /// install**: the switch on, the CA fine, and nothing named. This switch permits
+    /// decryption, the whitelist decides what gets decrypted, and both have to be
+    /// satisfied — "decrypting" there was true only while the scope seeded itself
+    /// with `*`.
     private var httpsHelp: String { Self.httpsHelp(store.setup) }
 
     /// Static so it can be checked without a store: it is four sentences chosen from
@@ -299,13 +299,12 @@ public struct PanelView: View {
         guard setup.certificateStatus.trustState.isReady else {
             return "HTTPS interception on, but Loom's root CA isn't trusted yet, so nothing decrypts"
         }
+        if setup.interceptsEverything { return "HTTPS interception on — decrypting every host" }
         let hosts = setup.sslScope.include.count
         guard hosts > 0 else {
-            return "HTTPS interception on — no hosts decrypted yet. Right-click a locked row in the main window to pick one."
+            return "HTTPS interception on — no hosts decrypted yet. Right-click a relayed row in the main window to pick one."
         }
-        return setup.interceptsEverything
-            ? "HTTPS interception on — decrypting every host"
-            : "HTTPS interception on — decrypting \(hosts) host\(hosts == 1 ? "" : "s")"
+        return "HTTPS interception on — decrypting \(hosts) host\(hosts == 1 ? "" : "s")"
     }
 
     /// Carries what the tile's fill cannot, in the place a pure-icon control can
@@ -479,9 +478,12 @@ public struct PanelView: View {
     ///
     /// Those trailing numbers are the load-bearing half — they are the only hint on a
     /// collapsed console that a capture is thinner than it looks — and `unread`
-    /// deliberately counts only the *unexpected* ones: with the default scope covering
-    /// everything, an excluded pass-through is the configuration working, and counting
-    /// it here would teach the human to ignore the number.
+    /// deliberately counts only the *unexpected* ones: an excluded pass-through is the
+    /// configuration working whatever the scope, and counting
+    /// it here would teach the human to ignore the number — and under a whitelist so
+    /// is a host nobody named, which is what `unexpectedlyUnreadHosts` is scope-aware
+    /// for. `refused` is a different event, not a subset: an unread origin's request
+    /// still reached it, a refused one's never left the client.
     ///
     /// `refused` is a separate word from `unread` because it is a separate event: an
     /// unread origin's request still reached it, a refused one's never left the

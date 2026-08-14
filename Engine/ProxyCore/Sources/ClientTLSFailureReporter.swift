@@ -35,24 +35,32 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
     private let host: String
     private let port: Int
     private let log: TunneledHostLog
-    /// Set by NIOSSL's own handshake event. After it, an error is something else —
-    /// a broken request, a dropped connection — and belongs to whatever is
-    /// handling the decrypted exchange, not here.
-    private var handshakeCompleted = false
-    /// One report per connection: a failing handshake can raise several errors on
-    /// its way down, and the host's `connections` count should say how many clients
-    /// were refused, not how many errors BoringSSL emitted.
-    private var reported = false
-
-    init(host: String, port: Int, log: TunneledHostLog = .shared) {
+    /// Where the failed connection is recorded as a flow. Optional so the reporter
+    /// can be exercised on its own — every production path supplies one.
+    private let store: FlowStore?
+    /// Shared with `ClientTLSAbortReporter` below the SSL handler: that one sees the
+    /// bytes and the connection ending, this one sees NIOSSL's events. Either may be
+    /// the first to learn the interception failed, and the attempt is what keeps them
+    /// to one report between them.
+    private let attempt: ClientTLSAttempt
+    /// When the client connected, so the row carries a duration rather than a
+    /// zero: a handshake that fails slowly and one that fails instantly are
+    /// different problems.
+    private let startedAt = Date()
+    init(
+        host: String, port: Int, attempt: ClientTLSAttempt = ClientTLSAttempt(),
+        log: TunneledHostLog = .shared, store: FlowStore? = nil
+    ) {
         self.host = host
         self.port = port
+        self.attempt = attempt
         self.log = log
+        self.store = store
     }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if case TLSUserEvent.handshakeCompleted = event {
-            handshakeCompleted = true
+            attempt.handshakeCompleted = true
             // Recovery is symmetric with failure: the same host that was recorded
             // as refusing Loom stops being listed the moment a client completes a
             // handshake — the operator who just installed the CA sees the entry
@@ -63,17 +71,22 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        report(error)
+        report(error, client: context.channel)
         context.fireErrorCaught(error)
     }
 
-    private func report(_ error: Error) {
-        guard !handshakeCompleted, !reported else { return }
+    private func report(_ error: Error, client: Channel?) {
+        guard !attempt.handshakeCompleted, !attempt.reported else { return }
         guard Self.isHandshakeFailure(error) else { return }
-        reported = true
         let detail = Self.describe(error)
-        log.record(
-            host: host, port: port, reason: .clientHandshakeFailed, detail: detail
+        // Recorded in both places — the console's aggregate and a row in the request
+        // table. Without the row a refused handshake is a client-side certificate
+        // error against a capture holding nothing for that host at all, which is what
+        // "Loom lost it" and "the app never asked" look like alike.
+        attempt.report(
+            host: host, port: port, detail: detail,
+            summary: "Client refused Loom's certificate — \(detail)",
+            client: client, startedAt: startedAt, log: log, store: store
         )
         // NIOSSL maps an EOF *during* the handshake to `handshakeFailed` too
         // (a pre-connected tunnel abandoned before its ClientHello finishes looks

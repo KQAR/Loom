@@ -35,9 +35,8 @@ extension PanelTile.Mode {
     /// card is showing, because a warning tile whose repair card isn't visible
     /// is a dead end.
     ///
-    /// An **empty whitelist** also decrypts nothing (0.0.27) and deliberately does
-    /// *not* warn: that is the `rules(enabled:)` case below, not this one. An
-    /// untrusted CA defeats something the operator asked for; an empty `include` is
+    /// An **empty whitelist** also decrypts nothing and deliberately does *not* warn:
+    /// an untrusted CA defeats something the operator asked for, an empty `include` is
     /// the operator not having asked yet, and orange on the state every fresh install
     /// starts in is how a colour stops being read. The tile's `help` says it instead.
     static func https(sslEnabled: Bool, trust: CertificateTrustState) -> Self {

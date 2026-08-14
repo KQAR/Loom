@@ -1,4 +1,6 @@
 import Foundation
+import NIOCore
+import NIOEmbedded
 import NIOSSL
 import X509
 import Testing
@@ -166,71 +168,17 @@ import LoomSharedModels
         // disabled → all HTTPS blind-tunneled → nothing captured.
         let defaults = makeDefaults()
         let first = InterceptionConfig(defaults: defaults)
-        first.update(SSLScope(enabled: true, include: ["api.example.com"], exclude: ["secure.bank.com"]))
+        first.update(SSLScope(enabled: true, include: ["*"], exclude: ["secure.bank.com"]))
         first.flush() // the write is queued; drain it before "relaunching"
 
         // A fresh config (simulating an app relaunch) must reload the saved scope.
         let reloaded = InterceptionConfig(scope: .disabled, defaults: defaults)
         let scope = reloaded.snapshot()
         #expect(scope.enabled)
-        #expect(scope.include == ["api.example.com"])
+        #expect(scope.include == ["*"])
         #expect(scope.exclude == ["secure.bank.com"])
         #expect(reloaded.shouldIntercept(host: "api.example.com"))
         #expect(!reloaded.shouldIntercept(host: "secure.bank.com"))
-    }
-
-    // MARK: The whitelist migration (0.0.27)
-
-    /// The old default was seeded, never chosen: `toggleSSLTapped` wrote `["*"]` the
-    /// first time anyone switched interception on. So an install carrying exactly that
-    /// shape is migrated to an empty whitelist once — at load, before any listener is
-    /// bound, so not one connection is decrypted under the old scope.
-    @Test func theSeededWildcardIsDroppedOnce() {
-        let defaults = makeDefaults()
-        let first = InterceptionConfig(defaults: defaults)
-        first.update(SSLScope(enabled: true, include: ["*"], exclude: ["secure.bank.com"]))
-        first.flush()
-
-        let migrated = InterceptionConfig(scope: .disabled, defaults: defaults)
-        #expect(migrated.snapshot().include == [])
-        #expect(migrated.snapshot().enabled, "the switch itself is untouched — only what it decrypts")
-        #expect(migrated.snapshot().exclude == ["secure.bank.com"], "carve-outs the human made stand")
-        #expect(!migrated.shouldIntercept(host: "api.example.com"))
-        #expect(defaults.bool(forKey: InterceptionConfig.whitelistMigrationAppliedKey))
-
-        // Once. A wildcard typed back in afterwards is a decision, and survives a
-        // relaunch like any other — this is the difference the marker exists to keep.
-        migrated.update(SSLScope(enabled: true, include: ["*"]))
-        migrated.flush()
-        #expect(InterceptionConfig(scope: .disabled, defaults: defaults).snapshot().include == ["*"])
-    }
-
-    /// Only that exact shape. A wildcard with anything beside it, or a glob, is
-    /// someone's list — rewriting it would be this migration deciding what an operator
-    /// meant.
-    @Test func anythingOtherThanTheBareWildcardIsLeftAlone() {
-        for include in [["*", "api.test"], ["*.corp"], ["api.test"], []] {
-            let defaults = makeDefaults()
-            let first = InterceptionConfig(defaults: defaults)
-            first.update(SSLScope(enabled: true, include: include))
-            first.flush()
-            let reloaded = InterceptionConfig(scope: .disabled, defaults: defaults)
-            #expect(reloaded.snapshot().include == include)
-            #expect(
-                !defaults.bool(forKey: InterceptionConfig.whitelistMigrationAppliedKey),
-                "nothing was applied, so nothing should be announced to the human"
-            )
-        }
-    }
-
-    /// A fresh install has no stored scope, so the migration cannot run — and must not
-    /// leave the "applied" marker behind, or the console would announce a rewrite that
-    /// never happened.
-    @Test func aFreshInstallAnnouncesNothing() {
-        let defaults = makeDefaults()
-        let config = InterceptionConfig(defaults: defaults)
-        #expect(config.snapshot().include == [])
-        #expect(!defaults.bool(forKey: InterceptionConfig.whitelistMigrationAppliedKey))
     }
 
     @Test func nilDefaults_doesNotPersist() {
@@ -255,5 +203,49 @@ import LoomSharedModels
         let scope = SSLScope(enabled: true, include: ["*.bank.com"], exclude: ["secure.bank.com"])
         #expect(scope.shouldIntercept(host: "app.bank.com"))
         #expect(!scope.shouldIntercept(host: "secure.bank.com"))
+    }
+}
+
+/// `intercept_host` reports the connections it ended, and only ends them when the
+/// write can actually take effect.
+@Suite("interceptHost ends relayed tunnels", .serialized)
+struct InterceptHostClosesTunnelsTests {
+    @Test func aShadowedInterceptClosesNothing() async {
+        // The host is in `include` but a wildcard `exclude` still relays it, so
+        // reconnecting would land the client straight back in a relayed tunnel:
+        // closing would cost it a reconnect and change nothing.
+        let engine = ProxyEngine(persistFlows: false)
+        defer { RelayedTunnelRegistry.shared.reset() }
+        RelayedTunnelRegistry.shared.reset()
+        let channel = EmbeddedChannel()
+        let watch = ChannelCloseWatch(channel)
+        RelayedTunnelRegistry.shared.register(host: "api.corp", port: 443, client: channel)
+
+        await engine.setSSLScope(SSLScope(enabled: true, include: [], exclude: ["*.corp"]))
+        let outcome = await engine.interceptHost("api.corp")
+
+        #expect(outcome.effective == false)
+        #expect(outcome.closedTunnels == 0)
+        channel.embeddedEventLoop.run()
+        #expect(watch.closed == false, "the connection would only be relayed again")
+        _ = try? channel.finish()
+    }
+
+    @Test func anEffectiveInterceptReportsWhatItClosed() async {
+        let engine = ProxyEngine(persistFlows: false)
+        defer { RelayedTunnelRegistry.shared.reset() }
+        RelayedTunnelRegistry.shared.reset()
+        let channel = EmbeddedChannel()
+        let watch = ChannelCloseWatch(channel)
+        RelayedTunnelRegistry.shared.register(host: "api.example.test", port: 443, client: channel)
+
+        await engine.setSSLScope(SSLScope(enabled: true, include: []))
+        let outcome = await engine.interceptHost("api.example.test")
+
+        #expect(outcome.effective)
+        #expect(outcome.closedTunnels == 1,
+                "a scope write that also ends a live connection has to say so")
+        channel.embeddedEventLoop.run()
+        #expect(watch.closed)
     }
 }

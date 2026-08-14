@@ -78,7 +78,7 @@ arguments; this file is about sequence and interpretation.
   the request never happened at all — the client is broken with Loom in the path,
   not merely unread: `clientHandshakeFailed` (it refused Loom's leaf and hung up
   before sending anything — it carries its own trust store or pins the host; the
-  fix is to leave the host out of `include`, or to trust Loom's CA in *that*
+  fix is to take the host back out of `include`, or to trust Loom's CA in *that*
   client) and
   `protocolError` (Loom's HTTP/2 codec could not read the connection and closed
   it — `detail` carries the codec's own error, and it is worth filing). Say which
@@ -88,8 +88,8 @@ arguments; this file is about sequence and interpretation.
   replaces them). Only add it to `exclude` when a glob you left in `include`
   (`*`, `*.corp`) still covers it. Under an empty whitelist this rarely comes up at
   all: a client carrying its own trust store (a JVM, Python, Go — a Gradle build or
-  a `pip install`) and a pinned host both keep working until someone decrypts them,
-  and the failure, when it happens, surfaces at the client as a certificate error. Loom does see the refusal, though — that host
+  a `pip install`) and a pinned host both keep working until someone decrypts them.
+  When it does happen, Loom sees the refusal — that host
   appears in `get_ssl_scope`'s `tunneledHosts` as `clientHandshakeFailed` with the
   handshake error in `detail`, so you can name the host instead of asking the user
   which one broke.
@@ -153,12 +153,15 @@ arguments; this file is about sequence and interpretation.
     session (yours or a human's) may have paused it;
   - otherwise nothing has been routed through the proxy yet — the client is not
     pointed at it. Say so.
-- Only a `CONNECT` entry for a host → it was passed through (nobody named it — the
-  common case, since the scope is a whitelist — or Loom can't read it). The CONNECT
-  row is the connection, not the request: no headers, no body. `intercept_host`
-  then re-run the client. A host Loom cannot read at any setting records no flow
-  whatsoever, not even that. `get_ssl_scope`'s `tunneledHosts` is the only surface holding this fact;
-  check it before reporting that the client made no requests.
+- Only a `CONNECT` entry for a host, or no flow at all → it was not decrypted
+  (nobody named it — the common case, since the scope is a whitelist — or Loom
+  can't read it). A `CONNECT` row is the *connection*, not the request: no
+  headers, no body, nothing inside it. Its `error` separates the two kinds — absent
+  means relayed and the request reached the origin, present means Loom tried and
+  the request never happened. Some pass-throughs record no flow at all, so absence
+  is the same answer. `get_ssl_scope`'s `tunneledHosts` is the surface holding the
+  reason; check it before reporting that the client made no requests, then
+  `intercept_host` and re-run.
 - HTTPS flow is a blind tunnel / empty body → host out of SSL scope or CA not
   trusted (or legitimate cert pinning, e.g. Apple domains). Diagnose with
   `get_ssl_scope` + `get_certificate_status`; don't claim you saw the plaintext.

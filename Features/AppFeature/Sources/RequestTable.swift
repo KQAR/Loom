@@ -52,10 +52,15 @@ struct RequestTable: NSViewRepresentable {
     let onReplay: (Flow.ID) -> Void
     let onCopyCurl: (Flow.ID) -> Void
     let onAddRule: (Flow.ID, RuleTemplate) -> Void
-    /// Start / stop decrypting a host, by its name rather than the flow's id: the
-    /// scope is keyed on the host and the row is only how the operator picked one.
+    /// Both directions of the scope, by host name rather than by flow id: the scope is
+    /// keyed on the host and the row is only how the operator picked one. Decrypt adds
+    /// to the whitelist (a relayed row), Exclude carves out of it (a decrypted row, or
+    /// one whose decryption failed).
     let onDecryptHost: (String) -> Void
-    let onStopDecrypting: (String) -> Void
+    let onExcludeHost: (String) -> Void
+    /// The live scope, so the menu can ask whether excluding would change anything
+    /// rather than guessing from the URL. A value, not the store: this view draws rows.
+    let sslScope: SSLScope
 
     /// Fixed, not automatic: `usesAutomaticRowHeights` measures every row it draws, and
     /// every row here is one line of text by construction.
@@ -64,7 +69,8 @@ struct RequestTable: NSViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(selection: $selection, followTail: $followTail,
                     onReplay: onReplay, onCopyCurl: onCopyCurl, onAddRule: onAddRule,
-                    onDecryptHost: onDecryptHost, onStopDecrypting: onStopDecrypting)
+                    onDecryptHost: onDecryptHost, onExcludeHost: onExcludeHost,
+                    sslScope: sslScope)
     }
 
     func makeNSView(context: Context) -> RequestScrollView {
@@ -116,6 +122,10 @@ struct RequestTable: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: RequestScrollView, context: Context) {
+        // The scope's other writer is an agent, so it is re-read here rather than
+        // captured once at `makeCoordinator` — a menu built from a stale scope offers
+        // to exclude a host that was excluded a minute ago.
+        context.coordinator.sslScope = sslScope
         context.coordinator.update(rows: rows, capture: capture, selection: selection)
     }
 
@@ -138,7 +148,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: ""
             case .ordinal: "#"
             case .app: "App"
-            case .lock: ""
+            case .lock: "Decrypted"
             case .proto: "Protocol"
             case .method: "Method"
             case .host: "Host"
@@ -152,7 +162,14 @@ struct RequestTable: NSViewRepresentable {
             case .status: 28
             case .ordinal: 30
             case .app: 36
-            case .lock: 26
+            // Sized to its HEADER, not its content: the content is one glyph and would
+            // fit in 26, which is what it was while the header was blank. A column
+            // whose meaning is four states of one symbol needs the word — "Decrypted"
+            // at the header's 11pt is ~62pt plus the ~10pt of inset the header view
+            // adds. It is a fixed width for the same reason Status is: nothing here
+            // grows with the data, so giving it resize handles would only let someone
+            // hide it by accident.
+            case .lock: 72
             // Sized to the widest token this column can hold — `HTTPS`, 5 mono glyphs —
             // not to the header word, which is the only thing here that wants more room.
             case .proto: 46
@@ -175,7 +192,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: 28
             case .ordinal: 38
             case .app: 36
-            case .lock: 26
+            case .lock: 72
             case .proto: 52
             case .method: 62
             case .host: 180
@@ -192,7 +209,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: 28
             case .ordinal: 56
             case .app: 36
-            case .lock: 26
+            case .lock: 72
             case .proto: 64
             case .method: 90
             case .host: 280
@@ -201,13 +218,14 @@ struct RequestTable: NSViewRepresentable {
             }
         }
 
-        /// The name shown in the header's column menu. Two columns draw a glyph and have
-        /// no header text, so the menu is the one place they have to be nameable.
+        /// The name shown in the header's column menu. Status draws a glyph and has no
+        /// header text, so the menu is the one place it can be named; Decrypted used to
+        /// be the second such column and now carries its own header instead, because
+        /// four states of one symbol are not guessable from the symbol.
         var menuTitle: String {
             switch self {
             case .status: "Status"
             case .ordinal: "Number"
-            case .lock: "Decrypted"
             default: title
             }
         }
@@ -315,7 +333,9 @@ struct RequestTable: NSViewRepresentable {
         private let onCopyCurl: (Flow.ID) -> Void
         private let onAddRule: (Flow.ID, RuleTemplate) -> Void
         private let onDecryptHost: (String) -> Void
-        private let onStopDecrypting: (String) -> Void
+        private let onExcludeHost: (String) -> Void
+        /// Refreshed from `updateNSView`, not captured once — see the note there.
+        var sslScope: SSLScope
 
         private weak var table: NSTableView?
         private weak var scrollView: NSScrollView?
@@ -333,7 +353,8 @@ struct RequestTable: NSViewRepresentable {
             onCopyCurl: @escaping (Flow.ID) -> Void,
             onAddRule: @escaping (Flow.ID, RuleTemplate) -> Void,
             onDecryptHost: @escaping (String) -> Void,
-            onStopDecrypting: @escaping (String) -> Void
+            onExcludeHost: @escaping (String) -> Void,
+            sslScope: SSLScope
         ) {
             _selection = selection
             _followTail = followTail
@@ -341,7 +362,8 @@ struct RequestTable: NSViewRepresentable {
             self.onCopyCurl = onCopyCurl
             self.onAddRule = onAddRule
             self.onDecryptHost = onDecryptHost
-            self.onStopDecrypting = onStopDecrypting
+            self.onExcludeHost = onExcludeHost
+            self.sslScope = sslScope
         }
 
         func attach(scrollView: NSScrollView, table: NSTableView) {
@@ -1115,23 +1137,25 @@ struct RequestTable: NSViewRepresentable {
             let id = flow.id
             let host = MainView.host(flow.request.url)
 
-            // A tunnel row is not an exchange: there is no request to replay, no body to
-            // copy and no rule worth stamping from it. It has exactly one useful action,
-            // and it is the one that turns it into an exchange next time.
-            if case .tunnelled = FlowEncryption(flow) {
-                menu.addItem(item("Decrypt \(host)", image: "lock.open") { [onDecryptHost] in onDecryptHost(host) })
-                // The whole project in one click. A service is usually several
-                // sub-domains of one apex — five of them in the session that drove this
-                // — and decrypting them one at a time is five clicks *and* five re-runs
-                // of the client, since each only takes effect on the next connection.
-                if let wildcard = Self.parentWildcard(for: host) {
-                    menu.addItem(item("Decrypt \(wildcard)", image: "lock.open") { [onDecryptHost] in
-                        onDecryptHost(wildcard)
-                    })
-                }
+            // A CONNECT row is not an exchange: there is no request to replay, no body
+            // to copy and no rule worth stamping from it. It has the scope items and
+            // its name, and *which* scope item is the whole difference between its two
+            // kinds — which wear the same lock and mean opposite things.
+            //
+            // A **relayed** tunnel is a host nobody named: under a whitelist that is
+            // the ordinary state, this row is how the operator meets the origin at all,
+            // and Decrypt is the point of the row. A **failed** one is a host Loom is
+            // already trying to decrypt, so the repair is the opposite write. Neither
+            // is read off the row — `scopeItems` asks the scope, and the two predicates
+            // are complementary by construction.
+            switch FlowEncryption(flow) {
+            case .tunnelled, .decryptionFailed:
+                for entry in scopeItems(for: flow, host: host) { menu.addItem(entry) }
                 menu.addItem(.separator())
                 menu.addItem(item("Copy Host") { MainView.copy(host) })
                 return
+            case .decrypted, .plaintext:
+                break
             }
 
             menu.addItem(item("Replay", image: "arrow.triangle.2.circlepath") { [onReplay] in onReplay(id) })
@@ -1158,15 +1182,49 @@ struct RequestTable: NSViewRepresentable {
             rulesItem.submenu = rules
             menu.addItem(rulesItem)
 
-            // Only where it would do something. Every TLS row in this table exists
-            // *because* its host is in the whitelist, so the meaningful scope action
-            // from here is the inverse — dropping that entry. Decrypting a new host
-            // is the sidebar's Not Decrypted panel, since a host Loom never decrypted
-            // has no row here to right-click.
-            if Self.hostIsDecrypted(flow.request.url) {
+            let scope = scopeItems(for: flow, host: host)
+            if !scope.isEmpty {
                 menu.addItem(.separator())
-                menu.addItem(item("Stop Decrypting \(host)") { [onStopDecrypting] in onStopDecrypting(host) })
+                for entry in scope { menu.addItem(entry) }
             }
+        }
+
+        /// The scope write this row makes available — empty when neither would change
+        /// anything.
+        ///
+        /// **Exactly one direction is ever offered**, because the scope answers the
+        /// question for us: a host it decrypts can only be passed through, one it does
+        /// not can only be decrypted. Deriving it from the row instead (its glyph, its
+        /// error, its scheme) is how a menu comes to offer a write that silently does
+        /// nothing — a replayed flow, a HAR import and a reverse-proxy flow all carry
+        /// an `https://` URL for a host the scope may have nothing to say about.
+        ///
+        /// Two grains each, because a service is usually several sub-domains of one
+        /// apex and doing them one at a time is one click *and* one re-run of the
+        /// client per sub-domain.
+        private func scopeItems(for flow: Flow, host: String) -> [NSMenuItem] {
+            let wildcard = Self.parentWildcard(for: host)
+            if Self.offersExclude(flow.request.url, scope: sslScope) {
+                var items = [item("Pass Through \(host)", image: "lock") { [onExcludeHost] in
+                    onExcludeHost(host)
+                }]
+                if let wildcard {
+                    items.append(item("Pass Through \(wildcard)", image: "lock") { [onExcludeHost] in
+                        onExcludeHost(wildcard)
+                    })
+                }
+                return items
+            }
+            guard Self.offersDecrypt(flow.request.url, scope: sslScope) else { return [] }
+            var items = [item("Decrypt \(host)", image: "lock.open") { [onDecryptHost] in
+                onDecryptHost(host)
+            }]
+            if let wildcard {
+                items.append(item("Decrypt \(wildcard)", image: "lock.open") { [onDecryptHost] in
+                    onDecryptHost(wildcard)
+                })
+            }
+            return items
         }
 
         /// One level up from a host, as a glob — `api.test.example.com` →
@@ -1175,8 +1233,9 @@ struct RequestTable: NSViewRepresentable {
         /// **One label, not "the registrable domain".** Getting to `*.example.com` from
         /// `api.test.example.com` needs a public-suffix list, and guessing it with "keep
         /// the last two labels" answers `*.co.uk` for `shop.example.co.uk` — a glob that
-        /// decrypts a country. Dropping exactly one label can only ever widen the scope
-        /// by one level, which is the same thing the operator would have typed.
+        /// stops decrypting a country. Dropping exactly one label can only ever widen
+        /// the carve-out by one level, which is the same thing the operator would have
+        /// typed.
         ///
         /// Two hosts still have no answer: fewer than three labels (`example.com` would
         /// give `*.com`) and anything that looks like an IP address (`10.0.12.93` would
@@ -1184,8 +1243,9 @@ struct RequestTable: NSViewRepresentable {
         ///
         /// The remaining hazard — a three-label host on a multi-label suffix, where
         /// `example.co.uk` does yield `*.co.uk` — is answered by the menu *item*, which
-        /// spells the glob out. The operator reads what they are about to decrypt
-        /// before clicking it, and the write is one `Stop Decrypting` from being undone.
+        /// spells the glob out. The operator reads what they are about to pass through
+        /// before clicking it, and the write is one line removed from the console's
+        /// "Passed through" list from being undone.
         static func parentWildcard(for host: String) -> String? {
             let labels = host.split(separator: ".", omittingEmptySubsequences: false)
             guard labels.count >= 3, labels.allSatisfy({ !$0.isEmpty }) else { return nil }
@@ -1196,15 +1256,41 @@ struct RequestTable: NSViewRepresentable {
             return "*." + labels.dropFirst().joined(separator: ".")
         }
 
-        /// Whether this exchange only exists because Loom decrypted it — i.e. whether
-        /// excluding its host would change anything.
+        /// Whether "pass this host through" would change anything for this row.
         ///
-        /// Answered from the scheme rather than from `FlowTransport`: an absent
-        /// transport means unmeasured, not plaintext (see AGENTS.md § FlowTransport),
-        /// so reading it here would hide the entry on a flow that was mocked or is
-        /// still in flight. `wss://` counts — it is a TLS handshake Loom terminated
-        /// like any other.
-        static func hostIsDecrypted(_ url: String) -> Bool {
+        /// Two conditions, and both are needed. **The exchange must be TLS** — on a
+        /// plain `http://` row the scope decides nothing, so the item would be a
+        /// control that silently does nothing. That half is answered from the *scheme*
+        /// rather than from `FlowTransport`, because an absent transport means
+        /// unmeasured, not plaintext (AGENTS.md § FlowTransport), so reading it here
+        /// would hide the item on a flow that was mocked or is still in flight;
+        /// `wss://` counts, being a TLS handshake Loom terminated like any other.
+        ///
+        /// **And the scope must currently decrypt the host.** Scheme alone was the
+        /// first version and it offered the item on every TLS row — including replayed
+        /// flows, HAR imports and reverse-proxy flows (whose recorded URL is the
+        /// upstream `https://` one while the inbound hop is plaintext), where the host
+        /// may already be excluded. The write then changed nothing while the console
+        /// reported a fresh success.
+        static func offersExclude(_ url: String, scope: SSLScope) -> Bool {
+            guard isTLS(url) else { return false }
+            return scope.shouldIntercept(host: MainView.host(url))
+        }
+
+        /// The inverse, and the primary write under a whitelist: a TLS host the scope
+        /// does **not** decrypt. This is how a host enters the whitelist from the
+        /// table — the relayed `CONNECT` row is where the operator meets the origin at
+        /// all, so a row with no Decrypt on it is a dead end.
+        ///
+        /// Complementary with `offersExclude` by construction: both require TLS and
+        /// they split on the same `shouldIntercept`, so no row can offer both and no
+        /// TLS row can offer neither.
+        static func offersDecrypt(_ url: String, scope: SSLScope) -> Bool {
+            guard isTLS(url) else { return false }
+            return !scope.shouldIntercept(host: MainView.host(url))
+        }
+
+        private static func isTLS(_ url: String) -> Bool {
             let lower = url.lowercased()
             return lower.hasPrefix("https://") || lower.hasPrefix("wss://")
         }
@@ -1307,17 +1393,32 @@ enum RowDiff: Equatable {
 
 /// Whether Loom read this exchange's contents, for the request table's lock column.
 ///
-/// Derived from the flow, not stored: a `CONNECT` flow is one Loom only ever relayed
+/// Derived from the flow, not stored: a `CONNECT` flow is one Loom did not read
 /// (Loom never *proxies* a CONNECT it decrypted — the intercepted path replaces it with
-/// the requests inside), and a scheme says whether there was any TLS to read. Nothing in
-/// `Flow` had to grow for this, which matters because a field would then need a render,
-/// a census entry and a reason for every other consumer.
+/// the requests inside), its `error` says whether that was a decision or a failure, and
+/// a scheme says whether there was any TLS to read at all. Nothing in `Flow` had to
+/// grow for this, which matters because a field would then need a render, a census
+/// entry and a reason for every other consumer.
+///
+/// **Three answers about decryption, and the third is why this is not a `Bool`.**
+/// Succeeded, failed and deliberately-not-attempted are different events with
+/// different repairs, and the first version drew the last two identically: a host
+/// whose client refused Loom's leaf looked exactly like a host somebody had carved
+/// out on purpose, which is the more misleading direction — a deliberate
+/// pass-through is the configuration working, a refusal is a request that never
+/// happened. `.plaintext` is a fourth *row* state but not a fourth answer to this
+/// question: there was nothing to decrypt, so none of the three apply.
 enum FlowEncryption {
     /// TLS Loom terminated: the request and response below are plaintext because Loom
     /// decrypted them.
     case decrypted
-    /// A relayed tunnel. The row is the whole record — there is no body, because these
-    /// bytes went past Loom encrypted.
+    /// Loom tried to decrypt and the connection failed — the client refused Loom's
+    /// leaf, or the intercepted codec could not read it. Unlike `tunnelled`, the
+    /// request never reached the origin: this row is a *broken* request, not an
+    /// opaque one.
+    case decryptionFailed
+    /// A relayed tunnel, by decision. The row is the whole record — there is no body,
+    /// because these bytes went past Loom encrypted — but the request itself worked.
     case tunnelled
     /// Plain HTTP. Nothing was encrypted, so nothing was decrypted; drawn differently
     /// from `tunnelled` because "Loom read it" and "Loom couldn't" are opposite answers.
@@ -1325,7 +1426,10 @@ enum FlowEncryption {
 
     init(_ flow: Flow) {
         if flow.request.method.uppercased() == "CONNECT" {
-            self = .tunnelled
+            // The error is the discriminator, and it is the flow's own rather than a
+            // second field: `TunnelFlow.record` completes a relayed tunnel with a
+            // `200`, `recordFailure` fails it with what Loom did wrong.
+            self = flow.error == nil ? .tunnelled : .decryptionFailed
             return
         }
         let url = flow.request.url.lowercased()
@@ -1335,6 +1439,7 @@ enum FlowEncryption {
     var glyph: String {
         switch self {
         case .decrypted: "lock.open.fill"
+        case .decryptionFailed: "lock.trianglebadge.exclamationmark"
         case .tunnelled: "lock.fill"
         case .plaintext: "lock.slash"
         }
@@ -1344,10 +1449,17 @@ enum FlowEncryption {
     /// stayed encrypted to Loom, an open one means Loom opened them. Reading it the
     /// other way round — a lock for "secure" — would put the reassuring glyph on the
     /// row whose contents are missing.
+    ///
+    /// Only the failure is tinted, and that is the whole colour budget of this column.
+    /// A relayed tunnel was tinted too in an earlier version: the scope decrypts
+    /// everything by default, so a pass-through is a carve-out somebody made
+    /// deliberately, and orange on a configuration working as asked is how a colour
+    /// stops being read — which then costs the one row that needs it.
     var tint: AnyShapeStyle {
         switch self {
         case .decrypted: AnyShapeStyle(.tertiary)
-        case .tunnelled: AnyShapeStyle(LoomTheme.Palette.warning)
+        case .decryptionFailed: AnyShapeStyle(LoomTheme.Palette.warning)
+        case .tunnelled: AnyShapeStyle(.secondary)
         case .plaintext: AnyShapeStyle(.quaternary)
         }
     }
@@ -1355,7 +1467,10 @@ enum FlowEncryption {
     var help: String {
         switch self {
         case .decrypted: "Decrypted — Loom read this exchange"
-        case .tunnelled: "Not decrypted — relayed encrypted. Right-click to decrypt this host, then run the client again."
+        case .decryptionFailed:
+            "Decryption failed — the request never reached the origin. Right-click to pass this host through."
+        case .tunnelled:
+            "Not decrypted — relayed encrypted, so this row is the whole record. Right-click to decrypt this host, then run the client again."
         case .plaintext: "Plain HTTP — nothing to decrypt"
         }
     }
@@ -1418,9 +1533,9 @@ private struct CellContent: View, Equatable {
                 .help(flow.sourceApp?.name ?? "Unknown app")
 
         case .lock:
-            // Three states, and the third is the reason this column exists: since the
-            // scope became a whitelist (0.0.27) most HTTPS origins are relayed
-            // untouched, and a CONNECT row is the only place the operator meets one.
+            // Three states, and the middle one is the reason this column exists: a
+            // relayed tunnel produces a row with no body, which is otherwise
+            // indistinguishable from an exchange whose body Loom simply lost.
             let encryption = FlowEncryption(flow)
             Image(systemName: encryption.glyph)
                 .font(LoomTheme.Icon.badge)

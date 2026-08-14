@@ -135,9 +135,11 @@ extension ProxyClient: DependencyKey {
             // `observeTunnels` is on for the app and off in the engine's own default,
             // which is the right split: an embedder gets content flows only, while the
             // app's request table is the operator's single list and has to show what it
-            // is *not* reading. Since the scope became a whitelist that is most HTTPS
-            // origins, and one CONNECT row per relayed connection is how the human sees
-            // a host at all — and right-clicks it to start decrypting.
+            // is *not* reading. A pass-through otherwise records no flow at all, so the
+            // carve-outs someone made are invisible on the surface they were made from.
+            // The cost is stated rather than hidden: these are real flows, so a chatty
+            // relayed origin spends the same `FlowLimits.persistedRows` budget as
+            // content exchanges.
             start: { try await engine.start(port: $0, observeTunnels: true, socksPort: $0 + 1) },
             stop: { await engine.stop() },
             status: { await engine.status() },

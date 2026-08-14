@@ -188,3 +188,213 @@ struct ClientVerdictRecoveryTests {
         #expect(entry?.connections == 1, "recovery reset the count — these are new refusals, not a running total")
     }
 }
+
+/// A connection Loom broke is a **row**, not only a log line.
+///
+/// `TunneledHostLog` answers "which origins went unread" for the console and for an
+/// agent. It is not what the operator is looking at when a request produced nothing:
+/// that is the request table, and until this the table held *no row at all* for a
+/// refused handshake — the client showed a certificate error against a capture
+/// denying the host had ever been contacted. It is the same failure the tunnelled-host
+/// log was written for, left open on the path where the request did not merely go
+/// unread but never happened.
+@Suite("A failed interception is recorded as a flow")
+struct FailedInterceptionFlowTests {
+    private func failureFlow(in store: FlowStore) async -> Flow? {
+        await store.recent(limit: 20).first { $0.request.method == "CONNECT" && $0.error != nil }
+    }
+
+    @Test func aRefusedClientHandshakeBecomesACONNECTRowCarryingTheError() async throws {
+        let log = TunneledHostLog()
+        let store = FlowStore()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            ClientTLSFailureReporter(host: "pinned.example.test", port: 443, log: log, store: store)
+        )
+
+        channel.pipeline.fireErrorCaught(NIOSSLError.handshakeFailed(.sslError([])))
+        channel.embeddedEventLoop.run()
+
+        var flow: Flow?
+        for _ in 0..<200 where flow == nil {
+            flow = await failureFlow(in: store)
+            if flow == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        }
+        #expect(flow?.request.url == "https://pinned.example.test:443")
+        #expect(flow?.error?.contains("refused Loom's certificate") == true,
+                "the row has to name what Loom did, or it reads as the origin's fault")
+        // And the aggregate still exists — the two surfaces answer different questions.
+        #expect(log.snapshot().hosts.first?.reason == .clientHandshakeFailed)
+        _ = try? channel.finish()
+    }
+
+    @Test func anUnreadableHTTP2ConnectionBecomesACONNECTRowToo() async throws {
+        let log = TunneledHostLog()
+        let store = FlowStore()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            HTTP2ConnectionErrorReporter(host: "h2.example.test", port: 443, log: log, store: store)
+        )
+
+        channel.pipeline.fireErrorCaught(NIOHTTP2Errors.excessivelyLargeHeaderBlock())
+        channel.embeddedEventLoop.run()
+
+        var flow: Flow?
+        for _ in 0..<200 where flow == nil {
+            flow = await failureFlow(in: store)
+            if flow == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        }
+        #expect(flow?.request.url == "https://h2.example.test:443")
+        #expect(flow?.error?.contains("could not read") == true)
+        _ = try? channel.finish()
+    }
+
+    /// Ordinary teardown is not a failed interception. A phone dropping an idle
+    /// connection with RST is normal mobile behaviour, and a row per instance would
+    /// bury the ones that mean something — the same reasoning that gave the h2
+    /// reporter its three tiers.
+    @Test func transportTeardownRecordsNoRow() async throws {
+        let store = FlowStore()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            HTTP2ConnectionErrorReporter(host: "quiet.example.test", port: 443,
+                                         log: TunneledHostLog(), store: store)
+        )
+
+        channel.pipeline.fireErrorCaught(NIOSSLError.uncleanShutdown)
+        channel.embeddedEventLoop.run()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(await failureFlow(in: store) == nil)
+        _ = try? channel.finish()
+    }
+
+    /// **A client that just closes the socket is the common refusal, and it raises no
+    /// error at all.** `ClientTLSFailureReporter` catches what NIOSSL *reports* — a
+    /// fatal alert becomes `handshakeFailed`, which is what a refusing `curl` sends —
+    /// but an Android app that pins a certificate typically reads Loom's leaf and hangs
+    /// up, so BoringSSL sees a clean EOF and nothing is raised. Measured in use: after
+    /// clicking Decrypt on such a host, the operator got no decrypted rows, no failure
+    /// row and no log line — the one host they had explicitly asked to read went silent.
+    @Test func aClientThatHangsUpMidHandshakeIsStillRecorded() async throws {
+        let log = TunneledHostLog()
+        let store = FlowStore()
+        let attempt = ClientTLSAttempt()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            ClientTLSAbortReporter(host: "pinned.example.test", port: 443,
+                                   attempt: attempt, log: log, store: store)
+        )
+
+        // A ClientHello's first bytes, then the connection goes away with no alert.
+        try channel.writeInbound(ByteBuffer(bytes: [0x16, 0x03, 0x01]))
+        channel.pipeline.fireChannelInactive()
+        channel.embeddedEventLoop.run()
+
+        var flow: Flow?
+        for _ in 0..<200 where flow == nil {
+            flow = await failureFlow(in: store)
+            if flow == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
+        }
+        #expect(flow?.request.url == "https://pinned.example.test:443")
+        #expect(flow?.error?.contains("pins this host") == true,
+                "the row has to name the operator's next move, not just say the socket closed")
+        #expect(log.snapshot().hosts.first?.reason == .clientHandshakeFailed)
+    }
+
+    /// And the discriminator that makes that safe: a tunnel opened ahead of need and
+    /// closed unused says nothing about Loom's certificate. Browsers and pooled HTTP
+    /// clients do this constantly, so reporting it would put a "decryption failed" row
+    /// on every warm connection a browser drops — the same rule `TunnelSniffHandler`
+    /// applies to a tunnel that stays silent past its deadline.
+    @Test func anAbandonedPreConnectedTunnelIsNotAFailure() async throws {
+        let log = TunneledHostLog()
+        let store = FlowStore()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            ClientTLSAbortReporter(host: "warm.example.test", port: 443,
+                                   attempt: ClientTLSAttempt(), log: log, store: store)
+        )
+
+        // No bytes at all — the client never started a handshake.
+        channel.pipeline.fireChannelInactive()
+        channel.embeddedEventLoop.run()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(await failureFlow(in: store) == nil)
+        #expect(log.snapshot().hosts.isEmpty)
+    }
+
+    /// A completed handshake ends the question: everything after it belongs to the
+    /// exchange, and the connection closing is how every healthy connection ends.
+    @Test func aCompletedHandshakeMeansTheCloseIsOrdinary() async throws {
+        let store = FlowStore()
+        let attempt = ClientTLSAttempt()
+        attempt.clientSpoke = true
+        attempt.handshakeCompleted = true
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            ClientTLSAbortReporter(host: "fine.example.test", port: 443,
+                                   attempt: attempt, log: TunneledHostLog(), store: store)
+        )
+
+        channel.pipeline.fireChannelInactive()
+        channel.embeddedEventLoop.run()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        #expect(await failureFlow(in: store) == nil)
+    }
+
+    /// The two halves share one attempt, so a refusal that surfaces as an alert *and*
+    /// as the connection closing is one row, not two. The host's `connections` count
+    /// says how many clients were refused, not how many events each refusal produced.
+    @Test func theTwoReportersAgreeOnOneReportPerConnection() async throws {
+        let log = TunneledHostLog()
+        let store = FlowStore()
+        let attempt = ClientTLSAttempt()
+        let channel = EmbeddedChannel()
+        let sync = channel.pipeline.syncOperations
+        try sync.addHandler(
+            ClientTLSAbortReporter(host: "pinned.example.test", port: 443,
+                                   attempt: attempt, log: log, store: store)
+        )
+        try sync.addHandler(
+            ClientTLSFailureReporter(host: "pinned.example.test", port: 443,
+                                     attempt: attempt, log: log, store: store)
+        )
+
+        try channel.writeInbound(ByteBuffer(bytes: [0x16, 0x03, 0x01]))
+        channel.pipeline.fireErrorCaught(NIOSSLError.handshakeFailed(.sslError([])))
+        channel.pipeline.fireChannelInactive()
+        channel.embeddedEventLoop.run()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let rows = await store.recent(limit: 20).filter { $0.request.method == "CONNECT" }
+        #expect(rows.count == 1)
+        #expect(log.snapshot().hosts.first?.connections == 1)
+    }
+
+    /// Recording is deliberately **not** gated on `observeTunnels`: that flag is a
+    /// volume decision about traffic that worked, and this is a request that never
+    /// happened because Loom was in the path. An embedder with no row for it has the
+    /// same hole the operator had.
+    @Test func aCompletedHandshakeAfterAFailureStillRecordsOnlyOneRow() async throws {
+        let store = FlowStore()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            ClientTLSFailureReporter(host: "retry.example.test", port: 443,
+                                     log: TunneledHostLog(), store: store)
+        )
+
+        // A failing handshake raises several errors on its way down; the row count
+        // has to be per connection, like the log's `connections` tally.
+        channel.pipeline.fireErrorCaught(NIOSSLError.handshakeFailed(.sslError([])))
+        channel.pipeline.fireErrorCaught(NIOSSLError.handshakeFailed(.sslError([])))
+        channel.embeddedEventLoop.run()
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        let rows = await store.recent(limit: 20).filter { $0.request.method == "CONNECT" }
+        #expect(rows.count == 1)
+        _ = try? channel.finish()
+    }
+}

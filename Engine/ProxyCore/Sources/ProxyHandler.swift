@@ -445,14 +445,14 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                             client: clientChannel, store: self.store
                         )
                     }
-                    self.spliceRawBytes(client: clientChannel, upstream: upstream)
+                    self.spliceRawBytes(client: clientChannel, upstream: upstream, host: host, port: port)
                 case .failure:
                     clientChannel.close(promise: nil)
                 }
             }
     }
 
-    private func spliceRawBytes(client: Channel, upstream: Channel) {
+    private func spliceRawBytes(client: Channel, upstream: Channel, host: String, port: Int) {
         // Strip HTTP framing, glue the raw byte streams, then acknowledge the
         // CONNECT. The ack is written as raw bytes (not via HTTPResponseEncoder):
         // the encoder would chunk-frame a bodyless 200 and inject `0\r\n\r\n` into
@@ -461,7 +461,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             client.pipeline.removeHandler(name: name).recover { _ in () }
         }
         EventLoopFuture.andAllSucceed(removals, on: client.eventLoop).flatMap {
-            TunnelFlow.glue(client: client, upstream: upstream)
+            TunnelFlow.glue(client: client, upstream: upstream, host: host, port: port)
         }.whenComplete { result in
             switch result {
             case .success:

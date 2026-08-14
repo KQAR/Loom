@@ -290,7 +290,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         let store = self.store
         upstream.pipeline.removeHandler(probeHandler)
             .flatMap { client.pipeline.removeHandler(self) }
-            .flatMap { TunnelFlow.glue(client: client, upstream: upstream) }
+            .flatMap { TunnelFlow.glue(client: client, upstream: upstream, host: host, port: port) }
             .assumeIsolated()
             .whenComplete { result in
                 guard case .success = result else {
@@ -454,7 +454,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                         host: host, port: port, startedAt: startedAt, client: channel, store: store
                     )
                 }
-                return TunnelFlow.glue(client: channel, upstream: upstream)
+                return TunnelFlow.glue(client: channel, upstream: upstream, host: host, port: port)
             }
     }
 }
