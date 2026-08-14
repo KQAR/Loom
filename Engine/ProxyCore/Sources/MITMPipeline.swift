@@ -188,11 +188,22 @@ enum MITMPipeline {
 /// request never carries one), and having one definition means an embedder's
 /// `observeTunnels` means the same thing whichever listener the client used.
 enum TunnelFlow {
-    static func record(host: String, port: Int, startedAt: Date, store: FlowStore) {
+    /// - Parameter client: the channel the tunnel was opened on, for attribution. A
+    ///   tunnel carries no request head, so there is no `User-Agent` to type the device
+    ///   from and no `SourceApp` at all — but the peer's address is right there, and
+    ///   without it the row is unreachable from the surface it exists for: filtering the
+    ///   table to a device (the sidebar's most-used filter, and `get_recent_flows`'s
+    ///   `device_ip`) dropped every CONNECT row, so "what is this phone not showing me"
+    ///   answered nothing.
+    static func record(host: String, port: Int, startedAt: Date, client: Channel?, store: FlowStore) {
+        let device = client?.remoteAddress?.ipAddress.map { ip in
+            SourceDevice(ip: ip, kind: SourceDevice.kind(forIP: ip))
+        }
         let flow = Flow(
             request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
             startedAt: startedAt,
-            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date())
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
+            sourceDevice: device
         )
         Task { await store.upsert(flow) }
     }

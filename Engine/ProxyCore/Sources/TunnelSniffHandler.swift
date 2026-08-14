@@ -307,7 +307,9 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                 // "relayed" would claim activity the operator's client never got.
                 TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
                 if observeTunnels {
-                    TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
+                    TunnelFlow.record(
+                        host: host, port: port, startedAt: startedAt, client: client, store: store
+                    )
                 }
                 // Order matters: whatever the client managed to say before the
                 // greeting has to reach the server ahead of anything it says next,
@@ -448,7 +450,9 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             .connect(host: host, port: port)
             .flatMap { upstream in
                 if observeTunnels {
-                    TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
+                    TunnelFlow.record(
+                        host: host, port: port, startedAt: startedAt, client: channel, store: store
+                    )
                 }
                 return TunnelFlow.glue(client: channel, upstream: upstream)
             }

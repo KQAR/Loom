@@ -440,7 +440,10 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 switch result {
                 case let .success(upstream):
                     if self.observeTunnels {
-                        TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: self.store)
+                        TunnelFlow.record(
+                            host: host, port: port, startedAt: startedAt,
+                            client: clientChannel, store: self.store
+                        )
                     }
                     self.spliceRawBytes(client: clientChannel, upstream: upstream)
                 case .failure:
