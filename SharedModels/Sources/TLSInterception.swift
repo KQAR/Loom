@@ -345,12 +345,25 @@ public struct SSLScope: Equatable, Codable, Sendable {
     /// An `exclude` is still added in the one case where removing cannot finish the
     /// job: the host was covered by a *glob* (`*`, `*.corp`) that belongs to some
     /// broader intent, so narrowing it is not this call's business.
+    ///
+    /// `host` may itself be a glob — the request table's "Pass Through `*.parent`"
+    /// item. Matching that string as a hostname never finds the literal include
+    /// entries it covers (`api.example.com` is not equal to `*.example.com`), so
+    /// those have to be dropped explicitly. A wider include glob still standing
+    /// (`*`) takes the exclude path above.
     public mutating func stopIntercepting(host: String) -> StopInterceptOutcome {
         var outcome = StopInterceptOutcome()
         let exact = include.filter { $0.lowercased() == host.lowercased() }
         if !exact.isEmpty {
             include.removeAll { $0.lowercased() == host.lowercased() }
             outcome.removedIncludes = exact
+        }
+        if !Glob.pattern(for: host).isLiteral {
+            let covered = include.filter { Glob.matches(host, $0) }
+            if !covered.isEmpty {
+                include.removeAll { Glob.matches(host, $0) }
+                outcome.removedIncludes.append(contentsOf: covered)
+            }
         }
         // Re-read rather than reason about it, for the same reason `intercept` does.
         if let glob = include.first(where: { Glob.matches($0, host) }) {

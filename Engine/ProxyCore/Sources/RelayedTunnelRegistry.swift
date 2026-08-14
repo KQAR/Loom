@@ -74,20 +74,33 @@ final class RelayedTunnelRegistry: Sendable {
     /// decrypting `*.corp` has to end the tunnels to `api.corp` and `cdn.corp` as
     /// well, or the one write the operator made covers a domain while its live
     /// connections stay opaque.
+    @discardableResult
+    func closeTunnels(matching pattern: String) -> Int {
+        closeTunnels { Glob.matches(pattern, $0.host) }
+    }
+
+    /// Close every open relayed tunnel that `scope` would now decrypt.
     ///
+    /// `setSSLScope` is a wholesale replace, so it cannot name one host the way
+    /// `interceptHost` does. Closing every tunnel whose host `shouldIntercept`
+    /// would now read is the same rule applied to the resulting scope: a host
+    /// still excluded, or still unnamed, reconnects into another relay and the
+    /// close would cost the client a reconnect for nothing.
+    @discardableResult
+    func closeTunnels(interceptedBy scope: SSLScope) -> Int {
+        closeTunnels { scope.shouldIntercept(host: $0.host) }
+    }
+
     /// The close is `nil`-promised and the entry is removed by the channel's own
     /// `closeFuture`, not here — a close that is already in flight, or a channel that
     /// died a microsecond ago, must not be a second removal path with its own
     /// ordering. The count is of tunnels this call asked to close.
-    @discardableResult
-    func closeTunnels(matching pattern: String) -> Int {
+    private func closeTunnels(where matches: (Entry) -> Bool) -> Int {
         // Snapshot under the lock, close outside it: `close` hops to each channel's
         // event loop and may complete inline, and running a completion that re-enters
         // this lock while it is held is the deadlock the two-section shape avoids
         // (ProxyCore/CLAUDE.md § Sendable escape hatches).
-        let doomed = entries.withLock { entries in
-            entries.values.filter { Glob.matches(pattern, $0.host) }
-        }
+        let doomed = entries.withLock { $0.values.filter(matches) }
         for entry in doomed {
             Log.tls.error("""
             Closing the relayed tunnel to \(entry.host, privacy: .public):\(entry.port, privacy: .public) \

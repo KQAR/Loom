@@ -32,9 +32,12 @@ struct CaptureStageRuleTests {
         )
     }
 
-    private func store(_ rules: [TrafficRule], enabled: Bool = true) -> FlowStore {
+    private func store(
+        _ rules: [TrafficRule], enabled: Bool = true, disabledGroups: Set<String?> = []
+    ) -> FlowStore {
         FlowStore(rules: RulesConfig(
-            state: RulesState(enabled: enabled, rules: rules), fileURL: nil
+            state: RulesState(enabled: enabled, rules: rules, disabledGroups: disabledGroups),
+            fileURL: nil
         ))
     }
 
@@ -141,5 +144,62 @@ struct CaptureStageRuleTests {
         let store = store([mock])
         await store.upsert(flow("https://api.test/v1"))
         #expect(await store.recent(limit: 10).count == 1, "block stops the request, not the record")
+    }
+
+    /// An in-flight exchange whose id is already in the store is not dropped: a
+    /// completion upsert must still land, or a drop rule added mid-request freezes
+    /// a pending row forever — the same shape as pause (`recording`).
+    @Test func aPendingExchangeStillCompletesAfterADropRuleIsAdded() async {
+        let config = RulesConfig(state: RulesState(), fileURL: nil)
+        let store = FlowStore(rules: config)
+        let id = UUID()
+        await store.upsert(flow("https://api.test/v1", id: id))
+        #expect(await store.recent(limit: 10).count == 1)
+
+        config.replaceAll([dropRule(host: "api.test")])
+        await store.upsert(Flow(
+            id: id,
+            request: CapturedRequest(method: "GET", url: "https://api.test/v1", headers: []),
+            startedAt: Date(timeIntervalSince1970: 0),
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date())
+        ))
+
+        let landed = await store.recent(limit: 10)
+        #expect(landed.count == 1)
+        #expect(landed[0].response?.statusCode == 200)
+        #expect(await store.droppedFlowCount == 0)
+    }
+
+    /// `force` is an explicit action (replay, HAR import) that records even when a
+    /// rule would drop live traffic — otherwise `importFlows` reports success for
+    /// rows that never landed.
+    @Test func forceRecordsEvenWhenADropRuleMatches() async {
+        let store = store([dropRule(host: "sentry.example.test")])
+        await store.upsert(flow("https://sentry.example.test/envelope"), force: true)
+        #expect(await store.recent(limit: 10).count == 1)
+        #expect(await store.droppedFlowCount == 0)
+    }
+
+    /// Groups are a third switch, the same as `matchingRules`. A capture rule in a
+    /// disabled group must not drop.
+    @Test func aDisabledGroupDropsNothing() async {
+        let store = store(
+            [dropRule(host: "sentry.example.test", group: "noise")],
+            disabledGroups: ["noise"]
+        )
+        await store.upsert(flow("https://sentry.example.test/envelope"))
+        #expect(await store.recent(limit: 10).count == 1)
+        #expect(await store.droppedFlowCount == 0)
+    }
+
+    /// The counters are a session fact, like `TunneledHostLog`. `clearFlows` zeros
+    /// them, or a strip under the table keeps naming drops whose rows no longer exist.
+    @Test func clearZerosTheDropCounters() async {
+        let store = store([dropRule(host: "sentry.example.test")])
+        await store.upsert(flow("https://sentry.example.test/envelope"))
+        #expect(await store.droppedFlowCount == 1)
+        await store.clear()
+        #expect(await store.droppedFlowCount == 0)
+        #expect(await store.droppedCountsByRule.isEmpty)
     }
 }

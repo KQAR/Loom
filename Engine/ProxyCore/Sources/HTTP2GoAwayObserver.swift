@@ -13,7 +13,10 @@ import NIOHTTP2
 /// never sees it. Head-side of the codec the frame is already serialized, so reading
 /// the code means reading the wire format. Nine header bytes and two fields.
 ///
-/// Diagnostic only: it records and forwards, and nothing branches on what it saw.
+/// The reporter branches on the code (`compressionError` is the HPACK-limit
+/// downgrade; a frame-size or protocol violation is not). Recording without a
+/// reader would be the "log it for the human, return it for the agent" hole
+/// this observer was written to close.
 final class HTTP2GoAwayCode: @unchecked Sendable {
     /// Event-loop confined like the handlers that touch it.
     var code: HTTP2ErrorCode?
