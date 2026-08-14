@@ -60,13 +60,66 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
     private let host: String
     private let port: Int
     private let log: TunneledHostLog
+    /// Where the failed connection is recorded as a flow. Optional so the reporter
+    /// can be exercised on its own — every production path supplies one.
+    private let store: FlowStore?
+    /// When the connection reached this handler, so the row carries a duration.
+    private let startedAt = Date()
     /// One record per connection, not per raised error.
     private var reported = false
+    /// Whether any **stream** frame has reached this handler, i.e. whether the
+    /// connection ever carried a request. The discriminator for the downgrade below: a
+    /// codec error before the first one is the pre-ACK HPACK limit
+    /// (`HTTP2DowngradeRegistry`), and one after it is something else that must not
+    /// quietly change how the next connection is negotiated.
+    ///
+    /// **Stream frames only, and that distinction is the whole predicate.** Counting
+    /// *any* frame was the first version and it never fired: a client sends its
+    /// SETTINGS in the same write as its first HEADERS (RFC 9113 §3.4), that SETTINGS
+    /// reaches this handler, and the connection then looks like one that had already
+    /// worked. Connection-level frames — SETTINGS, PING, GOAWAY, a stream-0
+    /// WINDOW_UPDATE — are housekeeping and say nothing about whether a request
+    /// survived.
+    private var deliveredAStreamFrame = false
+    /// Where a downgrade decision is recorded, and the CA whose cached context has to
+    /// be dropped for it to take effect on the next connection.
+    private let downgrades: HTTP2DowngradeRegistry
+    private let certificateAuthority: CertificateAuthority?
+    /// The HTTP/2 error code NIOHTTP2 put in the GOAWAY it sent, if it sent one.
+    ///
+    /// **The code is the whole diagnosis and the error type does not carry it.**
+    /// `frameDecoder.nextFrame()` throws `InternalError.codecError(code:)` from about
+    /// forty places, and `NIOHTTP2Handler` turns every one of them into the same
+    /// `NIOHTTP2Errors.unableToParseFrame()` — the code goes into the GOAWAY frame
+    /// and nowhere else. So a report without it says "Loom's codec refused this
+    /// connection" and cannot distinguish an HPACK dynamic-table desync
+    /// (`compressionError`) from a frame larger than the advertised maximum
+    /// (`frameSizeError`) from an illegal frame on stream 0 (`protocolError`) —
+    /// three different bugs with three different owners.
+    ///
+    /// Filled in by `HTTP2GoAwayObserver`, which sits head-side of the codec — the
+    /// only position from which that frame is visible. This handler is at the tail,
+    /// where `NIOHTTP2Handler`'s own outbound writes never arrive.
+    private let goAway: HTTP2GoAwayCode
 
-    init(host: String, port: Int, log: TunneledHostLog = .shared) {
+    init(
+        host: String, port: Int, log: TunneledHostLog = .shared,
+        store: FlowStore? = nil, goAway: HTTP2GoAwayCode = HTTP2GoAwayCode(),
+        downgrades: HTTP2DowngradeRegistry = .shared,
+        certificateAuthority: CertificateAuthority? = nil
+    ) {
+        self.downgrades = downgrades
+        self.certificateAuthority = certificateAuthority
         self.host = host
         self.port = port
         self.log = log
+        self.store = store
+        self.goAway = goAway
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        if Self.unwrapInboundIn(data).streamID != .rootStream { deliveredAStreamFrame = true }
+        context.fireChannelRead(data)
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
@@ -87,8 +140,18 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
         case .connectionFatal:
             if !reported {
                 reported = true
-                let detail = Self.describe(error)
+                let detail = Self.describe(error, goAwayCode: goAway.code)
+                downgradeIfHPACKRefusedTheFirstHeaderBlock()
                 log.record(host: host, port: port, reason: .protocolError, detail: detail)
+                // And as a row, for the same reason `ClientTLSFailureReporter`
+                // records one: the console holds the aggregate, the request table is
+                // where the operator is looking when a request produced nothing.
+                if let store {
+                    TunnelFlow.recordFailure(
+                        host: host, port: port, startedAt: startedAt, client: context.channel,
+                        error: "Loom could not read the HTTP/2 connection — \(detail)", store: store
+                    )
+                }
                 Log.proxy.error("""
                 HTTP/2 codec error on the intercepted connection to \
                 \(self.host, privacy: .public):\(self.port, privacy: .public) — \(detail, privacy: .public). \
@@ -102,6 +165,32 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
             // connection is still an answer where silence is not.
             context.close(promise: nil)
         }
+    }
+
+    /// Stop offering h2 to this host, for this session.
+    ///
+    /// **Three conditions, and each one narrows a way this could fire wrongly.** The
+    /// GOAWAY code must be `compressionError` — a frame-size or protocol violation is
+    /// the client's bug and hiding it behind a downgrade would be Loom lying about
+    /// whose fault it is. No *stream* frame may have been delivered, so this is the
+    /// connection's first header block, which is the only moment the pre-ACK limit
+    /// applies (see `deliveredAStreamFrame` — counting connection-level frames too
+    /// made this never fire). And it
+    /// runs once: `downgrade` reports whether it changed anything, and only then is the
+    /// cached TLS context dropped, because that context is what still advertises `h2`.
+    ///
+    /// What it costs is stated rather than hidden: the app now speaks HTTP/1.1 to Loom,
+    /// so it loses multiplexing and every flow on that host records `HTTP/1.1` as the
+    /// client protocol. That is true of what happened and false about what the client
+    /// would have done without Loom in the path, which is why the flows carry
+    /// `FlowTransport.clientProtocolDowngraded` and the log says so here.
+    private func downgradeIfHPACKRefusedTheFirstHeaderBlock() {
+        guard goAway.code == .compressionError, !deliveredAStreamFrame else { return }
+        guard downgrades.downgrade(host: host) else { return }
+        certificateAuthority?.invalidateContext(for: host)
+        Log.tls.error("""
+        Serving \(self.host, privacy: .public) as HTTP/1.1 from now on: Loom's HTTP/2 decoder         refused the first header block with COMPRESSION_ERROR, which is SwiftNIO's 16 KB HPACK         limit applying before the client ACKs Loom's SETTINGS (RFC 9113 §3.4 lets it send first).         The exchange is still decrypted and captured; the client leg is no longer the protocol         the app would have used, and every flow says so.
+        """)
     }
 
     enum Verdict: Equatable {
@@ -128,8 +217,12 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
     }
 
     /// Name the error the way `NIOHTTP2Errors` does — `excessivelyLargeHeaderBlock`
-    /// is the difference between "your client sent too much" and "Loom broke".
-    private static func describe(_ error: Error) -> String {
-        String(describing: type(of: error)) + ": " + String(describing: error)
+    /// is the difference between "your client sent too much" and "Loom broke" — and
+    /// append the GOAWAY code when there is one, because for `unableToParseFrame`
+    /// the type says nothing and the code says everything (see `goAwayCode`).
+    static func describe(_ error: Error, goAwayCode: HTTP2ErrorCode? = nil) -> String {
+        var detail = String(describing: type(of: error)) + ": " + String(describing: error)
+        if let goAwayCode { detail += " [GOAWAY \(goAwayCode)]" }
+        return detail
     }
 }

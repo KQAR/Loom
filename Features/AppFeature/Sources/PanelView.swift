@@ -284,11 +284,27 @@ public struct PanelView: View {
         return "\(count) rule\(count == 1 ? "" : "s") active — tap to disable all"
     }
 
-    private var httpsHelp: String {
-        guard store.setup.sslEnabled else { return "HTTPS interception is off — HTTPS is tunnelled blind" }
-        return store.setup.certificateStatus.trustState.isReady
-            ? "HTTPS interception on — decrypting"
-            : "HTTPS interception on, but Loom's root CA isn't trusted yet, so nothing decrypts"
+    /// Three ways for HTTPS to be unread, and the tile's fill can only say two of
+    /// them, so this says all three. The third is the **ordinary state of a fresh
+    /// install**: the switch on, the CA fine, and nothing named. This switch permits
+    /// decryption, the whitelist decides what gets decrypted, and both have to be
+    /// satisfied — "decrypting" there was true only while the scope seeded itself
+    /// with `*`.
+    private var httpsHelp: String { Self.httpsHelp(store.setup) }
+
+    /// Static so it can be checked without a store: it is four sentences chosen from
+    /// three pieces of state, which is the kind of thing that goes stale silently.
+    static func httpsHelp(_ setup: SetupFeature.State) -> String {
+        guard setup.sslEnabled else { return "HTTPS interception is off — HTTPS is tunnelled blind" }
+        guard setup.certificateStatus.trustState.isReady else {
+            return "HTTPS interception on, but Loom's root CA isn't trusted yet, so nothing decrypts"
+        }
+        if setup.interceptsEverything { return "HTTPS interception on — decrypting every host" }
+        let hosts = setup.sslScope.include.count
+        guard hosts > 0 else {
+            return "HTTPS interception on — no hosts decrypted yet. Right-click a relayed row in the main window to pick one."
+        }
+        return "HTTPS interception on — decrypting \(hosts) host\(hosts == 1 ? "" : "s")"
     }
 
     /// Carries what the tile's fill cannot, in the place a pure-icon control can
@@ -441,7 +457,8 @@ public struct PanelView: View {
             PanelRow(
                 kind: .expand(isExpanded: store.setup.sslScopeExpanded),
                 icon: "list.bullet.rectangle",
-                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty ? nil : LoomTheme.Palette.warning,
+                iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty
+                    && store.setup.brokenHosts.isEmpty ? nil : LoomTheme.Palette.warning,
                 title: "SSL Scope",
                 detail: sslScopeDetail,
                 help: "Hosts Loom passes through instead of decrypting, and what it saw but couldn't read"
@@ -456,14 +473,24 @@ public struct PanelView: View {
         }
     }
 
-    /// The scope in one phrase, plus anything unread that nobody asked for.
+    /// The scope in one phrase, plus anything unread that nobody asked for, plus
+    /// anything Loom outright broke.
     ///
-    /// That second number is the load-bearing half — it is the only hint on a collapsed
-    /// console that a capture is thinner than it looks — and it deliberately counts
-    /// only the *unexpected* ones: with the default scope covering everything, an
-    /// excluded pass-through is the configuration working, and counting it here would
-    /// teach the human to ignore the number.
+    /// Those trailing numbers are the load-bearing half — they are the only hint on a
+    /// collapsed console that a capture is thinner than it looks — and `unread`
+    /// deliberately counts only the *unexpected* ones: an excluded pass-through is the
+    /// configuration working whatever the scope, and counting
+    /// it here would teach the human to ignore the number — and under a whitelist so
+    /// is a host nobody named, which is what `unexpectedlyUnreadHosts` is scope-aware
+    /// for. `refused` is a different event, not a subset: an unread origin's request
+    /// still reached it, a refused one's never left the client.
+    ///
+    /// `refused` is a separate word from `unread` because it is a separate event: an
+    /// unread origin's request still reached it, a refused one's never left the
+    /// client. Collapsing them would make the console say "3 unread" about traffic
+    /// that did not happen. It comes first for the same reason.
     private var sslScopeDetail: String {
+        let broken = store.setup.brokenHosts.count
         let unread = store.setup.unexpectedlyUnreadHosts.count
         let head: String
         if store.setup.interceptsEverything {
@@ -473,7 +500,10 @@ public struct PanelView: View {
             let covered = store.setup.sslScope.include.count
             head = covered == 0 ? "none" : "\(covered) host\(covered == 1 ? "" : "s")"
         }
-        return unread > 0 ? "\(head) · \(unread) unread" : head
+        var flags: [String] = [head]
+        if broken > 0 { flags.append("\(broken) refused") }
+        if unread > 0 { flags.append("\(unread) unread") }
+        return flags.joined(separator: " · ")
     }
 
     /// Mutual TLS — the identity Loom presents *to* an origin, the mirror of the root

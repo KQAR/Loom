@@ -47,9 +47,17 @@ enum CapturedExchange {
         /// TLS the client negotiated with Loom's leaf, or nil for cleartext.
         let tlsVersion: String?
 
-        init(httpVersion: String, tlsVersion: String? = nil) {
+        /// Whether this leg is HTTP/1.1 only because Loom withheld ALPN `h2` from
+        /// the host (`HTTP2DowngradeRegistry`). Stated by the entry point, like
+        /// `httpVersion` itself — a downgraded leg is indistinguishable from an h1
+        /// client once the request is in hand, which is exactly why it has to be
+        /// recorded where the decision is known.
+        let downgraded: Bool
+
+        init(httpVersion: String, tlsVersion: String? = nil, downgraded: Bool = false) {
             self.httpVersion = httpVersion
             self.tlsVersion = tlsVersion
+            self.downgraded = downgraded
         }
 
         /// The client leg as a transport reading. Never empty — the HTTP version
@@ -57,8 +65,11 @@ enum CapturedExchange {
         /// there is nothing to say, so a plaintext exchange doesn't get an empty
         /// transport that reads as "measured, and nothing there".
         var transport: FlowTransport? {
-            guard let tlsVersion else { return nil }
-            return FlowTransport(clientTLSVersion: tlsVersion)
+            guard tlsVersion != nil || downgraded else { return nil }
+            return FlowTransport(
+                clientTLSVersion: tlsVersion,
+                clientProtocolDowngraded: downgraded ? true : nil
+            )
         }
     }
 

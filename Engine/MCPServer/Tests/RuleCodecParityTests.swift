@@ -53,6 +53,7 @@ import Testing
                 "is_regex": true, "case_sensitive": false,
             ]],
             "delay_ms": 250,
+            "drop_from_capture": true,
         ]
         switch route {
         case .passthrough:
@@ -187,6 +188,7 @@ import Testing
         #expect(responseSub.caseSensitive == false)
 
         #expect(rule.actions.delayMilliseconds == 250)
+        #expect(rule.actions.dropFromCapture)
     }
 
     /// The four match styles, each spelled the way an agent would. The older

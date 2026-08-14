@@ -1,5 +1,6 @@
 import Foundation
 import NIOCore
+import NIOEmbedded
 import NIOPosix
 import Testing
 @testable import LoomProxyCore
@@ -213,5 +214,127 @@ struct TunneledHostLogTests {
         // reason `EngineTeardown.swift` gives: a `defer` cannot await, and the
         // blocking bridge that let it try parks a cooperative-pool thread.
         await engine.stopForTest()
+    }
+}
+
+/// Clearing the capture is "forget what this session saw", and this log is part of
+/// the session.
+///
+/// It used to survive a clear, which left the console reporting origins — with
+/// `connections` counts and an orange icon — whose rows no longer existed anywhere.
+/// The two surfaces then answered the same question differently, which is the exact
+/// failure the tunnelled-host log was written to prevent, reintroduced from the other
+/// side.
+@Suite("Clearing forgets both surfaces", .serialized)
+struct ClearForgetsTunneledHostsTests {
+    @Test func clearFlowsAlsoEmptiesTheTunneledHostLog() async throws {
+        let engine = ProxyEngine(persistFlows: false)
+        defer { TunneledHostLog.shared.reset() }
+        TunneledHostLog.shared.reset()
+        TunneledHostLog.shared.record(host: "relayed.example.test", port: 443, reason: .notInScope)
+        #expect(await engine.tunneledHosts().hosts.isEmpty == false)
+
+        await engine.clearFlows()
+
+        #expect(await engine.tunneledHosts().hosts.isEmpty,
+                "a console still naming hosts whose rows were just cleared is two answers to one question")
+        #expect(await engine.recentFlows(limit: 10).isEmpty)
+    }
+}
+
+/// Decrypting a host has to end the connections that are already relaying it.
+///
+/// A relayed tunnel is a byte splice, so the requests inside it are invisible for its
+/// whole life, and an HTTP client reuses the connection it has — measured on a real
+/// app, seven requests over two connections, and a home screen refreshed repeatedly on
+/// a connection opened minutes earlier. Without this, an operator clicks Decrypt and
+/// watches nothing happen until their client's pool turns over: the setting correct
+/// and the surface empty.
+@Suite("Decrypting ends the relayed tunnels", .serialized)
+struct RelayedTunnelRegistryTests {
+    /// A channel that only has to be closeable and identifiable.
+    ///
+    /// Closure is asserted through `closeFuture`, not `isActive`: an `EmbeddedChannel`
+    /// is inactive until it is connected, so `isActive == false` is true of one that
+    /// was never touched and would pass whatever this code did.
+    private func channel() -> EmbeddedChannel { EmbeddedChannel() }
+
+    private func isClosed(_ watch: ChannelCloseWatch, _ channel: EmbeddedChannel) -> Bool {
+        channel.embeddedEventLoop.run()
+        return watch.closed
+    }
+
+    @Test func decryptingAHostClosesItsOpenTunnels() throws {
+        let registry = RelayedTunnelRegistry()
+        let doomed = channel(), spared = channel()
+        let doomedWatch = ChannelCloseWatch(doomed), sparedWatch = ChannelCloseWatch(spared)
+        registry.register(host: "api.example.test", port: 443, client: doomed)
+        registry.register(host: "other.example.test", port: 443, client: spared)
+
+        #expect(registry.closeTunnels(matching: "api.example.test") == 1)
+        #expect(isClosed(doomedWatch, doomed))
+        #expect(isClosed(sparedWatch, spared) == false, "a host nobody decrypted keeps its connection")
+        #expect(registry.count == 1, "and only the closed one leaves the registry")
+        _ = try? spared.finish()
+    }
+
+    /// An include entry is a **glob**, so decrypting `*.corp` has to end the tunnels
+    /// to every host it covers — otherwise the one write the operator made covers a
+    /// domain while its live connections stay opaque.
+    @Test func aGlobClosesEveryTunnelItCovers() throws {
+        let registry = RelayedTunnelRegistry()
+        let a = channel(), b = channel(), outside = channel()
+        let wa = ChannelCloseWatch(a), wb = ChannelCloseWatch(b), wo = ChannelCloseWatch(outside)
+        registry.register(host: "api.corp", port: 443, client: a)
+        registry.register(host: "cdn.corp", port: 8443, client: b)
+        registry.register(host: "api.other", port: 443, client: outside)
+
+        #expect(registry.closeTunnels(matching: "*.corp") == 2)
+        #expect(isClosed(wa, a))
+        #expect(isClosed(wb, b), "the port is not part of the decision — a host is")
+        #expect(isClosed(wo, outside) == false)
+        _ = try? outside.finish()
+    }
+
+    /// Matched case-insensitively, because DNS is and nothing normalizes what a client
+    /// put in its `CONNECT` line.
+    @Test func hostsMatchCaseInsensitively() throws {
+        let registry = RelayedTunnelRegistry()
+        let c = channel()
+        let watch = ChannelCloseWatch(c)
+        registry.register(host: "API.Example.Test", port: 443, client: c)
+        #expect(registry.closeTunnels(matching: "api.example.test") == 1)
+        #expect(isClosed(watch, c))
+    }
+
+    /// Entries remove themselves when the tunnel ends on its own, which is nearly all
+    /// of them. Without that the registry would grow for the life of the process and
+    /// hold a reference to every socket ever spliced.
+    @Test func aClosedTunnelLeavesTheRegistry() throws {
+        let registry = RelayedTunnelRegistry()
+        let c = channel()
+        registry.register(host: "api.example.test", port: 443, client: c)
+        #expect(registry.count == 1)
+
+        _ = try? c.finish()
+        c.embeddedEventLoop.run()
+        #expect(registry.count == 0)
+        #expect(registry.closeTunnels(matching: "api.example.test") == 0)
+    }
+
+    /// A host with nothing open is the ordinary case and must not look like an error.
+    @Test func decryptingAQuietHostClosesNothing() {
+        #expect(RelayedTunnelRegistry().closeTunnels(matching: "never.seen.test") == 0)
+    }
+}
+
+/// `EventLoopFuture` has no "did it complete" query in this NIO version, and
+/// `EmbeddedChannel.isActive` is false for a channel that was never connected — so a
+/// naive `isActive == false` passes whatever the code under test did. This records
+/// the closure as it happens.
+final class ChannelCloseWatch: @unchecked Sendable {
+    private(set) var closed = false
+    init(_ channel: EmbeddedChannel) {
+        channel.closeFuture.whenComplete { [self] _ in closed = true }
     }
 }

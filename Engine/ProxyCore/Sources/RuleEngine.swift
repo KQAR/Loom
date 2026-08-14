@@ -42,6 +42,29 @@ enum RuleEngine {
     /// `origin` (who sent the request) participates in matching, so a rule can be
     /// scoped to one app or device; nil means "unknown client", which an
     /// origin-scoped rule deliberately never matches.
+    /// The first rule whose `dropFromCapture` matches this flow, or nil.
+    ///
+    /// **A second stage, not a second engine**: same list, same matcher, same master
+    /// switch (`state.enabled`) and same per-rule/-group enablement, evaluated where
+    /// the decision belongs — `FlowStore.upsert`, the one call every producer arrives
+    /// through. Returns the rule rather than a `Bool` so the drop can be counted
+    /// against it: a dropped flow carries no `appliedRules`, so that counter is the
+    /// only place a capture rule can be audited.
+    ///
+    /// Takes the flow rather than a prepared context because it runs on the store's
+    /// actor once per exchange, not on the event loop per rule — the preparation
+    /// `matchingRules` needs would cost more than it saves here.
+    static func captureDropRule(state: RulesState, flow: Flow) -> TrafficRule? {
+        guard state.enabled else { return nil }
+        guard let url = URL(string: flow.request.url) else { return nil }
+        var context = RequestMatchContext(method: flow.request.method, url: url.absoluteString)
+        let origin = RequestOrigin(app: flow.sourceApp, device: flow.sourceDevice)
+        for rule in state.rules where rule.isEnabled && rule.actions.dropFromCapture {
+            if rule.match.matches(&context, origin: origin) { return rule }
+        }
+        return nil
+    }
+
     static func matchingRules(
         state: RulesState, method: String, url: URL, origin: RequestOrigin? = nil
     ) -> [TrafficRule] {

@@ -322,6 +322,13 @@ extension MCPToolExecutor {
             name: "get_recent_flows",
             description: """
             List captured HTTP flows, newest first, with method, url, status, timing and startedAt. \
+            A `CONNECT` entry is **not an exchange**: it is one HTTPS connection Loom did not \
+            decrypt. It has no headers or body by construction — the row *is* the record. Its \
+            `error` says which kind: absent means relayed (nobody named the host — the scope is a \
+            whitelist, so this is the ordinary state — or it was excluded), present means Loom \
+            tried and the connection failed, i.e. that request never reached the origin. \
+            `intercept_host` the host and have the client run again to get real exchanges, or \
+            filter these out with `method: ["GET", "POST", ...]` when you only want content. \
             Filters (all optional, ANDed) are applied across every retained flow BEFORE `limit`, \
             so a match that isn't among the newest exchanges is still found — prefer filtering here \
             over pulling a big list and scanning it yourself. "Retained" means memory **and** the \
@@ -690,10 +697,12 @@ extension MCPToolExecutor {
             description: """
             Get the SSL-proxying scope: whether interception is enabled and the include/exclude \
             host globs. Hosts matching an include glob (and no exclude glob) are MITM-decrypted; \
-            everything else is blind-tunneled. The default is `include: ["*"]`, so a host is \
-            usually missing because someone put it in `exclude` — a client that carries its own \
-            certificate store (a JVM, Python, Go) or a pinned host has to be carved out or it \
-            fails its handshake.
+            everything else is blind-tunneled. **The scope is a whitelist: `include` starts \
+            empty and nothing is decrypted until a host is named** (`intercept_host`). So a host \
+            missing from the capture is the ordinary case, not a misconfiguration — read \
+            `tunneledHosts` below and decrypt what you need. This also means a client that \
+            carries its own certificate store (a JVM, Python, Go) or pins its certificate keeps \
+            working until someone asks Loom to decrypt it.
 
             `tunneledHosts` is how you tell a carve-out from an idle client: one entry per origin \
             Loom relayed without reading, newest first, with `connections`, `lastSeen` and a \
@@ -703,8 +712,9 @@ extension MCPToolExecutor {
             SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
             scope change will. Two reasons mean the traffic did not merely go unread — the \
             request never happened and the operator's page is broken: `clientHandshakeFailed` \
-            (the client refused Loom's leaf and hung up before sending anything; fix is an \
-            `exclude` entry or trusting Loom's CA in that client) and `protocolError` (Loom's \
+            (the client refused Loom's leaf and hung up before sending anything; fix is trusting \
+            Loom's CA in that client, or removing the host from `include` so it is relayed \
+            untouched) and `protocolError` (Loom's \
             HTTP/2 codec could not read the connection and closed it; `detail` carries the \
             codec's own error). Both carry `detail`, and both clear themselves once a client \
             completes a handshake against Loom's leaf on that host. Read this before concluding \
@@ -724,7 +734,16 @@ extension MCPToolExecutor {
             someone carved into `exclude` that you now need to read.
 
             Only affects connections made AFTER the call; an exchange already relayed is gone, so \
-            re-run the client. The reply says what it took: `effective` (false when a wildcard \
+            **re-run the client** — under a whitelist scope that is the normal loop, not an \
+            error: drive the client once, read `get_ssl_scope.tunneledHosts` for the origins it \
+            touched, decrypt the ones you need, drive it again. There is no way to recover the \
+            first run's bodies. You do NOT need to restart the client, though: any relayed \
+            connection still open to that host is closed by this call (`closedTunnels` says how \
+            many), so the client reconnects into an intercepted connection by itself — without \
+            that, a pooled connection opened before the call stays opaque for its whole life and \
+            the scope change looks like it did nothing. A request in flight on a closed \
+            connection is retried by the client or fails. The reply says what it took: \
+            `effective` (false when a wildcard \
             `exclude` still shadows the host — `shadowedByExclude` names it, and only whoever \
             wrote that glob should narrow it), `alreadyIncluded`, `enabledInterception`, \
             `removedExcludes`, plus the resulting scope. Decrypting also needs Loom's root CA \
@@ -743,7 +762,15 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "set_ssl_scope",
-            description: "Set the SSL-proxying scope. Enables/disables HTTPS interception and replaces the include/exclude host globs (e.g. \"*.example.com\"). exclude doubles as the pinned/pass-through list. This is a write action.",
+            description: """
+            Set the SSL-proxying scope. Enables/disables HTTPS interception and REPLACES the \
+            include/exclude host globs (e.g. "*.example.com"). `include` is a whitelist and is \
+            empty by default — passing `include: ["*"]` decrypts everything, which is a \
+            deliberate setting rather than a default, and it breaks any client on the machine \
+            that doesn't trust Loom's CA. Prefer `intercept_host` for one host: it adds rather \
+            than replaces, and can't lose a concurrent edit from the console. `exclude` is only \
+            needed to punch a hole in a glob you put in `include`. This is a write action.
+            """,
             inputSchema: .object([
                 "enabled": .boolean("Master switch for HTTPS interception."),
                 "include": .array(
@@ -1041,6 +1068,17 @@ extension MCPToolExecutor {
             "response_substitutions": Self.substitutionsSchema(
                 "Find/replace substitutions on the returned response (\"modify response\"). Applied in order."),
             "delay_ms": .integer("Hold the response back this many milliseconds (crude throttle)."),
+            "drop_from_capture": .boolean("""
+                Do not RECORD matching exchanges. The request is forwarded and answered exactly \
+                as it would be without the rule — this is the noise filter, not `block`, which \
+                stops the request from happening. Matching flows never enter the store, so this \
+                read, get_recent_flows, the main window and the on-disk capture agree by \
+                construction; nothing arriving while the rule is on can be recovered, and \
+                disabling it affects the next request, never the last one. `list_rules` reports \
+                what each such rule has dropped, and `get_proxy_status.droppedByRules` the total \
+                — that count is the only trace, so read it before concluding a host made no \
+                requests. Obeys the rules master switch like every other action.
+                """),
         ],
         description: "What to do with matching traffic. Set any combination. block beats mock_response beats map_local when several short-circuits match; request rewrites compose in rule order."
     )

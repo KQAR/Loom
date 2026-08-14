@@ -290,7 +290,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         let store = self.store
         upstream.pipeline.removeHandler(probeHandler)
             .flatMap { client.pipeline.removeHandler(self) }
-            .flatMap { TunnelFlow.glue(client: client, upstream: upstream) }
+            .flatMap { TunnelFlow.glue(client: client, upstream: upstream, host: host, port: port) }
             .assumeIsolated()
             .whenComplete { result in
                 guard case .success = result else {
@@ -307,7 +307,9 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                 // "relayed" would claim activity the operator's client never got.
                 TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
                 if observeTunnels {
-                    TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
+                    TunnelFlow.record(
+                        host: host, port: port, startedAt: startedAt, client: client, store: store
+                    )
                 }
                 // Order matters: whatever the client managed to say before the
                 // greeting has to reach the server ahead of anything it says next,
@@ -420,7 +422,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             let sslContext = try ca.serverContext(for: host)
             return MITMPipeline.installTLS(
                 channel: channel, host: host, port: port, sslContext: sslContext,
-                store: store, forwarder: forwarder
+                store: store, forwarder: forwarder, certificateAuthority: ca
             )
         } catch {
             Log.tls.error("""
@@ -452,9 +454,11 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             .connect(host: host, port: port)
             .flatMap { upstream in
                 if observeTunnels {
-                    TunnelFlow.record(host: host, port: port, startedAt: startedAt, store: store)
+                    TunnelFlow.record(
+                        host: host, port: port, startedAt: startedAt, client: channel, store: store
+                    )
                 }
-                return TunnelFlow.glue(client: channel, upstream: upstream)
+                return TunnelFlow.glue(client: channel, upstream: upstream, host: host, port: port)
             }
     }
 }

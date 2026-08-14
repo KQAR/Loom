@@ -63,6 +63,20 @@ public struct FlowTransport: Equatable, Codable, Sendable {
     /// completes, so the clock there measures the handshake — which
     /// `setup.tlsHandshakeMS` already reports, correctly and once.
     public var requestSendMS: Int?
+    /// The client leg is HTTP/1.1 **because Loom made it so**, not because the client
+    /// chose it.
+    ///
+    /// Loom withholds ALPN `h2` from a host whose first header block its HPACK decoder
+    /// refused (`HTTP2DowngradeRegistry` — SwiftNIO's 16 KB pre-ACK limit, an upstream
+    /// gap Loom has no knob for). The alternative is a connection that dies, so the
+    /// trade is worth taking; what it is not is invisible. `CapturedRequest
+    /// .httpVersion` then reads `HTTP/1.1`, which is true of what happened and **false
+    /// about what the app would have done** — and an operator comparing this capture
+    /// with production is measuring exactly that difference.
+    ///
+    /// `Bool?` rather than `Bool`: a flag that only ever means true adds a key that was
+    /// never there when it is false (AGENTS.md § renders).
+    public var clientProtocolDowngraded: Bool?
 
     public init(
         clientTLSVersion: String? = nil,
@@ -72,7 +86,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         responseContentEncoding: String? = nil,
         responseEncodedBodyBytes: Int? = nil,
         setup: ConnectionSetup? = nil,
-        requestSendMS: Int? = nil
+        requestSendMS: Int? = nil,
+        clientProtocolDowngraded: Bool? = nil
     ) {
         self.clientTLSVersion = clientTLSVersion
         self.remoteAddress = remoteAddress
@@ -82,6 +97,7 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         self.responseEncodedBodyBytes = responseEncodedBodyBytes
         self.setup = setup
         self.requestSendMS = requestSendMS
+        self.clientProtocolDowngraded = clientProtocolDowngraded
     }
 
     public var isEmpty: Bool { self == FlowTransport() }
@@ -100,7 +116,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
             responseContentEncoding: other.responseContentEncoding ?? responseContentEncoding,
             responseEncodedBodyBytes: other.responseEncodedBodyBytes ?? responseEncodedBodyBytes,
             setup: other.setup ?? setup,
-            requestSendMS: other.requestSendMS ?? requestSendMS
+            requestSendMS: other.requestSendMS ?? requestSendMS,
+            clientProtocolDowngraded: other.clientProtocolDowngraded ?? clientProtocolDowngraded
         )
     }
 }

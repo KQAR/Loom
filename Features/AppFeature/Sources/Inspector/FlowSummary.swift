@@ -168,6 +168,18 @@ struct FlowSummary: View {
             if let setup = transport.setup, let text = setupText(setup) { row("Setup", text) }
             if let send = transport.requestSendMS, send > 0 { row("Request sent in", "\(send) ms") }
             if let version = transport.clientTLSVersion { row("Client TLS", version) }
+            // **Loud, and in the warning colour**, because the row above it
+            // (`request.httpVersion`, "HTTP/1.1") is true about what happened and
+            // false about what the app would have done — and this pane is what
+            // someone reads when comparing a capture with production. A quiet row
+            // saying "downgraded" would be read as a property of the client.
+            if transport.clientProtocolDowngraded == true {
+                row(
+                    "Client protocol",
+                    "HTTP/1.1 — forced by Loom (its HTTP/2 decoder refused this host's header block)",
+                    color: LoomTheme.Palette.warning
+                )
+            }
             if let tls = transport.upstreamTLS { upstreamTLSRows(tls) }
         }
     }

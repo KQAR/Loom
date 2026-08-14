@@ -44,10 +44,14 @@ public struct SetupFeature: Sendable {
         public var certBusy = false               // a trust action is running
         public var certActionMessage: String?     // transient feedback under the cert card
 
-        /// Origins Loom saw and relayed without reading — excluded, or something it
-        /// can't read at any setting. The *only* thing standing between "nothing was
-        /// captured for this host" and "nothing happened", because a relayed connection
-        /// records no flow at all.
+        /// Origins Loom saw and relayed without reading — un-named, excluded, or
+        /// something it can't read at any setting.
+        ///
+        /// **Counted, no longer listed on the console.** The card used to render this
+        /// as its lead section; the request table shows the same origins one `CONNECT`
+        /// row at a time with the action attached, so what survives here is the two
+        /// numbers on the collapsed row (`unexpectedlyUnreadHosts`, `brokenHosts`) —
+        /// the only hint on a shut console that a capture is thinner than it looks.
         public var tunneledHosts: [TunneledHost] = []
         /// Dropped past the engine's 256-host cap — surfaced so a truncated list
         /// never reads as a complete one.
@@ -57,16 +61,13 @@ public struct SetupFeature: Sendable {
         public var sslScopeExpanded = false
         /// A glob the human is typing into the scope editor.
         public var sslScopeDraft = ""
+        /// Which list that glob joins. **Decrypt is the default**, which is the whole
+        /// difference the whitelist makes: under a wide scope an include entry is a
+        /// no-op and this field could only mean "pass through". Now the primary write
+        /// is the other one, and typing `*.corp.example` is how a project's whole
+        /// domain gets read in one go rather than one sub-domain per click.
+        public var sslScopeDraftDecrypts = true
         public var sslScopeMessage: String?
-        /// Whether the include/exclude lists are open inside the card.
-        ///
-        /// Collapsed by default because these lists have the opposite shape to the one
-        /// above them: the tunnelled list *shrinks* as hosts get decrypted (a decrypted
-        /// host drops out of it), while `exclude` only grows, gaining an entry every
-        /// time something breaks. They still have to be reachable — removing an entry is
-        /// the only way to start decrypting a host again, and this is the only place an
-        /// agent's scope write becomes visible to the human.
-        public var sslGlobsExpanded = false
 
         /// Hosts worth offering a one-click "decrypt" for — the rest are unread for
         /// reasons a scope change can't fix (`notTLSOrHTTP`, a failed leaf mint).
@@ -76,19 +77,51 @@ public struct SetupFeature: Sendable {
 
         /// Unread origins the operator did **not** ask for.
         ///
-        /// With the default scope decrypting everything, an `excluded` pass-through is
-        /// working as configured, and flagging it would train the human to ignore the
-        /// flag. What still deserves attention is an origin going unread for a reason
-        /// nobody chose — interception switched off, or a host somehow outside a scope
-        /// that is meant to cover everything.
+        /// Which reasons count **depends on the scope**, and getting that wrong makes
+        /// this number worthless in one direction or the other.
+        ///
+        /// An `excluded` pass-through was asked for under any scope. `notInScope` is
+        /// the ordinary state of every host nobody named under a whitelist — counting
+        /// it puts a permanent "67 unread" on the console, which is the "teach the
+        /// human to ignore the number" failure with a new cause — but means the
+        /// opposite under a wildcard include, where a host escaping a scope meant to
+        /// cover everything is a real anomaly.
+        ///
+        /// What is left under a whitelist is interception switched off entirely while
+        /// traffic arrives: the one case where the operator's *stated* intent and what
+        /// Loom is doing disagree.
         public var unexpectedlyUnreadHosts: [TunneledHost] {
-            tunneledHosts.filter { $0.interceptable && $0.reason != .excluded }
+            tunneledHosts.filter { entry in
+                guard entry.interceptable, entry.reason != .excluded else { return false }
+                if entry.reason == .notInScope, !interceptsEverything { return false }
+                return true
+            }
         }
 
-        /// Is the scope decrypting everything? The default, and not a problem in
-        /// itself — it is the reason a capture is complete out of the box. It only
-        /// decides wording: with `*` there is no include list worth reading, so the
-        /// summary talks about what is being *passed through* instead.
+        /// Origins whose traffic **failed**, as opposed to merely going unread.
+        ///
+        /// Every other entry in `tunneledHosts` is a pass-through: the request
+        /// reached the origin and Loom simply didn't read it. A refused handshake or
+        /// a rejected codec is the one where the request never happened — the
+        /// operator's client is broken *because Loom is in the path* — so it is the
+        /// most urgent thing this list can hold.
+        ///
+        /// It is deliberately not folded into `unexpectedlyUnreadHosts`: that one
+        /// asks "would decrypting this host help", and the answer here is no (these
+        /// are `interceptable == false`, which is why they went uncounted for four
+        /// releases while `TunneledHost.brokeTheClient` sat unused). The two need
+        /// different words on every surface — unread means Loom saw less than it
+        /// could, broken means the client saw nothing at all.
+        public var brokenHosts: [TunneledHost] {
+            tunneledHosts.filter(\.brokeTheClient)
+        }
+
+        /// Is the scope decrypting everything? **Not the default** — the scope is a
+        /// whitelist — but one deliberate setting away, and two surfaces read it: with
+        /// `*` there is no include list worth reading, so the summary talks about what
+        /// is being *passed through* instead, and `notInScope` flips from "the ordinary
+        /// state of an un-named host" to "a host escaped a scope meant to cover
+        /// everything" (see `unexpectedlyUnreadHosts`).
         public var interceptsEverything: Bool {
             sslScope.enabled && sslScope.include.contains("*")
         }
@@ -151,11 +184,16 @@ public struct SetupFeature: Sendable {
         case tunneledHostsTick
         case interceptHostTapped(String)
         case interceptFinished(host: String, outcome: InterceptOutcome)
-        /// "Never decrypt this" from a tunnelled row: moves the host to `exclude` so
-        /// it stops being offered. The list is a to-do list; this is how an item
-        /// leaves it without being intercepted.
+        /// "Never decrypt this" — from a tunnelled row on the console, and from a
+        /// captured row's context menu in the main window. Moves the host (or a glob
+        /// standing for a whole domain) to `exclude`, which is the one write that
+        /// stops decryption under a scope that otherwise covers everything.
+        ///
+        /// One action for both surfaces on purpose: the window is where the operator
+        /// *meets* the failure — a request that broke because Loom terminated its TLS
+        /// — and the console is where the resulting carve-out is read back. They must
+        /// not be able to disagree about what "pass this through" does.
         case excludeHostTapped(String)
-        case sslGlobsExpandTapped
         case sslScopeDraftChanged(String)
         /// Add a typed glob to `exclude`. The card's one text field feeds this rather
         /// than `include`, because with the default scope covering everything, adding
@@ -163,7 +201,14 @@ public struct SetupFeature: Sendable {
         /// *out* (a corporate mirror, a pinned host, an API called by a Python CLI).
         /// Adding to `include` is still reachable, from a tunnelled row's Decrypt.
         case addExcludeGlobTapped
+        /// Add the typed glob to `include`. A separate action from its opposite rather
+        /// than a parameter: they are different writes with different failure modes
+        /// (an include can be shadowed by an exclude; an exclude can't be shadowed by
+        /// anything), and each says so in its own message.
+        case addIncludeGlobTapped
+        case sslScopeDraftTargetChanged(Bool)
         case removeIncludeGlobTapped(String)
+
         case removeExcludeGlobTapped(String)
         case exportCATapped
         case caExported(URL?)
@@ -364,15 +409,21 @@ public struct SetupFeature: Sendable {
                 state.sslEnabled = enabling
                 var next = state.sslScope
                 next.enabled = enabling
-                // First time on with no scope: decrypt everything. A whitelist was
-                // tried and rejected as the default — it makes the common case
-                // "traffic happened and Loom read none of it" and costs a second run
-                // of the client to fix, because the bytes of the first one are gone.
-                // The cost of this direction is a client with its own certificate
-                // store (a JVM, Python, Go) failing at the client rather than here.
-                // Nothing is pre-excluded for it — the failure shows up as a flow with
-                // a TLS error, and the pass-through list is how it gets carved out.
-                if enabling, next.include.isEmpty { next.include = ["*"] }
+                // Nothing is seeded. The switch means "Loom may decrypt the hosts I
+                // name", not "decrypt everything" — Charles's model, and Proxyman's.
+                //
+                // The alternative shipped in this project twice and was measured
+                // twice: seeding `["*"]` makes Loom terminate TLS for every client on
+                // the machine, a connected phone's whole OS included, so an app under
+                // test could not be run until its origins had been carved out one at a
+                // time (67 refusing origins in one measured session). Its cost is
+                // stated rather than hidden: an un-named host's *first* run is
+                // unreadable and its bytes are gone, so a one-shot request — a login,
+                // a callback, a webhook — has to be triggered again after decrypting.
+                //
+                // What makes that liveable is that un-named is never invisible: every
+                // relayed origin is a CONNECT row in the request table and an entry in
+                // `tunneledHosts`, and both offer Decrypt.
                 state.sslScope = next
                 let scope = next
                 return .run { send in
@@ -424,19 +475,53 @@ public struct SetupFeature: Sendable {
 
             case let .excludeHostTapped(host):
                 var next = state.sslScope
-                next.include.removeAll { $0.lowercased() == host.lowercased() }
-                if !next.exclude.contains(where: { $0.lowercased() == host.lowercased() }) {
-                    next.exclude.append(host)
+                // **Removing the include entry, not adding an exclude** — see
+                // `SSLScope.stopIntercepting`. Under a whitelist an un-named host is
+                // already relayed, so the exclude is redundant *and* harmful: it is a
+                // standing carve-out that would silently beat a later re-add. It goes
+                // in only when a glob someone else wrote still covers the host, which
+                // removal cannot answer.
+                let outcome = next.stopIntercepting(host: host)
+                guard outcome.removedIncludes.isEmpty == false || outcome.addedExclude else {
+                    // Neither list changed: the scope already relayed this host.
+                    state.sslScopeMessage = "\(host) is already passed through."
+                    return .none
                 }
-                return persist(next, into: &state, message: "\(host) will be passed through untouched.")
-
-            case .sslGlobsExpandTapped:
-                state.sslGlobsExpanded.toggle()
-                return .none
+                return persist(next, into: &state, message: Self.excludeMessage(host: host, outcome: outcome))
 
             case let .sslScopeDraftChanged(text):
                 state.sslScopeDraft = text
                 return .none
+
+            case let .sslScopeDraftTargetChanged(decrypts):
+                state.sslScopeDraftDecrypts = decrypts
+                return .none
+
+            case .addIncludeGlobTapped:
+                let glob = state.sslScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.sslScopeDraft = ""
+                guard !glob.isEmpty else { return .none }
+                var next = state.sslScope
+                // Turning the switch on is part of the ask: a glob added while
+                // interception is off is a setting that silently does nothing.
+                next.enabled = true
+                // Case-insensitively, because DNS is and nothing normalizes what
+                // someone typed — and the message has to be the *outcome*, not a
+                // repeat of the success sentence, or a second Add on the same host
+                // reads as having done something.
+                guard !next.include.contains(where: { $0.lowercased() == glob.lowercased() }) else {
+                    // Still persisted rather than returned early: the entry was
+                    // already there, but `enabled` above may be the part that changed,
+                    // and dropping the write would leave the switch off with a list
+                    // saying the host is decrypted.
+                    return persist(next, into: &state, message: "\(glob) is already decrypted.")
+                }
+                next.include.append(glob)
+                // The mirror of the exclude path below: a stale exclude for the same
+                // pattern would beat the entry just added, so the two lists would
+                // disagree about a host the human just asked to read.
+                next.exclude.removeAll { $0.lowercased() == glob.lowercased() }
+                return persist(next, into: &state, message: Self.addIncludeMessage(glob: glob, scope: next))
 
             case .addExcludeGlobTapped:
                 let glob = state.sslScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -602,6 +687,39 @@ public struct SetupFeature: Sendable {
         }
     }
 
+    /// Write the ignore list and re-read it, for the same reason the scope's writes
+    /// do: the other writer is an agent (`set_ignored_hosts`), so a surface that
+    /// predicted the result would disagree with the engine after a concurrent write.
+    /// What a typed include glob will and won't cover.
+    ///
+    /// The one case worth a sentence is a wildcard `exclude` that still shadows it —
+    /// the same trap `intercept_host` reports as `effective: false`. The include list
+    /// will show the glob, which reads as done, while the traffic stays unread.
+    static func addIncludeMessage(glob: String, scope: SSLScope) -> String {
+        if let shadow = scope.exclude.first(where: { Glob.matches($0, glob) }) {
+            return "\(glob) is included but still passed through — “\(shadow)” excludes it."
+        }
+        return "Decrypting \(glob). Takes effect on the client's next connection — re-run it."
+    }
+
+    /// What a carve-out achieved, and — the load-bearing half — what it did *not*.
+    ///
+    /// Two things operators hit as "I clicked it and nothing changed", and the caveat
+    /// answers both: this decides how the **next** connection is treated, so a
+    /// connection the client already holds keeps the treatment it was opened under,
+    /// and the exchange that made someone reach for this is already over.
+    ///
+    /// The `shadowedByInclude` case is why this is prose rather than one sentence:
+    /// dropping the entry was not enough, so an exclude now stands that a later
+    /// "decrypt this host" would have to undo.
+    static func excludeMessage(host: String, outcome: StopInterceptOutcome) -> String {
+        let caveat = "Takes effect on the client's next connection — re-run it."
+        if let glob = outcome.shadowedByInclude {
+            return "\(host) is passed through, but “\(glob)” still decrypts it — added a carve-out to win. \(caveat)"
+        }
+        return "\(host) is no longer decrypted. \(caveat)"
+    }
+
     /// What an intercept actually achieved. The `shadowedByExclude` case is the whole
     /// reason this returns prose rather than nothing: the include list will show the
     /// host, which reads as done, while the traffic stays unread.
@@ -611,7 +729,17 @@ public struct SetupFeature: Sendable {
         }
         var note = "Decrypting \(host)."
         if outcome.enabledInterception { note += " HTTPS interception is now on." }
-        note += " Re-run your client — connections already made are gone."
+        // The second half is what operators hit as "I clicked it and nothing changed":
+        // the exchange that put the host on the list is gone, and a connection the
+        // client already holds would keep its old treatment until it closed. Closing
+        // those is what makes the next sentence "trigger it again" rather than
+        // "restart your app" — say so, because a client reconnecting on its own is
+        // otherwise indistinguishable from nothing having happened.
+        if outcome.closedTunnels > 0 {
+            let n = outcome.closedTunnels
+            note += " Closed \(n) open connection\(n == 1 ? "" : "s") to it, so the client will reconnect."
+        }
+        note += " Trigger the request again — the exchange that led you here is gone."
         return note
     }
 }

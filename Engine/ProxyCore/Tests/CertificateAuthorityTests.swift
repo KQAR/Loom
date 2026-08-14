@@ -1,4 +1,6 @@
 import Foundation
+import NIOCore
+import NIOEmbedded
 import NIOSSL
 import X509
 import Testing
@@ -201,5 +203,49 @@ import LoomSharedModels
         let scope = SSLScope(enabled: true, include: ["*.bank.com"], exclude: ["secure.bank.com"])
         #expect(scope.shouldIntercept(host: "app.bank.com"))
         #expect(!scope.shouldIntercept(host: "secure.bank.com"))
+    }
+}
+
+/// `intercept_host` reports the connections it ended, and only ends them when the
+/// write can actually take effect.
+@Suite("interceptHost ends relayed tunnels", .serialized)
+struct InterceptHostClosesTunnelsTests {
+    @Test func aShadowedInterceptClosesNothing() async {
+        // The host is in `include` but a wildcard `exclude` still relays it, so
+        // reconnecting would land the client straight back in a relayed tunnel:
+        // closing would cost it a reconnect and change nothing.
+        let engine = ProxyEngine(persistFlows: false)
+        defer { RelayedTunnelRegistry.shared.reset() }
+        RelayedTunnelRegistry.shared.reset()
+        let channel = EmbeddedChannel()
+        let watch = ChannelCloseWatch(channel)
+        RelayedTunnelRegistry.shared.register(host: "api.corp", port: 443, client: channel)
+
+        await engine.setSSLScope(SSLScope(enabled: true, include: [], exclude: ["*.corp"]))
+        let outcome = await engine.interceptHost("api.corp")
+
+        #expect(outcome.effective == false)
+        #expect(outcome.closedTunnels == 0)
+        channel.embeddedEventLoop.run()
+        #expect(watch.closed == false, "the connection would only be relayed again")
+        _ = try? channel.finish()
+    }
+
+    @Test func anEffectiveInterceptReportsWhatItClosed() async {
+        let engine = ProxyEngine(persistFlows: false)
+        defer { RelayedTunnelRegistry.shared.reset() }
+        RelayedTunnelRegistry.shared.reset()
+        let channel = EmbeddedChannel()
+        let watch = ChannelCloseWatch(channel)
+        RelayedTunnelRegistry.shared.register(host: "api.example.test", port: 443, client: channel)
+
+        await engine.setSSLScope(SSLScope(enabled: true, include: []))
+        let outcome = await engine.interceptHost("api.example.test")
+
+        #expect(outcome.effective)
+        #expect(outcome.closedTunnels == 1,
+                "a scope write that also ends a live connection has to say so")
+        channel.embeddedEventLoop.run()
+        #expect(watch.closed)
     }
 }

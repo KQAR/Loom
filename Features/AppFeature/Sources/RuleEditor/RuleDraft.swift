@@ -100,6 +100,11 @@ struct RuleDraft {
     /// the same reason the line and header sections don't have one — an empty
     /// field already says it.
     var delayMs: String
+    /// Stop *recording* matching exchanges. In Advanced because it is the one action
+    /// that changes nothing about the traffic — the request is forwarded and answered
+    /// exactly as it would be without the rule — so it does not belong in the route
+    /// segments beside mock/block/redirect, which all do.
+    var dropFromCapture: Bool
 
     init(rule: TrafficRule) {
         id = rule.id
@@ -204,6 +209,7 @@ struct RuleDraft {
         carriedResponseRewrite = (mock != nil || local != nil || route == .block) ? rewriteResp : nil
 
         delayMs = a.delayMilliseconds.map(String.init) ?? ""
+        dropFromCapture = a.dropFromCapture
     }
 
     func build() -> Result<TrafficRule, RuleDraftError> {
@@ -329,6 +335,7 @@ struct RuleDraft {
             }
             actions.delayMilliseconds = ms
         }
+        actions.dropFromCapture = dropFromCapture
 
         let trimmedGroup = group.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedComment = comment.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -443,8 +450,11 @@ struct RuleDraft {
     /// badge on its collapsed header, so a delay set by an agent isn't hidden
     /// behind a closed disclosure with nothing to say it is there.
     var advancedSummary: String {
+        var parts: [String] = []
         let trimmed = delayMs.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? "" : "delay \(trimmed)ms"
+        if !trimmed.isEmpty { parts.append("delay \(trimmed)ms") }
+        if dropFromCapture { parts.append("not captured") }
+        return parts.joined(separator: " · ")
     }
 
     /// Which parts of each message the rule actually edits — the dots on the two

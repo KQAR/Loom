@@ -34,6 +34,11 @@ extension PanelTile.Mode {
     /// is `trustState.isReady` — the same one that decides whether the CA-trust
     /// card is showing, because a warning tile whose repair card isn't visible
     /// is a dead end.
+    ///
+    /// An **empty whitelist** also decrypts nothing and deliberately does *not* warn:
+    /// an untrusted CA defeats something the operator asked for, an empty `include` is
+    /// the operator not having asked yet, and orange on the state every fresh install
+    /// starts in is how a colour stops being read. The tile's `help` says it instead.
     static func https(sslEnabled: Bool, trust: CertificateTrustState) -> Self {
         guard sslEnabled else { return .off }
         return trust.isReady ? .on : .warning

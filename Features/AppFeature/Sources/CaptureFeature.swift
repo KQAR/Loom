@@ -651,6 +651,18 @@ public struct CaptureFeature: Sendable {
         /// gesture is here (it is a row's context menu) and the editor is the parent's,
         /// so the rule travels up as a delegate.
         case addRuleFromFlow(Flow.ID, RuleTemplate)
+        /// Pass a host (or a `*.parent` glob) through instead of decrypting it, picked
+        /// off a captured row. Same shape as `addRuleFromFlow`: the gesture is a row's
+        /// context menu and the thing it writes (the SSL scope) belongs to
+        /// `SetupFeature`, so it travels up.
+        case excludeHostTapped(String)
+        /// The opposite write, off a relayed `CONNECT` row — the table's answer to
+        /// "Loom passed this through and I want to read it", and the primary one under
+        /// a whitelist scope.
+        case decryptHostTapped(String)
+        /// Stop capturing a host entirely. A different axis from the two above: those
+        /// decide whether Loom decrypts, this decides whether it records.
+        case ignoreHostTapped(String)
         case flowReceived(Flow)
         /// The engine's counts landed (boot, and after each capture burst).
         case flowAggregatesRefreshed(FlowAggregates, coversHistory: Bool)
@@ -718,6 +730,18 @@ public struct CaptureFeature: Sendable {
             /// A replay this feature started failed. The parent routes it to
             /// `RulesFeature`, which owns the message line both writes share.
             case replayFailed(String)
+            /// Carve this host out of the scope. The parent routes it to
+            /// `SetupFeature`, which owns the scope; the host shows up as CONNECT rows
+            /// afterwards, which is what makes the write visible without going to the
+            /// console to read a glob list.
+            case excludeHost(String)
+            /// Add this host to the whitelist. Routed to `SetupFeature`, which writes
+            /// it atomically through the engine (`intercept_host`'s path), because the
+            /// console and an agent are independent writers of the same scope.
+            case decryptHost(String)
+            /// Drop this host's traffic on arrival. The parent routes it to the engine;
+            /// the list is engine state so the window and an agent cannot disagree.
+            case ignoreHost(String)
         }
     }
 
@@ -793,6 +817,15 @@ public struct CaptureFeature: Sendable {
                     else { return }
                     await send(.delegate(.stampedRule(rule)))
                 }
+
+            case let .excludeHostTapped(host):
+                return .send(.delegate(.excludeHost(host)))
+
+            case let .decryptHostTapped(host):
+                return .send(.delegate(.decryptHost(host)))
+
+            case let .ignoreHostTapped(host):
+                return .send(.delegate(.ignoreHost(host)))
 
             case let .flowAggregatesRefreshed(aggregates, coversHistory):
                 state.aggregates = aggregates

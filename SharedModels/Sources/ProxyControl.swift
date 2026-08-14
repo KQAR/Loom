@@ -98,12 +98,22 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// refused, which looks like Loom isn't running at all.
     public var reverseProxies: [ReverseProxyStatus]
 
-    public init(
+        /// How many exchanges `dropFromCapture` rules have dropped this session.
+    ///
+    /// Reported because an absence the operator caused is still an absence: the window
+    /// and an agent both see nothing for a dropped exchange, and without a number that
+    /// is indistinguishable from a client that never ran — the failure
+    /// `TunneledHostLog` and `RefusalLog` exist to prevent, arrived at deliberately.
+    /// Which rules, and what each cost, is on `RulesState.droppedCounts`.
+    public var droppedByRules = 0
+
+public init(
         isRunning: Bool, port: Int, capturedCount: Int, retainedCount: Int? = nil,
         isRecording: Bool = true,
         listenHost: String = "127.0.0.1", socksPort: Int? = nil,
         recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
-        reverseProxies: [ReverseProxyStatus] = []
+        reverseProxies: [ReverseProxyStatus] = [],
+        droppedByRules: Int = 0
     ) {
         self.isRunning = isRunning
         self.port = port
@@ -115,6 +125,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.recentRefusals = recentRefusals
         self.refusedConnections = refusedConnections
         self.reverseProxies = reverseProxies
+        self.droppedByRules = droppedByRules
     }
 
     /// Reachable from other devices on the network, not just this Mac.
@@ -425,10 +436,23 @@ public protocol CaptureControlling: Sendable {
     /// `FlowProviding.flowsClearedStream()`, so a surface showing the old flows
     /// doesn't keep presenting them as current.
     func clearFlows() async
+    /// Host globs whose traffic is **dropped on arrival** rather than hidden on read.
+    ///
+    /// Distinct from `SSLScope.exclude`: that one stops Loom *decrypting* a host and
+    /// still records the connection as a `CONNECT` row, because it happened. This one
+    /// records nothing, because the operator said they do not want to know — the noise
+    /// filter, which also stops that noise spending the persistence budget.
+    ///
+    /// Dropping rather than filtering on read is what makes the window and an agent's
+    /// reads agree by construction: there is one copy of the data and no read path that
+    /// can forget to apply a filter. The cost is that traffic arriving while a host is
+    /// ignored is gone, which is why `ProxyStatus.ignoredFlows` counts it.
 }
 
 public extension CaptureControlling {
     func importFlows(_ flows: [Flow]) async -> Int { 0 }
+    /// An embedder that never set one ignores nothing; the setter is a no-op rather
+    /// than a trap, for the same reason `importFlows` has a default.
 }
 
 /// A push-based sink for flow updates, for an embedder that keeps captured flows

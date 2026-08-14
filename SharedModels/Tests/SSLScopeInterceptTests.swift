@@ -115,4 +115,76 @@ import Testing
             ))
         }
     }
+
+    // MARK: stopIntercepting — the inverse (0.0.27)
+
+    /// Under a whitelist the inverse of "decrypt this" is dropping the include entry.
+    /// No exclude is added: an exclude is a standing carve-out that would outlive the
+    /// entry it answered, so a later `intercept(host:)` would appear to succeed and
+    /// change nothing.
+    @Test func stopIntercepting_dropsTheEntryWithoutLeavingACarveOut() {
+        var scope = SSLScope(enabled: true, include: ["api.test", "other.test"])
+        let outcome = scope.stopIntercepting(host: "api.test")
+        #expect(outcome.removedIncludes == ["api.test"])
+        #expect(outcome.addedExclude == false)
+        #expect(outcome.shadowedByInclude == nil)
+        #expect(scope.include == ["other.test"])
+        #expect(scope.exclude == [])
+        #expect(!scope.shouldIntercept(host: "api.test"))
+        #expect(scope.shouldIntercept(host: "other.test"))
+    }
+
+    /// Case-insensitively, because DNS is and nothing normalizes what a client sent.
+    @Test func stopIntercepting_matchesTheEntryCaseInsensitively() {
+        var scope = SSLScope(enabled: true, include: ["API.Test"])
+        _ = scope.stopIntercepting(host: "api.test")
+        #expect(scope.include == [])
+    }
+
+    /// The one case removal cannot finish: a glob someone else wrote still covers the
+    /// host. Narrowing that glob is not this call's business, so it adds the exclude —
+    /// and says it did, because the resulting scope now holds a carve-out that a later
+    /// re-add has to undo.
+    @Test func stopIntercepting_addsAnExcludeOnlyWhenAGlobStillCovers() {
+        var scope = SSLScope(enabled: true, include: ["*.corp"])
+        let outcome = scope.stopIntercepting(host: "api.corp")
+        #expect(outcome.removedIncludes == [])
+        #expect(outcome.shadowedByInclude == "*.corp")
+        #expect(outcome.addedExclude)
+        #expect(scope.include == ["*.corp"], "someone else's glob stands")
+        #expect(scope.exclude == ["api.corp"])
+        #expect(!scope.shouldIntercept(host: "api.corp"))
+        #expect(scope.shouldIntercept(host: "other.corp"), "and only that host is carved out")
+    }
+
+    /// Both mechanisms at once: an exact entry *and* a glob. Dropping the entry alone
+    /// would leave the host decrypted, which is the failure `effective` is about.
+    @Test func stopIntercepting_handlesAnEntryAndAGlobTogether() {
+        var scope = SSLScope(enabled: true, include: ["api.corp", "*.corp"])
+        let outcome = scope.stopIntercepting(host: "api.corp")
+        #expect(outcome.removedIncludes == ["api.corp"])
+        #expect(outcome.addedExclude)
+        #expect(!scope.shouldIntercept(host: "api.corp"))
+    }
+
+    /// Idempotent: stopping twice must not stack duplicate excludes.
+    @Test func stopIntercepting_isIdempotent() {
+        var scope = SSLScope(enabled: true, include: ["*.corp"])
+        _ = scope.stopIntercepting(host: "api.corp")
+        let second = scope.stopIntercepting(host: "api.corp")
+        #expect(second.addedExclude == false)
+        #expect(scope.exclude == ["api.corp"])
+    }
+
+    /// And it round-trips with `intercept`, which is the loop a human clicking Decrypt
+    /// and then Stop Decrypting actually walks.
+    @Test func interceptAndStop_roundTrip() {
+        var scope = SSLScope(enabled: true, include: [])
+        _ = scope.intercept(host: "api.test")
+        #expect(scope.shouldIntercept(host: "api.test"))
+        _ = scope.stopIntercepting(host: "api.test")
+        #expect(!scope.shouldIntercept(host: "api.test"))
+        _ = scope.intercept(host: "api.test")
+        #expect(scope.shouldIntercept(host: "api.test"), "re-adding must not lose to a leftover exclude")
+    }
 }

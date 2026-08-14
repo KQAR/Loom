@@ -12,15 +12,19 @@ extension MCPToolExecutor {
     /// `list_rules`: all rules (bodies truncated), or — with `id` — one rule with
     /// full bodies. Absorbs the former `get_rule`.
     func handleListRules(_ arguments: MCPArguments) async throws -> String {
+        let state = await engine.rulesState()
         if arguments.has("id") {
             let rule = try await existingRule(arguments)
-            return prettyJSON(Self.rule(rule, truncateBodies: false))
+            return prettyJSON(Self.rule(
+                rule, truncateBodies: false, dropped: state.droppedCounts[rule.id]
+            ))
         }
-        let state = await engine.rulesState()
         var out: [String: Any] = [
             "enabled": state.enabled,
             "count": state.rules.count,
-            "rules": state.rules.map { Self.rule($0, truncateBodies: true) },
+            "rules": state.rules.map {
+                Self.rule($0, truncateBodies: true, dropped: state.droppedCounts[$0.id])
+            },
         ]
         // Only when something is switched off: a group switch is the third reason
         // an enabled-looking rule does nothing, and it is invisible on the rule
@@ -304,6 +308,7 @@ extension MCPToolExecutor {
         actions.requestSubstitutions = try substitutions(raw, "request_substitutions")
         actions.responseSubstitutions = try substitutions(raw, "response_substitutions")
         actions.delayMilliseconds = try raw.int("delay_ms")
+        actions.dropFromCapture = try raw.bool("drop_from_capture", or: false)
         return actions
     }
 
@@ -347,8 +352,10 @@ extension MCPToolExecutor {
         try arguments.stringMap(key)?.map { HeaderPair(name: $0.key, value: $0.value) } ?? []
     }
 
-    static func rule(_ rule: TrafficRule, truncateBodies: Bool) -> [String: Any] {
-        MCPRender.dict(RuleRender(rule, truncateBodies: truncateBodies))
+    static func rule(
+        _ rule: TrafficRule, truncateBodies: Bool, dropped: Int? = nil
+    ) -> [String: Any] {
+        MCPRender.dict(RuleRender(rule, truncateBodies: truncateBodies, droppedFlows: dropped))
     }
 
     /// The one rendering of a `RuleMatch`, shared by `list_rules` and by the

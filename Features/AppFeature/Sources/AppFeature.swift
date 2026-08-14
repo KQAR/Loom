@@ -152,7 +152,9 @@ public struct AppFeature: Sendable {
             }
             set {
                 // The projected fields are the parent's to own; whatever the child
-                // hands back for them is ignored on the next read.
+                // hands back for them is ignored on the next read. Cleared rather than
+                // merely ignored, so two `State` values can't compare unequal over a
+                // list neither of them is the source of.
                 setupState = newValue
             }
         }
@@ -414,6 +416,15 @@ public struct AppFeature: Sendable {
 
             case let .capture(.delegate(.replayFailed(message))):
                 return .send(.rules(.ruleWriteFailed(message)))
+
+            // Both directions of the scope, picked off a row in the request table.
+            // Routed through `SetupFeature` rather than written here, so the table and
+            // the console card cannot disagree about what either one does.
+            case let .capture(.delegate(.excludeHost(host))):
+                return .send(.setup(.excludeHostTapped(host)))
+
+            case let .capture(.delegate(.decryptHost(host))):
+                return .send(.setup(.interceptHostTapped(host)))
 
             // Starting a replay clears the shared line, for the same reason.
             case .capture(.replayTapped):

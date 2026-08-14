@@ -2,57 +2,79 @@ import ComposableArchitecture
 import LoomSharedModels
 import SwiftUI
 
-/// The SSL-proxying scope, and the list of origins Loom saw but did not read.
+/// The SSL-proxying scope: the whitelist of hosts Loom decrypts, and the one control
+/// that adds to it.
 ///
-/// One card because they are one decision, read from opposite ends. The default scope
-/// decrypts **everything**, so what the human needs here is not "what is covered" —
-/// that is "all of it" — but the two ways an origin still ends up unread: something
-/// carved out of the scope, and something Loom cannot read whatever the scope says
-/// (SSH, a server-first protocol, a leaf that wouldn't mint). Both are invisible
-/// everywhere else, because an unread relay records no flow at all.
+/// The scope is a **whitelist** — Charles's model, and Proxyman's: `include` starts
+/// empty, nothing is decrypted until a host is named. The wide default
+/// (`include: ["*"]`) was tried twice and measured twice: it makes Loom terminate TLS
+/// for every client on the machine, a connected phone's whole OS included, so an app
+/// under test could not be run until its origins had been carved out one at a time —
+/// 67 refusing origins in one session. Its cost is that an un-named host's *first*
+/// run is unreadable and its bytes are gone.
 ///
-/// A whitelist default was built and rejected: it makes the common case "traffic
-/// happened and Loom read none of it", and fixing that costs a second run of the
-/// client because the first run's bytes are gone. So the scope stays wide and this
-/// card is where it gets narrowed — one host at a time, driven by what actually
-/// broke: a dependency mirror whose JVM rejects Loom's leaf, a pinned host, an API a
-/// Python CLI calls. Nothing is pre-excluded; a guessed list would be both incomplete
-/// (a corporate mirror is not on it) and quietly wrong (it hides traffic someone may
-/// be looking for).
+/// **The card used to lead with the origins Loom saw and did not read, and that list
+/// is gone from here.** It was the answer to "un-named must not mean invisible" back
+/// when a pass-through recorded no flow at all — but the request table answers that
+/// now, one `CONNECT` row per relayed connection, with a Decrypted column and a
+/// right-click Decrypt (AGENTS.md § the scope is a whitelist). Keeping it here made
+/// this card a second, aggregated rendering of the same origins: a 256-host log
+/// showing 6 at a time, in a 300pt console, above the two lines someone opened the
+/// card to edit. One surface per question — the table lists origins, this card holds
+/// the configuration.
 ///
-/// Lives in the console rather than the main window for the same reason
-/// `ClientCertificatesCard` does: per DESIGN v3 the console is the configuration
-/// surface. The other writer of this state is an agent (`intercept_host`,
-/// `set_ssl_scope`), so the list is the point — a scope an agent narrowed has to be
-/// visible and reversible here.
+/// What that costs, stated rather than discovered: a **refused** origin is no longer
+/// one click from a Pass Through here. The row's `N refused` still counts it, and the
+/// repair is on its row in the window, where the failure is also visible as an
+/// exchange that broke.
 struct SSLScopeCard: View {
     let store: StoreOf<SetupFeature>
 
+    /// Whether the add form is showing. View-local like `ReverseProxyCard`'s: it is
+    /// the state of a control, not of the scope, and nothing outside this card reads
+    /// it.
+    @State private var adding = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
-            tunneledSection
-            // No hairline between the two halves: the console draws no lines
-            // anywhere (DESIGN.md § console), and the disclosure row below is
-            // already a distinct shape from the list above it.
-            globDisclosure
-            if store.sslGlobsExpanded {
+            // The whitelist *is* the configuration under this scope — the answer to
+            // "what is Loom reading" — so it is the card's first and main content and
+            // is never behind a fold. It used to sit under the tunnelled list and
+            // inside the glob disclosure, i.e. behind two of them, and an operator who
+            // had just decrypted a host could not find where that had been recorded.
+            globSection(
+                title: "Decrypting",
+                globs: store.sslScope.include,
+                empty: "Nothing is decrypted yet. Add a host here, or right-click a relayed row in the main window.",
+                remove: { store.send(.removeIncludeGlobTapped($0)) }
+            )
+
+            // **Only when it holds something**, which under a whitelist is rare and
+            // is the honest reading of what an exclude is *for*: an un-named host is
+            // already relayed, so the only carve-out that does anything removal
+            // cannot is a hole punched in a glob (`*.corp` covering `api.corp`).
+            // Rendering the section empty on every install would give the scope two
+            // headings where it has one list, and teach the reader that the second is
+            // always blank.
+            //
+            // Never hidden when non-empty, though: this card is the only surface on
+            // which an agent's `set_ssl_scope` becomes visible to the human, and an
+            // exclude it wrote has to be readable and removable here.
+            if !store.sslScope.exclude.isEmpty {
                 globSection(
                     title: "Passed through",
                     globs: store.sslScope.exclude,
-                    empty: "Nothing carved out — every host is decrypted.",
+                    empty: "",
                     remove: { store.send(.removeExcludeGlobTapped($0)) }
                 )
-                addGlobField
-                // Only worth showing when it says something a reader can't already
-                // infer: with the default `*` the include list is one line of noise.
-                if !store.interceptsEverything {
-                    globSection(
-                        title: "Decrypting",
-                        globs: store.sslScope.include,
-                        empty: "Nothing is decrypted. Add a host, or decrypt one from the list above.",
-                        remove: { store.send(.removeIncludeGlobTapped($0)) }
-                    )
-                }
+            }
+
+            // Last, under both lists: it adds to whichever one the picker names, so it
+            // cannot sit under just one of them without reading as belonging to it.
+            if adding {
+                addForm
+            } else {
+                addButton
             }
 
             if let message = store.sslScopeMessage {
@@ -66,152 +88,83 @@ struct SSLScopeCard: View {
         .loomSurface(LoomTheme.Surface.card)
     }
 
-    // MARK: Seen but not decrypted
+    // MARK: Adding
 
-    @ViewBuilder private var tunneledSection: some View {
-        sectionTitle("Seen, not decrypted")
-
-        if store.tunneledHosts.isEmpty {
-            Text("Nothing yet. Origins show up here as soon as a client makes an HTTPS connection Loom passed through.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            // Capped like `ReverseProxyCard`'s list: the remainder is counted rather
-            // than rendered, so a busy session can't grow the console panel without
-            // bound. Ordered by how much attention the row deserves — something unread
-            // that nobody asked for, then the deliberate pass-throughs, then what Loom
-            // can't read at any setting.
-            let ordered = store.unexpectedlyUnreadHosts
-                + store.tunneledHosts.filter { $0.reason == .excluded }
-                + store.tunneledHosts.filter { !$0.interceptable }
-            ForEach(ordered.prefix(Self.visibleTunneledHosts)) { entry in
-                tunneledRow(entry)
-            }
-            if ordered.count > Self.visibleTunneledHosts {
-                Text("+\(ordered.count - Self.visibleTunneledHosts) more")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            if store.tunneledHostsEvicted > 0 {
-                Text("\(store.tunneledHostsEvicted) older host\(store.tunneledHostsEvicted == 1 ? "" : "s") dropped")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private func tunneledRow(_ entry: TunneledHost) -> some View {
-        HStack(spacing: LoomTheme.Space.xs) {
-            Image(systemName: entry.interceptable ? "lock.slash" : "questionmark.circle")
-                .font(LoomTheme.Icon.badge)
-                .foregroundStyle(.secondary)
-                .frame(width: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(entry.host)
-                    .font(.callout.monospaced())
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(Self.caption(for: entry))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+    /// Trailing edge, below the list, glyph only — `ReverseProxyCard`'s add button,
+    /// for the same reason: the card's whole content is one list, so the button on it
+    /// cannot be adding anything else, and the word was spending width on a fact the
+    /// position already gives. The tooltip and the accessibility label still say it.
+    private var addButton: some View {
+        HStack(spacing: LoomTheme.Space.sm) {
             Spacer(minLength: LoomTheme.Space.xs)
-            if entry.interceptable {
-                Button("Decrypt") { store.send(.interceptHostTapped(entry.host)) }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Decrypt \(entry.host) from now on")
-                // Only for something unread that *wasn't* asked for: an already-excluded
-                // row has nothing to add to the exclude list, and offering it would
-                // imply the row is unfinished business when it is the configuration
-                // working.
-                if entry.reason != .excluded {
-                    Button {
-                        store.send(.excludeHostTapped(entry.host))
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("Never decrypt \(entry.host)")
+            Button {
+                adding = true
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .font(LoomTheme.Icon.card)
+            .accessibilityLabel("Decrypt a host")
+            .help("Decrypt a host, or pass one through")
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var addForm: some View {
+        VStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
+            HStack(spacing: LoomTheme.Space.xs) {
+                // Ahead of the field, for the same reason the find bar's scope picker
+                // is: it qualifies what you are about to type, so the line reads
+                // "Decrypt *.corp.example" left to right. Decrypt leads because it is
+                // the primary write — one glob covers a project's whole domain, where
+                // the per-row Decrypt is one click *and* one client re-run per
+                // sub-domain.
+                LoomPicker(
+                    selection: Binding(
+                        get: { store.sslScopeDraftDecrypts },
+                        set: { store.send(.sslScopeDraftTargetChanged($0)) }
+                    ),
+                    items: [(true, "Decrypt"), (false, "Pass through")],
+                    font: .callout
+                )
+                .accessibilityLabel("What this glob does")
+
+                TextField(
+                    "Host or glob, e.g. *.corp.example",
+                    text: Binding(
+                        get: { store.sslScopeDraft },
+                        set: { store.send(.sslScopeDraftChanged($0)) }
+                    )
+                )
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .onSubmit { submit() }
+            }
+
+            HStack(spacing: LoomTheme.Space.sm) {
+                Spacer(minLength: LoomTheme.Space.xs)
+                Button("Cancel") {
+                    store.send(.sslScopeDraftChanged(""))
+                    adding = false
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Add") { submit() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(store.sslScopeDraft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
     }
 
-    /// One line saying why the origin is unread and how much of it there is. Reason
-    /// first: it is what decides whether the Decrypt button would do anything.
-    static func caption(for entry: TunneledHost) -> String {
-        let volume = entry.connections == 1 ? "1 connection" : "\(entry.connections) connections"
-        return "\(reason(entry.reason)) · \(volume) · port \(entry.port)"
-    }
-
-    private static func reason(_ reason: TunnelReason) -> String {
-        switch reason {
-        case .interceptionDisabled: "HTTPS interception off"
-        case .notInScope: "outside the decrypted scope"
-        case .excluded: "passed through on purpose"
-        case .noCertificateAuthority: "no root CA yet"
-        case .leafMintFailed: "couldn't mint a certificate"
-        case .notTLSOrHTTP: "not HTTP or TLS — can't be read"
-        case .clientHandshakeFailed: "client refused Loom's certificate — pinned, or CA not trusted there"
-        case .protocolError: "protocol error — Loom's codec rejected the stream"
-        }
+    private func submit() {
+        guard !store.sslScopeDraft.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        store.send(store.sslScopeDraftDecrypts ? .addIncludeGlobTapped : .addExcludeGlobTapped)
+        adding = false
     }
 
     // MARK: Glob lists
-
-    /// One line standing in for the two glob lists.
-    ///
-    /// Collapsed because the lists grow while the list above them shrinks: an
-    /// intercepted host drops out of the tunnelled list, whereas `exclude` only
-    /// accumulates, gaining one entry every time something breaks. A summary keeps the
-    /// card's height roughly constant while leaving the lists one click away, and they
-    /// have to *be* reachable: removing an exclude entry is the only way to start
-    /// decrypting a host someone carved out, and this card is the only surface on which
-    /// an agent's scope write becomes visible.
-    private var globDisclosure: some View {
-        Button {
-            store.send(.sslGlobsExpandTapped)
-        } label: {
-            HStack(spacing: LoomTheme.Space.xs) {
-                Image(systemName: store.sslGlobsExpanded ? "chevron.down" : "chevron.right")
-                    .font(LoomTheme.Icon.badge)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 10)
-                Text(globSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("The host globs Loom decrypts, and the ones it deliberately passes through")
-    }
-
-    private var globSummary: String {
-        let include = store.sslScope.include
-        let exclude = store.sslScope.exclude
-        // Leads with what is *not* being read, because under the default scope that is
-        // the only part carrying information.
-        var head: String
-        switch exclude.count {
-        case 0: head = "Nothing passed through"
-        case 1: head = "1 host passed through"
-        default: head = "\(exclude.count) hosts passed through"
-        }
-        if store.interceptsEverything {
-            head += " · everything else decrypted"
-        } else if include.isEmpty {
-            head += " · nothing decrypted"
-        } else {
-            head += " · \(include.count) decrypted"
-        }
-        return head
-    }
 
     @ViewBuilder private func globSection(
         title: String, globs: [String], empty: String, remove: @escaping (String) -> Void
@@ -254,26 +207,6 @@ struct SSLScopeCard: View {
         }
     }
 
-    private var addGlobField: some View {
-        HStack(spacing: LoomTheme.Space.sm) {
-            TextField(
-                "Pass through a host or glob, e.g. *.corp.example",
-                text: Binding(
-                    get: { store.sslScopeDraft },
-                    set: { store.send(.sslScopeDraftChanged($0)) }
-                )
-            )
-            .textFieldStyle(.roundedBorder)
-            .controlSize(.small)
-            .onSubmit { store.send(.addExcludeGlobTapped) }
-
-            Button("Add") { store.send(.addExcludeGlobTapped) }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(store.sslScopeDraft.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-    }
-
     private func sectionTitle(_ text: String) -> some View {
         Text(text)
             .font(.caption2.weight(.medium))
@@ -282,11 +215,8 @@ struct SSLScopeCard: View {
     }
 
     /// Same cap and same reasoning as `ReverseProxyCard`: the console is a control
-    /// surface, not a log.
-    private static let visibleTunneledHosts = 6
-
-    /// A little more than the tunnelled cap: these lists are opened deliberately, so
-    /// the human asked to see them — but `exclude` only grows, so it still must not be
-    /// able to grow the panel without bound.
+    /// surface, not a log. `exclude` in particular only ever grows — it gains an entry
+    /// every time something breaks — so it must not be able to grow the panel without
+    /// bound, and the whitelist is capped with it rather than trusted to stay short.
     private static let visibleGlobs = 10
 }

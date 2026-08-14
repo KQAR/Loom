@@ -149,6 +149,13 @@ struct RenderedTransport: Encodable {
     /// side. Do not read an absent `setup` as "setup was free".
     var setup: RenderedConnectionSetup?
     var requestSendMS: Int?
+    /// Present **only when true**: this exchange's client leg is HTTP/1.1 because
+    /// Loom withheld ALPN `h2` from the host after its HPACK decoder refused the
+    /// first header block, not because the client chose it. So
+    /// `request.httpVersion` reads `HTTP/1.1` and is true about what happened and
+    /// false about what the app would have done without Loom in the path — read
+    /// this before comparing a capture with production behaviour.
+    var clientProtocolDowngraded: Bool?
 
     init?(_ transport: FlowTransport?) {
         guard let transport, !transport.isEmpty else { return nil }
@@ -160,6 +167,7 @@ struct RenderedTransport: Encodable {
         responseEncodedBodyBytes = transport.responseEncodedBodyBytes
         setup = transport.setup.flatMap(RenderedConnectionSetup.init)
         requestSendMS = transport.requestSendMS
+        clientProtocolDowngraded = transport.clientProtocolDowngraded
     }
 }
 
@@ -529,6 +537,14 @@ struct ProxyStatusRender: Encodable {
     var refusedConnections: Int?
     var recentRefusals: [ConnectionRefusalRender]?
     var reverseProxies: [ReverseProxyRender]?
+    /// How many exchanges `drop_from_capture` rules have dropped this session, when
+    /// any have.
+    ///
+    /// Read this before concluding a host made no requests: the window and these reads
+    /// agree by construction (the flows were never stored), so a dropped exchange is
+    /// invisible on every surface and this count is the only trace. `list_rules` says
+    /// which rules and what each cost.
+    var droppedByRules: Int?
 }
 
 struct ConnectionRefusalRender: Encodable {
@@ -728,8 +744,13 @@ struct RuleRender: Encodable {
     var comment: String?
     var group: String?
     var actions: RuleActionsRender
+    /// How many exchanges this rule has dropped this session. Only on
+    /// `drop_from_capture` rules, and the only trace they leave: a dropped exchange has
+    /// no flow, so it can carry no `appliedRules`.
+    var droppedFlows: Int?
 
-    init(_ rule: TrafficRule, truncateBodies: Bool) {
+    init(_ rule: TrafficRule, truncateBodies: Bool, droppedFlows: Int? = nil) {
+        self.droppedFlows = droppedFlows
         id = rule.id.uuidString
         name = rule.name
         enabled = rule.isEnabled
@@ -754,6 +775,9 @@ struct RuleActionsRender: Encodable {
     var requestSubstitutions: [SubstitutionRender]?
     var responseSubstitutions: [SubstitutionRender]?
     var delayMs: Int?
+    /// Present only when true: matching exchanges are **not recorded**. The request
+    /// still happens — this is the noise filter, not `block`.
+    var dropFromCapture: Bool?
 
     init(_ actions: RuleActions, truncateBodies: Bool) {
         switch actions.route {
@@ -779,6 +803,7 @@ struct RuleActionsRender: Encodable {
         let responses = actions.activeResponseSubstitutions
         if !responses.isEmpty { responseSubstitutions = responses.map(SubstitutionRender.init) }
         delayMs = actions.delayMilliseconds
+        dropFromCapture = actions.dropFromCapture ? true : nil
     }
 }
 
