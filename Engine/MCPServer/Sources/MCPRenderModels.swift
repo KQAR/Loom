@@ -416,6 +416,8 @@ struct RuleMatchRender: Encodable {
     init(_ match: RuleMatch) {
         urlPattern = match.urlPattern
         matchStyle = match.style.rawValue
+        // Rendered in the spelling an agent sends: `*` for "any value", the explicit
+        // object only for the predicate that spelling can't say.
         query = match.query.flatMap { predicates in
             predicates.isEmpty ? nil : predicates.mapValues(QueryPredicateRender.init)
         }
