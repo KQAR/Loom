@@ -141,6 +141,19 @@ import Foundation
         #expect(plan(state(rule)).shortCircuit == nil)
     }
 
+    /// Groups are a third switch, not a display label. `matchingRules` used to look
+    /// only at `rule.isEnabled`, so a disabled group's rules still rewrote traffic.
+    @Test func disabledGroup_isSkipped() {
+        let rule = TrafficRule(
+            name: "block", group: "scenario-a",
+            match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block)
+        )
+        let off = RulesState(enabled: true, rules: [rule], disabledGroups: ["scenario-a"])
+        #expect(RuleEngine.matchingRules(state: off, method: "GET", url: url).isEmpty)
+        #expect(plan(off).shortCircuit == nil)
+        #expect(plan(state(rule)).shortCircuit != nil, "the same rule applies when its group is on")
+    }
+
     @Test func requestRewrites_compose_inOrder() {
         let first = TrafficRule(
             name: "auth", match: RuleMatch(urlPattern: "*"),
