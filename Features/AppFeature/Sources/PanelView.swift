@@ -284,11 +284,28 @@ public struct PanelView: View {
         return "\(count) rule\(count == 1 ? "" : "s") active — tap to disable all"
     }
 
-    private var httpsHelp: String {
-        guard store.setup.sslEnabled else { return "HTTPS interception is off — HTTPS is tunnelled blind" }
-        return store.setup.certificateStatus.trustState.isReady
-            ? "HTTPS interception on — decrypting"
-            : "HTTPS interception on, but Loom's root CA isn't trusted yet, so nothing decrypts"
+    /// Three ways for HTTPS to be unread, and the tile's fill can only say two of
+    /// them, so this says all three. The one added in 0.0.27 is the ordinary state of
+    /// a fresh install: the switch is on, the CA is fine, and nothing is named — this
+    /// switch permits decryption, the whitelist decides what gets decrypted, and both
+    /// have to be satisfied. Saying "decrypting" there was true only while the scope
+    /// seeded itself with `*`.
+    private var httpsHelp: String { Self.httpsHelp(store.setup) }
+
+    /// Static so it can be checked without a store: it is four sentences chosen from
+    /// three pieces of state, which is the kind of thing that goes stale silently.
+    static func httpsHelp(_ setup: SetupFeature.State) -> String {
+        guard setup.sslEnabled else { return "HTTPS interception is off — HTTPS is tunnelled blind" }
+        guard setup.certificateStatus.trustState.isReady else {
+            return "HTTPS interception on, but Loom's root CA isn't trusted yet, so nothing decrypts"
+        }
+        let hosts = setup.sslScope.include.count
+        guard hosts > 0 else {
+            return "HTTPS interception on — no hosts decrypted yet. Right-click a locked row in the main window to pick one."
+        }
+        return setup.interceptsEverything
+            ? "HTTPS interception on — decrypting every host"
+            : "HTTPS interception on — decrypting \(hosts) host\(hosts == 1 ? "" : "s")"
     }
 
     /// Carries what the tile's fill cannot, in the place a pure-icon control can

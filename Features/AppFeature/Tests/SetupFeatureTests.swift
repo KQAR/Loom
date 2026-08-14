@@ -810,4 +810,34 @@ import Testing
         // Scheme casing is the client's business, not a reason to hide the entry.
         #expect(RequestTable.Coordinator.hostIsDecrypted("HTTPS://api.example.com/v1"))
     }
+
+    // MARK: The HTTPS tile's sentence
+
+    /// The switch permits decryption; the whitelist decides what gets decrypted. With
+    /// the seeded `*` gone, "interception on" and "decrypting" stopped being the same
+    /// statement — and the tile's help was still making the old one.
+    @Test func theHTTPSHelpSeparatesTheSwitchFromTheScope() {
+        var state = AppFeature.State()
+        state.setup.certificateStatus = CertificateStatus(isGenerated: true, isTrusted: true)
+
+        state.setup.sslEnabled = false
+        #expect(PanelView.httpsHelp(state.setup).contains("is off"))
+
+        // On, trusted, nothing named: the ordinary state of a fresh install, and the
+        // one the old wording called "decrypting".
+        state.setup.sslEnabled = true
+        state.setup.sslScope = SSLScope(enabled: true, include: [])
+        #expect(PanelView.httpsHelp(state.setup).contains("no hosts decrypted yet"))
+
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*.corp.example", "api.test"])
+        #expect(PanelView.httpsHelp(state.setup).contains("2 hosts"))
+
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*"])
+        #expect(PanelView.httpsHelp(state.setup).contains("every host"))
+
+        // An untrusted CA still outranks all of it: it defeats a request the operator
+        // *did* make, where an empty list is one they haven't made yet.
+        state.setup.certificateStatus = CertificateStatus(isGenerated: true, isTrusted: false)
+        #expect(PanelView.httpsHelp(state.setup).contains("isn't trusted"))
+    }
 }
