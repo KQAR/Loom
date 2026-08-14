@@ -20,7 +20,10 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     /// nil app fails closed, which would silently skip the rule the user armed).
     var requiresSourceAppResolution: Bool {
         let state = rules.snapshot()
-        return (state.enabled && state.rules.contains { $0.isEnabled && !($0.match.sourceApp ?? "").isEmpty })
+        // `applies`, not `isEnabled` — the same three switches the matcher reads, so
+        // a rule in a switched-off group cannot make every exchange wait for a
+        // resolution no rule will use.
+        return (state.enabled && state.rules.contains { state.applies($0) && !($0.match.sourceApp ?? "").isEmpty })
             || base.requiresSourceAppResolution
     }
 

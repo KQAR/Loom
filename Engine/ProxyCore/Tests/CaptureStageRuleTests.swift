@@ -80,6 +80,36 @@ struct CaptureStageRuleTests {
         #expect(await store.recent(limit: 10).count == 1)
     }
 
+    /// **A switched-off group covers this stage too**, and it did not: this matcher
+    /// spelled its own `rule.isEnabled` predicate and so read past `disabledGroups`
+    /// entirely, while every group test asserted on `RulesState.activeRules` — the
+    /// projection the engine does not use. `RulesState.applies` is the one
+    /// definition now.
+    @Test func aSwitchedOffGroupDropsNothing() async {
+        let rule = dropRule(host: "sentry.example.test", group: "scenario A")
+        let store = FlowStore(rules: RulesConfig(
+            state: RulesState(enabled: true, rules: [rule], disabledGroups: ["scenario A"]),
+            fileURL: nil
+        ))
+        await store.upsert(flow("https://sentry.example.test/envelope"))
+        #expect(await store.recent(limit: 10).count == 1)
+        #expect(await store.droppedFlowCount == 0)
+    }
+
+    /// An expired rule cannot drop either — the same gate, reached from the store's
+    /// side rather than the forwarder's.
+    @Test func anExpiredRuleDropsNothing() async {
+        let expired = TrafficRule(
+            name: "Don't capture sentry",
+            match: RuleMatch(urlPattern: "*", expiredHostPattern: "sentry.example.test"),
+            actions: RuleActions(dropFromCapture: true)
+        )
+        let store = store([expired])
+        await store.upsert(flow("https://sentry.example.test/envelope"))
+        #expect(await store.recent(limit: 10).count == 1)
+        #expect(await store.droppedFlowCount == 0)
+    }
+
     /// The count is **per rule**, because a dropped exchange carries no `appliedRules`
     /// — it has no flow — so this counter is the only place a capture rule can be seen
     /// to have done anything.
