@@ -150,16 +150,20 @@ public actor ProxyEngine: ProxyControlling {
     private init(configuration: EngineConfiguration) {
         self.flowCapacity = configuration.flowCapacity
         let durable = configuration.persistence == .durable
+        // Rules are built before the store, because the store needs them: a rule
+        // carrying `dropFromCapture` is evaluated at `FlowStore.upsert`, the capture
+        // stage, while every other action is applied in the forwarder below.
+        let rulesConfig = durable ? RulesConfig() : RulesConfig(fileURL: nil)
+        self.rulesConfig = rulesConfig
         self.store = FlowStore(
             capacity: configuration.flowCapacity,
             persistence: durable ? FlowPersistence.makeDefault() : nil,
-            observer: configuration.flowObserver
+            observer: configuration.flowObserver,
+            rules: rulesConfig
         )
         self.auditStore = AuditStore(persistence: durable ? AuditPersistence.makeDefault() : nil)
-        // Rules and SSL scope persist across launches for the app; a test-seam
-        // engine gets non-persisting ones so it can't read or clobber the real set.
-        let rulesConfig = durable ? RulesConfig() : RulesConfig(fileURL: nil)
-        self.rulesConfig = rulesConfig
+        // SSL scope persists across launches for the app; a test-seam engine gets a
+        // non-persisting one so it can't read or clobber the real set.
         self.config = durable ? InterceptionConfig() : InterceptionConfig(defaults: nil)
         self.reverseProxyConfig = durable ? ReverseProxyConfig() : ReverseProxyConfig(fileURL: nil)
 

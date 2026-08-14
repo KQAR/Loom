@@ -103,7 +103,9 @@ import Testing
         init(hiding hidden: Set<RequestTable.Column> = []) {
             coordinator = RequestTable.Coordinator(
                 selection: .constant(nil), followTail: .constant(true),
-                onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in }
+                onReplay: { _ in }, onCopyCurl: { _ in }, onAddRule: { _, _ in },
+                onDecryptHost: { _ in }, onExcludeHost: { _ in },
+                sslScope: SSLScope(enabled: true, include: ["*"])
             )
             // Both matter to the arithmetic: `.inset` decides the edge insets and intercell
             // spacing the trailing edge is measured against, and the autoresizing style is
@@ -146,11 +148,39 @@ import Testing
 
     /// The complaint this replaced: widening the window grew Time to its cap and left dead
     /// space, because AppKit's default hands the slack to the *rightmost* column.
+    ///
+    /// This one asserts on `abs`, so it can only run where the columns *fit* — below
+    /// that the gap is legitimately negative and the assertion would be measuring "this
+    /// window is narrow". The floor is the column set's own minimum: 550pt of widths
+    /// plus ~17.5pt per column of `.inset` padding and intercell spacing, ~708pt for the
+    /// nine columns, which is why it starts at 800 rather than the 700 it used to. The
+    /// window's own default gives the table 740 (1040 less a 300pt sidebar), so the
+    /// narrow end is a deliberately-shrunk window and belongs to the test below.
     @Test func wideningTheWindowLeavesNothingAtTheRight() {
         let harness = WidthHarness()
-        for width in [700.0, 1200.0, 1800.0, 2600.0] {
+        for width in [800.0, 1200.0, 1800.0, 2600.0] {
             harness.resize(to: width)
             #expect(abs(harness.trailingGap) <= 0.5, "gap of \(harness.trailingGap) at \(width)")
+        }
+    }
+
+    /// **Dead space and overflow are different failures**, and only one of them is this
+    /// layout's to prevent. A *positive* gap is the dead strip above — the columns fit
+    /// and nobody claimed the remainder — and it must never appear at any width. A
+    /// negative one means the columns want more than the viewport has, which is what
+    /// horizontal scrolling is for; asserting `abs(gap)` treated the two as one bug and
+    /// so turned "this window is narrow" into a test failure.
+    ///
+    /// The floor is real, though: every column costs ~17.5pt of `.inset` padding and
+    /// intercell spacing on top of its width, so a column set that overflows a viewport
+    /// someone can actually produce is a column set that is too wide. 640pt is below
+    /// anything the window offers (`defaultSize` is 1040 with a 300pt sidebar) and is
+    /// where scrolling is allowed to start.
+    @Test func noWidthLeavesDeadSpaceAtTheRight() {
+        let harness = WidthHarness()
+        for width in stride(from: 640.0, through: 3200.0, by: 40.0) {
+            harness.resize(to: width)
+            #expect(harness.trailingGap <= 0.5, "dead space of \(harness.trailingGap) at \(width)")
         }
     }
 
@@ -219,5 +249,84 @@ import Testing
         let withOld = RequestTable.fittingWidth(for: .path, rows: rows, capture: capture)
         let withoutOld = RequestTable.fittingWidth(for: .path, rows: recent, capture: capture)
         #expect(withOld == withoutOld)
+    }
+
+    // MARK: The Decrypted column
+
+    /// The reading of the glyph is the part that is easy to get backwards: the lock is
+    /// the **traffic's** state, so a closed lock means these bytes stayed encrypted to
+    /// Loom and there is no body on the row. Putting the reassuring glyph on the row
+    /// whose contents are missing is the failure mode.
+    @Test func theLockColumnSaysWhetherLoomReadTheExchange() {
+        let decrypted = FlowEncryption(Fixtures.flow(url: "https://api.test/v1"))
+        let tunnelled = FlowEncryption(Fixtures.flow(method: "CONNECT", url: "https://api.test:443"))
+        let plaintext = FlowEncryption(Fixtures.flow(url: "http://api.test/v1"))
+
+        #expect(decrypted.glyph == "lock.open.fill")
+        #expect(tunnelled.glyph == "lock.fill")
+        #expect(plaintext.glyph == "lock.slash")
+
+        #expect(tunnelled.help.contains("Not decrypted"))
+        #expect(decrypted.help.contains("Loom read"))
+        #expect(plaintext.help.contains("nothing to decrypt"))
+    }
+
+    /// **Failed and not-attempted are different answers**, and drawing them alike is
+    /// the more misleading direction of the two: a deliberate pass-through is the
+    /// configuration working, while a refused handshake is a request that never
+    /// happened. The discriminator is the flow's own error — `TunnelFlow.record`
+    /// completes a relayed tunnel with a 200, `recordFailure` fails it.
+    @Test func aFailedDecryptionIsItsOwnStateNotAPassThrough() {
+        let relayed = FlowEncryption(Fixtures.flow(method: "CONNECT", url: "https://carved.test:443"))
+        let failed = FlowEncryption(
+            Fixtures.flow(method: "CONNECT", url: "https://pinned.test:443",
+                          error: "Client refused Loom's certificate — sslError")
+        )
+        #expect(relayed.glyph != failed.glyph)
+        #expect(failed.glyph == "lock.trianglebadge.exclamationmark")
+        #expect(failed.help.contains("Decryption failed"))
+        #expect(failed.help.contains("never reached the origin"),
+                "the row has to say the request did not happen, not merely that it was unread")
+    }
+
+    /// The column carries its own header word. Four states of one symbol are not
+    /// guessable from the symbol, and the width follows the header rather than the
+    /// glyph — which is the only thing in this column that has a size.
+    @Test func theLockColumnIsNamedInItsHeader() {
+        #expect(RequestTable.Column.lock.title == "Decrypted")
+        #expect(RequestTable.Column.lock.menuTitle == "Decrypted")
+        #expect(RequestTable.Column.lock.minWidth >= 60, "narrower than the word it shows would truncate the header")
+    }
+
+    /// `wss://` is a TLS handshake Loom terminated like any other, and a lowercase check
+    /// must not depend on the client's spelling of the scheme.
+    @Test func theLockColumnCountsWebSocketsAndIgnoresSchemeCasing() {
+        #expect(FlowEncryption(Fixtures.flow(url: "wss://api.test/socket")).glyph == "lock.open.fill")
+        #expect(FlowEncryption(Fixtures.flow(url: "ws://api.test/socket")).glyph == "lock.slash")
+        #expect(FlowEncryption(Fixtures.flow(url: "HTTPS://api.test/v1")).glyph == "lock.open.fill")
+        #expect(FlowEncryption(Fixtures.flow(method: "connect", url: "https://a.test:443")).glyph == "lock.fill")
+    }
+
+    // MARK: The parent-wildcard menu item
+
+    /// One label up, never "the registrable domain" — that needs a public-suffix list,
+    /// and guessing it with "keep the last two labels" answers `*.co.uk` for
+    /// `shop.example.co.uk`.
+    @Test func theParentWildcardWidensByExactlyOneLevel() {
+        #expect(RequestTable.Coordinator.parentWildcard(for: "test-mex-ec-api.fintopia.tech") == "*.fintopia.tech")
+        #expect(RequestTable.Coordinator.parentWildcard(for: "api.test.example.com") == "*.test.example.com")
+        #expect(RequestTable.Coordinator.parentWildcard(for: "shop.example.co.uk") == "*.example.co.uk")
+    }
+
+    /// The two hosts with no safe answer. `example.com` would widen to `*.com`, and an
+    /// IPv4 address has the shape of a domain and none of the meaning.
+    @Test func theParentWildcardRefusesWhereItWouldBeWrong() {
+        #expect(RequestTable.Coordinator.parentWildcard(for: "example.com") == nil)
+        #expect(RequestTable.Coordinator.parentWildcard(for: "localhost") == nil)
+        #expect(RequestTable.Coordinator.parentWildcard(for: "10.0.12.93") == nil)
+        #expect(RequestTable.Coordinator.parentWildcard(for: "127.0.0.1") == nil)
+        // Malformed rather than dangerous, but a glob with an empty label matches
+        // nothing and would sit in the list looking like it works.
+        #expect(RequestTable.Coordinator.parentWildcard(for: "a..b.com") == nil)
     }
 }

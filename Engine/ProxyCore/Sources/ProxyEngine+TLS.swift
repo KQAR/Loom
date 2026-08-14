@@ -106,7 +106,20 @@ extension ProxyEngine {
 
     public func interceptHost(_ host: String) async -> InterceptOutcome {
         _ = ensureCA() // the include entry is worthless without a CA to mint from
-        return config.mutate { $0.intercept(host: host) }
+        var outcome = config.mutate { $0.intercept(host: host) }
+        // **End the tunnels this write just made obsolete.** A scope change reaches
+        // only new connections, and an HTTP client reuses the one it has, so without
+        // this the operator watches nothing happen until their client's pool turns
+        // over — the setting correct and the surface empty. `RelayedTunnelRegistry`
+        // has the whole rationale and the cost.
+        //
+        // Only when the write can take effect: a host still shadowed by an exclude
+        // would be reconnected straight back into a relayed tunnel, so closing would
+        // cost the client a reconnect and change nothing.
+        if outcome.effective {
+            outcome.closedTunnels = RelayedTunnelRegistry.shared.closeTunnels(matching: host)
+        }
+        return outcome
     }
 
     // MARK: - Mutual TLS (client certificates)

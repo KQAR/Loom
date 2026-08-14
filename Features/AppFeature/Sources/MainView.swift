@@ -415,13 +415,17 @@ public struct MainView: View {
                 if store.capture.displayFlowsAreEmpty {
                     emptyState.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    RequestTableView(store: captureStore, followTail: $followTail)
+                    RequestTableView(
+                        store: captureStore, followTail: $followTail,
+                        sslScope: store.setup.sslScope
+                    )
                         // The clear control floats over the table (bottom-right): a small red
                         // dot at rest, expanding to the full hold-to-clear button on hover, so
                         // it barely covers content until you reach for it. No reserved gap —
                         // the table keeps full height and the row stripes fill it.
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             if store.capture.droppedFlowCount > 0 { capBanner }
+                            if store.status.droppedByRules > 0 { droppedBanner }
                         }
                         .overlay(alignment: .bottomTrailing) { clearFAB }
                 }
@@ -434,6 +438,26 @@ public struct MainView: View {
         // The bar slides out of the toolbar band it hangs from; without this it
         // paints over the band on the way in.
         .clipped()
+    }
+
+    /// The other honest "you're not seeing everything" strip, and the one the
+    /// operator caused: a `dropFromCapture` rule drops matching exchanges on arrival,
+    /// so they leave no row anywhere — this count is their only trace. Without it a
+    /// dropped exchange is indistinguishable from a client that never ran, which is
+    /// the failure `TunneledHostLog` and `RefusalLog` exist to prevent, arrived at
+    /// deliberately. Which rule, and what each cost, is in the Rules panel.
+    private var droppedBanner: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            Image(systemName: "eye.slash").font(.caption2)
+            Text("\(store.status.droppedByRules) not captured — a rule is dropping them")
+                .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, LoomTheme.Space.sm)
+        .padding(.vertical, LoomTheme.Space.xxs)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial)
+        .help("A rule is dropping these on arrival — they appear on no surface, including MCP reads")
     }
 
     /// Honest "you're not seeing everything" strip: the session cap has dropped
@@ -1094,6 +1118,12 @@ private struct RequestTableView: View {
     /// Tail-follow lives in `MainView`, alongside the empty state and clear button
     /// that share it; the table below consumes it.
     @Binding var followTail: Bool
+    /// The SSL scope, passed down as a value from the parent that owns it
+    /// (`SetupFeature`) rather than projected into `CaptureFeature.State`. The row
+    /// menu needs it to decide whether "pass this through" would write anything, and
+    /// a projection through capture state would mean rebuilding a struct holding the
+    /// whole 20 000-row window on every read of it.
+    let sslScope: SSLScope
 
     var body: some View {
         // Both read once here, not per row: a cell body that touches `store.flows`
@@ -1109,7 +1139,10 @@ private struct RequestTableView: View {
             followTail: $followTail,
             onReplay: { store.send(.replayTapped($0)) },
             onCopyCurl: { store.send(.copyCurlTapped($0)) },
-            onAddRule: { store.send(.addRuleFromFlow($0, $1)) }
+            onAddRule: { store.send(.addRuleFromFlow($0, $1)) },
+            onDecryptHost: { store.send(.decryptHostTapped($0)) },
+            onExcludeHost: { store.send(.excludeHostTapped($0)) },
+            sslScope: sslScope
         )
         // Selection is an interactive signal, so it is the accent's job (DESIGN.md
         // § Colors) — untinted, `NSTableView` fills the row with the *system* accent, a

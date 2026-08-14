@@ -18,7 +18,8 @@ extension ProxyEngine {
             socksPort: boundSOCKSPort,
             recentRefusals: refusals.recent,
             refusedConnections: refusals.total,
-            reverseProxies: reverseProxyConfig.snapshot()
+            reverseProxies: reverseProxyConfig.snapshot(),
+            droppedByRules: await store.droppedFlowCount
         )
     }
 
@@ -145,8 +146,23 @@ extension ProxyEngine {
 
     /// Generate-or-load the CA once. Failure leaves interception unavailable but
 
+    /// Forget this session's capture — the flows **and** the tunnelled-host log.
+    ///
+    /// The log used to survive, and that was one surface disagreeing with another
+    /// about the same session: `TunneledHostLog` is in-memory and keyed per origin,
+    /// so after a clear the console kept reporting hosts (`N unread`, `N refused`, one
+    /// line each with a `connections` count) whose rows no longer existed anywhere.
+    /// Measured in use as "I removed this host and it vanished from the request list"
+    /// — the row had been cleared, the log entry had not, and the two readings could
+    /// not both be right.
+    ///
+    /// Clearing is "forget what this session saw", and every surface that answers from
+    /// the session has to hear it. The two are not otherwise coupled: an origin leaves
+    /// the log by aging out of its 256-entry bound or by having its verdict cleared,
+    /// neither of which touches flows.
     public func clearFlows() async {
         await store.clear()
+        TunneledHostLog.shared.reset()
     }
 
     /// Persist everything to disk before the app dies. Call from the terminate

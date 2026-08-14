@@ -132,7 +132,15 @@ extension ProxyClient: DependencyKey {
             // wants it (a client that can only point at a SOCKS proxy is invisible
             // otherwise), while the engine defaults it off so an embedder isn't given
             // a second socket it never asked for.
-            start: { try await engine.start(port: $0, socksPort: $0 + 1) },
+            // `observeTunnels` is on for the app and off in the engine's own default,
+            // which is the right split: an embedder gets content flows only, while the
+            // app's request table is the operator's single list and has to show what it
+            // is *not* reading. A pass-through otherwise records no flow at all, so the
+            // carve-outs someone made are invisible on the surface they were made from.
+            // The cost is stated rather than hidden: these are real flows, so a chatty
+            // relayed origin spends the same `FlowLimits.persistedRows` budget as
+            // content exchanges.
+            start: { try await engine.start(port: $0, observeTunnels: true, socksPort: $0 + 1) },
             stop: { await engine.stop() },
             status: { await engine.status() },
             recentFlows: { await engine.recentFlows(limit: $0) },

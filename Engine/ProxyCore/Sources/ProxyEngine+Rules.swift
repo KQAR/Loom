@@ -7,7 +7,13 @@ import LoomSharedModels
 /// on the next request without any further plumbing.
 extension ProxyEngine {
     public func rulesState() async -> RulesState {
-        rulesConfig.snapshot()
+        // The per-rule drop counts live on the store (that is where the drops happen)
+        // and are folded in here rather than kept in `RulesConfig`, which is persisted
+        // — a session count written to the rules file would come back on the next
+        // launch attached to traffic that never arrived.
+        var state = rulesConfig.snapshot()
+        state.droppedCounts = await store.droppedCountsByRule
+        return state
     }
 
     public func setRulesEnabled(_ enabled: Bool) async {

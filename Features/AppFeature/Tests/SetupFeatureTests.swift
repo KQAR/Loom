@@ -298,14 +298,15 @@ import Testing
 
     // MARK: SSL interception
 
-    /// Turning HTTPS on decrypts **everything**.
+    /// Turning HTTPS on decrypts **nothing yet** — the scope is a whitelist.
     ///
-    /// A whitelist default was built and rejected: it makes the common case "traffic
-    /// happened and Loom read none of it", and fixing that costs a second run of the
-    /// client because the first run's bytes are gone. The cost of this direction — a
-    /// client with its own certificate store failing at the client — is handled case by
-    /// case in the pass-through list, not by a guessed default.
-    @Test func test_toggleSSL_enabling_decryptsEverything_thenReloadsCert() async {
+    /// Seeding `["*"]` is what made an app under test unrunnable until its hosts had
+    /// been carved out one by one: Loom was terminating TLS for every client on the
+    /// machine, a phone's whole OS included. The switch means "Loom may decrypt hosts
+    /// I name"; naming them is a relayed row's Decrypt, the card's field, or
+    /// `intercept_host`. Traffic is observed either way, which is what makes an empty
+    /// include list honest rather than blind.
+    @Test func test_toggleSSL_enabling_seedsNothing_thenReloadsCert() async {
         let cert = CertificateStatus(isGenerated: true, isTrusted: false)
         let store = TestStore(initialState: SetupFeature.State()) {
             SetupFeature()
@@ -316,7 +317,7 @@ import Testing
         }
         await store.send(.toggleSSLTapped) {
             $0.sslEnabled = true
-            $0.sslScope = SSLScope(enabled: true, include: ["*"])
+            $0.sslScope = SSLScope(enabled: true, include: [])
         }
         await store.receive(\.certificateStatusLoaded) {
             $0.certificateStatus = cert
@@ -343,7 +344,7 @@ import Testing
         }
         await store.send(.interceptHostTapped("api.example.com"))
         await store.receive(\.interceptFinished) {
-            $0.sslScopeMessage = "Decrypting api.example.com. HTTPS interception is now on. Re-run your client — connections already made are gone."
+            $0.sslScopeMessage = "Decrypting api.example.com. HTTPS interception is now on. Trigger the request again — the exchange that led you here is gone."
         }
         await store.receive(\.sslScopeLoaded) {
             $0.sslScope = intercepted
@@ -373,12 +374,13 @@ import Testing
         await store.receive(\.tunneledHostsLoaded)
     }
 
-    /// "Never decrypt this" — how an origin leaves the to-do list without being read.
-    @Test func test_excludeHostTapped_movesTheHostToTheExcludeList() async {
-        let start = SSLScope(enabled: true, include: ["dl.google.com"])
-        let expected = SSLScope(enabled: true, include: [], exclude: ["dl.google.com"])
+    /// "Stop decrypting this" drops the include entry and leaves **no** carve-out
+    /// behind: under a whitelist an un-named host is already relayed, and an exclude
+    /// would be a standing entry that silently beats a later re-add.
+    @Test func test_excludeHostTapped_dropsTheIncludeEntry() async {
+        let expected = SSLScope(enabled: true, include: [], exclude: [])
         var state = SetupFeature.State()
-        state.sslScope = start
+        state.sslScope = SSLScope(enabled: true, include: ["dl.google.com"])
         state.sslEnabled = true
         let store = TestStore(initialState: state) {
             SetupFeature()
@@ -387,28 +389,18 @@ import Testing
             $0.proxyClient.sslScope = { expected }
             $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
+        var outcome = StopInterceptOutcome()
+        outcome.removedIncludes = ["dl.google.com"]
         await store.send(.excludeHostTapped("dl.google.com")) {
             $0.sslScope = expected
-            $0.sslScopeMessage = "dl.google.com will be passed through untouched."
+            $0.sslScopeMessage = SetupFeature.excludeMessage(host: "dl.google.com", outcome: outcome)
         }
         await store.receive(\.sslScopeLoaded)
         await store.receive(\.tunneledHostsLoaded)
     }
 
-    /// The glob lists collapse by default and the tunnelled list does not, because
-    /// they grow in opposite directions — but collapsed must never mean unreachable:
-    /// removing an include entry is the only way to stop decrypting a host, and the
-    /// only place an agent's `intercept_host` becomes visible to the human.
-    @Test func test_globListsAreCollapsedByDefault_andToggleWithoutHittingTheEngine() async {
-        let store = TestStore(initialState: SetupFeature.State()) { SetupFeature() }
-        #expect(store.state.sslGlobsExpanded == false)
-        await store.send(.sslGlobsExpandTapped) { $0.sslGlobsExpanded = true }
-        await store.send(.sslGlobsExpandTapped) { $0.sslGlobsExpanded = false }
-    }
-
-    /// The card's one text field carves a host *out*, because with the default scope
-    /// covering everything an include entry is a no-op. It also drops a stale include
-    /// for the same host, or the two lists would disagree about it.
+    /// The card's field carves a host *out* when its picker says Pass through. It also
+    /// drops a stale include for the same host, or the two lists would disagree.
     @Test func test_addExcludeGlob_carvesTheHostOut_andDropsItsIncludeEntry() async {
         let expected = SSLScope(enabled: true, include: ["*"], exclude: ["artifactory.corp.example"])
         var state = SetupFeature.State()
@@ -619,5 +611,187 @@ import Testing
             $0.helperState = .notInstalled
             $0.helperMessage = nil
         }
+    }
+
+    /// **The sentence has to name the connections it ended**, because a client
+    /// reconnecting on its own is otherwise indistinguishable from nothing having
+    /// happened — which is the whole reason the tunnels are closed.
+    @Test func interceptMessage_namesTheConnectionsItClosed() {
+        var outcome = InterceptOutcome()
+        outcome.closedTunnels = 2
+        let note = SetupFeature.interceptMessage(host: "api.test", outcome: outcome)
+        #expect(note.contains("Closed 2 open connections"))
+        #expect(note.contains("reconnect"))
+
+        // And says nothing about them when there were none — the ordinary case.
+        #expect(!SetupFeature.interceptMessage(host: "api.test", outcome: InterceptOutcome())
+            .contains("Closed"))
+    }
+
+    // MARK: Broken origins
+
+    /// Every reason, so a new `TunnelReason` has to decide which side it is on here
+    /// rather than defaulting into silence — which is how `brokeTheClient` came to be
+    /// declared, documented and called from nowhere.
+    private static func host(_ name: String, _ reason: TunnelReason) -> TunneledHost {
+        TunneledHost(
+            host: name, port: 443, connections: 2,
+            firstSeen: Date(timeIntervalSince1970: 0), lastSeen: Date(timeIntervalSince1970: 1),
+            reason: reason
+        )
+    }
+
+    private static let everyReason: [TunneledHost] = [
+        host("off.example.com", .interceptionDisabled),
+        host("out.example.com", .notInScope),
+        host("skipped.example.com", .excluded),
+        host("noca.example.com", .noCertificateAuthority),
+        host("mint.example.com", .leafMintFailed),
+        host("ssh.example.com", .notTLSOrHTTP),
+        host("refused.example.com", .clientHandshakeFailed),
+        host("h2.example.com", .protocolError),
+    ]
+
+    /// The two reasons where the request never happened, and only those. An unread
+    /// pass-through reached its origin; counting it here would put "your client is
+    /// failing" on traffic that succeeded.
+    @Test func brokenHosts_areTheTwoFailureReasons() {
+        var state = SetupFeature.State()
+        state.tunneledHosts = Self.everyReason
+        #expect(state.brokenHosts.map(\.host) == ["refused.example.com", "h2.example.com"])
+        // Disjoint from the unread list by construction — a broken origin is
+        // `interceptable == false`, which is exactly why it went uncounted before.
+        #expect(state.brokenHosts.allSatisfy { !state.unexpectedlyUnreadHosts.contains($0) })
+    }
+
+    /// A deliberate pass-through is the configuration working, and counting it would
+    /// train the reader to ignore the number.
+    @Test func aDeliberatePassThroughIsNotCountedAsUnread() {
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["*"], exclude: ["skipped.example.com"])
+        state.tunneledHosts = Self.everyReason
+        #expect(!state.unexpectedlyUnreadHosts.contains(where: { $0.reason == .excluded }))
+        // And what no scope change can fix is not "unread that nobody asked for" either.
+        #expect(state.unexpectedlyUnreadHosts.allSatisfy { $0.interceptable })
+    }
+
+    /// Under a whitelist, `notInScope` is the ordinary state of every host nobody
+    /// named — counting it puts a permanent "67 unread" on the console, which is the
+    /// same "train them to ignore it" failure the `excluded` exemption was written for.
+    @Test func anUnnamedHostIsNotUnreadUnderAWhitelist() {
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["api.test"])
+        state.tunneledHosts = Self.everyReason
+        #expect(!state.unexpectedlyUnreadHosts.contains(where: { $0.reason == .notInScope }))
+        // Interception switched off entirely is still worth flagging: that one is Loom
+        // not doing what its own switch says.
+        #expect(state.unexpectedlyUnreadHosts.map(\.reason) == [.interceptionDisabled])
+    }
+
+    /// A wildcard include flips it back: a host escaping a scope meant to cover
+    /// everything is a real anomaly, not the ordinary case.
+    @Test func anUnnamedHostIsUnreadUnderAWildcardInclude() {
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: ["*"])
+        state.tunneledHosts = Self.everyReason
+        #expect(state.unexpectedlyUnreadHosts.contains(where: { $0.reason == .notInScope }))
+    }
+
+    /// The row menu offers it only where the SSL scope decides anything. On a plain
+    /// `http://` exchange, excluding the host would change nothing — a control that
+    /// silently does nothing is worse than an absent one.
+    @Test func theRowMenuOffersExcludeOnlyForTLSExchanges() {
+        let wide = SSLScope(enabled: true, include: ["*"])
+        #expect(RequestTable.Coordinator.offersExclude("https://api.example.com/v1", scope: wide))
+        #expect(RequestTable.Coordinator.offersExclude("wss://api.example.com/socket", scope: wide))
+        #expect(!RequestTable.Coordinator.offersExclude("http://api.example.com/v1", scope: wide))
+        #expect(!RequestTable.Coordinator.offersExclude("ws://api.example.com/socket", scope: wide))
+        // Scheme casing is the client's business, not a reason to hide the entry.
+        #expect(RequestTable.Coordinator.offersExclude("HTTPS://api.example.com/v1", scope: wide))
+    }
+
+    /// And only where the scope still decrypts the host. Scheme alone was the first
+    /// version, and it offered the item on replayed flows, HAR imports and
+    /// reverse-proxy flows whose recorded URL is the upstream `https://` one — the
+    /// write then changed nothing while the console reported a fresh success.
+    @Test func theRowMenuHidesExcludeOnceTheHostIsAlreadyPassedThrough() {
+        let carved = SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"])
+        #expect(!RequestTable.Coordinator.offersExclude("https://pinned.example.com/v1", scope: carved))
+        #expect(RequestTable.Coordinator.offersExclude("https://other.example.com/v1", scope: carved))
+        #expect(!RequestTable.Coordinator.offersExclude(
+            "https://api.example.com/v1", scope: SSLScope(enabled: false, include: ["*"])
+        ))
+    }
+
+    /// The two kinds of `CONNECT` row wear the same lock and want **opposite** menus,
+    /// and the scope is what separates them rather than anything read off the row. A
+    /// relayed tunnel is a host nobody named — Decrypt is the point of the row. A
+    /// refused handshake is a host Loom is already trying to decrypt — passing it
+    /// through is its repair.
+    @Test func aRelayedRowOffersDecryptAndARefusedOneOffersPassThrough() {
+        let whitelist = SSLScope(enabled: true, include: ["pinned.example.com"])
+        // Loom terminated this one and the client refused: still in scope.
+        #expect(RequestTable.Coordinator.offersExclude("https://pinned.example.com:443", scope: whitelist))
+        #expect(!RequestTable.Coordinator.offersDecrypt("https://pinned.example.com:443", scope: whitelist))
+        // Nobody named this one: the row exists so it can be decrypted.
+        #expect(RequestTable.Coordinator.offersDecrypt("https://unnamed.example.com:443", scope: whitelist))
+        #expect(!RequestTable.Coordinator.offersExclude("https://unnamed.example.com:443", scope: whitelist))
+    }
+
+    /// The two predicates are complementary by construction — every TLS row offers
+    /// exactly one direction, and a plain `http://` row offers neither, because there
+    /// the scope decides nothing at all.
+    @Test func exactlyOneScopeDirectionIsOfferedPerRow() {
+        let scopes = [
+            SSLScope(enabled: true, include: []),
+            SSLScope(enabled: true, include: ["*"]),
+            SSLScope(enabled: true, include: ["*"], exclude: ["api.example.com"]),
+            SSLScope(enabled: true, include: ["api.example.com"]),
+            SSLScope(enabled: false, include: ["*"]),
+        ]
+        for scope in scopes {
+            for url in ["https://api.example.com/v1", "wss://api.example.com/s", "https://api.example.com:443"] {
+                let decrypt = RequestTable.Coordinator.offersDecrypt(url, scope: scope)
+                let exclude = RequestTable.Coordinator.offersExclude(url, scope: scope)
+                #expect(decrypt != exclude, "\(url) under \(scope.include)/\(scope.exclude)")
+            }
+            for url in ["http://api.example.com/v1", "ws://api.example.com/s"] {
+                #expect(!RequestTable.Coordinator.offersDecrypt(url, scope: scope))
+                #expect(!RequestTable.Coordinator.offersExclude(url, scope: scope))
+            }
+        }
+    }
+
+    // MARK: The HTTPS tile's sentence
+
+    /// The switch permits decryption; the whitelist decides what gets decrypted. With
+    /// no seeded `*`, "interception on" and "decrypting" are not the same statement,
+    /// and the tile's help has to say which.
+    @Test func theHTTPSHelpSeparatesTheSwitchFromTheScope() {
+        var state = AppFeature.State()
+        state.setup.certificateStatus = CertificateStatus(isGenerated: true, isTrusted: true)
+
+        state.setup.sslEnabled = false
+        #expect(PanelView.httpsHelp(state.setup).contains("is off"))
+
+        // On, trusted, nothing named: the ordinary state of a fresh install, and the
+        // one the old wording called "decrypting".
+        state.setup.sslEnabled = true
+        state.setup.sslScope = SSLScope(enabled: true, include: [])
+        #expect(PanelView.httpsHelp(state.setup).contains("no hosts decrypted yet"))
+
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*.corp.example", "api.test"])
+        #expect(PanelView.httpsHelp(state.setup).contains("2 hosts"))
+
+        state.setup.sslScope = SSLScope(enabled: true, include: ["*"])
+        #expect(PanelView.httpsHelp(state.setup).contains("every host"))
+
+        // An untrusted CA still outranks all of it: it defeats a request the operator
+        // *did* make, where an empty list is one they haven't made yet.
+        state.setup.certificateStatus = CertificateStatus(isGenerated: true, isTrusted: false)
+        #expect(PanelView.httpsHelp(state.setup).contains("isn't trusted"))
     }
 }

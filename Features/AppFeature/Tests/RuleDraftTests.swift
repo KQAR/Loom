@@ -409,6 +409,9 @@ import Testing
             // RuleActions
             "route", "rewriteRequest", "rewriteResponse",
             "requestSubstitutions", "responseSubstitutions", "delayMilliseconds",
+            // The capture stage: the one action that does not touch the traffic. The
+            // editor surfaces it in Advanced (`RuleDraft.dropFromCapture`).
+            "dropFromCapture",
             // Route payloads (mock shown here; the others are covered by the
             // per-route tests above, and adding a Route case is a compile error in
             // MCPServerTests' RuleCodecParityTests)
@@ -447,7 +450,8 @@ import Testing
                 rewriteResponse: ResponseRewriteAction(statusCode: 200, bodyText: "b"),
                 requestSubstitutions: [SubstitutionRule(field: .url, match: "m", replacement: "r")],
                 responseSubstitutions: [SubstitutionRule(field: .body, match: "m", replacement: "r")],
-                delayMilliseconds: 1
+                delayMilliseconds: 1,
+                dropFromCapture: true
             )
         )
     }

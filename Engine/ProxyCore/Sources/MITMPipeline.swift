@@ -63,9 +63,14 @@ enum MITMPipeline {
         ]
     }
 
+    /// - Parameter certificateAuthority: whose per-host TLS context cache has to be
+    ///   dropped if this connection turns out to need an HTTP/1.1 downgrade — that
+    ///   cached context is what still advertises `h2`. Optional so the pipeline can be
+    ///   installed in a test without one; production always has it.
     static func installTLS(
         channel: Channel, host: String, port: Int, sslContext: NIOSSLContext,
-        store: FlowStore, forwarder: UpstreamForwarding
+        store: FlowStore, forwarder: UpstreamForwarding,
+        certificateAuthority: CertificateAuthority? = nil
     ) -> EventLoopFuture<Void> {
         // Every `addHandler` here goes through `syncOperations` inside a
         // `makeCompletedFuture` body, which — unlike `EventLoopFuture.flatMap`'s — is
@@ -76,15 +81,35 @@ enum MITMPipeline {
         // loop, which `syncOperations` requires.
         channel.eventLoop.makeCompletedFuture {
             let sync = channel.pipeline.syncOperations
+            // One attempt, watched from both sides of the SSL handler: below it for
+            // the bytes and the connection ending, above it for NIOSSL's own events.
+            // Neither half is sufficient — a client that refuses with an alert raises
+            // an error the lower one never sees, and one that just closes the socket
+            // raises nothing at all for the upper one to catch.
+            let attempt = ClientTLSAttempt()
             try sync.addHandler(NIOSSLServerHandler(context: sslContext), name: "loom.tls", position: .first)
+            // **Ahead of the TLS handler, and the order is the whole point**: added
+            // at `.first` after it, so it becomes the new head and the bytes it sees
+            // are the client's ciphertext. Behind TLS it would see decrypted
+            // application data, which by definition only exists after the handshake
+            // it exists to watch fail. It observes and forwards, nothing else — the
+            // CONNECT-surgery ordering (AGENTS.md § Known Issues) is about what may
+            // sit between the client and TLS *writing*, and this writes nothing.
+            try sync.addHandler(
+                ClientTLSAbortReporter(host: host, port: port, attempt: attempt, store: store),
+                position: .first
+            )
             // Between the TLS handler and ALPN, so it sees a handshake failure before
             // anything else and while it is still unambiguously a *handshake* failure.
-            try sync.addHandler(ClientTLSFailureReporter(host: host, port: port))
+            try sync.addHandler(
+                ClientTLSFailureReporter(host: host, port: port, attempt: attempt, store: store)
+            )
             try sync.addHandler(
                 ApplicationProtocolNegotiationHandler { negotiated in
                     configureIntercepted(
                         channel: channel, negotiated: negotiated,
-                        host: host, port: port, store: store, forwarder: forwarder
+                        host: host, port: port, store: store, forwarder: forwarder,
+                        certificateAuthority: certificateAuthority
                     )
                 }
             )
@@ -138,7 +163,8 @@ enum MITMPipeline {
     /// stack (kept removable so a WebSocket upgrade can splice a raw relay).
     static func configureIntercepted(
         channel: Channel, negotiated: ALPNResult,
-        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding
+        host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding,
+        certificateAuthority: CertificateAuthority? = nil
     ) -> EventLoopFuture<Void> {
         // Read once, here, and handed down. This runs on the connection channel
         // after the handshake — the only point where both facts are available:
@@ -151,7 +177,8 @@ enum MITMPipeline {
         if case .negotiated("h2") = negotiated {
             return installHTTP2(
                 channel: channel, host: host, port: port, store: store, forwarder: forwarder,
-                upstreamTLS: true, clientTLSVersion: tlsVersion
+                upstreamTLS: true, clientTLSVersion: tlsVersion,
+                certificateAuthority: certificateAuthority
             )
         }
         return installHTTP1(
@@ -166,8 +193,18 @@ enum MITMPipeline {
     private static func installHTTP2(
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding,
-        upstreamTLS: Bool, clientTLSVersion: String?
+        upstreamTLS: Bool, clientTLSVersion: String?,
+        certificateAuthority: CertificateAuthority? = nil
     ) -> EventLoopFuture<Void> {
+        // Added *before* the codec, so it sits head-side of it: `NIOHTTP2Handler`
+        // writes its GOAWAY outbound from its own position, which travels toward the
+        // head and never reaches the tail where `HTTP2Frame` values exist. See
+        // `HTTP2GoAwayObserver` — the code in that frame is the entire diagnosis for
+        // an `unableToParseFrame`, and nothing else carries it.
+        let goAway = HTTP2GoAwayCode()
+        return channel.eventLoop.makeCompletedFuture {
+            try channel.pipeline.syncOperations.addHandler(HTTP2GoAwayObserver(box: goAway))
+        }.flatMap {
         channel.configureHTTP2Pipeline(
             mode: .server, initialLocalSettings: h2ServerSettings
         ) { streamChannel in
@@ -193,16 +230,24 @@ enum MITMPipeline {
             // wait on a request that would never be answered.
             channel.eventLoop.makeCompletedFuture {
                 try channel.pipeline.syncOperations.addHandler(
-                    HTTP2ConnectionErrorReporter(host: host, port: port)
+                    HTTP2ConnectionErrorReporter(
+                        host: host, port: port, store: store, goAway: goAway,
+                        certificateAuthority: certificateAuthority
+                    )
                 )
             }
         }
+        }
     }
 
+    /// - Parameter downgrades: whose verdict decides whether an HTTP/1.1 client leg
+    ///   here is the client's choice or Loom's. Injected for tests; production reads
+    ///   the process-wide registry.
     private static func installHTTP1(
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding, upstreamTLS: Bool,
-        clientTLSVersion: String? = nil
+        clientTLSVersion: String? = nil,
+        downgrades: HTTP2DowngradeRegistry = .shared
     ) -> EventLoopFuture<Void> {
         channel.eventLoop.makeCompletedFuture {
             let sync = channel.pipeline.syncOperations
@@ -214,7 +259,11 @@ enum MITMPipeline {
             try sync.addHandler(
                 TLSInterceptHandler(
                     host: host, port: port, store: store, forwarder: forwarder,
-                    upstreamTLS: upstreamTLS, clientTLSVersion: clientTLSVersion
+                    upstreamTLS: upstreamTLS, clientTLSVersion: clientTLSVersion,
+                    // Only an *intercepted TLS* leg can have been downgraded: the
+                    // cleartext installer reaches here too, and h2 was never on
+                    // offer there, so an h1 request over it is the client's choice.
+                    clientProtocolDowngraded: upstreamTLS && downgrades.isDowngraded(host: host)
                 ),
                 name: interceptName
             )
@@ -222,26 +271,95 @@ enum MITMPipeline {
     }
 }
 
-/// Recording an un-decrypted tunnel as a flow, so HTTPS (or opaque TCP) activity
-/// Loom deliberately did *not* read is still visible instead of invisible.
+/// Recording a tunnel as a flow, so an HTTPS connection Loom did *not* read is
+/// visible instead of invisible — whether it went past unread on purpose
+/// (`record`) or failed because Loom was terminating it (`recordFailure`).
 ///
 /// Shared by both entry points: the `CONNECT` method marks it (a real captured
 /// request never carries one), and having one definition means an embedder's
 /// `observeTunnels` means the same thing whichever listener the client used.
 enum TunnelFlow {
-    static func record(host: String, port: Int, startedAt: Date, store: FlowStore) {
+    /// - Parameter client: the channel the tunnel was opened on, for attribution. A
+    ///   tunnel carries no request head, so there is no `User-Agent` to type the device
+    ///   from and no `SourceApp` at all — but the peer's address is right there, and
+    ///   without it the row is unreachable from the surface it exists for: filtering the
+    ///   table to a device (the sidebar's most-used filter, and `get_recent_flows`'s
+    ///   `device_ip`) dropped every CONNECT row, so "what is this phone not showing me"
+    ///   answered nothing.
+    static func record(host: String, port: Int, startedAt: Date, client: Channel?, store: FlowStore) {
         let flow = Flow(
             request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
             startedAt: startedAt,
-            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date())
+            outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
+            sourceDevice: device(of: client)
         )
         Task { await store.upsert(flow) }
+    }
+
+    /// The other way a tunnel ends: Loom terminated the TLS and the **connection
+    /// failed** — the client refused Loom's leaf, or the intercepted h2 codec could
+    /// not read it. Recorded as the same `CONNECT` row, with the failure in
+    /// `Flow.error` instead of a `200`.
+    ///
+    /// Three rules, and the first two are why this is not just a call to `record`.
+    ///
+    /// **It is not gated on `observeTunnels`.** That flag asks whether an embedder
+    /// wants rows for traffic Loom deliberately passed through, which is a volume
+    /// decision about things that *worked*. This is a request that never happened
+    /// because Loom was in the path, and an embedder given no row for it has the
+    /// same hole the operator had: a client reporting a certificate error against a
+    /// capture that denies the host was ever contacted.
+    ///
+    /// **One row per refused connection, not per host.** A pinned client retries —
+    /// a measured session had 736 refusals on one origin — so this is genuinely
+    /// noisy, and the aggregate already exists: `TunneledHostLog` holds one entry
+    /// per host with a `connections` count, and the console reads that. The table's
+    /// grain is the connection everywhere else, and a row that silently stood for
+    /// 736 of them would be the more confusing of the two lies.
+    ///
+    /// **The reason is the operator's next action, not the codec's spelling.** A
+    /// refused leaf is repaired by trusting Loom's CA in *that* client or by passing
+    /// the host through; the error text says which, and the row's context menu
+    /// offers the second.
+    static func recordFailure(
+        host: String, port: Int, startedAt: Date, client: Channel?,
+        error: String, store: FlowStore
+    ) {
+        let flow = Flow(
+            request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
+            startedAt: startedAt,
+            outcome: .failed(FlowError(error), at: Date(), partialResponse: nil),
+            sourceDevice: device(of: client)
+        )
+        Task { await store.upsert(flow) }
+    }
+
+    private static func device(of client: Channel?) -> SourceDevice? {
+        client?.remoteAddress?.ipAddress.map { ip in
+            SourceDevice(ip: ip, kind: SourceDevice.kind(forIP: ip))
+        }
     }
 
     /// Glue two channels into a byte-transparent relay. Both ends must already be
     /// on the same event loop — `GlueHandler` relays by writing to its partner's
     /// context, which NIO requires happen on that loop.
-    static func glue(client: Channel, upstream: Channel) -> EventLoopFuture<Void> {
+    ///
+    /// - Parameters host/port: what this tunnel is *to*, recorded in
+    ///   `RelayedTunnelRegistry` so decrypting that host can end it. Registered here
+    ///   rather than at the three call sites for the same reason the splice itself is
+    ///   one function: a tunnel that skipped registration would be one an operator
+    ///   could never turn into a captured exchange without restarting their client,
+    ///   and which call site forgot would be invisible.
+    static func glue(
+        client: Channel, upstream: Channel,
+        host: String, port: Int,
+        registry: RelayedTunnelRegistry = .shared
+    ) -> EventLoopFuture<Void> {
+        registry.register(host: host, port: port, client: client)
+        return glueChannels(client: client, upstream: upstream)
+    }
+
+    private static func glueChannels(client: Channel, upstream: Channel) -> EventLoopFuture<Void> {
         // The pair is built *inside* the loop-bound body for the same reason as
         // `MITMPipeline`'s handlers: `GlueHandler` is event-loop confined and not
         // `Sendable`. Adding both on the one loop is also what the shared-loop
