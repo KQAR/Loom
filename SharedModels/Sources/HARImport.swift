@@ -89,7 +89,12 @@ public enum HARImport {
             // Nothing here can tell a stated version from a defaulted one, so it
             // is taken as-is and only an empty one is dropped.
             httpVersion: (request["httpVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 },
-            headers: headers(request["headers"]), body: requestBody
+            headers: headers(request["headers"]), body: requestBody,
+            // Loom's own `_trailers` extension (§ HARExport). Absent from every
+            // other exporter's output, which is the honest answer there: HAR 1.2
+            // has no trailer section, so a file without the extension genuinely
+            // does not say whether one existed.
+            trailers: optionalHeaders(request["_trailers"])
         )
 
         // Timings: `time` is the whole exchange, `timings.wait` the server think-time.
@@ -109,7 +114,8 @@ public enum HARImport {
                     statusCode: status,
                     httpVersion: response["httpVersion"] as? String,
                     headers: headers(response["headers"]),
-                    body: content(response["content"])
+                    body: content(response["content"]),
+                    trailers: optionalHeaders(response["_trailers"])
                 ),
                 at: completedAt
             )
@@ -148,6 +154,14 @@ public enum HARImport {
         }
         guard let ip = entry["serverIPAddress"] as? String, !ip.isEmpty else { return nil }
         return FlowTransport(remoteAddress: ip)
+    }
+
+    /// The same shape, but distinguishing "the key was absent" (nil — no trailer
+    /// section) from "the key was there and empty" (`[]`). `headers` collapses both
+    /// to `[]`, which is right for a required HAR field and wrong for this one.
+    private static func optionalHeaders(_ raw: Any?) -> [HeaderPair]? {
+        guard raw is [[String: Any]] else { return nil }
+        return headers(raw)
     }
 
     private static func headers(_ raw: Any?) -> [HeaderPair] {

@@ -73,7 +73,7 @@ arguments; this file is about sequence and interpretation.
   `tunneledHosts` is the only place the fact exists. `notInScope` is the **ordinary**
   state of a host nobody named — the scope is a whitelist — and it, `excluded`
   (someone carved the host out of a glob) and `interceptionDisabled` are all one
-  `intercept_host` away; `notTLSOrHTTP` (h2c, SSH, SMTP, a server-first
+  `intercept_host` away; `notTLSOrHTTP` (SSH, SMTP, a server-first
   protocol), `noCertificateAuthority` and `leafMintFailed` are not. Two more mean
   the request never happened at all — the client is broken with Loom in the path,
   not merely unread: `clientHandshakeFailed` (it refused Loom's leaf and hung up

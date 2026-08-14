@@ -13,6 +13,21 @@ enum SharedTLS {
     static let clientContext: NIOSSLContext =
         try! NIOSSLContext(configuration: .makeClientConfiguration())
 
+    /// The same, offering `h2` first. A separate context because ALPN is fixed in a
+    /// `TLSConfiguration` at build time, and offering `h2` unconditionally is not
+    /// free: an origin that answers `h2` would be answering a protocol the h1-only
+    /// forward path cannot speak. Only an exchange whose *client* spoke h2 uses this.
+    ///
+    /// `http/1.1` stays in the list, and honouring the answer is the caller's job:
+    /// an origin is entitled to decline, and a client that got h2 from Loom is not
+    /// entitled to assume the origin did too.
+    static let clientContextOfferingHTTP2: NIOSSLContext = {
+        var configuration = TLSConfiguration.makeClientConfiguration()
+        configuration.applicationProtocols = ["h2", "http/1.1"]
+        // Same force-try reasoning as above: a fixed, valid configuration.
+        return try! NIOSSLContext(configuration: configuration)
+    }()
+
     /// Whether `host` is an IPv4/IPv6 literal rather than a name.
     ///
     /// The reason this is shared rather than a private helper on each caller:

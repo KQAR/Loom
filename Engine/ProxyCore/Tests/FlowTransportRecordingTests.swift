@@ -85,7 +85,7 @@ import LoomSharedModels
         continuation.yield(.head(statusCode: 200, httpVersion: "HTTP/1.1", headers: []))
         continuation.yield(.body(Data("done".utf8)))
         continuation.yield(.transport(FlowTransport(responseEncodedBodyBytes: 12)))
-        continuation.yield(.end)
+        continuation.yield(.end(trailers: nil))
         continuation.finish()
         await relay.value
         _ = try? channel.finish()

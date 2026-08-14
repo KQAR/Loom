@@ -71,6 +71,13 @@ public struct CapturedRequest: Equatable, Codable, Sendable {
     /// recorded copy stops, and a reader must be able to tell. Optional so flows
     /// persisted before this field existed still decode.
     public var fullBodyBytes: Int?
+    /// The trailer field section, when the client sent one (chunked `.end` trailers,
+    /// or an h2 HEADERS frame after the DATA). **Nil and empty are different**: nil
+    /// is "no trailer section on the wire", `[]` is one that arrived carrying no
+    /// fields. Request trailers are rare in practice — gRPC puts none on requests —
+    /// but they are forwarded and recorded rather than dropped, because a field a
+    /// proxy silently eats is the failure mode this whole file is written against.
+    public var trailers: [HeaderPair]?
 
     /// Whether `body` is a prefix of what actually flowed rather than the whole of it.
     public var isBodyTruncated: Bool { fullBodyBytes != nil }
@@ -88,7 +95,8 @@ public struct CapturedRequest: Equatable, Codable, Sendable {
         httpVersion: String? = nil,
         headers: [HeaderPair],
         body: Data? = nil,
-        fullBodyBytes: Int? = nil
+        fullBodyBytes: Int? = nil,
+        trailers: [HeaderPair]? = nil
     ) {
         self.method = method
         self.url = url
@@ -96,6 +104,7 @@ public struct CapturedRequest: Equatable, Codable, Sendable {
         self.headers = headers
         self.body = body
         self.fullBodyBytes = fullBodyBytes
+        self.trailers = trailers
     }
 }
 
@@ -110,6 +119,15 @@ public struct CapturedResponse: Equatable, Codable, Sendable {
     /// capped prefix of them (an SSE/long-poll/large download hitting the capture
     /// cap). Nil means `body` is complete. See `CapturedRequest.fullBodyBytes`.
     public var fullBodyBytes: Int?
+    /// The trailer field section the origin sent after the body, or nil when there
+    /// was none (nil and `[]` are different — see `CapturedRequest.trailers`).
+    ///
+    /// This is where **gRPC puts its result**: `grpc-status` / `grpc-message` ride
+    /// the response trailers, and a "Trailers-Only" response puts them in the head
+    /// instead. A proxy that drops this section turns every gRPC failure into a
+    /// call that answered 200 and then hung — which is what Loom did until 0.0.27,
+    /// on both legs, silently.
+    public var trailers: [HeaderPair]?
 
     /// Whether `body` is a prefix of what actually flowed rather than the whole of it.
     public var isBodyTruncated: Bool { fullBodyBytes != nil }
@@ -128,13 +146,15 @@ public struct CapturedResponse: Equatable, Codable, Sendable {
         httpVersion: String? = nil,
         headers: [HeaderPair],
         body: Data? = nil,
-        fullBodyBytes: Int? = nil
+        fullBodyBytes: Int? = nil,
+        trailers: [HeaderPair]? = nil
     ) {
         self.statusCode = statusCode
         self.httpVersion = httpVersion
         self.headers = headers
         self.body = body
         self.fullBodyBytes = fullBodyBytes
+        self.trailers = trailers
     }
 }
 

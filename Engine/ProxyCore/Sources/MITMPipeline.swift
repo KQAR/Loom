@@ -125,6 +125,32 @@ enum MITMPipeline {
         installHTTP1(channel: channel, host: host, port: port, store: store, forwarder: forwarder, upstreamTLS: false)
     }
 
+    /// Install the cleartext HTTP/2 capture stack — h2c with prior knowledge
+    /// (RFC 9113 §3.4), i.e. a client that opens with the connection preface and
+    /// never negotiates anything.
+    ///
+    /// This is the **same** stack the ALPN `h2` branch installs, differing only in
+    /// what it records (`http://`, no client TLS version) — deliberately so, and
+    /// deliberately not a second copy: h2 capture is where the h2↔h1 codec, the
+    /// raised `SETTINGS_MAX_HEADER_LIST_SIZE` and the connection-error reporter all
+    /// live, and every one of those was a bug before it was a handler.
+    ///
+    /// Before this existed, `ProtocolSniff` classified the preface as `.opaque` and
+    /// the tunnel was relayed unread. That is the exact failure `TunneledHostLog`
+    /// was built to make visible rather than the one it was built to accept: gRPC
+    /// over cleartext, Go's `h2c.NewHandler`, and an internal service reached by
+    /// hostname all recorded no flow at all, which reads identically to a client
+    /// that never ran.
+    static func installCleartextHTTP2(
+        channel: Channel, host: String, port: Int,
+        store: FlowStore, forwarder: UpstreamForwarding
+    ) -> EventLoopFuture<Void> {
+        installHTTP2(
+            channel: channel, host: host, port: port, store: store, forwarder: forwarder,
+            upstreamTLS: false, clientTLSVersion: nil
+        )
+    }
+
     /// Install the decrypted capture stack once ALPN is known. HTTP/2 demuxes each
     /// stream into an HTTP/1-shaped child channel (via the h2↔h1 codec) so the same
     /// `TLSInterceptHandler` captures + forwards it; http/1.1 uses the named h1
@@ -142,39 +168,54 @@ enum MITMPipeline {
             (try? channel.pipeline.syncOperations.nioSSL_tlsVersion()) ?? nil
         )
         if case .negotiated("h2") = negotiated {
-            return channel.configureHTTP2Pipeline(
-                mode: .server, initialLocalSettings: h2ServerSettings
-            ) { streamChannel in
-                streamChannel.eventLoop.makeCompletedFuture {
-                    let sync = streamChannel.pipeline.syncOperations
-                    try sync.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
-                    // The codec hands the request over as an HTTP/1.1 head, so the
-                    // negotiated protocol has to be stated rather than derived —
-                    // otherwise every h2 exchange records itself as HTTP/1.1, which
-                    // is true of the shape and false about the client.
-                    try sync.addHandler(
-                        TLSInterceptHandler(
-                            host: host, port: port, store: store, forwarder: forwarder,
-                            negotiatedProtocol: "HTTP/2", clientTLSVersion: tlsVersion
-                        )
-                    )
-                }
-            }.flatMap { _ in
-                // At the tail of the *connection* channel: a codec error travels
-                // inbound from `NIOHTTP2Handler`, and with nothing here it used to
-                // reach the end of the pipeline and vanish, leaving the client to
-                // wait on a request that would never be answered.
-                channel.eventLoop.makeCompletedFuture {
-                    try channel.pipeline.syncOperations.addHandler(
-                        HTTP2ConnectionErrorReporter(host: host, port: port, store: store)
-                    )
-                }
-            }
+            return installHTTP2(
+                channel: channel, host: host, port: port, store: store, forwarder: forwarder,
+                upstreamTLS: true, clientTLSVersion: tlsVersion
+            )
         }
         return installHTTP1(
             channel: channel, host: host, port: port, store: store, forwarder: forwarder,
             upstreamTLS: true, clientTLSVersion: tlsVersion
         )
+    }
+
+    /// The HTTP/2 capture stack, over TLS or in cleartext. `upstreamTLS` decides
+    /// the scheme the exchange is recorded and re-sent under; nothing else in the
+    /// stack differs, because nothing else in h2 does.
+    private static func installHTTP2(
+        channel: Channel, host: String, port: Int,
+        store: FlowStore, forwarder: UpstreamForwarding,
+        upstreamTLS: Bool, clientTLSVersion: String?
+    ) -> EventLoopFuture<Void> {
+        channel.configureHTTP2Pipeline(
+            mode: .server, initialLocalSettings: h2ServerSettings
+        ) { streamChannel in
+            streamChannel.eventLoop.makeCompletedFuture {
+                let sync = streamChannel.pipeline.syncOperations
+                try sync.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
+                // The codec hands the request over as an HTTP/1.1 head, so the
+                // negotiated protocol has to be stated rather than derived —
+                // otherwise every h2 exchange records itself as HTTP/1.1, which
+                // is true of the shape and false about the client.
+                try sync.addHandler(
+                    TLSInterceptHandler(
+                        host: host, port: port, store: store, forwarder: forwarder,
+                        upstreamTLS: upstreamTLS,
+                        negotiatedProtocol: "HTTP/2", clientTLSVersion: clientTLSVersion
+                    )
+                )
+            }
+        }.flatMap { _ in
+            // At the tail of the *connection* channel: a codec error travels
+            // inbound from `NIOHTTP2Handler`, and with nothing here it used to
+            // reach the end of the pipeline and vanish, leaving the client to
+            // wait on a request that would never be answered.
+            channel.eventLoop.makeCompletedFuture {
+                try channel.pipeline.syncOperations.addHandler(
+                    HTTP2ConnectionErrorReporter(host: host, port: port, store: store)
+                )
+            }
+        }
     }
 
     private static func installHTTP1(

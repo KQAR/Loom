@@ -6,8 +6,11 @@ enum ClientProtocolGuess: Equatable {
     case tls
     /// An HTTP/1.x request line — capturable in cleartext.
     case http
-    /// Anything else (or h2c prior-knowledge, which Loom can't demux without a
-    /// negotiated ALPN): relay the bytes untouched.
+    /// The HTTP/2 connection preface in cleartext — h2c with prior knowledge.
+    /// Capturable: the h2 stack demuxes it exactly as the ALPN-negotiated path
+    /// does, minus the TLS.
+    case h2c
+    /// Anything else: relay the bytes untouched.
     case opaque
     /// Not enough bytes to decide yet.
     case needMore
@@ -42,11 +45,17 @@ enum ProtocolSniff {
             return bytes[1] == 0x03 ? .tls : .opaque
         }
 
-        // HTTP/2 prior-knowledge preface. Reads exactly like an HTTP request line
-        // to the test below, but the h1 codec would reject the frames that follow,
-        // so relay it instead of capturing it badly.
+        // HTTP/2 prior-knowledge preface (RFC 9113 §3.4). Reads exactly like an
+        // HTTP request line to the test below, and the h1 codec would reject the
+        // frames that follow — so it has to be separated out *before* that test,
+        // and it gets the h2 stack rather than a relay.
+        //
+        // The real preface is 24 bytes (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`); this
+        // matches the first 14, which is enough to be unambiguous and fits inside
+        // `maxBytes`. Waiting for all 24 would mean buffering past the point where
+        // every other verdict is already decided, for no extra certainty.
         if bytes.count >= h2Preface.count {
-            if Array(bytes.prefix(h2Preface.count)) == h2Preface { return .opaque }
+            if Array(bytes.prefix(h2Preface.count)) == h2Preface { return .h2c }
         } else if Array(h2Preface.prefix(bytes.count)) == bytes {
             return .needMore
         }

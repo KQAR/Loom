@@ -156,10 +156,16 @@ public enum HARExport {
         /// partial body, and silently shipping the prefix under the real size would
         /// misrepresent the capture.
         let bodyTruncated: Bool?
+        /// Vendor extension: the trailer field section. HAR 1.2 predates any notion
+        /// of trailers and has nowhere to put them — folding them into `headers`
+        /// would claim they arrived before the body, and dropping them would lose
+        /// the field a gRPC exchange is exported *for*.
+        let trailers: [NameValue]?
 
         enum CodingKeys: String, CodingKey {
             case method, url, httpVersion, headers, queryString, cookies, headersSize, bodySize, postData
             case bodyTruncated = "_bodyTruncated"
+            case trailers = "_trailers"
         }
 
         init(_ request: CapturedRequest) {
@@ -176,6 +182,7 @@ public enum HARExport {
             // The size that crossed the wire, not the size we kept.
             bodySize = request.fullBodyBytes ?? request.body?.count ?? 0
             bodyTruncated = request.isBodyTruncated ? true : nil
+            trailers = request.trailers.map(HARExport.nameValues)
             if let body = request.body, !body.isEmpty {
                 let rendered = HARExport.renderBody(body)
                 postData = PostData(
@@ -212,10 +219,14 @@ public enum HARExport {
         let bodySize: Int
         /// Vendor extension — see `Request.bodyTruncated`.
         let bodyTruncated: Bool?
+        /// Vendor extension — see `Request.trailers`. This is the response half,
+        /// which is the one that carries `grpc-status`.
+        let trailers: [NameValue]?
 
         enum CodingKeys: String, CodingKey {
             case status, statusText, httpVersion, headers, cookies, content, redirectURL, headersSize, bodySize
             case bodyTruncated = "_bodyTruncated"
+            case trailers = "_trailers"
         }
 
         init(_ flow: Flow) {
@@ -231,6 +242,7 @@ public enum HARExport {
                 headersSize = -1
                 bodySize = 0
                 bodyTruncated = nil
+                trailers = nil
                 return
             }
             status = response.statusCode
@@ -257,6 +269,7 @@ public enum HARExport {
             headersSize = -1
             bodySize = response.fullBodyBytes ?? response.body?.count ?? 0
             bodyTruncated = response.isBodyTruncated ? true : nil
+            trailers = response.trailers.map(HARExport.nameValues)
         }
     }
 

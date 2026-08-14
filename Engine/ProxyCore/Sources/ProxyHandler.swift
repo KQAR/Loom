@@ -105,18 +105,20 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 bodyBridge = bridge
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: false)
                 startExchange(channel: context.channel, head: head, url: url,
-                              body: .stream(bridge.chunks, contentLength: RequestBodyStreaming.contentLength(head)),
+                              body: .stream(bridge.chunks,
+                                            contentLength: RequestBodyStreaming.contentLength(head),
+                                            trailers: bridge.trailers),
                               capture: bridge.capture)
             }
             if let bytes = chunk.readBytes(length: chunk.readableBytes) { bodyBridge?.yield(Data(bytes)) }
-        case .end:
+        case let .end(trailers):
             if let connectHead {
                 self.connectHead = nil
                 handleConnect(context: context, head: connectHead)
                 return
             }
             if let bodyBridge {
-                bodyBridge.finish()
+                bodyBridge.finish(trailers: trailers.map(HTTPUtil.headerPairs))
                 self.bodyBridge = nil
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
                 requestHead = nil; requestURL = nil; observed = nil
@@ -124,7 +126,8 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
             }
             if droppingRequest { droppingRequest = false; requestHead = nil; requestURL = nil; observed = nil; return }
             guard let head = requestHead, let url = requestURL else { return }
-            startExchange(channel: context.channel, head: head, url: url, body: .bytes(nil), capture: nil)
+            startExchange(channel: context.channel, head: head, url: url,
+                          body: .bytes(nil, trailers: trailers.map(HTTPUtil.headerPairs)), capture: nil)
             requestHead = nil; requestURL = nil; observed = nil
         }
     }

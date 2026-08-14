@@ -48,6 +48,46 @@ struct CookieCrumbTests {
         #expect(HTTPUtil.coalesceCookieCrumbs(HTTPHeaders()).isEmpty)
     }
 
+    // MARK: - Splitting them back for an h2 leg
+
+    /// The inverse encoder. `coalesceCookieCrumbs` makes the *message* canonical —
+    /// §8.2.3 requires that form before the fields reach "an HTTP/1.1 connection, or
+    /// a generic HTTP server application", so it is what the origin's application
+    /// sees either way. `splitCookieCrumbs` then frames it for an h2 leg, where HPACK
+    /// indexes fields whole and a merged kilobyte of cookie cannot fit the 4096-byte
+    /// dynamic table at all.
+    @Test func oneFieldIsSplitBackIntoCrumbsForAnH2Leg() {
+        var headers = HTTPHeaders()
+        headers.add(name: "host", value: "example.test")
+        headers.add(name: "cookie", value: "a=1; user_session=abc; z=9")
+        headers.add(name: "accept", value: "*/*")
+
+        let out = HTTPUtil.splitCookieCrumbs(headers)
+        #expect(out["cookie"] == ["a=1", "user_session=abc", "z=9"])
+        #expect(out.map(\.name) == ["host", "cookie", "cookie", "cookie", "accept"],
+                "the crumbs take the field's position; nothing else moves")
+    }
+
+    /// The two are inverses on the fact that matters — what a server application
+    /// reads — which is what makes it safe for the model to hold one form and the h2
+    /// encoder to emit the other.
+    @Test func joiningASplitFieldReturnsTheCanonicalForm() {
+        var headers = HTTPHeaders()
+        headers.add(name: "cookie", value: "a=1; b=2; c=3")
+        let roundTripped = HTTPUtil.coalesceCookieCrumbs(HTTPUtil.splitCookieCrumbs(headers))
+        #expect(roundTripped["cookie"] == ["a=1; b=2; c=3"])
+    }
+
+    /// A value with nothing to split stays one field, byte for byte. Producing a
+    /// wrong split is worse than producing none, and a single-pair cookie is the
+    /// common case.
+    @Test func anUnsplittableCookieIsLeftAlone() {
+        var headers = HTTPHeaders()
+        headers.add(name: "Cookie", value: "only=one")
+        #expect(HTTPUtil.splitCookieCrumbs(headers)["Cookie"] == ["only=one"])
+        #expect(HTTPUtil.splitCookieCrumbs(HTTPHeaders()).isEmpty)
+    }
+
     /// End to end over a real h2 connection: three crumbs in, one `Cookie` header at
     /// the forwarder — the shape that broke logged-in sites.
     @Test func h2CrumbsReachUpstreamAsOneCookieHeader() async throws {

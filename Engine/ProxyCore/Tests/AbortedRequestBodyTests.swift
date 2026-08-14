@@ -110,7 +110,7 @@ private final class BodyStreamRecorder: UpstreamForwarding, Sendable {
                     _ = try await body.collect()
                     self.state.withLock { $0.finishedCleanly = true }
                     continuation.yield(.head(statusCode: 200, httpVersion: nil, headers: []))
-                    continuation.yield(.end)
+                    continuation.yield(.end(trailers: nil))
                     continuation.finish()
                 } catch {
                     self.state.withLock { $0.failure = error }

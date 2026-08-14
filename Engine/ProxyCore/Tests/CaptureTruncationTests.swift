@@ -21,7 +21,7 @@ import LoomSharedModels
         let (stream, continuation) = AsyncThrowingStream<UpstreamResponseEvent, Error>.makeStream()
         continuation.yield(.head(statusCode: 200, httpVersion: "HTTP/1.1", headers: []))
         for chunk in chunks { continuation.yield(.body(chunk)) }
-        continuation.yield(.end)
+        continuation.yield(.end(trailers: nil))
         continuation.finish()
 
         let channel = EmbeddedChannel()
@@ -60,7 +60,7 @@ import LoomSharedModels
 
         let (stream, continuation) = AsyncThrowingStream<UpstreamResponseEvent, Error>.makeStream()
         continuation.yield(.head(statusCode: 200, httpVersion: "HTTP/1.1", headers: []))
-        continuation.yield(.end)
+        continuation.yield(.end(trailers: nil))
         continuation.finish()
 
         let channel = EmbeddedChannel()

@@ -244,9 +244,13 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
    therefore capture nothing on the non-standard ports that are half the reason to
    add this. So the reply goes out first and the first bytes are sniffed
    (`ProtocolSniff`): a TLS record MITMs if the host is in SSL scope, an HTTP
-   request line is captured in cleartext, everything else — h2c prior knowledge
-   included — is relayed byte-transparently and recorded as a tunnel flow when the
-   embedder asked to observe tunnels. The cost of replying first is that an
+   request line is captured in cleartext, the HTTP/2 connection preface gets the
+   same h2 stack the ALPN path uses (h2c with prior knowledge — 0.0.27; it used to
+   be relayed on the reasoning that h2 needs a negotiated ALPN, which it does not —
+   though such an exchange's *upstream* leg is HTTP/1.1 for now, gated off after it
+   was found to stall: `docs/decisions/h2c-upstream-stall.md`),
+   and everything else is relayed byte-transparently and recorded as a tunnel flow
+   when the embedder asked to observe tunnels. The cost of replying first is that an
    unreachable upstream is discovered after having already said "succeeded", so the
    client sees a closed connection instead of a SOCKS error; mitmproxy's SOCKS mode
    makes the same trade, and it is strictly better than declining to capture.

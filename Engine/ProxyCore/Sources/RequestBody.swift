@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import LoomSharedModels
 import NIOConcurrencyHelpers
 import NIOCore
 import NIOHTTP1
@@ -13,27 +14,90 @@ enum RequestBodyStreaming {
     }
 }
 
+/// A request's trailer field section, which for a live stream is **not known until
+/// the body has finished** — the client sends it after the last chunk (chunked
+/// `.end` trailers, or an h2 HEADERS frame following the DATA).
+///
+/// So it is a box rather than a value on the body: the forwarder writes the request
+/// in one pass and only reaches the trailers after draining, and nothing else in the
+/// path has a place to put a fact that arrives that late. For a buffered body the
+/// value is simply known up front.
+///
+/// **Read it only after the chunk sequence has ended.** The bridge fills it before
+/// `finish()`, so a consumer that has seen the sequence terminate is guaranteed to
+/// see whatever arrived; a read before that answers nil, which is the honest answer
+/// at that point rather than a wrong one.
+final class RequestTrailers: Sendable {
+    private let value = Mutex<[HeaderPair]?>(nil)
+
+    init(_ initial: [HeaderPair]? = nil) {
+        value.withLock { $0 = initial }
+    }
+
+    /// Nil means no trailer section arrived; `[]` means one did and it was empty.
+    var current: [HeaderPair]? { value.withLock { $0 } }
+
+    func set(_ trailers: [HeaderPair]?) {
+        value.withLock { $0 = trailers }
+    }
+}
+
+/// What `RequestBody.collect()` produces: the whole body **and** whatever trailer
+/// section followed it. The two are returned together because draining is the act
+/// that makes the second one knowable — a caller that took only the bytes would
+/// silently drop the trailers, which is exactly what every buffering decorator did
+/// before this existed.
+struct CollectedRequestBody: Sendable {
+    var body: Data?
+    var trailers: [HeaderPair]?
+}
+
 /// The request body handed to the forwarder. Either fully materialized (replay, or
 /// a body a rule/breakpoint forced us to buffer) or a live, back-pressured chunk
-/// stream from the client that is consumed exactly once. Modeling it as a sum type
-/// keeps the "stream when nothing needs the whole body, buffer when it does"
+/// stream from the client that is consumed exactly once. Modeling `source` as a sum
+/// type keeps the "stream when nothing needs the whole body, buffer when it does"
 /// decision explicit at each decorator.
-enum RequestBody: Sendable {
-    case bytes(Data?)
-    /// Live chunks + the client's declared Content-Length (nil when the client used
-    /// chunked transfer-encoding, so the forwarder re-frames as chunked upstream).
-    case stream(RequestChunks, contentLength: Int?)
+///
+/// `.bytes(_)` / `.stream(_, contentLength:)` remain the spelling at every
+/// construction site — they are factories now rather than cases, so that adding the
+/// trailer channel did not touch a hundred call sites that have no trailers to give.
+struct RequestBody: Sendable {
+    enum Source: Sendable {
+        case bytes(Data?)
+        /// Live chunks + the client's declared Content-Length (nil when the client used
+        /// chunked transfer-encoding, so the forwarder re-frames as chunked upstream).
+        case stream(RequestChunks, contentLength: Int?)
+    }
 
-    /// Drain to a single `Data` (the buffered fallback). Pulling respects the
-    /// stream's back-pressure, so this never reads faster than the consumer here.
-    func collect() async throws -> Data? {
-        switch self {
+    var source: Source
+    /// The trailer section, when there is a channel for one at all. Nil for a body
+    /// that cannot have trailers (a synthesized replay, a mock) — which is a
+    /// different statement from a box holding nil, i.e. "there was a client and it
+    /// sent none".
+    var trailers: RequestTrailers?
+
+    static func bytes(_ data: Data?, trailers: [HeaderPair]? = nil) -> RequestBody {
+        RequestBody(source: .bytes(data), trailers: trailers.map(RequestTrailers.init))
+    }
+
+    static func stream(
+        _ chunks: RequestChunks, contentLength: Int?, trailers: RequestTrailers? = nil
+    ) -> RequestBody {
+        RequestBody(source: .stream(chunks, contentLength: contentLength), trailers: trailers)
+    }
+
+    /// Drain to a single `Data` plus the trailer section (the buffered fallback).
+    /// Pulling respects the stream's back-pressure, so this never reads faster than
+    /// the consumer here. The trailers are read *after* the sequence ends, which is
+    /// the only point at which they exist.
+    func collect() async throws -> CollectedRequestBody {
+        switch source {
         case let .bytes(data):
-            return data
+            return CollectedRequestBody(body: data, trailers: trailers?.current)
         case let .stream(chunks, _):
             var data = Data()
             for try await chunk in chunks { data.append(chunk) }
-            return data
+            return CollectedRequestBody(body: data, trailers: trailers?.current)
         }
     }
 }
@@ -118,6 +182,10 @@ final class RequestBodyBridge: @unchecked Sendable {
     private static let highWatermark = 4
 
     let capture: RequestBodyCapture
+    /// Filled from the client's `.end` before the sequence is finished, so a
+    /// consumer that has drained the chunks can read it and be sure. Handed to the
+    /// forwarder inside `RequestBody.stream`.
+    let trailers = RequestTrailers()
     private let source: Producer.Source
     /// Internal rather than private so `RequestBodyReadPumpTests` can drive its
     /// lifecycle (`didTerminate`) without a live consumer.
@@ -154,7 +222,13 @@ final class RequestBodyBridge: @unchecked Sendable {
         }
     }
 
-    func finish() { source.finish() }
+    /// End the body stream, recording the client's trailer section first so a
+    /// consumer that wakes on the termination already sees it. Order matters and is
+    /// the whole contract of `RequestTrailers`.
+    func finish(trailers: [HeaderPair]? = nil) {
+        if let trailers { self.trailers.set(trailers) }
+        source.finish()
+    }
     func fail(_ error: Error) { source.finish(error) }
 
     /// Terminate a body stream whose client vanished mid-upload. **Not optional
