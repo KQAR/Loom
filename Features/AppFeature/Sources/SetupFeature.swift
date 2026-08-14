@@ -127,8 +127,8 @@ public struct SetupFeature: Sendable {
         /// that are the configuration working, then what no setting can read.
         ///
         /// One definition rather than an ordering written at the render site, so the
-        /// console card and the window's Not Decrypted panel can't disagree about
-        /// which origin matters most.
+        /// console card and any other reader can't disagree about which origin
+        /// matters most.
         ///
         /// **A ranking, not a concatenation of filters.** The first version was four
         /// `filter` calls appended together, which is only a partition as long as the
@@ -469,8 +469,8 @@ public struct SetupFeature: Sendable {
                 // this replaces (0.0.27) had to be undone host by host before an app
                 // with its own trust store would run at all, and that tax was paid on
                 // every host the operator never asked about. Traffic is still fully
-                // observed while un-named: it lands in `tunneledHosts`, which is what
-                // the sidebar's "Not Decrypted" panel renders.
+                // observed while un-named: every relayed connection is a CONNECT row
+                // in the request table, and the origin is listed in `tunneledHosts`.
                 state.sslScope = next
                 let scope = next
                 return .run { send in
@@ -748,7 +748,7 @@ public struct SetupFeature: Sendable {
         defaults.set(true, forKey: announcedKey)
         return """
         HTTPS is now decrypted per host: the previous “decrypt everything” default was \
-        dropped. Traffic is still listed under Not Decrypted — pick a host there to read it.
+        dropped. Relayed traffic still shows as CONNECT rows — right-click one to decrypt it.
         """
     }
 
@@ -761,17 +761,18 @@ public struct SetupFeature: Sendable {
         if let shadow = scope.exclude.first(where: { Glob.matches($0, glob) }) {
             return "\(glob) is included but still passed through — “\(shadow)” excludes it."
         }
-        return "Decrypting \(glob). Clients have to reconnect before it takes effect."
+        return "Decrypting \(glob). Takes effect on the client's next connection — re-run it."
     }
 
     /// What stopping achieved. The `shadowedByInclude` case is why this is prose:
     /// dropping the entry was not enough, so an exclude now stands that a later
     /// "decrypt this host" would have to undo.
     static func stopInterceptMessage(host: String, outcome: StopInterceptOutcome) -> String {
+        let caveat = "Connections already open stay decrypted until the client reconnects."
         if let glob = outcome.shadowedByInclude {
-            return "\(host) is passed through, but “\(glob)” still includes it — added an exclude to win."
+            return "\(host) is passed through, but “\(glob)” still includes it — added an exclude to win. \(caveat)"
         }
-        return "\(host) is no longer decrypted. It stays visible under Not Decrypted."
+        return "\(host) is no longer decrypted. \(caveat)"
     }
 
     /// What an intercept actually achieved. The `shadowedByExclude` case is the whole
@@ -783,7 +784,10 @@ public struct SetupFeature: Sendable {
         }
         var note = "Decrypting \(host)."
         if outcome.enabledInterception { note += " HTTPS interception is now on." }
-        note += " Re-run your client — connections already made are gone."
+        // Two facts, and operators hit the second one as "I clicked it and nothing
+        // changed": the exchange that put the host on the list is gone, *and* a
+        // connection the client already holds keeps its old treatment until it closes.
+        note += " Takes effect on the client's next connection — re-run it."
         return note
     }
 }

@@ -34,18 +34,32 @@ struct SSLScopeCard: View {
             // No hairline between the two halves: the console draws no lines
             // anywhere (DESIGN.md § console), and the disclosure row below is
             // already a distinct shape from the list above it.
+            // **Always open, above the disclosure.** Under a whitelist this list *is*
+            // the configuration — it is the answer to "what is Loom reading" — and it
+            // used to sit behind two folds (this card, then the glob disclosure),
+            // which was right only while it was the seeded `*` and there was nothing
+            // in it worth reading. An operator who had just decrypted a host could not
+            // find where that had been recorded.
+            if !store.sslScope.include.isEmpty {
+                globSection(
+                    title: "Decrypting",
+                    globs: store.sslScope.include,
+                    empty: "",
+                    remove: { store.send(.removeIncludeGlobTapped($0)) }
+                )
+            }
+            addGlobField
             globDisclosure
             if store.sslGlobsExpanded {
                 globSection(
                     title: "Passed through",
                     globs: store.sslScope.exclude,
-                    empty: "Nothing carved out — every host is decrypted.",
+                    empty: "Nothing carved out.",
                     remove: { store.send(.removeExcludeGlobTapped($0)) }
                 )
-                addGlobField
-                // Only worth showing when it says something a reader can't already
-                // infer: with the default `*` the include list is one line of noise.
-                if !store.interceptsEverything {
+                // Shown again in the fold only when the list above is hidden for being
+                // the bare `*` — otherwise it would be the same list twice.
+                if store.interceptsEverything {
                     globSection(
                         title: "Decrypting",
                         globs: store.sslScope.include,

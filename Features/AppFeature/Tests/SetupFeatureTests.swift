@@ -344,7 +344,7 @@ import Testing
         }
         await store.send(.interceptHostTapped("api.example.com"))
         await store.receive(\.interceptFinished) {
-            $0.sslScopeMessage = "Decrypting api.example.com. HTTPS interception is now on. Re-run your client — connections already made are gone."
+            $0.sslScopeMessage = "Decrypting api.example.com. HTTPS interception is now on. Takes effect on the client's next connection — re-run it."
         }
         await store.receive(\.sslScopeLoaded) {
             $0.sslScope = intercepted
@@ -451,7 +451,7 @@ import Testing
             $0.sslScope = expected
             // A glob added while interception is off is a setting that does nothing.
             $0.sslEnabled = true
-            $0.sslScopeMessage = "Decrypting *.fintopia.tech. Clients have to reconnect before it takes effect."
+            $0.sslScopeMessage = "Decrypting *.fintopia.tech. Takes effect on the client's next connection — re-run it."
         }
         await store.receive(\.sslScopeLoaded)
         await store.receive(\.tunneledHostsLoaded)
