@@ -19,8 +19,8 @@ import Foundation
         #expect(match.matches(method: "GET", url: "https://api.example.test/v1/home/extra"))
     }
 
-    @Test func hostPattern_gate() {
-        let match = RuleMatch(urlPattern: "*", hostPattern: "*.example.test")
+    @Test func urlGlob_coversWhatHostPatternUsedTo() {
+        let match = RuleMatch(urlPattern: "https://*.example.test*")
         #expect(match.matches(method: "GET", url: "https://api.example.test/x"))
         #expect(!(match.matches(method: "GET", url: "https://api.other.test/x")))
     }
@@ -77,7 +77,7 @@ import Foundation
         let match = try JSONDecoder().decode(RuleMatch.self, from: json)
         #expect(match.urlPattern == "https://a.test/x")
         #expect(!(match.isExact))
-        #expect(match.hostPattern == nil)
+        #expect(match.expiredHostPattern == nil)
         #expect(match.query == nil)
     }
 
@@ -89,7 +89,7 @@ import Foundation
     }
 
     @Test func roundTrip_preservesNewFields() throws {
-        let match = RuleMatch(urlPattern: "https://a.test/x", style: .exact, hostPattern: "*.test", query: ["v": .equals("2")])
+        let match = RuleMatch(urlPattern: "https://a.test/x", style: .exact, query: ["v": .equals("2")])
         let decoded = try JSONDecoder().decode(RuleMatch.self, from: JSONEncoder().encode(match))
         #expect(decoded == match)
     }

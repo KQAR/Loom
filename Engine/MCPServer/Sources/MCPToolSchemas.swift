@@ -598,7 +598,7 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "arm_breakpoint",
-            description: "Arm a breakpoint: matching traffic is HELD mid-flight so you can inspect and edit it before it continues. Match by URL pattern (+ optional methods/host/query), same as a rule. Pause the request (before it's forwarded upstream), the response (before it reaches the client), or both. Held exchanges surface in list_pending; release them with resume. This is a write action.",
+            description: "Arm a breakpoint: matching traffic is HELD mid-flight so you can inspect and edit it before it continues. Match by URL pattern (+ optional methods/query/origin), same as a rule. Pause the request (before it's forwarded upstream), the response (before it reaches the client), or both. Held exchanges surface in list_pending; release them with resume. This is a write action.",
             inputSchema: .object(
                 [
                     "match": Self.matchSchema,
@@ -906,9 +906,12 @@ extension MCPToolExecutor {
             name: "set_rule",
             description: """
             Create or update a traffic rule (upsert): omit `id` to create, pass `id` to update. A \
-            rule matches requests by URL pattern (+ optional methods) and acts on them — mock the \
-            response, map to another origin or a local file, rewrite request/response headers or \
-            bodies, block, or delay. Rules apply to live traffic and replays, in list order.
+            rule matches requests by URL pattern (+ optional methods, query, origin) and acts on \
+            them — mock the response, map to another origin or a local file, rewrite \
+            request/response headers or bodies, block, or delay. A host glob belongs in \
+            `url_pattern` (`https://*.example.com*`); `host_pattern` is no longer a field, and a \
+            stored rule that still carries one is expired and does not apply. Rules apply to live \
+            traffic and replays, in list order.
 
             On update, provided fields replace the existing ones (match/actions are replaced \
             whole, not merged); toggle a single rule with just {id, enabled}. The reply carries \
@@ -976,7 +979,7 @@ extension MCPToolExecutor {
     static let matchSchema: JSONSchema = .object(
         [
             "url_pattern": .string(
-                "Matched against the full URL, the way match_style says. Omit match_style and the pattern speaks for itself: a `*` in it means glob, otherwise prefix."
+                "Matched against the full URL, the way match_style says. A host glob goes here (`https://*.example.com*`), not as a separate field. Omit match_style and the pattern speaks for itself: a `*` in it means glob, otherwise prefix."
             ),
             "match_style": .string(
                 "How url_pattern is compared. prefix: the pattern must be a case-insensitive prefix of the URL, so a pattern with no query string still matches every query string. glob: `*` matches any run of characters and the pattern must cover the whole URL. exact: the URL must equal the pattern. regex: unanchored, case-insensitive. Defaults to glob when the pattern contains `*`, else prefix — pass it explicitly to match a literal `*`. Read back as `matchStyle`.",
@@ -984,7 +987,6 @@ extension MCPToolExecutor {
             ),
             "is_regex": .boolean("Older spelling of match_style: \"regex\". Ignored when match_style is set."),
             "is_exact": .boolean("Older spelling of match_style: \"exact\". Ignored when match_style is set; is_regex wins over it."),
-            "host_pattern": .string("Optional host glob (e.g. *.example.com) matched against the URL host; combines with url_pattern."),
             "query": .freeformObject(
                 "Optional query predicates, order-independent: each key must be present and equal its value, or \"*\" to require the key with any value. To require a value that is literally `*`, use the explicit form {\"key\": {\"equals\": \"*\"}} — {\"key\": {\"present\": true}} is the long spelling of \"*\". Read back in the same spelling."
             ),

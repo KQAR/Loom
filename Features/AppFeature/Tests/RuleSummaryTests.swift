@@ -71,12 +71,17 @@ import Testing
         #expect(RuleSummary.scopeBadges(for: rule(RuleActions(route: .block))).isEmpty)
     }
 
-    @Test func patternText_showsMethodsHostAndPattern() {
+    @Test func patternText_showsMethodsAndPattern() {
         var scoped = rule(RuleActions(route: .block))
         scoped.match.methods = ["get", "post"]
-        scoped.match.hostPattern = "*.example.com"
         #expect(RuleSummary.patternText(for: scoped)
-            == "GET/POST host:*.example.com https://api.example.com/v1/home")
+            == "GET/POST https://api.example.com/v1/home")
+    }
+
+    @Test func expiredRule_isBadgedFirst() {
+        var expired = rule(RuleActions(route: .block))
+        expired.match.expiredHostPattern = "*.example.com"
+        #expect(RuleSummary.actionBadges(for: expired) == ["EXPIRED", "BLOCK"])
     }
 
     @Test func patternText_marksARegexPattern() {

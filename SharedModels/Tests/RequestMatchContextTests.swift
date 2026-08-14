@@ -6,7 +6,7 @@ import Testing
 ///
 /// The context exists because every rule in a list is matched against the *same*
 /// method and URL, so `URLComponents` was parsing that URL once per rule carrying a
-/// host/query predicate and the glob path was re-encoding it once per glob rule — on
+/// query predicate and the glob path was re-encoding it once per glob rule — on
 /// the event loop, per exchange. The saving is only legitimate if a shared context
 /// gives the same verdict as a per-call one, and if reusing it across rules can't
 /// leak one rule's state into the next: these pin both.
@@ -19,8 +19,8 @@ import Testing
             RuleMatch(urlPattern: "https://api.example.com/v2/*", style: .glob),
             RuleMatch(urlPattern: "*/orders*", style: .glob, methods: ["GET"]),
             RuleMatch(urlPattern: "*/orders*", style: .glob, methods: ["POST"]),
-            RuleMatch(urlPattern: "*", style: .glob, hostPattern: "*.example.com"),
-            RuleMatch(urlPattern: "*", style: .glob, hostPattern: "*.other.com"),
+            RuleMatch(urlPattern: "https://*.example.com*", style: .glob),
+            RuleMatch(urlPattern: "https://*.other.com*", style: .glob),
             RuleMatch(urlPattern: "*", style: .glob, query: ["page": .equals("2")]),
             RuleMatch(urlPattern: "*", style: .glob, query: ["page": .equals("3")]),
             RuleMatch(urlPattern: "*", style: .glob, query: ["flag": .present]),

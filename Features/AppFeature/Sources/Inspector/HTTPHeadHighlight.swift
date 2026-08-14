@@ -26,7 +26,7 @@ import Foundation
 /// neither re-derives what a header name is.
 enum HTTPHeadHighlight {
     enum Role: Equatable {
-        /// The request method — coloured by which methods change server state.
+        /// The request method — coloured per `LoomTheme.methodColor`.
         case method(String)
         /// The response status code.
         case status(Int)

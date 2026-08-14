@@ -251,7 +251,7 @@ import Testing
         #expect(withOld == withoutOld)
     }
 
-    // MARK: The Decrypted column
+    // MARK: The SSL column
 
     /// The reading of the glyph is the part that is easy to get backwards: the lock is
     /// the **traffic's** state, so a closed lock means these bytes stayed encrypted to
@@ -265,6 +265,9 @@ import Testing
         #expect(decrypted.glyph == "lock.open.fill")
         #expect(tunnelled.glyph == "lock.fill")
         #expect(plaintext.glyph == "lock.slash")
+        #expect(decrypted.paletteTint == LoomTheme.Palette.success)
+        #expect(tunnelled.paletteTint == nil)
+        #expect(plaintext.paletteTint == nil)
 
         #expect(tunnelled.help.contains("Not decrypted"))
         #expect(decrypted.help.contains("Loom read"))
@@ -284,18 +287,21 @@ import Testing
         )
         #expect(relayed.glyph != failed.glyph)
         #expect(failed.glyph == "lock.trianglebadge.exclamationmark")
+        #expect(failed.paletteTint == LoomTheme.Palette.warning)
         #expect(failed.help.contains("Decryption failed"))
         #expect(failed.help.contains("never reached the origin"),
                 "the row has to say the request did not happen, not merely that it was unread")
     }
 
     /// The column carries its own header word. Four states of one symbol are not
-    /// guessable from the symbol, and the width follows the header rather than the
-    /// glyph — which is the only thing in this column that has a size.
+    /// guessable from the symbol. The width matches App: both columns are a
+    /// centered glyph (or a 16pt icon), so they read as one band.
     @Test func theLockColumnIsNamedInItsHeader() {
-        #expect(RequestTable.Column.lock.title == "Decrypted")
-        #expect(RequestTable.Column.lock.menuTitle == "Decrypted")
-        #expect(RequestTable.Column.lock.minWidth >= 60, "narrower than the word it shows would truncate the header")
+        #expect(RequestTable.Column.lock.title == "SSL")
+        #expect(RequestTable.Column.lock.menuTitle == "SSL")
+        #expect(RequestTable.Column.lock.minWidth == RequestTable.Column.app.minWidth)
+        #expect(RequestTable.Column.lock.idealWidth == RequestTable.Column.app.idealWidth)
+        #expect(RequestTable.Column.lock.maxWidth == RequestTable.Column.app.maxWidth)
     }
 
     /// `wss://` is a TLS handshake Loom terminated like any other, and a lowercase check

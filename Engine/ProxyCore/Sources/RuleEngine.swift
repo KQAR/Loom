@@ -71,7 +71,7 @@ enum RuleEngine {
         guard state.enabled else { return [] }
         // Prepared once for the whole list: `RuleMatch.matches(method:url:)` builds a
         // context per call, so matching N rules used to parse the URL N times (any rule
-        // with a host/query predicate) and re-encode it N times (any glob rule). Same
+        // with a query predicate) and re-encode it N times (any glob rule). Same
         // verdicts, one derivation — see `RequestMatchContext`.
         var context = RequestMatchContext(method: method, url: url.absoluteString)
         // One pass, one allocation. `state.activeRules` would build a second array of

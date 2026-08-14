@@ -18,7 +18,7 @@ struct CaptureStageRuleTests {
             name: "Don't capture \(host)",
             group: group,
             isEnabled: enabled,
-            match: RuleMatch(urlPattern: "", hostPattern: host),
+            match: RuleMatch(urlPattern: "https://\(host)*"),
             actions: RuleActions(dropFromCapture: true)
         )
     }
@@ -45,7 +45,7 @@ struct CaptureStageRuleTests {
     @Test func aCaptureOnlyRuleIsValid() {
         let rule = TrafficRule(
             name: "Don't capture sentry",
-            match: RuleMatch(urlPattern: "*", style: .glob, hostPattern: "sentry.example.test"),
+            match: RuleMatch(urlPattern: "*", style: .glob),
             actions: RuleActions(dropFromCapture: true)
         )
         #expect(rule.actions.isEmpty == false)
@@ -135,7 +135,7 @@ struct CaptureStageRuleTests {
     /// the two stages are separate and a mock must not stop the exchange being kept.
     @Test func anOrdinaryRuleDoesNotDrop() async {
         let mock = TrafficRule(
-            name: "Mock", match: RuleMatch(urlPattern: "", hostPattern: "api.test"),
+            name: "Mock", match: RuleMatch(urlPattern: "https://api.test*"),
             actions: RuleActions(route: .block)
         )
         let store = store([mock])

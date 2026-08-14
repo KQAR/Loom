@@ -107,7 +107,6 @@ import Testing
             "url_pattern": exactVariant
                 ? "https://api.example.com/v1/home"
                 : "https://api\\.example\\.com/.*",
-            "host_pattern": "*.example.com",
             "query": ["v": "2"],
             "source_app": "com.example.app",
             "device_ip": "192.168.1.42",
@@ -147,7 +146,6 @@ import Testing
         #expect(rule.match.style == .regex)
         #expect(rule.match.isRegex)
         #expect(rule.match.isExact == false)
-        #expect(rule.match.hostPattern == "*.example.com")
         #expect(rule.match.query == ["v": .equals("2")])
         #expect(rule.match.sourceApp == "com.example.app")
         #expect(rule.match.deviceIP == "192.168.1.42")
@@ -391,7 +389,6 @@ import Testing
         let match: [String: Any] = [
             "url_pattern": "https://api\\.example\\.com/.*",
             "is_regex": true,
-            "host_pattern": "*.example.com",
             "query": ["v": "2"],
             "source_app": "com.example.app",
             "device_ip": "192.168.1.42",
@@ -416,8 +413,25 @@ import Testing
             "the same match reads differently as a rule (\(fromRule)) and as a breakpoint (\(fromBreakpoint))"
         )
         // Not vacuous: the shared render must actually carry the predicates.
-        #expect(fromRule["hostPattern"] as? String == "*.example.com")
+        #expect(fromRule["sourceApp"] as? String == "com.example.app")
         #expect(fromRule["deviceIP"] as? String == "192.168.1.42")
+    }
+
+    @Test func leftoverHostPattern_rendersAsExpired() async throws {
+        let engine = StubEngine()
+        let executor = makeExecutor(engine)
+        let match = try JSONDecoder().decode(
+            RuleMatch.self,
+            from: Data(#"{"urlPattern":"*","hostPattern":"*.example.com"}"#.utf8)
+        )
+        let rule = TrafficRule(name: "old", match: match, actions: RuleActions(route: .block))
+        engine.rules.rules = [rule]
+        let json = try #require(try JSONSerialization.jsonObject(
+            with: Data(try await executor.call(name: "list_rules", arguments: ["id": rule.id.uuidString]).utf8)
+        ) as? [String: Any])
+        let rendered = try #require(json["match"] as? [String: Any])
+        #expect(rendered["expired"] as? Bool == true)
+        #expect(rendered["expiredHostPattern"] as? String == "*.example.com")
     }
 
     // MARK: - Census: the model's fields vs. the two hand-written surfaces
@@ -429,12 +443,14 @@ import Testing
         "createdAt": "server-stamped on create; an agent-supplied creation time would be a lie",
         "route": "The route is not an object on the wire — it is implied by which of block/mock_response/map_remote/map_local is present, and set_rule rejects more than one.",
         "type": "Route's Codable discriminator, which the flattened wire shape above has no need for.",
+        "expiredHostPattern": "Decode leftover from a pre-fold host_pattern; not an authoring field — fold the glob into url_pattern and save to clear it.",
     ]
 
     /// Field names the model encodes but the **render** deliberately doesn't emit.
     private static let renderOmissions: [String: String] = [
         "type": "Route's Codable discriminator; the render flattens it into the actions key (actions.mockResponse, actions.mapRemote, …).",
         "route": "Flattened for the same reason — there is no `route` object in the rendered actions.",
+        "expiredHostPattern": "Only rendered when a leftover host_pattern made the match expired; a freshly authored rule never carries one.",
     ]
 
     /// camelCase model field → its wire name, where mechanical snake_casing is wrong.

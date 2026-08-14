@@ -12,10 +12,12 @@ enum RuleSummary {
     /// is represented: the substitution lists were missing, which made a
     /// find/replace rule — the shape the editor's two Modify segments produce, so
     /// the one a human is most likely to have authored by hand — render with no
-    /// badge at all, exactly like an empty passthrough rule.
+    /// badge at all, exactly like an empty passthrough rule. `EXPIRED` leads when
+    /// a leftover host glob has taken the rule out of matching.
     static func actionBadges(for rule: TrafficRule) -> [String] {
         let a = rule.actions
         var badges: [String] = []
+        if rule.match.isExpired { badges.append("EXPIRED") }
         switch a.route {
         case .passthrough: break
         case .block: badges.append("BLOCK")
@@ -47,15 +49,11 @@ enum RuleSummary {
         return badges
     }
 
-    /// The match line under the rule name: methods, the host predicate (which
-    /// narrows every rule and had no rendering anywhere), and the URL pattern.
+    /// The match line under the rule name: methods and the URL pattern.
     static func patternText(for rule: TrafficRule) -> String {
         var parts: [String] = []
         if !rule.match.methods.isEmpty {
             parts.append(rule.match.methods.joined(separator: "/").uppercased())
-        }
-        if let host = rule.match.hostPattern, !host.isEmpty {
-            parts.append("host:\(host)")
         }
         parts.append(rule.match.isRegex ? "/\(rule.match.urlPattern)/" : rule.match.urlPattern)
         return parts.joined(separator: " ")

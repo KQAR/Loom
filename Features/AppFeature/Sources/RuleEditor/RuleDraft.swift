@@ -28,7 +28,10 @@ struct RuleDraft {
     /// of this one value (below), so "regex and exact are both on" is not a state
     /// the editor can get into and then have to resolve on save.
     var style: MatchStyle
-    var hostPattern: String
+    /// Leftover host glob from before that field folded into `urlPattern`. Shown
+    /// as a warning; `build()` drops it, so Save turns the rule live again —
+    /// fold the glob into the URL first, or a `*` pattern starts matching every host.
+    var expiredHostPattern: String?
     var queryItems: [QueryItem]
     /// Originating app (bundle id or display name) this rule is scoped to; empty = any.
     var sourceApp: String
@@ -116,7 +119,7 @@ struct RuleDraft {
         methods = rule.match.methods
         urlPattern = rule.match.urlPattern
         style = rule.match.style
-        hostPattern = rule.match.hostPattern ?? ""
+        expiredHostPattern = rule.match.expiredHostPattern
         sourceApp = rule.match.sourceApp ?? ""
         deviceIP = rule.match.deviceIP ?? ""
         // Sort by key so the list has a stable order across edits (query is a dict).
@@ -347,7 +350,6 @@ struct RuleDraft {
             guard !key.isEmpty else { continue }
             queryDict[key] = item.predicate
         }
-        let trimmedHost = hostPattern.trimmingCharacters(in: .whitespaces)
         let trimmedApp = sourceApp.trimmingCharacters(in: .whitespaces)
         let trimmedDevice = deviceIP.trimmingCharacters(in: .whitespaces)
         let rule = TrafficRule(
@@ -360,10 +362,10 @@ struct RuleDraft {
                 urlPattern: urlPattern,
                 // Glob vs prefix follows the pattern the human just typed — the
                 // authoring inference, applied once, here. Exact and regex are
-                // explicit choices and are left alone.
+                // explicit choices and are left alone. A leftover host glob is
+                // not written back: Save is how an expired rule becomes live.
                 style: style == .regex || style == .exact ? style : .inferred(for: urlPattern),
                 methods: methods.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty },
-                hostPattern: trimmedHost.isEmpty ? nil : trimmedHost,
                 query: queryDict.isEmpty ? nil : queryDict,
                 sourceApp: trimmedApp.isEmpty ? nil : trimmedApp,
                 deviceIP: trimmedDevice.isEmpty ? nil : trimmedDevice

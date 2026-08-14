@@ -290,6 +290,33 @@ import Testing
         #expect(out.comment == nil, "whitespace is not a note")
     }
 
+    @Test func emptyGroup_buildsAsUngrouped() {
+        let grouped = Fixtures.rule(group: "scenario-a", route: .block)
+        var draft = RuleDraft(rule: grouped)
+        #expect(draft.group == "scenario-a")
+        draft.group = ""
+        guard case let .success(cleared) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(cleared.group == nil)
+
+        draft.group = "  "
+        guard case let .success(whitespace) = draft.build() else {
+            Issue.record("build failed")
+            return
+        }
+        #expect(whitespace.group == nil, "whitespace is not a group")
+    }
+
+    @Test func newRule_opensWithNoGroup() {
+        let blank = TrafficRule(name: "", match: RuleMatch(urlPattern: ""), actions: RuleActions())
+        let draft = RuleDraft(rule: blank)
+        #expect(draft.group.isEmpty)
+        // Can't build — name and pattern are empty — but the field itself must
+        // not pick up a neighbouring group's name.
+    }
+
     @Test func multiMethod_roundTrips() {
         let rule = Fixtures.rule(methods: ["GET", "HEAD"], route: .block)
         #expect(built(rule).match.methods == ["GET", "HEAD"])
@@ -358,7 +385,6 @@ import Testing
                 urlPattern: "https://api.example.com/v1/*",
                 style: .glob,
                 methods: ["GET", "POST"],
-                hostPattern: "*.example.com",
                 query: ["ab_test": .equals("on")],
                 sourceApp: "com.example.MyApp",
                 deviceIP: "192.168.1.9"
@@ -404,8 +430,8 @@ import Testing
             "id", "name", "comment", "group", "isEnabled", "match", "actions", "createdAt",
             // RuleMatch ("isRegex" below belongs to SubstitutionRule; RuleMatch's
             // own regex/exact booleans are one `style` enum now)
-            "urlPattern", "style", "methods", "hostPattern", "query",
-            "sourceApp", "deviceIP",
+            "urlPattern", "style", "methods", "query",
+            "sourceApp", "deviceIP", "expiredHostPattern",
             // RuleActions
             "route", "rewriteRequest", "rewriteResponse",
             "requestSubstitutions", "responseSubstitutions", "delayMilliseconds",
@@ -443,7 +469,7 @@ import Testing
             name: "census",
             comment: "c",
             group: "g",
-            match: RuleMatch(urlPattern: "x", hostPattern: "h", query: ["q": .equals("1")], sourceApp: "a", deviceIP: "1.2.3.4"),
+            match: RuleMatch(urlPattern: "x", query: ["q": .equals("1")], sourceApp: "a", deviceIP: "1.2.3.4"),
             actions: RuleActions(
                 route: .mock(MockResponseAction(body: .bytes(Data("b".utf8)), contentType: "text/plain")),
                 rewriteRequest: RequestRewriteAction(method: "GET", body: .text("b")),
@@ -482,23 +508,37 @@ import Testing
         return names
     }
 
-    // MARK: New match fields (isExact / hostPattern / query) round-trip
+    // MARK: Match fields (exact / query) round-trip
 
     @Test func matchFields_roundTrip() {
         let rule = TrafficRule(
-            name: "exact + host + query",
+            name: "exact + query",
             match: RuleMatch(
                 urlPattern: "https://api.example.com/v1/home",
                 style: .exact,
-                hostPattern: "*.example.com",
                 query: ["ab_test": .equals("on"), "debug": .present]
             ),
             actions: RuleActions(route: .block)
         )
         let out = built(rule).match
         #expect(out.isExact)
-        #expect(out.hostPattern == "*.example.com")
         #expect(out.query == ["ab_test": .equals("on"), "debug": .present])
+    }
+
+    /// A leftover host glob is a warning, not an editor field. Save drops it so
+    /// the rule can apply again — fold the glob into the URL first.
+    @Test func expiredHostPattern_isShownAndSaveClearsIt() {
+        let rule = TrafficRule(
+            name: "old host glob",
+            match: RuleMatch(urlPattern: "*", expiredHostPattern: "*.example.com"),
+            actions: RuleActions(route: .block)
+        )
+        let draft = RuleDraft(rule: rule)
+        #expect(draft.expiredHostPattern == "*.example.com")
+        let out = built(rule)
+        #expect(out.match.expiredHostPattern == nil)
+        #expect(out.match.isExpired == false)
+        #expect(out.match.urlPattern == "*")
     }
 
     /// A rule an agent scoped to one app or device must survive a human opening it in

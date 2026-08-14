@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Testing
 
 @testable import AppFeature
@@ -86,6 +87,37 @@ import Testing
         .deletingLastPathComponent()   // Tests/
         .deletingLastPathComponent()   // AppFeature/
         .appendingPathComponent("Resources/Assets.xcassets")
+
+    /// CONNECT is the only uncoloured method (a tunnel, not a verb). Every other
+    /// standard verb has its own hue, so two different requests cannot look like one.
+    @Test func connectIsTheOnlyUncolouredMethod() {
+        #expect(LoomTheme.methodTint("CONNECT") == nil)
+        #expect(LoomTheme.methodTint("connect") == nil)
+        #expect(LoomTheme.methodColor("CONNECT") == .primary)
+
+        let verbs = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"]
+        let colours = verbs.map { LoomTheme.methodColor($0) }
+        for (i, left) in colours.enumerated() {
+            #expect(LoomTheme.methodTint(verbs[i]) != nil, "\(verbs[i]) must not share CONNECT's uncoloured ink")
+            #expect(left != .primary, "\(verbs[i]) must not resolve to CONNECT's ink")
+            for j in (i + 1) ..< colours.count {
+                #expect(left != colours[j], "\(verbs[i]) and \(verbs[j]) share a hue")
+            }
+        }
+    }
+
+    @Test func methodHuesMatchTheNamedPalette() {
+        #expect(LoomTheme.methodColor("GET") == LoomTheme.Palette.success)
+        #expect(LoomTheme.methodColor("POST") == LoomTheme.Palette.accent)
+        #expect(LoomTheme.methodColor("PUT") == LoomTheme.Palette.redirect)
+        #expect(LoomTheme.methodColor("PATCH") == LoomTheme.Palette.waiting)
+        #expect(LoomTheme.methodColor("DELETE") == LoomTheme.Palette.error)
+        #expect(LoomTheme.methodColor("HEAD") == LoomTheme.Palette.Syntax.bool)
+        #expect(LoomTheme.methodColor("OPTIONS") == LoomTheme.Palette.pending)
+        #expect(LoomTheme.methodColor("TRACE") == Color.secondary)
+        // Unknown verbs recede to pending, never to CONNECT's ink.
+        #expect(LoomTheme.methodColor("PROPFIND") == LoomTheme.Palette.pending)
+    }
 }
 
 private extension NSColor {

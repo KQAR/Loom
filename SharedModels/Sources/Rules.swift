@@ -75,9 +75,11 @@ public struct RuleMatch: Equatable, Codable, Sendable {
     public var style: MatchStyle
     /// HTTP methods to match (case-insensitive); empty means all methods.
     public var methods: [String]
-    /// Optional host predicate as a glob (`*.example.com`), matched against the
-    /// URL's host. nil/empty = any host.
-    public var hostPattern: String?
+    /// A leftover `host_pattern` from before that field was folded into
+    /// `urlPattern`. Non-nil means this match is **expired** and never applies —
+    /// fold the glob into the URL (`https://*.example.com*`) and save. Not an
+    /// authoring field.
+    public var expiredHostPattern: String?
     /// Optional query predicates: each key must satisfy its `QueryPredicate`.
     /// nil/empty = no query constraint. Order-independent, unlike encoding the
     /// query into `urlPattern`.
@@ -108,18 +110,18 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         urlPattern: String,
         style: MatchStyle? = nil,
         methods: [String] = [],
-        hostPattern: String? = nil,
         query: [String: QueryPredicate]? = nil,
         sourceApp: String? = nil,
-        deviceIP: String? = nil
+        deviceIP: String? = nil,
+        expiredHostPattern: String? = nil
     ) {
         self.urlPattern = urlPattern
         self.style = style ?? .inferred(for: urlPattern)
         self.methods = methods
-        self.hostPattern = hostPattern
         self.query = query
         self.sourceApp = sourceApp
         self.deviceIP = deviceIP
+        self.expiredHostPattern = expiredHostPattern.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// True when the pattern is a regular expression / an exact URL. Read-only
@@ -134,10 +136,15 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         !(sourceApp ?? "").isEmpty || !(deviceIP ?? "").isEmpty
     }
 
+    /// True when a leftover `host_pattern` is sitting on this match. Expired
+    /// rules stay in the list so they can be rewritten; they never match.
+    public var isExpired: Bool { expiredHostPattern != nil }
+
     private enum CodingKeys: String, CodingKey {
-        case urlPattern, style, methods, hostPattern, query, sourceApp, deviceIP
-        // Read-only: the shape rules were saved in before `style` existed.
-        case isRegex, isExact
+        case urlPattern, style, methods, query, sourceApp, deviceIP, expiredHostPattern
+        // Read-only: the shape rules were saved in before `style` existed,
+        // and `hostPattern` before it was folded into `urlPattern`.
+        case isRegex, isExact, hostPattern
     }
 
     // Tolerant decode: rules saved before these fields existed still load, and a
@@ -157,10 +164,15 @@ public struct RuleMatch: Equatable, Codable, Sendable {
             style = .inferred(for: urlPattern)
         }
         methods = try c.decodeIfPresent([String].self, forKey: .methods) ?? []
-        hostPattern = try c.decodeIfPresent(String.self, forKey: .hostPattern)
         query = try Self.decodeQuery(from: c)
         sourceApp = try c.decodeIfPresent(String.self, forKey: .sourceApp)
         deviceIP = try c.decodeIfPresent(String.self, forKey: .deviceIP)
+        if let leftover = try c.decodeIfPresent(String.self, forKey: .hostPattern), !leftover.isEmpty {
+            expiredHostPattern = leftover
+        } else {
+            expiredHostPattern = try c.decodeIfPresent(String.self, forKey: .expiredHostPattern)
+                .flatMap { $0.isEmpty ? nil : $0 }
+        }
     }
 
     /// Writes `style`, never the two legacy booleans — they are decode-only, so a
@@ -171,10 +183,10 @@ public struct RuleMatch: Equatable, Codable, Sendable {
         try c.encode(urlPattern, forKey: .urlPattern)
         try c.encode(style, forKey: .style)
         try c.encode(methods, forKey: .methods)
-        try c.encodeIfPresent(hostPattern, forKey: .hostPattern)
         try Self.encodeQuery(query, to: &c)
         try c.encodeIfPresent(sourceApp, forKey: .sourceApp)
         try c.encodeIfPresent(deviceIP, forKey: .deviceIP)
+        try c.encodeIfPresent(expiredHostPattern, forKey: .expiredHostPattern)
     }
 
     /// Does this request match?
@@ -196,19 +208,16 @@ public struct RuleMatch: Equatable, Codable, Sendable {
 
     /// Does this request match, against a context shared by every rule in one
     /// evaluation? `inout` because the context parses the URL lazily and keeps the
-    /// result: the first rule with a `hostPattern` or a `query` pays for the parse
-    /// and the rest read it.
+    /// result: the first rule with a `query` pays for the parse and the rest read it.
     public func matches(_ context: inout RequestMatchContext, origin: RequestOrigin? = nil) -> Bool {
+        if isExpired { return false }
         if !matchesOrigin(origin) { return false }
         if !methods.isEmpty,
            !methods.contains(where: { $0.caseInsensitiveCompare(context.method) == .orderedSame }) {
             return false
         }
-        // Host / query predicates run off the parsed URL, so they compose with any
+        // Query predicates run off the parsed URL, so they compose with any
         // urlPattern style without the caller hand-anchoring a regex.
-        if let hostPattern, !hostPattern.isEmpty {
-            guard Glob.matches(hostPattern, context.host ?? "") else { return false }
-        }
         if let query, !query.isEmpty {
             let actual = context.queryItems
             for (key, predicate) in query {
@@ -347,11 +356,11 @@ public struct RuleMatch: Equatable, Codable, Sendable {
 ///
 /// Every rule in the list is matched against the *same* method and URL, so anything
 /// derived from them is per-request work that was being paid per rule: `URLComponents`
-/// parsed the URL again for every rule carrying a `hostPattern` or a `query`, and the
-/// glob path re-encoded the URL to bytes for every rule. With 50 rules that is 50
-/// parses and 50 encodings of one string, on the event loop, per exchange.
+/// parsed the URL again for every rule carrying a `query`, and the glob path
+/// re-encoded the URL to bytes for every glob rule. With 50 rules that is 50 parses
+/// and 50 encodings of one string, on the event loop, per exchange.
 ///
-/// Both derivations are lazy: a rule list with no host/query predicate never parses,
+/// Both derivations are lazy: a rule list with no query predicate never parses,
 /// and a list with no glob rule never encodes.
 public struct RequestMatchContext {
     public let method: String
@@ -390,8 +399,7 @@ public struct RequestMatchContext {
         }
     }
 
-    /// The URL's host as `URLComponents` reads it — the same value the per-rule parse
-    /// produced, so a host predicate's verdict is unchanged.
+    /// The URL's host as `URLComponents` reads it.
     public var host: String? {
         mutating get { parse()?.host }
     }
@@ -1097,7 +1105,7 @@ public struct RulesState: Equatable, Codable, Sendable {
     /// three switches ANDed: master, group, rule.
     public var activeRules: [TrafficRule] {
         guard enabled else { return [] }
-        return rules.filter { $0.isEnabled && !disabledGroups.contains($0.group) }
+        return rules.filter { $0.isEnabled && !$0.match.isExpired && !disabledGroups.contains($0.group) }
     }
 
     /// Whether a group's switch is on. `nil` = the ungrouped bucket.
@@ -1109,6 +1117,13 @@ public struct RulesState: Equatable, Codable, Sendable {
     /// agent's `effective` reason and any human surface can't disagree about
     /// which of the three switches is the one in the way.
     public func ineffectiveReason(for rule: TrafficRule) -> String? {
+        if let host = rule.match.expiredHostPattern {
+            return """
+            This rule is expired: host_pattern (\(host)) is no longer a match field, \
+            so it will not apply to traffic. Fold the host glob into url_pattern \
+            (e.g. https://\(host)*) and save.
+            """
+        }
         if !enabled {
             return """
             The rules master switch is off, so no rule applies to traffic — including \
