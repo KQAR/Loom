@@ -74,8 +74,12 @@ final class AppIconLoader {
     }
 }
 
-/// A source app's icon, with sensible fallbacks: a terminal glyph for CLI/daemon
-/// origins (no bundle) and a question mark when the origin couldn't be resolved.
+/// A source app's icon, with fallbacks that follow how the app was attributed.
+///
+/// A local process with a `.app` bundle shows that icon. Everything else is a
+/// glyph: `questionmark.app.dashed` for a User-Agent attribution and for an
+/// unresolved origin (there is no bundle to read on this Mac), and `terminal`
+/// for a local CLI/daemon.
 struct AppIconView: View {
     let app: SourceApp?
     /// A plain reference, not `@ObservedObject`: `@Observable` tracks the `icons` read
@@ -89,8 +93,21 @@ struct AppIconView: View {
                 .resizable()
                 .frame(width: 16, height: 16)
         } else {
-            Image(systemName: app == nil ? "questionmark.app.dashed" : "terminal")
+            Image(systemName: Self.fallbackGlyph(for: app))
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The SF Symbol drawn when no bundle icon is available.
+    ///
+    /// Attribution is the discriminator, not the absence of a path: a phone app
+    /// and a local `curl` are both bundle-less, and drawing them alike is how a
+    /// WeChat row reads as a terminal.
+    static func fallbackGlyph(for app: SourceApp?) -> String {
+        guard let app else { return "questionmark.app.dashed" }
+        return switch app.attribution {
+        case .userAgent: "questionmark.app.dashed"
+        case .process: "terminal"
         }
     }
 }

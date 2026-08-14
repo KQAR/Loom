@@ -113,6 +113,18 @@ import LoomSharedModels
 
     // MARK: The suggestion must not invent a neighbour
 
+    @Test func aFoldedHostPattern_isRejectedOnSetRule() async throws {
+        let executor = makeExecutor()
+        let error = await #expect(throws: MCPError.self) {
+            _ = try await executor.call(name: "set_rule", arguments: [
+                "name": "x",
+                "match": ["url_pattern": "*", "host_pattern": "*.example.com"],
+                "actions": ["block": true],
+            ])
+        }
+        #expect(message(try #require(error)).contains("host_pattern"))
+    }
+
     @Test func aGenuinelyUnknownKey_isNotMatchedToASimilarOne() async throws {
         let executor = makeExecutor()
         let error = await #expect(throws: MCPError.self) {

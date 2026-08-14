@@ -46,6 +46,18 @@ import Testing
         await store.send(.newRuleTapped)
         #expect(store.state.editor?.isNew ?? false)
         #expect(store.state.editor?.rule.name == "")
+        #expect(store.state.editor?.rule.group == nil)
+    }
+
+    @Test func test_newRuleTapped_doesNotInheritAnExistingGroup() async {
+        let grouped = Fixtures.rule(name: "Existing", group: "scenario-a")
+        var initial = RulesFeature.State()
+        initial.rulesState = RulesState(enabled: true, rules: [grouped])
+        let store = TestStore(initialState: initial) { RulesFeature() }
+        store.exhaustivity = .off
+        await store.send(.newRuleTapped)
+        #expect(store.state.editor?.rule.group == nil)
+        #expect(store.state.editor?.existingGroups == ["scenario-a"])
     }
 
     @Test func test_editorCancel_closesEditor() async {

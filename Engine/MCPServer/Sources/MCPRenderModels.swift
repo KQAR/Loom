@@ -405,24 +405,27 @@ struct RuleMatchRender: Encodable {
     /// agent reading a pattern back could not tell whether the `*` in it was a
     /// wildcard or a literal.
     var matchStyle: String
-    var hostPattern: String?
     var query: [String: QueryPredicateRender]?
     var sourceApp: String?
     var deviceIP: String?
     var methods: [String]?
+    /// Present only when a leftover `host_pattern` made this match expired.
+    var expired: Bool?
+    var expiredHostPattern: String?
 
     init(_ match: RuleMatch) {
         urlPattern = match.urlPattern
         matchStyle = match.style.rawValue
-        hostPattern = match.hostPattern.flatMap { $0.isEmpty ? nil : $0 }
-        // Rendered in the spelling an agent sends: `*` for "any value", the
-        // explicit object only for the predicate that spelling can't say.
         query = match.query.flatMap { predicates in
             predicates.isEmpty ? nil : predicates.mapValues(QueryPredicateRender.init)
         }
         sourceApp = match.sourceApp.flatMap { $0.isEmpty ? nil : $0 }
         deviceIP = match.deviceIP.flatMap { $0.isEmpty ? nil : $0 }
         methods = match.methods.isEmpty ? nil : match.methods
+        if let leftover = match.expiredHostPattern {
+            expired = true
+            expiredHostPattern = leftover
+        }
     }
 }
 

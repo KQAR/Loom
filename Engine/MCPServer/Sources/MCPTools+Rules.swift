@@ -201,7 +201,6 @@ extension MCPToolExecutor {
             urlPattern: pattern,
             style: try matchStyle(from: raw),
             methods: try raw.stringArray("methods") ?? [],
-            hostPattern: try raw.string("host_pattern").flatMap { $0.isEmpty ? nil : $0 },
             query: try queryPredicates(raw, "query"),
             sourceApp: try raw.string("source_app").flatMap { $0.isEmpty ? nil : $0 },
             deviceIP: try raw.string("device_ip").flatMap { $0.isEmpty ? nil : $0 }

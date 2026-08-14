@@ -135,8 +135,10 @@ will affect before doing it. Every call is recorded in the audit trail.
 A rule is a **structured** match + action (no text DSL). Match on a URL pattern —
 `match_style` says how it is read (prefix / glob / exact / regex; omit it and a `*`
 in the pattern means glob, otherwise prefix) — plus HTTP methods, optionally
-narrowed by `host_pattern`, `query`, and **who sent it** (`source_app` /
-`device_ip` — unattributed traffic never matches a scoped rule); then one action:
+narrowed by `query` and **who sent it** (`source_app` / `device_ip` — unattributed
+traffic never matches a scoped rule). A host glob belongs in `url_pattern`
+(`https://*.example.com*`); `host_pattern` is gone, and a stored rule that still
+carries one is expired and does not apply. Then one action:
 
 - **mock** — return a canned status/headers/body without hitting the network.
 - **map remote** — redirect to another origin (`+exclude`/`keepHostHeader`).

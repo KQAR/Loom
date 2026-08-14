@@ -16,7 +16,7 @@ import SwiftUI
 /// **The card used to lead with the origins Loom saw and did not read, and that list
 /// is gone from here.** It was the answer to "un-named must not mean invisible" back
 /// when a pass-through recorded no flow at all — but the request table answers that
-/// now, one `CONNECT` row per relayed connection, with a Decrypted column and a
+/// now, one `CONNECT` row per relayed connection, with an SSL column and a
 /// right-click Decrypt (AGENTS.md § the scope is a whitelist). Keeping it here made
 /// this card a second, aggregated rendering of the same origins: a 256-host log
 /// showing 6 at a time, in a 300pt console, above the two lines someone opened the

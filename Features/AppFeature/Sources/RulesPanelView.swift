@@ -4,9 +4,10 @@ import SwiftUI
 
 /// The main-window rules surface (sidebar → Rules). The agent authors rules over
 /// MCP; here the human supervises them: master switch, per-group and per-rule
-/// enable/disable, delete. A group has a switch of its own (`RulesState.disabledGroups`)
-/// that composes with each rule's — switching a scenario off never overwrites which
-/// rules the human had turned off inside it. Evaluation order stays the flat list order.
+/// enable/disable, edit, and delete. A group has a switch of its own
+/// (`RulesState.disabledGroups`) that composes with each rule's — switching a
+/// scenario off never overwrites which rules the human had turned off inside it.
+/// Evaluation order stays the flat list order.
 struct RulesPanelView: View {
     @Bindable var store: StoreOf<RulesFeature>
     /// Collapsed groups, keyed by `groupKey` (nil group has its own sentinel).
@@ -83,7 +84,7 @@ struct RulesPanelView: View {
                 groupHeader(group.key, rules: group.rules)
                 if !collapsed.contains(Self.groupKey(group.key)) {
                     ForEach(group.rules) { rule in
-                        RuleRow(
+                        RulesPanelRow(
                             rule: rule,
                             engineEnabled: store.rulesEnabled,
                             groupEnabled: store.rulesState.isGroupEnabled(group.key),
@@ -110,8 +111,8 @@ struct RulesPanelView: View {
         // individually-disabled rule as switched off.
         let groupOn = store.rulesState.isGroupEnabled(group)
         let isCollapsed = collapsed.contains(Self.groupKey(group))
+        let title = group ?? "Ungrouped"
         return HStack(spacing: LoomTheme.Space.sm) {
-            // Switches the whole group; each rule keeps its own flag.
             Toggle(isOn: Binding(
                 get: { groupOn },
                 set: { store.send(.ruleGroupToggled(group: group, enabled: $0)) }
@@ -136,7 +137,7 @@ struct RulesPanelView: View {
                     Image(systemName: group == nil ? "tray" : "folder")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(group ?? "Ungrouped")
+                    Text(title)
                         .font(.callout.weight(.semibold))
                     Text("\(rules.count)")
                         .font(.caption)
@@ -146,6 +147,7 @@ struct RulesPanelView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help("Collapse or expand this group")
         }
         .padding(.vertical, 2)
     }
@@ -157,87 +159,4 @@ struct RulesPanelView: View {
             Text("Ask your agent to call `set_rule`, or right-click a captured request → Add Rule.")
         }
     }
-}
-
-// MARK: - Row
-
-private struct RuleRow: View {
-    let rule: TrafficRule
-    let engineEnabled: Bool
-    /// Its group's switch. A rule can be enabled and still inert because the group
-    /// it belongs to is off — the row has to show that, or the checkbox lies.
-    let groupEnabled: Bool
-    let onToggle: () -> Void
-    let onEdit: () -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        HStack(alignment: .center, spacing: LoomTheme.Space.sm) {
-            Toggle(isOn: Binding(get: { rule.isEnabled }, set: { _ in onToggle() })) {
-                EmptyView()
-            }
-            .toggleStyle(.checkbox)
-            .tint(LoomTheme.Palette.accent)
-            .help(rule.isEnabled ? "Disable this rule" : "Enable this rule")
-
-            // The info block is a button: click (or double-click the row) to edit.
-            Button(action: onEdit) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: LoomTheme.Space.xs) {
-                        Text(rule.name)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(dimmed ? .secondary : .primary)
-                        ForEach(actionBadges, id: \.self) { badge in
-                            CapsuleBadge(text: badge, hPadding: 5, vPadding: 1)
-                        }
-                        // Tinted apart from the action badges: these say who the
-                        // rule is limited to, not what it does.
-                        ForEach(scopeBadges) { badge in
-                            CapsuleBadge(text: badge.text, tint: LoomTheme.Palette.accent, hPadding: 5, vPadding: 1)
-                                .help(badge.detail)
-                        }
-                    }
-                    Text(patternText)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if let comment = rule.comment, !comment.isEmpty {
-                        Text(comment)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Edit this rule")
-
-            Button(action: onEdit) {
-                Image(systemName: "pencil")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .accessibilityLabel("Edit this rule")
-            .help("Edit this rule")
-
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .accessibilityLabel("Delete this rule")
-            .help("Delete this rule")
-        }
-        .padding(.vertical, 2)
-        .opacity(engineEnabled && groupEnabled ? 1 : 0.55)
-    }
-
-    private var dimmed: Bool { !rule.isEnabled || !engineEnabled || !groupEnabled }
-
-    private var patternText: String { RuleSummary.patternText(for: rule) }
-    private var actionBadges: [String] { RuleSummary.actionBadges(for: rule) }
-    private var scopeBadges: [RuleSummary.ScopeBadge] { RuleSummary.scopeBadges(for: rule) }
 }
