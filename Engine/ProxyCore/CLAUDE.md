@@ -17,6 +17,101 @@ M4) — Loom owns every request header, so a map-remote rule's `keepHostHeader` 
 drops Host so it follows the mapped origin). `forward` (buffered) is a **fold** over
 `forwardStream` (`.collect()`), and replay folds `forwardStream` too. Never add a second path.
 
+## The upstream leg matches the client's protocol (0.0.27)
+
+Loom re-originates every exchange, and re-originating an h2 request as HTTP/1.1 is
+not a neutral translation. `ClientWireProtocol` is carried from the client leg down
+to `NIOStreamingForwarder`, which speaks h2 upstream when the client did. Six rules:
+
+- **Only when the client did.** An h1 client gets an h1 upstream even against an
+  origin that offers `h2`. A proxy that upgraded on its own would change which
+  protocol the origin sees for traffic nobody asked it to change, and every
+  h2-specific origin behaviour after that would be Loom's to explain.
+- **Over TLS it is an offer; in cleartext it is a commitment — and cleartext is
+  currently switched off.** ALPN asks (`["h2", "http/1.1"]`) and `http/1.1` is a
+  legitimate answer, which is why both stacks are installed from the
+  `ApplicationProtocolNegotiationHandler` callback rather than chosen before
+  connecting. Cleartext has nothing to ask, so an h2c preface would go out **only**
+  for a client that itself arrived over h2c (`ClientWireProtocol.http2Cleartext`) —
+  the only evidence the origin speaks it. An h2-over-TLS request a `mapRemote` rule
+  retargets at an `http://` dev server gets HTTP/1.1, which is what that server can
+  read. `cleartextHTTP2Upstream` gates the h2c leg to `false`: it works and then
+  stalls under load with nothing on any surface, so the leg stays HTTP/1.1, where an
+  h2-only origin fails visibly instead. h2c *capture* is unaffected. Ruled-out list
+  and reproduction: `docs/decisions/h2c-upstream-stall.md`.
+- **ALPN is part of a context's identity.** `NIOSSLContext` fixes it at build time,
+  so `ClientIdentityProviding.context(forHost:offeringHTTP2:)` caches one per
+  (identity, ALPN). Offering `h2` from a context whose caller then cannot speak h2 is
+  the one outcome that hangs an exchange, so the answer travels back *with* the
+  context instead of being re-derived from the request.
+- **An h2 connection is shared, not leased.** `UpstreamConnectionPool` keeps them in
+  their own map: `lease` hands one out without removing it, `release` re-registers
+  rather than parking, and the h1 bookkeeping (take-on-lease, idle timer, "is the
+  slot busy") is wrong for a connection that is never idle between two requests
+  because it is carrying both. `registerMultiplexed` runs **before the first stream
+  is opened**, which is the only moment a duplicate can still be closed harmlessly.
+- **Concurrent first requests share one connect.** `pendingHTTP2Connects` joins an
+  attempt already under way, on a `Task.detached` so the connect does not inherit the
+  cancellation of whichever exchange happened to start it. Measured without it: six
+  concurrent first requests to one origin did six TCP connects and six TLS handshakes
+  to then use one connection and close five.
+- **The slot is per stream, and the version is stated.** `UpstreamExchangeSlot` is the
+  handoff for *one* exchange, so each stream channel gets its own; a shared one would
+  deliver one stream's head to another's caller. And `UpstreamResponseRelay` takes an
+  `httpVersion` override, because `HTTP2FramePayloadToHTTP1ClientCodec` synthesizes an
+  HTTP/1.1 head — deriving the version there records the conversion, not the
+  connection. Exactly the rule `CapturedRequest.httpVersion` states for the client leg.
+
+The response stack is otherwise **unchanged** on both legs — the codec hands a stream
+over as `HTTPClientResponsePart`, which is what the relay already reads.
+
+**The request writer frames per leg, and that is an encoder, not an edit.**
+`writeRequest` takes the wire protocol and differs in exactly two places:
+
+- **`cookie` is split back into one field per pair** for h2 (`HTTPUtil
+  .splitCookieCrumbs`, the inverse of `coalesceCookieCrumbs`). The model keeps the
+  canonical single field, because RFC 9113 §8.2.3 requires that form before the
+  fields reach "an HTTP/1.1 connection, **or a generic HTTP server application**" —
+  so the origin's application sees one field either way, and the crumb split is below
+  the semantic layer, like a body's DATA-frame boundaries. What it buys is HPACK: the
+  dynamic table defaults to 4096 bytes and charges `name + value + 32` per field, so
+  a merged kilobyte of cookie never fits and is re-sent as a literal on *every*
+  request, where crumbs are indexed once. (Reasoned from the table size, not measured
+  — but the split itself is pinned: remove it and `theH2LegSplitsCookieCrumbsBack`
+  fails.) The client's original grouping is gone by then, so this is a reconstruction
+  per cookie-pair, not a restoration.
+- **`Transfer-Encoding` is never set on an h2 leg** (RFC 9113 §8.2.2 — connection
+  specific, MUST NOT appear, receiver MUST treat as malformed). Belt-and-braces and
+  known to be so: NIOHTTP2's client codec strips it anyway, measured by removing the
+  guard and watching nothing change. It stays because not emitting a forbidden field
+  is ours to get right, not a library's to paper over.
+
+## Trailers are forwarded and captured on both legs (0.0.27)
+
+A trailer field section is where gRPC returns its result (`grpc-status` /
+`grpc-message`, after the body), and Loom dropped it in both directions: the request
+writer sent `.end(nil)`, the response writer sent `.end(nil)`, and the capture had
+nowhere to record one. Four rules:
+
+- **Nil and empty are different** (`CapturedRequest.trailers` / `CapturedResponse
+  .trailers`, `UpstreamResponseEvent.end(trailers:)`). No trailer section is not an
+  empty one, and a render that collapsed them would grow a `trailers: []` key on
+  every ordinary exchange.
+- **A streamed request's trailers are only knowable after the body**, so they travel
+  in a `RequestTrailers` box the bridge fills *before* `finish()` — read it only
+  after the chunk sequence has ended. `RequestBody.collect()` returns body **and**
+  trailers together, because draining is the act that makes the second one knowable;
+  a caller that took only the bytes is how every buffering decorator used to eat them.
+- **A buffered body carrying trailers is re-framed chunked upstream**, since a
+  `Content-Length` message has nowhere to put them (RFC 9112 §7.1.2). One case is
+  still dropped and is not silent: a *streamed* body whose client declared a
+  `Content-Length` and then sent trailers anyway — legal over h2, impossible over h1,
+  and the framing was chosen before the first chunk went out. The capture keeps them.
+- **A trailer is not a header.** They stay a separate field on the model, a separate
+  block in the renders, a separate section in the Inspector, and a separate list in
+  `FlowComparison` — a field that moved between the head and the trailers is a real
+  difference, and merging them would report it as none.
+
 ## Upstream connections are pooled
 
 `UpstreamConnectionPool` keeps upstream sockets alive between requests, keyed by
@@ -126,6 +221,17 @@ speaks next settle it. Five rules:
   on the splice's future chain running synchronously on one loop;
   `aBannerSplitAcrossTheSpliceArrivesWhole` pins the observable property so a
   future asynchronous step fails a test instead of dropping banner bytes.
+
+**The h2c preface is a verdict, not a relay.** `PRI * HTTP/2.0` reads exactly like
+an HTTP/1 request line, so it always had to be separated out before the request-line
+test — it just used to answer `.opaque`, on the reasoning that h2 needs a negotiated
+ALPN. It does not: ALPN only *says* h2. `.h2c` now routes to
+`MITMPipeline.installCleartextHTTP2`, which is the **same** `installHTTP2` the ALPN
+branch takes (one definition, for `MITMPipeline`'s own reason), differing only in
+`upstreamTLS` — so the h2↔h1 codec, the raised `SETTINGS_MAX_HEADER_LIST_SIZE` and
+`HTTP2ConnectionErrorReporter` all apply to cleartext h2 too, and every one of those
+was a bug before it was a handler. Only the first 14 bytes are matched, not the full
+24: enough to be unambiguous, and inside `ProtocolSniff.maxBytes`.
 
 The host is recorded in `TunneledHostLog` only **after the splice stands** — on the
 failure path both ends are closed, and listing the host as "relayed" would claim

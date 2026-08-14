@@ -144,11 +144,16 @@ struct ProtocolSniffTests {
         #expect(ProtocolSniff.classify(Array("GET".utf8)) == .needMore, "no space yet — the token may continue")
     }
 
-    @Test func h2cPriorKnowledgeIsRelayedNotMisreadAsHTTP1() {
-        // The preface reads exactly like a request line, but the h1 codec would
-        // choke on the frames after it, so it must relay instead.
-        #expect(ProtocolSniff.classify(Array("PRI * HTTP/2.0\r\n".utf8)) == .opaque)
+    @Test func h2cPriorKnowledgeGetsTheH2StackNotTheH1One() {
+        // The preface reads exactly like a request line, and the h1 codec would
+        // choke on the frames after it — so it has to be told apart *before* the
+        // request-line test, and it gets the h2 stack rather than a blind relay.
+        #expect(ProtocolSniff.classify(Array("PRI * HTTP/2.0\r\n".utf8)) == .h2c)
+        #expect(ProtocolSniff.classify(Array("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".utf8)) == .h2c,
+                "the full 24-byte preface, not just the prefix that decides it")
         #expect(ProtocolSniff.classify(Array("PRI".utf8)) == .needMore)
+        #expect(ProtocolSniff.classify(Array("PRI * HTTP/2".utf8)) == .needMore,
+                "a partial preface must not fall through to the request-line test")
         #expect(ProtocolSniff.classify(Array("PROPFIND /a".utf8)) == .http, "shares a prefix with PRI, isn't it")
     }
 

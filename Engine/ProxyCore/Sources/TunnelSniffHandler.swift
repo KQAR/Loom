@@ -371,6 +371,10 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             install = MITMPipeline.installPlaintextHTTP(
                 channel: channel, host: host, port: port, store: store, forwarder: forwarder
             )
+        case .h2c:
+            install = MITMPipeline.installCleartextHTTP2(
+                channel: channel, host: host, port: port, store: store, forwarder: forwarder
+            )
         case .opaque, .needMore:
             install = relay(channel: channel, reason: .notTLSOrHTTP)
         }
@@ -428,8 +432,8 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
     }
 
     /// Byte-transparent pass-through for traffic Loom won't read: out-of-scope TLS,
-    /// h2c prior knowledge, and anything that isn't HTTP at all (SSH, SMTP, a
-    /// hand-rolled binary protocol). Recorded as a tunnel flow when the embedder
+    /// and anything that isn't HTTP at all (SSH, SMTP, a hand-rolled binary
+    /// protocol). Recorded as a tunnel flow when the embedder
     /// asked to observe tunnels, so the activity is visible even unread.
     ///
     /// `reason` is always recorded in `TunneledHostLog`, tunnel flows or not: it is

@@ -99,13 +99,15 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                 bodyBridge = bridge
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: false)
                 startExchange(channel: context.channel, head: head, url: url, absolute: absolute,
-                              body: .stream(bridge.chunks, contentLength: RequestBodyStreaming.contentLength(head)),
+                              body: .stream(bridge.chunks,
+                                            contentLength: RequestBodyStreaming.contentLength(head),
+                                            trailers: bridge.trailers),
                               capture: bridge.capture)
             }
             if let bytes = chunk.readBytes(length: chunk.readableBytes) { bodyBridge?.yield(Data(bytes)) }
-        case .end:
+        case let .end(trailers):
             if let bodyBridge {
-                bodyBridge.finish()
+                bodyBridge.finish(trailers: trailers.map(HTTPUtil.headerPairs))
                 self.bodyBridge = nil
                 _ = context.channel.setOption(ChannelOptions.autoRead, value: true) // resume for keep-alive
                 resetRequest()
@@ -113,7 +115,11 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
             }
             if droppingRequest { droppingRequest = false; resetRequest(); return }
             guard let head = requestHead, let url = requestURL, let absolute = requestAbsolute else { return }
-            startExchange(channel: context.channel, head: head, url: url, absolute: absolute, body: .bytes(nil), capture: nil)
+            // A bodyless request with a trailer section is not a shape any client
+            // sends, but carrying it costs nothing and dropping it would be one more
+            // silent edit.
+            startExchange(channel: context.channel, head: head, url: url, absolute: absolute,
+                          body: .bytes(nil, trailers: trailers.map(HTTPUtil.headerPairs)), capture: nil)
             resetRequest()
         }
     }

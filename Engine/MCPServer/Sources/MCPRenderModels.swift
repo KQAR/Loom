@@ -232,12 +232,16 @@ struct RenderedRequest: Encodable {
     /// Say so explicitly, with the real wire size.
     var bodyCaptureTruncated: Bool?
     var bodyBytesOnWire: Int?
+    /// The trailer field section, omitted entirely when the client sent none — so
+    /// an absent key means "no trailers", never "an empty list of them".
+    var trailers: [RenderedHeader]?
 
     init(_ request: CapturedRequest, body: RenderedBody) {
         method = request.method
         url = request.url
         httpVersion = request.httpVersion
         headers = RenderedHeader.list(request.headers)
+        trailers = request.trailers.map(RenderedHeader.list)
         self.body = body
         if let wireBytes = request.fullBodyBytes {
             bodyCaptureTruncated = true
@@ -253,10 +257,15 @@ struct RenderedResponse: Encodable {
     var httpVersion: String?
     var bodyCaptureTruncated: Bool?
     var bodyBytesOnWire: Int?
+    /// Where gRPC returns its result (`grpc-status`), so this is the field that
+    /// answers "the call returned 200 — why did it fail". Omitted when the origin
+    /// sent no trailer section.
+    var trailers: [RenderedHeader]?
 
     init(_ response: CapturedResponse, body: RenderedBody) {
         status = response.statusCode
         headers = RenderedHeader.list(response.headers)
+        trailers = response.trailers.map(RenderedHeader.list)
         self.body = body
         httpVersion = response.httpVersion
         if let wireBytes = response.fullBodyBytes {
@@ -1157,15 +1166,20 @@ struct MessageDiffRender: Encodable {
     var method: ValueChangeRender<String>?
     var url: ValueChangeRender<String>?
     var headers: HeaderDiffRender?
+    var trailers: HeaderDiffRender?
     var body: BodyDiffRender?
 
-    var isEmpty: Bool { method == nil && url == nil && headers == nil && body == nil }
+    var isEmpty: Bool {
+        method == nil && url == nil && headers == nil && trailers == nil && body == nil
+    }
 
     init(_ message: FlowComparison.MessageComparison) {
         method = message.method.map(ValueChangeRender.init)
         url = message.url.map(ValueChangeRender.init)
         let headers = HeaderDiffRender(message.headers)
         self.headers = headers.isEmpty ? nil : headers
+        let trailers = HeaderDiffRender(message.trailers)
+        self.trailers = trailers.isEmpty ? nil : trailers
         body = message.body.map(BodyDiffRender.init)
     }
 }
@@ -1177,10 +1191,14 @@ struct ResponseDiffRender: Encodable {
     var status: ValueChangeRender<Int>?
     var httpVersion: ValueChangeRender<String>?
     var headers: HeaderDiffRender?
+    /// Where a gRPC verdict differs — two 200s with identical bodies can still be a
+    /// success and a failure, and this is the only field that says so.
+    var trailers: HeaderDiffRender?
     var body: BodyDiffRender?
 
     var isEmpty: Bool {
-        present == nil && status == nil && httpVersion == nil && headers == nil && body == nil
+        present == nil && status == nil && httpVersion == nil && headers == nil
+            && trailers == nil && body == nil
     }
 
     init(_ response: FlowComparison.ResponseComparison) {
@@ -1192,6 +1210,8 @@ struct ResponseDiffRender: Encodable {
         httpVersion = response.httpVersion.map(ValueChangeRender.init)
         let headers = HeaderDiffRender(response.headers)
         self.headers = headers.isEmpty ? nil : headers
+        let trailers = HeaderDiffRender(response.trailers)
+        self.trailers = trailers.isEmpty ? nil : trailers
         body = response.body.map(BodyDiffRender.init)
     }
 }

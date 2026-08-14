@@ -22,6 +22,10 @@ enum StreamRelay {
         sourceDevice: SourceDevice?,
         store: FlowStore,
         bodyCapture: RequestBodyCapture? = nil,
+        /// The client's trailer section, readable once its body stream has ended —
+        /// the request-side sibling of `bodyCapture`, and backfilled at the same
+        /// points for the same reason.
+        requestTrailers: RequestTrailers? = nil,
         /// What the *client* leg already contributed (its TLS version) — the
         /// upstream events only ever describe Loom's own hop, and a failure
         /// before any head would otherwise lose the client half entirely.
@@ -36,8 +40,8 @@ enum StreamRelay {
         let work = Task { await relayInner(
             stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
             request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
-            store: store, bodyCapture: bodyCapture, clientTransport: clientTransport,
-            captureCap: captureCap
+            store: store, bodyCapture: bodyCapture, requestTrailers: requestTrailers,
+            clientTransport: clientTransport, captureCap: captureCap
         ) }
         channel.closeFuture.whenComplete { _ in work.cancel() }
         await work.value
@@ -54,6 +58,7 @@ enum StreamRelay {
         sourceDevice: SourceDevice?,
         store: FlowStore,
         bodyCapture: RequestBodyCapture?,
+        requestTrailers: RequestTrailers?,
         clientTransport: FlowTransport?,
         captureCap: Int
     ) async {
@@ -61,8 +66,12 @@ enum StreamRelay {
         // the request recorded on the flow. `baseRequest.body` is nil while streaming;
         // this backfills it once the body has flowed.
         func request() -> CapturedRequest {
-            guard let bodyCapture else { return baseRequest }
             var request = baseRequest
+            // The client's trailer section is only knowable once its body has
+            // finished, so — like the body itself — it is read here rather than
+            // stamped when the exchange started.
+            if let sent = requestTrailers?.current { request.trailers = sent }
+            guard let bodyCapture else { return request }
             let snapshot = bodyCapture.snapshot()
             request.body = snapshot.body
             request.fullBodyBytes = snapshot.fullBodyBytes
@@ -87,12 +96,18 @@ enum StreamRelay {
         var wireBodyBytes = 0
         var headWritten = false
         var bodyless = false
+        /// The origin's trailer section, arriving with the terminal event. Kept as a
+        /// separate `var` rather than folded into `responseHeaders`: a trailer is
+        /// not a header, and merging them would make a `grpc-status` that arrived
+        /// after the body indistinguishable from one the origin promised up front.
+        var responseTrailers: [HeaderPair]?
 
         /// The response as captured, flagged when `capturedBody` is only a prefix.
         func response(body: Data) -> CapturedResponse {
             CapturedResponse(
                 statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: body,
-                fullBodyBytes: wireBodyBytes > body.count ? wireBodyBytes : nil
+                fullBodyBytes: wireBodyBytes > body.count ? wireBodyBytes : nil,
+                trailers: responseTrailers
             )
         }
 
@@ -135,8 +150,9 @@ enum StreamRelay {
                         let remaining = captureCap - capturedBody.count
                         capturedBody.append(chunk.count <= remaining ? chunk : chunk.prefix(remaining))
                     }
-                case .end:
-                    HTTPUtil.finishResponse(channel: channel, keepAlive: keepAlive)
+                case let .end(trailers):
+                    responseTrailers = trailers
+                    HTTPUtil.finishResponse(channel: channel, keepAlive: keepAlive, trailers: trailers)
                 }
             }
             await store.upsert(Flow(

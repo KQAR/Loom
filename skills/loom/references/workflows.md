@@ -71,7 +71,7 @@ arguments; this file is about sequence and interpretation.
   first, not `get_recent_flows` again: an unread relay records no flow at all, so
   `tunneledHosts` is the only place the fact exists. `excluded` (someone carved the
   host out to keep a client working), `notInScope` and `interceptionDisabled` are
-  one `intercept_host` away; `notTLSOrHTTP` (h2c, SSH, SMTP, a server-first
+  one `intercept_host` away; `notTLSOrHTTP` (SSH, SMTP, a server-first
   protocol), `noCertificateAuthority` and `leafMintFailed` are not. Two more mean
   the request never happened at all — the client is broken with Loom in the path,
   not merely unread: `clientHandshakeFailed` (it refused Loom's leaf and hung up

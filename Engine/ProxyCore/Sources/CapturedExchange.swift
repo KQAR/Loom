@@ -112,13 +112,16 @@ enum CapturedExchange {
         // as they flow, and `StreamRelay` reads the complete copy on the response
         // upserts (the request finishes before the response head by HTTP ordering).
         let initialBody: Data?
-        switch body {
+        switch body.source {
         case let .bytes(data): initialBody = data
         case .stream: initialBody = nil
         }
+        // Same story for the trailer section: a streamed request's arrives after the
+        // last chunk, so it is nil here and `StreamRelay` backfills it from the box.
         let capturedRequest = CapturedRequest(
             method: head.method.rawValue, url: routing.urlString,
-            httpVersion: clientLeg.httpVersion, headers: headers, body: initialBody
+            httpVersion: clientLeg.httpVersion, headers: headers, body: initialBody,
+            trailers: body.trailers?.current
         )
         // Identity and clock come from `observe`, which already put this request in
         // the capture: an exchange must continue that flow, never open a second one.
@@ -244,11 +247,19 @@ enum CapturedExchange {
                 // chain matches on it (device scoping needs no resolver).
                 stream: forwarder.forwardStream(
                     method: method, url: routing.url, headers: headers, body: body,
-                    origin: RequestOrigin(app: sourceApp, device: sourceDevice)
+                    origin: RequestOrigin(app: sourceApp, device: sourceDevice),
+                    // What the client negotiated with Loom decides the upstream leg:
+                    // an h2 client gets an h2 origin connection when the origin will
+                    // have one. See `ClientWireProtocol` for why this is gated on the
+                    // client rather than on what the origin offers.
+                    clientProtocol: ClientWireProtocol(
+                        httpVersion: clientLeg.httpVersion, clientTLSVersion: clientLeg.tlsVersion
+                    )
                 ),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
                 request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
-                store: store, bodyCapture: bodyCapture, clientTransport: clientLeg.transport
+                store: store, bodyCapture: bodyCapture, requestTrailers: body.trailers,
+                clientTransport: clientLeg.transport
             )
         }
     }

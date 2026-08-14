@@ -60,6 +60,7 @@ extension ProxyEngine {
         var httpVersion: String?
         var responseHeaders: [HeaderPair] = []
         var responseBody = Data()
+        var responseTrailers: [HeaderPair]?
         var transport: FlowTransport?
         do {
             // A replay inherits the origin of the flow it re-sends: replaying an app's
@@ -67,7 +68,15 @@ extension ProxyEngine {
             // breakpoints scoped to it.
             for try await event in forwarder.forwardStream(
                 method: method, url: url, headers: headers, body: .bytes(body),
-                origin: RequestOrigin(flow: source)
+                origin: RequestOrigin(flow: source),
+                // A replay re-sends over the protocol the original used, for the same
+                // reason it inherits the origin: a diff between an h2 capture and an
+                // h1 replay would report differences that are Loom's, not the change
+                // under test.
+                clientProtocol: ClientWireProtocol(
+                    httpVersion: source.request.httpVersion,
+                    clientTLSVersion: source.transport?.clientTLSVersion
+                )
             ) {
                 switch event {
                 case let .metadata(rules): appliedRules = rules
@@ -76,7 +85,7 @@ extension ProxyEngine {
                     firstByteAt = Date()
                     statusCode = code; httpVersion = version; responseHeaders = headers
                 case let .body(chunk): responseBody.append(chunk)
-                case .end: break
+                case let .end(trailers): responseTrailers = trailers
                 }
             }
             let flow = Flow(
@@ -84,7 +93,10 @@ extension ProxyEngine {
                 request: capturedRequest,
                 startedAt: startedAt,
                 outcome: .completed(
-                    CapturedResponse(statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders, body: responseBody),
+                    CapturedResponse(
+                        statusCode: statusCode, httpVersion: httpVersion, headers: responseHeaders,
+                        body: responseBody, trailers: responseTrailers
+                    ),
                     at: Date()
                 ),
                 firstByteAt: firstByteAt,

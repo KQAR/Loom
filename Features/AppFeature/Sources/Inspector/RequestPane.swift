@@ -100,7 +100,7 @@ struct RequestPane: View {
         case .query: Scrolled { QueryView(items: derived.query) }
         case .graphQL: Scrolled { GraphQLView(operation: derived.graphQL) }
         case .raw: RawTab(flow: flow, pane: "req", makeText: Self.rawText)
-        case .headers: Scrolled { HeadersList(headers: flow.request.headers) }
+        case .headers: Scrolled { HeadersList(headers: flow.request.headers, trailers: flow.request.trailers) }
         case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
         case .body: BodyView(data: flow.request.body, identity: "req-body:\(flow.id)", fullBodyBytes: flow.request.fullBodyBytes)
         case .diff: Scrolled { DiffView(original: original, replayed: flow) }
@@ -122,6 +122,11 @@ struct RequestPane: View {
         lines.append("")
         if let body = request.body, let string = String(data: body, encoding: .utf8) {
             lines.append(string)
+        }
+        // After the body: that is where a trailer section sits on the wire.
+        if let trailers = request.trailers, !trailers.isEmpty {
+            lines.append("")
+            lines += trailers.map { "\($0.name): \($0.value)" }
         }
         return lines.joined(separator: "\n")
     }

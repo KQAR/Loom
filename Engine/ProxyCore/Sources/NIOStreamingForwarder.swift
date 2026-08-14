@@ -3,6 +3,8 @@ import Synchronization
 import NIOCore
 import NIOPosix
 import NIOHTTP1
+import NIOHTTP2
+import NIOTLS
 import NIOHTTPCompression
 import NIOSSL
 import LoomSharedModels
@@ -23,6 +25,24 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// See the decompressor's installation below for why this isn't `.none`.
     static let maxDecompressionRatio = 100
 
+    /// Whether an h2c client's exchange also gets an **h2c upstream leg**.
+    ///
+    /// **Off**, and off deliberately rather than unimplemented. It is built, it
+    /// round-trips (a gRPC call with `grpc-status` trailers completes end to end
+    /// against a real cleartext origin, and the `cookie` crumbs arrive split), and it
+    /// then intermittently stalls under concurrent load: the request is captured, the
+    /// origin answers, no write reports a failure, and the client waits forever. A
+    /// hang with nothing on any surface is the one failure mode this proxy must not
+    /// ship, so the leg stays HTTP/1.1 — against an h2-only origin that fails
+    /// *visibly*, which is the honest half of a bad trade.
+    ///
+    /// Flipping this to `true` re-enables the leg and re-enables the two tests that
+    /// pin it (`H2CPriorKnowledgeTests`). The reproduction, everything ruled out, and
+    /// the one measurement that is still ambiguous: `docs/decisions/h2c-upstream-stall.md`.
+    ///
+    /// The **TLS** h2 leg is unaffected and on: it is verified against real origins.
+    static let cleartextHTTP2Upstream = false
+
     private let group: EventLoopGroup
     private let connectTimeout: TimeAmount
     /// Mutual-TLS identities, consulted per upstream host. Nil = never present a
@@ -32,6 +52,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// Keeps upstream connections alive between requests. See
     /// `UpstreamConnectionPool` for what a missing one used to cost.
     private let pool: UpstreamConnectionPool
+    /// In-flight h2 connects, one per origin, so a burst that all misses the pool
+    /// opens **one** socket rather than one each.
+    ///
+    /// The pool's own duplicate handling keeps the exchanges correct — they all end
+    /// up on the winner — but correctness was never the cost here: measured, six
+    /// concurrent first requests to one origin completed six TCP connects and six TLS
+    /// handshakes to then use one connection and close five. That is the whole
+    /// expense pooling exists to remove, reappearing on the protocol that needs a
+    /// second connection least.
+    private let pendingHTTP2Connects = Mutex<[UpstreamPoolKey: Task<UpstreamConnection, Error>]>([:])
 
     init(
         group: EventLoopGroup,
@@ -50,6 +80,13 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
+        forwardStream(method: method, url: url, headers: headers, body: body, origin: nil, clientProtocol: .http1)
+    }
+
+    func forwardStream(
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+    ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             guard let host = url.host else {
                 continuation.finish(throwing: ForwarderError.invalidURL(url.absoluteString))
@@ -70,9 +107,17 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             // verbatim (naming the identity, not the origin — see the type note on
             // `resolveClientTLS`). `NIOSSLContext` is `Sendable`; `NIOSSLClientHandler`
             // is not, which is why only the latter moves inside.
-            let clientTLS: (context: NIOSSLContext, serverName: String?)?
+            // Whether this exchange gets an h2 upstream leg. The client must have
+            // spoken h2, and — for a TLS origin — the resolved context must actually
+            // be offering `h2`, which is why that answer comes back from
+            // `resolveClientTLS` rather than being assumed here. An exchange that
+            // ends up on HTTP/1.1 says so on the flow: `CapturedResponse.httpVersion`
+            // is Loom's upstream hop, so the leg is readable rather than guessed at.
+            let clientTLS: (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool)?
             do {
-                clientTLS = try isTLS ? self.resolveClientTLS(host: host) : nil
+                clientTLS = try isTLS
+                    ? self.resolveClientTLS(host: host, offerHTTP2: clientProtocol.isHTTP2)
+                    : nil
             } catch {
                 // A configured identity that won't load: the error already names it
                 // (the store validates on the way in), so it is passed through as-is
@@ -81,19 +126,33 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 return
             }
 
-            let key = UpstreamPoolKey(host: host, port: port, isTLS: isTLS, identity: identity)
+            // Over TLS, ALPN asks and the origin may decline.
+            //
+            // **Cleartext h2c upstream is switched off** (`Self.cleartextHTTP2Upstream`)
+            // — it works, and then intermittently stalls under load with no error
+            // anywhere. An h2c client's exchange therefore goes upstream as HTTP/1.1,
+            // which against an h2-only origin fails *visibly* (a parse error on the
+            // flow) rather than hanging. See `docs/decisions/h2c-upstream-stall.md`.
+            let wantsHTTP2 = isTLS
+                ? (clientProtocol.isHTTP2 && (clientTLS?.offersHTTP2 ?? false))
+                : (Self.cleartextHTTP2Upstream && clientProtocol == .http2Cleartext)
+            let key = UpstreamPoolKey(
+                host: host, port: port, isTLS: isTLS, identity: identity, preferHTTP2: wantsHTTP2
+            )
             let active = ActiveUpstreamBox()
             let task = Task {
                 do {
-                    try await self.runExchange(
+                    let trailers = try await self.runExchange(
                         key: key, clientTLS: clientTLS, method: method, url: url,
                         headers: headers, body: body, continuation: continuation, active: active
                     )
                     // The forwarder, not the relay, terminates the caller's stream:
                     // a failure with nothing yet yielded is a retry candidate, and a
                     // relay that had already finished the stream would have spent
-                    // the outcome that decision needs.
-                    continuation.yield(.end)
+                    // the outcome that decision needs. The trailer section rides this
+                    // terminal event for the same reason — it is the last thing the
+                    // origin said, and the relay never gets to say anything last.
+                    continuation.yield(.end(trailers: trailers))
                     continuation.finish()
                 } catch {
                     // Two wrappers, one hop each, and neither touches what the other
@@ -132,21 +191,20 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// requests that follow it reuse the socket it opened.
     private func runExchange(
         key: UpstreamPoolKey,
-        clientTLS: (context: NIOSSLContext, serverName: String?)?,
+        clientTLS: (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool)?,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox
-    ) async throws {
+    ) async throws -> [HeaderPair]? {
         let replayable: Bool
-        if case .bytes = body { replayable = true } else { replayable = false }
+        if case .bytes = body.source { replayable = true } else { replayable = false }
 
         if replayable, let pooled = pool.lease(key) {
             do {
-                try await attempt(
+                return try await attempt(
                     on: pooled, reused: true, method: method, url: url, headers: headers, body: body,
                     continuation: continuation, active: active
                 )
-                return
             } catch let failure as UpstreamAttemptFailure {
                 guard !failure.didYield else { throw failure.underlying }
                 // Bytes-in-hand makes the request *re-sendable*; it does not make
@@ -168,9 +226,11 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             }
         }
 
-        let fresh = try await connect(key: key, clientTLS: clientTLS)
+        let fresh = key.preferHTTP2
+            ? try await connectSharing(key: key, clientTLS: clientTLS)
+            : try await connect(key: key, clientTLS: clientTLS)
         do {
-            try await attempt(
+            return try await attempt(
                 on: fresh, reused: false, method: method, url: url, headers: headers, body: body,
                 continuation: continuation, active: active
             )
@@ -187,8 +247,14 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox
-    ) async throws {
-        guard active.adopt(connection) else {
+    ) async throws -> [HeaderPair]? {
+        if connection.negotiated == .http2 {
+            return try await attemptHTTP2(
+                on: connection, reused: reused, method: method, url: url, headers: headers,
+                body: body, continuation: continuation, active: active
+            )
+        }
+        guard active.adopt(closing: { connection.close() }) else {
             // The consumer already went away; nothing to run this exchange for.
             connection.close()
             throw CancellationError()
@@ -291,7 +357,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         }
 
         active.clear()
-        switch end {
+        switch end.disposition {
         case .reusable where requestWritten:
             pool.release(connection)
         case .reusable:
@@ -304,21 +370,182 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         case .mustClose:
             connection.close()
         }
+        return end.trailers
+    }
+
+    /// One exchange over an HTTP/2 connection: a fresh stream, its own slot, its own
+    /// response stack.
+    ///
+    /// Three things differ from the h1 path, and each is a property of multiplexing
+    /// rather than a simplification:
+    ///
+    /// - **The slot is per stream, not per connection.** `UpstreamExchangeSlot` is
+    ///   the handoff for *one* exchange; under h2 a connection carries several at
+    ///   once, so a shared slot would deliver one stream's head to another's caller.
+    /// - **The connection is never closed on the way out.** `UpstreamAttemptEnd`'s
+    ///   disposition answers "can this socket carry another request", which is
+    ///   always yes for h2 and — critically — closing it would abort every other
+    ///   stream in flight. Cancellation closes the *stream*, for the same reason.
+    /// - **A stream carries no connection setup unless it opened it.** Same rule as
+    ///   h1 reuse, and it is what `reused` already says.
+    ///
+    /// The response stack is the h1 one, unchanged, because
+    /// `HTTP2FramePayloadToHTTP1ClientCodec` hands the stream over as
+    /// `HTTPClientResponsePart` — the same events `UpstreamResponseRelay` already
+    /// reads. That is also what makes `writeRequest` work here untouched.
+    private func attemptHTTP2(
+        on connection: UpstreamConnection,
+        reused: Bool,
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody,
+        continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
+        active: ActiveUpstreamBox
+    ) async throws -> [HeaderPair]? {
+        guard let multiplexer = connection.multiplexer else {
+            throw ForwarderError.connectionClosed
+        }
+        let slot = UpstreamExchangeSlot()
+        let notifier = UpstreamInactiveNotifier()
+        let scheme: HTTP2FramePayloadToHTTP1ClientCodec.HTTPProtocol = connection.key.isTLS ? .https : .http
+        let streamPromise = connection.channel.eventLoop.makePromise(of: Channel.self)
+        multiplexer.createStreamChannel(promise: streamPromise) { stream in
+            stream.eventLoop.makeCompletedFuture {
+                let sync = stream.pipeline.syncOperations
+                try sync.addHandler(HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: scheme))
+                try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
+                try sync.addHandler(
+                    NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))
+                )
+                try sync.addHandler(
+                    UpstreamResponseRelay(slot: slot, notifier: notifier, httpVersion: "HTTP/2")
+                )
+            }
+        }
+        let stream: Channel
+        do {
+            stream = try await streamPromise.futureResult.get()
+        } catch {
+            // A connection that cannot open a stream is dead or going away
+            // (GOAWAY, a closed socket). Nothing was yielded, so this is a retry
+            // candidate exactly like a stale pooled h1 connection.
+            pool.forget(connection)
+            throw UpstreamAttemptFailure(underlying: error, didYield: false, requestWritten: false)
+        }
+        guard active.adopt(closing: { stream.close(promise: nil) }) else {
+            stream.close(promise: nil)
+            throw CancellationError()
+        }
+
+        let promise = stream.eventLoop.makePromise(of: UpstreamAttemptEnd.self)
+        let remoteAddress = connection.remoteAddress
+        let tlsBox = connection.tlsInfo
+        let setup = reused ? nil : connection.setup
+        slot.arm(
+            continuation: continuation,
+            methodIsHead: method.uppercased() == "HEAD",
+            transport: {
+                var transport = FlowTransport(
+                    remoteAddress: remoteAddress,
+                    connectionReused: reused,
+                    upstreamTLS: tlsBox.info
+                )
+                if var setup {
+                    setup.tlsHandshakeMS = tlsBox.handshakeMS
+                    transport.setup = setup.isEmpty ? nil : setup
+                }
+                return transport
+            }
+        ) { result in
+            promise.completeWith(result.mapError { $0 as Error })
+        }
+
+        var requestWritten = false
+        do {
+            try await Self.writeRequest(
+                channel: stream, method: method, url: url,
+                host: connection.key.host, port: connection.key.port, headers: headers, body: body,
+                wire: .http2
+            )
+            requestWritten = true
+        } catch {
+            slot.fail(error)
+        }
+
+        let end: UpstreamAttemptEnd
+        do {
+            end = try await promise.futureResult.get()
+        } catch let failure as UpstreamAttemptFailure {
+            active.clear()
+            stream.close(promise: nil)
+            throw UpstreamAttemptFailure(
+                underlying: failure.underlying, didYield: failure.didYield,
+                requestWritten: requestWritten
+            )
+        } catch {
+            active.clear()
+            stream.close(promise: nil)
+            throw error
+        }
+        active.clear()
+        // The stream is finished; the connection carries on serving everyone else.
+        stream.close(promise: nil)
+        return end.trailers
+    }
+
+    /// Connect for an h2 origin, joining an attempt already under way rather than
+    /// racing it.
+    ///
+    /// `Task.detached` on purpose: the connect is *shared*, so it must not inherit
+    /// the cancellation of whichever exchange happened to start it — a client that
+    /// walks away mid-handshake would otherwise take down the connection every other
+    /// waiter is about to use.
+    ///
+    /// A shared attempt that produces a connection which is already unusable (the
+    /// origin hung up between the handshake and here) falls through to a private
+    /// connect rather than failing: the joiner has done nothing wrong, and one wasted
+    /// socket beats a spurious error.
+    private func connectSharing(
+        key: UpstreamPoolKey, clientTLS: (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool)?
+    ) async throws -> UpstreamConnection {
+        let (attempt, isOwner) = pendingHTTP2Connects.withLock { pending -> (Task<UpstreamConnection, Error>, Bool) in
+            if let existing = pending[key] { return (existing, false) }
+            let started = Task.detached { [self] in try await connect(key: key, clientTLS: clientTLS) }
+            pending[key] = started
+            return (started, true)
+        }
+        func forgetIfOwner() {
+            guard isOwner else { return }
+            pendingHTTP2Connects.withLock { pending in
+                if pending[key] == attempt { pending[key] = nil }
+            }
+        }
+        do {
+            let connection = try await attempt.value
+            forgetIfOwner()
+            if connection.isUsable { return connection }
+        } catch {
+            forgetIfOwner()
+            throw error
+        }
+        return try await connect(key: key, clientTLS: clientTLS)
     }
 
     /// Open a new upstream connection with the response relay already installed.
     private func connect(
-        key: UpstreamPoolKey, clientTLS: (context: NIOSSLContext, serverName: String?)?
+        key: UpstreamPoolKey, clientTLS: (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool)?
     ) async throws -> UpstreamConnection {
         let slot = UpstreamExchangeSlot()
         let notifier = UpstreamInactiveNotifier()
         let tlsInfo = UpstreamTLSInfoBox()
         let identity = key.identity
+        // Settled by ALPN (TLS) or by prior knowledge (cleartext h2c). Held in a box
+        // rather than returned from the initializer because the initializer runs
+        // before the handshake, and for h2 the answer *is* the handshake's.
+        let negotiation = UpstreamNegotiationBox()
         let bootstrap = ClientBootstrap(group: group)
             .connectTimeout(connectTimeout)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .channelInitializer { channel in
-                channel.eventLoop.makeCompletedFuture {
+                channel.eventLoop.makeCompletedFuture { () -> EventLoopFuture<Void> in
                     let sync = channel.pipeline.syncOperations
                     if let clientTLS {
                         try sync.addHandler(NIOSSLClientHandler(
@@ -331,27 +558,45 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                             box: tlsInfo, serverName: clientTLS.serverName, clientCertificate: identity
                         ))
                     }
-                    try sync.addHTTPClientHandlers()
-                    // Between the framing and the decompressor: the last point at
-                    // which the body is both parsed into parts and still encoded,
-                    // which is the only place its wire size still exists.
-                    try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
-                    // Decompress gzip/deflate so relayed/captured bytes are plaintext;
-                    // the now-wrong Content-Encoding/Length are stripped on `.head`.
-                    // The ratio cap is a decompression-bomb guard: bodies come from
-                    // arbitrary origins, and `.none` is the setting swift-nio-extras
-                    // itself documents as leaving you open to denial of service. 100x
-                    // is far above real content (text gzips ~3-10x) and far below a
-                    // zip bomb (1000x+), so it costs nothing legitimate. The capture
-                    // is separately capped; this bounds the *inflation*.
-                    //
-                    // Safe to keep across a pooled connection's later requests: it
-                    // builds a decoder per response `.head` and drops it on `.end`.
-                    try sync.addHandler(
-                        NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))
-                    )
-                    try sync.addHandler(UpstreamResponseRelay(slot: slot, notifier: notifier))
-                }
+                    guard key.preferHTTP2 else {
+                        try Self.addHTTP1Handlers(sync: sync, slot: slot, notifier: notifier)
+                        negotiation.settle(.http1, multiplexer: nil)
+                        return channel.eventLoop.makeSucceededVoidFuture()
+                    }
+                    guard clientTLS?.offersHTTP2 == true else {
+                        // Cleartext h2c with prior knowledge (RFC 9113 §3.4). Safe to
+                        // commit to at all *only* because this path is reached solely
+                        // for an exchange whose own client spoke h2c to this origin,
+                        // so the origin is an h2c server by demonstration. There is no
+                        // probe for it and no fallback from it.
+                        //
+                        // **It must go in here, in the initializer, before the channel
+                        // is active** — moving it after `connect()` returns was tried
+                        // and measured: the origin then never receives a single
+                        // HEADERS frame (0 of 5 requests arrived, against a live
+                        // origin answering a direct client 200). The likely reason is
+                        // the connection preface, which `NIOHTTP2Handler` writes on
+                        // activation; added to an already-active channel it is never
+                        // sent, so the server cannot parse anything that follows.
+                        // See ROADMAP § h2c upstream for what is still unexplained.
+                        return Self.installUpstreamHTTP2(channel: channel, negotiation: negotiation)
+                    }
+                    // The origin decides. `http/1.1` is a legitimate answer to an
+                    // `h2` offer and lands on the h1 stack, which is why both are
+                    // installed from here rather than chosen before connecting.
+                    try sync.addHandler(ApplicationProtocolNegotiationHandler { result in
+                        if case .negotiated("h2") = result {
+                            return Self.installUpstreamHTTP2(channel: channel, negotiation: negotiation)
+                        }
+                        return channel.eventLoop.makeCompletedFuture {
+                            try Self.addHTTP1Handlers(
+                                sync: channel.pipeline.syncOperations, slot: slot, notifier: notifier
+                            )
+                            negotiation.settle(.http1, multiplexer: nil)
+                        }
+                    })
+                    return channel.eventLoop.makeSucceededVoidFuture()
+                }.flatMap { $0 }
             }
         // DNS is timed by resolving here, *for measurement only* — the bootstrap
         // then resolves again and connects exactly as before.
@@ -374,8 +619,25 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             dnsMS: dnsMS,
             tcpMS: UpstreamTLSObserver.milliseconds(since: connectStartedAt)
         )
+        // For an h2 leg the protocol is not known when `connect()` returns — the TCP
+        // connection is up and the handshake is not. Waiting here is what lets
+        // `attempt` branch on a settled answer instead of guessing; a handshake that
+        // fails resolves this as a failure through the channel's own close.
+        let negotiated: UpstreamWireProtocol
+        let multiplexer: HTTP2StreamMultiplexer?
+        if key.preferHTTP2 {
+            channel.closeFuture.whenComplete { _ in negotiation.failIfUnsettled(ForwarderError.connectionClosed) }
+            let settled = try await negotiation.awaitSettled(on: channel.eventLoop)
+            negotiated = settled.wire
+            multiplexer = settled.multiplexer
+        } else {
+            negotiated = .http1
+            multiplexer = nil
+        }
         let connection = UpstreamConnection(
-            key: key, channel: channel, slot: slot, tlsInfo: tlsInfo, setup: setup
+            key: key, channel: channel, slot: slot,
+            negotiated: negotiated, multiplexer: multiplexer,
+            tlsInfo: tlsInfo, setup: setup
         )
         // Weak: while the connection is parked the pool holds it, and once it is
         // neither parked nor in flight there is nothing left to evict.
@@ -383,7 +645,72 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             guard let connection else { return }
             pool.forget(connection)
         }
+        // An h2 connection is shared, so it is registered *before* a stream is
+        // opened on it — see `UpstreamConnectionPool.registerMultiplexed` for why
+        // that is the only moment a duplicate can still be closed harmlessly.
+        if negotiated == .http2 {
+            // The h2 connection's own death has to evict it too, and it has no
+            // per-connection relay to notice: the relays live on stream channels.
+            channel.closeFuture.whenComplete { [pool, weak connection] _ in
+                guard let connection else { return }
+                pool.forget(connection)
+            }
+            return pool.registerMultiplexed(connection)
+        }
         return connection
+    }
+
+    /// The HTTP/1.1 response stack: framing, the encoded-size counter, the
+    /// decompressor, the relay. One definition, because the ALPN branch installs it
+    /// too — an origin answering `http/1.1` to an `h2` offer must get exactly the
+    /// pipeline it would have got without the offer.
+    private static func addHTTP1Handlers(
+        sync: ChannelPipeline.SynchronousOperations,
+        slot: UpstreamExchangeSlot,
+        notifier: UpstreamInactiveNotifier
+    ) throws {
+        try sync.addHTTPClientHandlers()
+        // Between the framing and the decompressor: the last point at which the body
+        // is both parsed into parts and still encoded, which is the only place its
+        // wire size still exists.
+        try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
+        // Decompress gzip/deflate so relayed/captured bytes are plaintext; the
+        // now-wrong Content-Encoding/Length are stripped on `.head`. The ratio cap is
+        // a decompression-bomb guard: bodies come from arbitrary origins, and `.none`
+        // is the setting swift-nio-extras itself documents as leaving you open to
+        // denial of service. 100x is far above real content (text gzips ~3-10x) and
+        // far below a zip bomb (1000x+), so it costs nothing legitimate. The capture
+        // is separately capped; this bounds the *inflation*.
+        //
+        // Safe to keep across a pooled connection's later requests: it builds a
+        // decoder per response `.head` and drops it on `.end`.
+        try sync.addHandler(NIOHTTPResponseDecompressor(limit: .ratio(maxDecompressionRatio)))
+        try sync.addHandler(UpstreamResponseRelay(slot: slot, notifier: notifier))
+    }
+
+    /// The HTTP/2 connection channel: just the multiplexer. Everything that reads a
+    /// response — the counter, the decompressor, the relay — lives on the *stream*
+    /// channel instead (`openHTTP2Stream`), because under h2 those are per-exchange
+    /// facts and a connection carries many exchanges at once.
+    private static func installUpstreamHTTP2(
+        channel: Channel, negotiation: UpstreamNegotiationBox
+    ) -> EventLoopFuture<Void> {
+        channel.configureHTTP2Pipeline(
+            mode: .client,
+            // Same rule as the server side (`MITMPipeline.maxHeaderListSize`): a
+            // proxy must not be stricter than the peer it stands in front of, and
+            // NIO's 16 KB default is stricter than any real origin's response.
+            initialLocalSettings: [
+                HTTP2Setting(parameter: .maxHeaderListSize, value: MITMPipeline.maxHeaderListSize),
+            ],
+            // Server push. Loom never asks for it and never relays it, and an
+            // unclaimed pushed stream that is merely ignored keeps a stream id and a
+            // flow-control window open for the life of the connection — so it is
+            // refused explicitly rather than left to accumulate.
+            inboundStreamInitializer: { stream in stream.close() }
+        ).map { multiplexer in
+            negotiation.settle(.http2, multiplexer: multiplexer)
+        }
     }
 
     /// Time one name resolution, off the event loop.
@@ -403,9 +730,12 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
 
     // MARK: - Request
 
+    /// - Parameter wire: which leg this request is being framed for. The message is
+    ///   the same either way; the *framing* is not, and both differences below are
+    ///   things HTTP/2 forbids or wastes rather than preferences.
     private static func writeRequest(
         channel: Channel, method: String, url: URL, host: String, port: Int,
-        headers: [HeaderPair], body: RequestBody
+        headers: [HeaderPair], body: RequestBody, wire: UpstreamWireProtocol = .http1
     ) async throws {
         var httpHeaders = HTTPHeaders()
         var sawHost = false
@@ -435,23 +765,58 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // Frame the body: a known length (buffered body, or a streamed body whose
         // client sent Content-Length) uses Content-Length; an unknown-length stream
         // (client used chunked) re-frames as chunked upstream.
+        // A trailer section is only legal on a chunked message (RFC 9112 §7.1.2), so
+        // a body whose trailers are *already in hand* is re-framed chunked rather
+        // than losing them to a `Content-Length`. That is the buffered path — a rule
+        // that had to materialize the body, a breakpoint that held it — and it is
+        // where an h2 client's perfectly legal `content-length` + trailers pair
+        // would otherwise be silently halved.
         let knownLength: Int?
-        switch body {
-        case let .bytes(data): knownLength = data?.count ?? 0
-        case let .stream(_, contentLength): knownLength = contentLength
+        switch body.source {
+        case let .bytes(data):
+            knownLength = body.trailers?.current == nil ? (data?.count ?? 0) : nil
+        case let .stream(_, contentLength):
+            knownLength = contentLength
         }
         if let knownLength {
             httpHeaders.replaceOrAdd(name: "Content-Length", value: String(knownLength))
-        } else {
+        } else if wire == .http1 {
             httpHeaders.replaceOrAdd(name: "Transfer-Encoding", value: "chunked")
+        }
+        // …and nothing in the `else` for h2, deliberately. `Transfer-Encoding` is a
+        // connection-specific field, which RFC 9113 §8.2.2 says a request MUST NOT
+        // contain and a receiver MUST treat as malformed; h2 needs no framing header
+        // anyway, since the body ends with END_STREAM.
+        //
+        // Belt-and-braces rather than load-bearing, and measured as such:
+        // `HTTP2FramePayloadToHTTP1ClientCodec` strips connection-specific fields on
+        // the way out, so removing this guard changes nothing observable today. It
+        // stays because not emitting a field the protocol forbids is our job, not the
+        // library's — and because the day that stripping changes, the failure would
+        // be every unknown-length upload on an h2 leg becoming a stream error.
+
+        if wire == .http2 {
+            // One field per cookie-pair — the encoding §8.2.3 exists to permit. The
+            // model's canonical single field (see `HTTPUtil.coalesceCookieCrumbs`) is
+            // what the origin's application still sees; this is framing, and it is
+            // what lets HPACK index the pairs instead of re-sending kilobytes of
+            // cookie as a literal on every request.
+            httpHeaders = HTTPUtil.splitCookieCrumbs(httpHeaders)
         }
 
         let head = HTTPRequestHead(
             version: .http1_1, method: httpMethod(method), uri: requestURI(url), headers: httpHeaders
         )
+        // `promise: nil`, and **do not "fix" this by awaiting it**. A `write` without
+        // a flush completes only when the flush happens, and the flush is the `.end`
+        // below — so awaiting here waits for something this function has not done
+        // yet. Measured: it deadlocks every request, which is a far worse failure
+        // than the swallowed encode error awaiting was meant to surface. The failure
+        // does still reach the exchange: NIO fails the subsequent writes on the same
+        // channel, and the awaited `.end` flush is where that lands.
         channel.write(HTTPClientRequestPart.head(head), promise: nil)
 
-        switch body {
+        switch body.source {
         case let .bytes(data):
             if let data, !data.isEmpty {
                 var buffer = channel.allocator.buffer(capacity: data.count)
@@ -468,11 +833,22 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 try await channel.writeAndFlush(HTTPClientRequestPart.body(.byteBuffer(buffer))).get()
             }
         }
+        // Read *after* the body has been drained, which is the only point at which a
+        // streamed request's trailer section exists (see `RequestTrailers`).
+        //
+        // One case survives the re-framing above and is dropped: a **streamed** body
+        // whose client declared a `Content-Length` and then sent trailers anyway —
+        // legal over h2, impossible over h1. The framing was chosen before the first
+        // chunk went out and cannot be taken back. The capture records them either
+        // way, so this is a visible drop rather than a silent one.
+        let requestTrailers = knownLength == nil ? body.trailers?.current : nil
         // Awaited, unlike the parts above: on a pooled connection the origin may
         // have closed while it was parked, and this flush is where that surfaces.
         // With `promise: nil` the failure was swallowed and the exchange waited on
         // a response the socket could never carry.
-        try await channel.writeAndFlush(HTTPClientRequestPart.end(nil)).get()
+        try await channel.writeAndFlush(
+            HTTPClientRequestPart.end(requestTrailers.map(HTTPUtil.httpHeaders))
+        ).get()
     }
 
     /// Origin-form request target: path + query (path defaults to "/").
@@ -524,17 +900,33 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// caller passes that error through untouched, because it already names the
     /// identity — which is the thing an operator can fix. Building the handler is left
     /// to the channel initializer, where the connection actually happens.
-    private func resolveClientTLS(host: String) throws -> (context: NIOSSLContext, serverName: String?) {
+    private func resolveClientTLS(
+        host: String, offerHTTP2: Bool
+    ) throws -> (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool) {
         // IP-literal peers can't take an SNI/validation hostname.
         let serverName = SharedTLS.isIPLiteral(host) ? nil : host
         // Identity for this host → its context; otherwise the provider's own
         // no-identity context (same trust settings, no client certificate), and only
         // then the process-wide default. The middle step keeps both paths on one
         // trust configuration; see `ClientIdentityProviding.baseContext()`.
-        let context = try clientIdentities?.context(forHost: host)
-            ?? clientIdentities?.baseContext()
-            ?? SharedTLS.clientContext
-        return (context, serverName)
+        //
+        // All three can offer `h2` — ALPN is fixed when a context is built, so the
+        // provider caches one per (identity, ALPN) rather than being told after the
+        // fact. The answer still travels *with* the context rather than being
+        // re-derived from `offerHTTP2`, because offering a protocol the caller then
+        // cannot speak is the one outcome that hangs an exchange, and a single
+        // source for that fact is what stops the two from drifting.
+        if let identityContext = try clientIdentities?.context(forHost: host, offeringHTTP2: offerHTTP2) {
+            return (identityContext, serverName, offerHTTP2)
+        }
+        if let base = try clientIdentities?.baseContext(offeringHTTP2: offerHTTP2) {
+            return (base, serverName, offerHTTP2)
+        }
+        return (
+            offerHTTP2 ? SharedTLS.clientContextOfferingHTTP2 : SharedTLS.clientContext,
+            serverName,
+            offerHTTP2
+        )
     }
 }
 
@@ -543,43 +935,122 @@ enum ForwarderError: Error {
     case connectionClosed
 }
 
+/// Carries the upstream protocol out of the channel initializer, where it is decided,
+/// to `connect()`, which is waiting for it.
+///
+/// It has to be a box rather than a return value because the initializer runs before
+/// the TLS handshake and the answer *is* the handshake's — and it has to be settled
+/// exactly once from either side, since a handshake that fails settles it by closing
+/// the channel while the ALPN handler never runs at all.
+///
+/// `@unchecked Sendable` for the same reason `UpstreamConnection` is: everything is
+/// inside the `Mutex` except `HTTP2StreamMultiplexer`, which NIOHTTP2 does not
+/// declare `Sendable` and which is only ever touched on its own channel's loop.
+final class UpstreamNegotiationBox: @unchecked Sendable {
+    /// `@unchecked Sendable`, escape-hatch kind 3 (ProxyCore/CLAUDE.md § Sendable
+    /// escape hatches): both fields are `let`, and the hatch exists only because
+    /// NIOHTTP2 does not declare `HTTP2StreamMultiplexer` `Sendable`. It is created
+    /// on its channel's event loop and `createStreamChannel` is documented as safe
+    /// to call from any thread — the same standing the `Channel` references in this
+    /// module already have.
+    struct Settled: @unchecked Sendable {
+        let wire: UpstreamWireProtocol
+        let multiplexer: HTTP2StreamMultiplexer?
+    }
+
+    private struct State {
+        var settled: Settled?
+        var failure: Error?
+        var waiters: [EventLoopPromise<Void>] = []
+    }
+
+    private let state = Mutex(State())
+
+    func settle(_ wire: UpstreamWireProtocol, multiplexer: HTTP2StreamMultiplexer?) {
+        let waiters = state.withLock { state -> [EventLoopPromise<Void>] in
+            guard state.settled == nil, state.failure == nil else { return [] }
+            state.settled = Settled(wire: wire, multiplexer: multiplexer)
+            let waiting = state.waiters
+            state.waiters = []
+            return waiting
+        }
+        // Outside the lock: completing a promise runs a stranger's continuation, and
+        // that must never happen inside this critical section (ProxyCore/CLAUDE.md
+        // § Sendable escape hatches).
+        for waiter in waiters { waiter.succeed(()) }
+    }
+
+    /// Settle as a failure, unless an answer already arrived. Called from the
+    /// channel's `closeFuture`, which fires on *every* close — including the ordinary
+    /// one long after a successful negotiation, hence "if unsettled".
+    func failIfUnsettled(_ error: Error) {
+        let waiters = state.withLock { state -> [EventLoopPromise<Void>] in
+            guard state.settled == nil, state.failure == nil else { return [] }
+            state.failure = error
+            let waiting = state.waiters
+            state.waiters = []
+            return waiting
+        }
+        for waiter in waiters { waiter.fail(error) }
+    }
+
+    func awaitSettled(on eventLoop: EventLoop) async throws -> Settled {
+        let promise: EventLoopPromise<Void>? = try state.withLock { state in
+            if let failure = state.failure { throw failure }
+            if state.settled != nil { return nil }
+            let waiter = eventLoop.makePromise(of: Void.self)
+            state.waiters.append(waiter)
+            return waiter
+        }
+        if let promise { try await promise.futureResult.get() }
+        return try state.withLock { state in
+            if let settled = state.settled { return settled }
+            throw state.failure ?? ForwarderError.connectionClosed
+        }
+    }
+}
+
 /// Tracks the connection an in-flight exchange is running on, so the stream's
 /// `onTermination` can close it when the consumer walks away mid-response — and,
 /// just as importantly, so it does **not** close one that has already been handed
 /// back to the pool.
 private final class ActiveUpstreamBox: Sendable {
     private struct State {
-        var connection: UpstreamConnection?
+        var closer: (@Sendable () -> Void)?
         var terminated = false
     }
 
     private let state = Mutex(State())
 
-    /// Take ownership of `connection` for the duration of an exchange. Returns
-    /// false if the consumer already terminated, in which case there is nothing
-    /// left to run and the caller closes it.
-    func adopt(_ connection: UpstreamConnection) -> Bool {
+    /// Take ownership of whatever this exchange is running on, for its duration.
+    /// Returns false if the consumer already terminated, in which case there is
+    /// nothing left to run and the caller closes it.
+    ///
+    /// A closure rather than an `UpstreamConnection`, because under HTTP/2 the thing
+    /// to close when the consumer walks away is the **stream**, not the connection —
+    /// closing the latter would abort every other exchange sharing it.
+    func adopt(closing closer: @escaping @Sendable () -> Void) -> Bool {
         state.withLock { state in
             guard !state.terminated else { return false }
-            state.connection = connection
+            state.closer = closer
             return true
         }
     }
 
-    /// The exchange finished; whatever happens to the connection now is the pool's
-    /// decision, not this box's.
+    /// The exchange finished; whatever happens now is the pool's decision, not this
+    /// box's.
     func clear() {
-        state.withLock { $0.connection = nil }
+        state.withLock { $0.closer = nil }
     }
 
     func terminate() {
-        let connection = state.withLock { state -> UpstreamConnection? in
+        let closer = state.withLock { state -> (@Sendable () -> Void)? in
             state.terminated = true
-            let current = state.connection
-            state.connection = nil
+            let current = state.closer
+            state.closer = nil
             return current
         }
-        connection?.close()
+        closer?()
     }
 }
 
@@ -602,10 +1073,19 @@ private final class UpstreamResponseRelay: ChannelInboundHandler, Sendable {
 
     private let slot: UpstreamExchangeSlot
     private let notifier: UpstreamInactiveNotifier
+    /// What Loom's upstream hop actually spoke, when the head cannot say.
+    ///
+    /// On an h2 stream `HTTP2FramePayloadToHTTP1ClientCodec` synthesizes an
+    /// **HTTP/1.1** head — it is converting, not reporting — so deriving the version
+    /// there records the shape of the conversion and not the connection. Exactly the
+    /// mistake `CapturedRequest.httpVersion` documents on the client side, one leg
+    /// over: it is *stated* by whoever installed the stack, never read off the head.
+    private let httpVersionOverride: String?
 
-    init(slot: UpstreamExchangeSlot, notifier: UpstreamInactiveNotifier) {
+    init(slot: UpstreamExchangeSlot, notifier: UpstreamInactiveNotifier, httpVersion: String? = nil) {
         self.slot = slot
         self.notifier = notifier
+        self.httpVersionOverride = httpVersion
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -614,14 +1094,17 @@ private final class UpstreamResponseRelay: ChannelInboundHandler, Sendable {
             // Body is decompressed by the decompressor, so Content-Encoding/Length
             // no longer describe the bytes — strip them (the client writer re-frames).
             let headers = HTTPUtil.sanitizeDecodedResponseHeaders(HTTPUtil.headerPairs(head.headers))
-            let version = "HTTP/\(head.version.major).\(head.version.minor)"
+            let version = httpVersionOverride ?? "HTTP/\(head.version.major).\(head.version.minor)"
             slot.receivedHead(head, headers: headers, httpVersion: version)
         case var .body(chunk):
             if let bytes = chunk.readBytes(length: chunk.readableBytes) {
                 slot.receivedBody(Data(bytes))
             }
-        case .end:
-            slot.completeSuccessfully()
+        case let .end(trailers):
+            // `.end(nil)` is an ordinary response with no trailer section, and
+            // `.end(headers)` is one that had one — the two must not collapse, or a
+            // gRPC call's `grpc-status` disappears between the origin and the client.
+            slot.completeSuccessfully(trailers: trailers.map(HTTPUtil.headerPairs))
         }
     }
 
