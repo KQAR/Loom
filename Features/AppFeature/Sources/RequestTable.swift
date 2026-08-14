@@ -1120,6 +1120,15 @@ struct RequestTable: NSViewRepresentable {
             // and it is the one that turns it into an exchange next time.
             if case .tunnelled = FlowEncryption(flow) {
                 menu.addItem(item("Decrypt \(host)", image: "lock.open") { [onDecryptHost] in onDecryptHost(host) })
+                // The whole project in one click. A service is usually several
+                // sub-domains of one apex — five of them in the session that drove this
+                // — and decrypting them one at a time is five clicks *and* five re-runs
+                // of the client, since each only takes effect on the next connection.
+                if let wildcard = Self.parentWildcard(for: host) {
+                    menu.addItem(item("Decrypt \(wildcard)", image: "lock.open") { [onDecryptHost] in
+                        onDecryptHost(wildcard)
+                    })
+                }
                 menu.addItem(.separator())
                 menu.addItem(item("Copy Host") { MainView.copy(host) })
                 return
@@ -1158,6 +1167,33 @@ struct RequestTable: NSViewRepresentable {
                 menu.addItem(.separator())
                 menu.addItem(item("Stop Decrypting \(host)") { [onStopDecrypting] in onStopDecrypting(host) })
             }
+        }
+
+        /// One level up from a host, as a glob — `api.test.example.com` →
+        /// `*.test.example.com`. `nil` when there is no safe answer.
+        ///
+        /// **One label, not "the registrable domain".** Getting to `*.example.com` from
+        /// `api.test.example.com` needs a public-suffix list, and guessing it with "keep
+        /// the last two labels" answers `*.co.uk` for `shop.example.co.uk` — a glob that
+        /// decrypts a country. Dropping exactly one label can only ever widen the scope
+        /// by one level, which is the same thing the operator would have typed.
+        ///
+        /// Two hosts still have no answer: fewer than three labels (`example.com` would
+        /// give `*.com`) and anything that looks like an IP address (`10.0.12.93` would
+        /// give `*.0.12.93`, which matches nothing and reads like it should).
+        ///
+        /// The remaining hazard — a three-label host on a multi-label suffix, where
+        /// `example.co.uk` does yield `*.co.uk` — is answered by the menu *item*, which
+        /// spells the glob out. The operator reads what they are about to decrypt
+        /// before clicking it, and the write is one `Stop Decrypting` from being undone.
+        static func parentWildcard(for host: String) -> String? {
+            let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+            guard labels.count >= 3, labels.allSatisfy({ !$0.isEmpty }) else { return nil }
+            // An IPv4 address has the shape but none of the meaning. IPv6 never reaches
+            // here — it has no dots — and neither does a host with a port, which the
+            // caller has already stripped.
+            guard labels.contains(where: { !$0.allSatisfy(\.isNumber) }) else { return nil }
+            return "*." + labels.dropFirst().joined(separator: ".")
         }
 
         /// Whether this exchange only exists because Loom decrypted it — i.e. whether

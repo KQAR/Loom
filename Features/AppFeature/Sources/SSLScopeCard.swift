@@ -276,9 +276,24 @@ struct SSLScopeCard: View {
     }
 
     private var addGlobField: some View {
-        HStack(spacing: LoomTheme.Space.sm) {
+        HStack(spacing: LoomTheme.Space.xs) {
+            // Ahead of the field, for the same reason the find bar's scope picker is:
+            // it qualifies what you are about to type, so the line reads "Decrypt
+            // *.corp.example" left to right. The field used to write `exclude`
+            // unconditionally — correct under the old wide scope, where an include
+            // entry did nothing, and exactly backwards under a whitelist.
+            LoomPicker(
+                selection: Binding(
+                    get: { store.sslScopeDraftDecrypts },
+                    set: { store.send(.sslScopeDraftTargetChanged($0)) }
+                ),
+                items: [(true, "Decrypt"), (false, "Pass through")],
+                font: .callout
+            )
+            .accessibilityLabel("What this glob does")
+
             TextField(
-                "Pass through a host or glob, e.g. *.corp.example",
+                "Host or glob, e.g. *.corp.example",
                 text: Binding(
                     get: { store.sslScopeDraft },
                     set: { store.send(.sslScopeDraftChanged($0)) }
@@ -286,13 +301,17 @@ struct SSLScopeCard: View {
             )
             .textFieldStyle(.roundedBorder)
             .controlSize(.small)
-            .onSubmit { store.send(.addExcludeGlobTapped) }
+            .onSubmit { submit() }
 
-            Button("Add") { store.send(.addExcludeGlobTapped) }
+            Button("Add") { submit() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
                 .disabled(store.sslScopeDraft.trimmingCharacters(in: .whitespaces).isEmpty)
         }
+    }
+
+    private func submit() {
+        store.send(store.sslScopeDraftDecrypts ? .addIncludeGlobTapped : .addExcludeGlobTapped)
     }
 
     private func sectionTitle(_ text: String) -> some View {

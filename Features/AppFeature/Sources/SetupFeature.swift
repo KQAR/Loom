@@ -57,6 +57,13 @@ public struct SetupFeature: Sendable {
         public var sslScopeExpanded = false
         /// A glob the human is typing into the scope editor.
         public var sslScopeDraft = ""
+        /// Which list that glob joins. **Decrypt is the default**, which is the whole
+        /// difference the whitelist made: under the old wide scope an include entry was
+        /// a no-op and this field could only mean "pass through", so it wrote `exclude`
+        /// unconditionally. Now the primary write is the other one, and typing
+        /// `*.corp.example` is how a project's whole domain gets read in one go rather
+        /// than one sub-domain per click.
+        public var sslScopeDraftDecrypts = true
         public var sslScopeMessage: String?
         /// Whether the include/exclude lists are open inside the card.
         ///
@@ -244,6 +251,12 @@ public struct SetupFeature: Sendable {
         /// *out* (a corporate mirror, a pinned host, an API called by a Python CLI).
         /// Adding to `include` is still reachable, from a tunnelled row's Decrypt.
         case addExcludeGlobTapped
+        /// Add the typed glob to `include`. Separate action from its opposite rather
+        /// than a parameter: they are different writes with different failure modes
+        /// (an include can be shadowed by an exclude; an exclude can't be shadowed by
+        /// anything), and each says so in its own message.
+        case addIncludeGlobTapped
+        case sslScopeDraftTargetChanged(Bool)
         case removeIncludeGlobTapped(String)
         case removeExcludeGlobTapped(String)
         case exportCATapped
@@ -532,6 +545,29 @@ public struct SetupFeature: Sendable {
                 state.sslScopeDraft = text
                 return .none
 
+            case let .sslScopeDraftTargetChanged(decrypts):
+                state.sslScopeDraftDecrypts = decrypts
+                return .none
+
+            case .addIncludeGlobTapped:
+                let glob = state.sslScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                state.sslScopeDraft = ""
+                guard !glob.isEmpty else { return .none }
+                var next = state.sslScope
+                // Turning the switch on is part of the ask: a glob added while
+                // interception is off is a setting that silently does nothing.
+                next.enabled = true
+                guard !next.include.contains(glob) else {
+                    state.sslScopeMessage = "\(glob) is already decrypted."
+                    return .none
+                }
+                next.include.append(glob)
+                // The mirror of the exclude path below: a stale exclude for the same
+                // pattern would beat the entry just added, so the two lists would
+                // disagree about a host the human just asked to read.
+                next.exclude.removeAll { $0.lowercased() == glob.lowercased() }
+                return persist(next, into: &state, message: Self.addIncludeMessage(glob: glob, scope: next))
+
             case .addExcludeGlobTapped:
                 let glob = state.sslScopeDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 state.sslScopeDraft = ""
@@ -714,6 +750,18 @@ public struct SetupFeature: Sendable {
         HTTPS is now decrypted per host: the previous “decrypt everything” default was \
         dropped. Traffic is still listed under Not Decrypted — pick a host there to read it.
         """
+    }
+
+    /// What a typed include glob will and won't cover.
+    ///
+    /// The one case worth a sentence is a wildcard `exclude` that still shadows it —
+    /// the same trap `intercept_host` reports as `effective: false`. The include list
+    /// will show the glob, which reads as done, while the traffic stays unread.
+    static func addIncludeMessage(glob: String, scope: SSLScope) -> String {
+        if let shadow = scope.exclude.first(where: { Glob.matches($0, glob) }) {
+            return "\(glob) is included but still passed through — “\(shadow)” excludes it."
+        }
+        return "Decrypting \(glob). Clients have to reconnect before it takes effect."
     }
 
     /// What stopping achieved. The `shadowedByInclude` case is why this is prose:

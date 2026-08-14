@@ -271,4 +271,27 @@ import Testing
         #expect(FlowEncryption(Fixtures.flow(url: "HTTPS://api.test/v1")).glyph == "lock.open.fill")
         #expect(FlowEncryption(Fixtures.flow(method: "connect", url: "https://a.test:443")).glyph == "lock.fill")
     }
+
+    // MARK: The parent-wildcard menu item
+
+    /// One label up, never "the registrable domain" — that needs a public-suffix list,
+    /// and guessing it with "keep the last two labels" answers `*.co.uk` for
+    /// `shop.example.co.uk`.
+    @Test func theParentWildcardWidensByExactlyOneLevel() {
+        #expect(RequestTable.Coordinator.parentWildcard(for: "test-mex-ec-api.fintopia.tech") == "*.fintopia.tech")
+        #expect(RequestTable.Coordinator.parentWildcard(for: "api.test.example.com") == "*.test.example.com")
+        #expect(RequestTable.Coordinator.parentWildcard(for: "shop.example.co.uk") == "*.example.co.uk")
+    }
+
+    /// The two hosts with no safe answer. `example.com` would widen to `*.com`, and an
+    /// IPv4 address has the shape of a domain and none of the meaning.
+    @Test func theParentWildcardRefusesWhereItWouldBeWrong() {
+        #expect(RequestTable.Coordinator.parentWildcard(for: "example.com") == nil)
+        #expect(RequestTable.Coordinator.parentWildcard(for: "localhost") == nil)
+        #expect(RequestTable.Coordinator.parentWildcard(for: "10.0.12.93") == nil)
+        #expect(RequestTable.Coordinator.parentWildcard(for: "127.0.0.1") == nil)
+        // Malformed rather than dangerous, but a glob with an empty label matches
+        // nothing and would sit in the list looking like it works.
+        #expect(RequestTable.Coordinator.parentWildcard(for: "a..b.com") == nil)
+    }
 }

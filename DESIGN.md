@@ -544,11 +544,15 @@ the only surface on which an agent's scope write becomes visible to the human as
 — the main window shows the same origins one CONNECT row at a time, with the Decrypted
 column and a right-click Decrypt (see § main-window). Opened, the lists are capped at 10 and drop from the *front*:
 newest is written last, so the end is what someone who just changed something is looking
-for. The single text field adds to the **pass-through** list, which under a whitelist is the
-narrower write — it punches a hole in a glob someone put in the include list — and
-**Decrypt** on a tunnelled row is how the include list grows. The include list itself is
-shown only when it says something a reader can't already infer (i.e. not while it is the
-bare `*`).
+for. The text field is preceded by a `{components.dropdown}` choosing what the glob does —
+**Decrypt** (default) or **Pass through** — and reads left to right as
+`Decrypt *.corp.example`, the same construction as the find bar's scope picker. Decrypt
+leads because under a whitelist it is the primary write: one glob covers a project's
+whole domain, where the per-row Decrypt is one click *and* one client re-run per
+sub-domain. (The field wrote `exclude` unconditionally before 0.0.27, which was right
+when an include entry was a no-op against a wildcard scope and is exactly backwards now.)
+The include list itself is shown only when it says something a reader can't already infer
+(i.e. not while it is the bare `*`).
 
 Rows marked **conditional** are absent rather than empty (tiles never are — a switch that
 vanishes is a switch you cannot turn on): Breakpoints appears only

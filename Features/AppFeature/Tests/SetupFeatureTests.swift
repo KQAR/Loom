@@ -431,6 +431,52 @@ import Testing
         await store.receive(\.tunneledHostsLoaded)
     }
 
+    /// The field's primary write since the scope became a whitelist: one glob covers a
+    /// project's whole domain, where Decrypt-per-row is one click *and* one client
+    /// re-run per sub-domain.
+    @Test func test_addIncludeGlob_decryptsTheWholeDomain_andTurnsInterceptionOn() async {
+        let expected = SSLScope(enabled: true, include: ["*.fintopia.tech"], exclude: [])
+        var state = SetupFeature.State()
+        state.sslScope = SSLScope(enabled: false)
+        state.sslScopeDraft = "  *.fintopia.tech  "
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in }
+            $0.proxyClient.sslScope = { expected }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        await store.send(.addIncludeGlobTapped) {
+            $0.sslScopeDraft = ""
+            $0.sslScope = expected
+            // A glob added while interception is off is a setting that does nothing.
+            $0.sslEnabled = true
+            $0.sslScopeMessage = "Decrypting *.fintopia.tech. Clients have to reconnect before it takes effect."
+        }
+        await store.receive(\.sslScopeLoaded)
+        await store.receive(\.tunneledHostsLoaded)
+    }
+
+    /// And it says so when the write cannot work: an exclude glob outranks any include,
+    /// so the list would show the entry while the traffic stayed unread — the same trap
+    /// `intercept_host` reports as `effective: false`.
+    @Test func test_addIncludeGlob_reportsAnExcludeThatStillShadowsIt() async {
+        var state = SetupFeature.State()
+        state.sslEnabled = true
+        state.sslScope = SSLScope(enabled: true, include: [], exclude: ["*.tech"])
+        state.sslScopeDraft = "*.fintopia.tech"
+        let store = TestStore(initialState: state) {
+            SetupFeature()
+        } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in }
+            $0.proxyClient.sslScope = { SSLScope(enabled: true, include: ["*.fintopia.tech"], exclude: ["*.tech"]) }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        store.exhaustivity = .off
+        await store.send(.addIncludeGlobTapped)
+        #expect(store.state.sslScopeMessage?.contains("still passed through") == true)
+    }
+
     /// Removing a pass-through is how a host someone carved out becomes readable again.
     @Test func test_removeExcludeGlob_startsDecryptingTheHostAgain() async {
         let expected = SSLScope(enabled: true, include: ["*"], exclude: [])
