@@ -141,7 +141,7 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
             if !reported {
                 reported = true
                 let detail = Self.describe(error, goAwayCode: goAway.code)
-                downgradeIfHPACKRefusedTheFirstHeaderBlock()
+                downgradeIfHPACKRefusedTheFirstHeaderBlock(error)
                 log.record(host: host, port: port, reason: .protocolError, detail: detail)
                 // And as a row, for the same reason `ClientTLSFailureReporter`
                 // records one: the console holds the aggregate, the request table is
@@ -170,22 +170,29 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
     /// Stop offering h2 to this host, for this session.
     ///
     /// **Three conditions, and each one narrows a way this could fire wrongly.** The
-    /// GOAWAY code must be `compressionError` — a frame-size or protocol violation is
-    /// the client's bug and hiding it behind a downgrade would be Loom lying about
-    /// whose fault it is. No *stream* frame may have been delivered, so this is the
-    /// connection's first header block, which is the only moment the pre-ACK limit
-    /// applies (see `deliveredAStreamFrame` — counting connection-level frames too
-    /// made this never fire). And it
-    /// runs once: `downgrade` reports whether it changed anything, and only then is the
-    /// cached TLS context dropped, because that context is what still advertises `h2`.
+    /// error must be the pre-ACK HPACK limit — a GOAWAY `compressionError` (how
+    /// NIOHTTP2 reports `MaxHeaderListSizeViolation` after wrapping it as
+    /// `unableToParseFrame()`) **or** `ExcessivelyLargeHeaderBlock` itself, which
+    /// the decoder raises before that wrap and which never carries a GOAWAY code.
+    /// A frame-size or protocol violation is the client's bug and hiding it behind
+    /// a downgrade would be Loom lying about whose fault it is. No *stream* frame
+    /// may have been delivered, so this is the connection's first header block,
+    /// which is the only moment the pre-ACK limit applies (see
+    /// `deliveredAStreamFrame` — counting connection-level frames too made this
+    /// never fire). And it runs once: `downgrade` reports whether it changed
+    /// anything, and only then is the cached TLS context dropped, because that
+    /// context is what still advertises `h2`.
     ///
     /// What it costs is stated rather than hidden: the app now speaks HTTP/1.1 to Loom,
     /// so it loses multiplexing and every flow on that host records `HTTP/1.1` as the
     /// client protocol. That is true of what happened and false about what the client
     /// would have done without Loom in the path, which is why the flows carry
     /// `FlowTransport.clientProtocolDowngraded` and the log says so here.
-    private func downgradeIfHPACKRefusedTheFirstHeaderBlock() {
-        guard goAway.code == .compressionError, !deliveredAStreamFrame else { return }
+    private func downgradeIfHPACKRefusedTheFirstHeaderBlock(_ error: Error) {
+        guard !deliveredAStreamFrame else { return }
+        let isHPACKLimit = goAway.code == .compressionError
+            || error is NIOHTTP2Errors.ExcessivelyLargeHeaderBlock
+        guard isHPACKLimit else { return }
         guard downgrades.downgrade(host: host) else { return }
         certificateAuthority?.invalidateContext(for: host)
         Log.tls.error("""

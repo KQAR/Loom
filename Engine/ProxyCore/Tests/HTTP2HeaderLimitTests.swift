@@ -36,7 +36,9 @@ struct HTTP2HeaderLimitTests {
         // reaching it must land in the one surface that answers "why is this host
         // missing from my capture", carrying what the codec actually said.
         let log = TunneledHostLog()
-        let reporter = HTTP2ConnectionErrorReporter(host: "api.example.test", port: 443, log: log)
+        let reporter = HTTP2ConnectionErrorReporter(
+            host: "api.example.test", port: 443, log: log, downgrades: HTTP2DowngradeRegistry()
+        )
         let channel = EmbeddedChannel()
         try channel.pipeline.syncOperations.addHandler(reporter)
 
@@ -60,7 +62,9 @@ struct HTTP2HeaderLimitTests {
         let log = TunneledHostLog()
         let channel = EmbeddedChannel()
         try channel.pipeline.syncOperations.addHandler(
-            HTTP2ConnectionErrorReporter(host: "api.example.test", port: 443, log: log)
+            HTTP2ConnectionErrorReporter(
+                host: "api.example.test", port: 443, log: log, downgrades: HTTP2DowngradeRegistry()
+            )
         )
         try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
 
@@ -233,7 +237,10 @@ struct FailedInterceptionFlowTests {
         let store = FlowStore()
         let channel = EmbeddedChannel()
         try channel.pipeline.syncOperations.addHandler(
-            HTTP2ConnectionErrorReporter(host: "h2.example.test", port: 443, log: log, store: store)
+            HTTP2ConnectionErrorReporter(
+                host: "h2.example.test", port: 443, log: log, store: store,
+                downgrades: HTTP2DowngradeRegistry()
+            )
         )
 
         channel.pipeline.fireErrorCaught(NIOHTTP2Errors.excessivelyLargeHeaderBlock())
@@ -475,7 +482,9 @@ struct HTTP2GoAwayCodeTests {
         let log = TunneledHostLog()
         let channel = EmbeddedChannel()
         try channel.pipeline.syncOperations.addHandler(
-            HTTP2ConnectionErrorReporter(host: "api.example.test", port: 443, log: log)
+            HTTP2ConnectionErrorReporter(
+                host: "api.example.test", port: 443, log: log, downgrades: HTTP2DowngradeRegistry()
+            )
         )
         channel.pipeline.fireErrorCaught(NIOHTTP2Errors.excessivelyLargeHeaderBlock())
         let detail = try #require(log.snapshot().hosts.first?.detail)
@@ -572,6 +581,22 @@ struct HTTP2DowngradeTests {
             #expect(registry.isDowngraded(host: "api.example.test") == false, "\(code)")
             _ = try? channel.finish()
         }
+    }
+
+    /// The decoder raises `ExcessivelyLargeHeaderBlock` *before* wrapping it as
+    /// `unableToParseFrame()` with a GOAWAY code. Requiring the code alone missed
+    /// this path: the typed error is the same HPACK limit, and a first-block
+    /// refusal with no GOAWAY still has to stop offering h2.
+    @Test func anExcessivelyLargeHeaderBlockWithoutAGOAWAYCodeStillDowngrades() throws {
+        let registry = HTTP2DowngradeRegistry()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandler(
+            reporter(host: "api.example.test", registry: registry, goAway: HTTP2GoAwayCode())
+        )
+
+        channel.pipeline.fireErrorCaught(NIOHTTP2Errors.excessivelyLargeHeaderBlock())
+        #expect(registry.isDowngraded(host: "api.example.test"))
+        _ = try? channel.finish()
     }
 
     /// The downgrade has to reach the *capture*, not just the negotiation: with the

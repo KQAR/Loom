@@ -286,15 +286,17 @@ actor FlowStore {
     /// `force` bypasses a capture pause — explicit actions like replay always
     /// record their result.
     func upsert(_ flow: Flow, force: Bool = false) {
-        // **The one choke point every flow enters through**, which is why the ignore
-        // list is applied here rather than at the dozen sites that produce one: a
+        // **The one choke point every flow enters through**, which is why the capture
+        // stage is applied here rather than at the dozen sites that produce one: a
         // content exchange, a relayed `CONNECT`, a failed interception and a replay
         // all arrive through this call, and a producer that skipped the check would be
-        // an ignored host that shows up anyway from one path only.
-        if let rules, let dropped = RuleEngine.captureDropRule(state: rules.snapshot(), flow: flow) {
-            noteDropped(flow.id, by: dropped.id)
-            return
-        }
+        // a dropped host that shows up anyway from one path only.
+        //
+        // Two things it must not do, both the same shape as pause (`recording`):
+        // an existing id is an in-flight exchange whose completion still has to land
+        // (a drop rule added mid-request, or `sourceApp` backfill that newly matches,
+        // must not freeze a pending row forever), and `force` is an explicit action
+        // (replay, HAR import) that records even when a rule would drop live traffic.
         var flow = flow
         if let idx = index(of: flow.id) {
             // A completed exchange never regresses to pending. The head-parsed
@@ -327,6 +329,11 @@ actor FlowStore {
             // those bytes are reclaimable again.
             if idx < slimCursor, bodySize(of: flow) > 0 { slimCursor = idx }
         } else {
+            if !force, let rules,
+               let dropped = RuleEngine.captureDropRule(state: rules.snapshot(), flow: flow) {
+                noteDropped(flow.id, by: dropped.id)
+                return
+            }
             guard recording || force else { return }
             positions[flow.id] = droppedFromFront + flows.count
             flows.append(flow)
@@ -653,6 +660,10 @@ actor FlowStore {
         positions.removeAll()
         aggregates.removeAll()
         droppedFromFront = 0
+        droppedFlowCount = 0
+        droppedCountsByRule.removeAll()
+        recentlyDropped.removeAll()
+        recentlyDroppedSet.removeAll()
         bodyBytes = 0
         slimCursor = 0
         connectedLANIPs.removeAll()

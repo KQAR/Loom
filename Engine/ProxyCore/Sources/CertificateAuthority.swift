@@ -144,9 +144,14 @@ final class CertificateAuthority: Sendable {
     /// A server-side `NIOSSLContext` presenting a freshly-minted (cached) leaf
     /// for `host`, chained to the root CA.
     func serverContext(for host: String) throws -> NIOSSLContext {
-        try cache.withLock { cache in
-            if let cached = cache.contexts[host] {
-                cache.touch(host)
+        // DNS is case-insensitive and nothing normalizes what a client sent, so
+        // the cache key is folded. Leaving it as the raw host meant a second
+        // CONNECT with different case kept a stale context that still advertised
+        // `h2` after a downgrade had invalidated the folded name.
+        let key = host.lowercased()
+        return try cache.withLock { cache in
+            if let cached = cache.contexts[key] {
+                cache.touch(key)
                 return cached
             }
 
@@ -169,8 +174,8 @@ final class CertificateAuthority: Sendable {
             config.applicationProtocols =
                 downgrades.isDowngraded(host: host) ? ["http/1.1"] : ["h2", "http/1.1"]
             let context = try NIOSSLContext(configuration: config)
-            cache.contexts[host] = context
-            cache.order.append(host)
+            cache.contexts[key] = context
+            cache.order.append(key)
             cache.evict(capacity: Self.contextCacheCapacity)
             return context
         }
@@ -184,9 +189,10 @@ final class CertificateAuthority: Sendable {
     /// the same stale-context trap `ClientCertificateConfig` documents for an edited
     /// identity, and here it would make the workaround silently not work.
     func invalidateContext(for host: String) {
+        let key = host.lowercased()
         cache.withLock { cache in
-            cache.contexts.removeValue(forKey: host)
-            cache.order.removeAll { $0 == host }
+            cache.contexts.removeValue(forKey: key)
+            cache.order.removeAll { $0 == key }
         }
     }
 

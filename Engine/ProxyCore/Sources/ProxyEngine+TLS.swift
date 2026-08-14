@@ -93,6 +93,12 @@ extension ProxyEngine {
     public func setSSLScope(_ scope: SSLScope) async {
         _ = ensureCA() // make sure a CA exists before we start intercepting
         config.update(scope)
+        // Same reason `interceptHost` closes: a scope write that only reaches new
+        // connections leaves a pooled client on the tunnel it already holds, and
+        // the operator watches nothing happen with the setting already correct.
+        // Only tunnels the *resulting* scope would decrypt — a host still
+        // excluded reconnects into another relay.
+        RelayedTunnelRegistry.shared.closeTunnels(interceptedBy: scope)
     }
 
     public func tunneledHosts() async -> TunneledHostReport {

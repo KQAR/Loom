@@ -687,9 +687,6 @@ public struct SetupFeature: Sendable {
         }
     }
 
-    /// Write the ignore list and re-read it, for the same reason the scope's writes
-    /// do: the other writer is an agent (`set_ignored_hosts`), so a surface that
-    /// predicted the result would disagree with the engine after a concurrent write.
     /// What a typed include glob will and won't cover.
     ///
     /// The one case worth a sentence is a wildcard `exclude` that still shadows it —
@@ -699,7 +696,7 @@ public struct SetupFeature: Sendable {
         if let shadow = scope.exclude.first(where: { Glob.matches($0, glob) }) {
             return "\(glob) is included but still passed through — “\(shadow)” excludes it."
         }
-        return "Decrypting \(glob). Takes effect on the client's next connection — re-run it."
+        return "Decrypting \(glob). Open relayed connections matching this scope are closed, so the client will reconnect — trigger the request again."
     }
 
     /// What a carve-out achieved, and — the load-bearing half — what it did *not*.

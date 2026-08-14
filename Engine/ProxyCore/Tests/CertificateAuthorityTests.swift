@@ -45,6 +45,19 @@ import LoomSharedModels
         #expect(throws: Never.self) { try ca.serverContext(for: "127.0.0.1") }
     }
 
+    @Test func serverContext_cacheKeyIsCaseInsensitive() throws {
+        // DNS is case-insensitive and nothing normalizes the host a client sent.
+        // A second CONNECT with different case must not keep a stale context that
+        // still advertises `h2` after a downgrade invalidated the folded name.
+        let ca = try CertificateAuthority.loadOrGenerate(store: InMemoryCAStore())
+        let a = try ca.serverContext(for: "API.Example.TEST")
+        let b = try ca.serverContext(for: "api.example.test")
+        #expect(a === b)
+        #expect(ca.cachedContextCount == 1)
+        ca.invalidateContext(for: "Api.Example.Test")
+        #expect(ca.cachedContextCount == 0)
+    }
+
     @Test func serverContext_cacheIsBoundedAndEvictsLeastRecentlyUsed() throws {
         // Regression: contextCache was the one collection in the engine with no
         // cap, so a long session across many distinct MITM'd hosts grew live
@@ -247,5 +260,24 @@ struct InterceptHostClosesTunnelsTests {
                 "a scope write that also ends a live connection has to say so")
         channel.embeddedEventLoop.run()
         #expect(watch.closed)
+    }
+
+    @Test func setSSLScopeClosesTunnelsTheNewScopeWouldDecrypt() async {
+        let engine = ProxyEngine(persistFlows: false)
+        defer { RelayedTunnelRegistry.shared.reset() }
+        RelayedTunnelRegistry.shared.reset()
+        let doomed = EmbeddedChannel(), spared = EmbeddedChannel()
+        let doomedWatch = ChannelCloseWatch(doomed), sparedWatch = ChannelCloseWatch(spared)
+        RelayedTunnelRegistry.shared.register(host: "api.example.test", port: 443, client: doomed)
+        RelayedTunnelRegistry.shared.register(host: "other.example.test", port: 443, client: spared)
+
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["api.example.test"]))
+
+        doomed.embeddedEventLoop.run()
+        spared.embeddedEventLoop.run()
+        #expect(doomedWatch.closed, "a host the new scope decrypts has to reconnect")
+        #expect(sparedWatch.closed == false, "a host still unnamed stays on its tunnel")
+        _ = try? doomed.finish()
+        _ = try? spared.finish()
     }
 }

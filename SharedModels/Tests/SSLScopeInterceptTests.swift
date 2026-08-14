@@ -20,9 +20,9 @@ import Testing
 
     @Test func emptyInclude_isNotInScope_ratherThanDisabled() {
         let scope = SSLScope(enabled: true)
-        // Not the shipping default (that is `["*"]`), but reachable — someone removed
-        // every include entry. The distinction is the point: one is a switch, the other
-        // is a list, and they need different words on every surface.
+        // Shipping default: `include` starts empty and nothing is decrypted until
+        // named. The distinction is the point: one is a switch, the other is a
+        // list, and they need different words on every surface.
         #expect(scope.passthroughReason(host: "api.example.com") == .notInScope)
     }
 
@@ -174,6 +174,33 @@ import Testing
         let second = scope.stopIntercepting(host: "api.corp")
         #expect(second.addedExclude == false)
         #expect(scope.exclude == ["api.corp"])
+    }
+
+    /// The row menu's "Pass Through `*.parent`" hands a glob, not a hostname.
+    /// Matching that string as a hostname never finds the literal include entries
+    /// it covers, so those have to be dropped explicitly.
+    @Test func stopIntercepting_aGlobDropsTheLiteralHostsItCovers() {
+        var scope = SSLScope(enabled: true, include: ["api.example.com", "cdn.example.com", "other.test"])
+        let outcome = scope.stopIntercepting(host: "*.example.com")
+        #expect(Set(outcome.removedIncludes) == ["api.example.com", "cdn.example.com"])
+        #expect(outcome.addedExclude == false)
+        #expect(scope.include == ["other.test"])
+        #expect(!scope.shouldIntercept(host: "api.example.com"))
+        #expect(scope.shouldIntercept(host: "other.test"))
+    }
+
+    /// A wider include glob still standing (`*`) is not this call's to narrow, so
+    /// the glob argument becomes the exclude that punches the hole.
+    @Test func stopIntercepting_aGlobStillCarvesOutOfAWiderInclude() {
+        var scope = SSLScope(enabled: true, include: ["*", "api.example.com"])
+        let outcome = scope.stopIntercepting(host: "*.example.com")
+        #expect(outcome.removedIncludes == ["api.example.com"])
+        #expect(outcome.shadowedByInclude == "*")
+        #expect(outcome.addedExclude)
+        #expect(scope.include == ["*"])
+        #expect(scope.exclude == ["*.example.com"])
+        #expect(!scope.shouldIntercept(host: "api.example.com"))
+        #expect(scope.shouldIntercept(host: "other.test"))
     }
 
     /// And it round-trips with `intercept`, which is the loop a human clicking Decrypt

@@ -59,7 +59,9 @@ enum RuleEngine {
         guard let url = URL(string: flow.request.url) else { return nil }
         var context = RequestMatchContext(method: flow.request.method, url: url.absoluteString)
         let origin = RequestOrigin(app: flow.sourceApp, device: flow.sourceDevice)
-        for rule in state.rules where rule.isEnabled && rule.actions.dropFromCapture {
+        for rule in state.rules where rule.isEnabled && state.isGroupEnabled(rule.group)
+            && rule.actions.dropFromCapture
+        {
             if rule.match.matches(&context, origin: origin) { return rule }
         }
         return nil
@@ -78,7 +80,7 @@ enum RuleEngine {
         // every enabled rule before this filter touched it — on every exchange, on the
         // event loop, to produce a result that is usually empty.
         var matched: [TrafficRule] = []
-        for rule in state.rules where rule.isEnabled {
+        for rule in state.rules where rule.isEnabled && state.isGroupEnabled(rule.group) {
             if rule.match.matches(&context, origin: origin) { matched.append(rule) }
         }
         return matched

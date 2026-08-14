@@ -769,7 +769,14 @@ extension MCPToolExecutor {
             deliberate setting rather than a default, and it breaks any client on the machine \
             that doesn't trust Loom's CA. Prefer `intercept_host` for one host: it adds rather \
             than replaces, and can't lose a concurrent edit from the console. `exclude` is only \
-            needed to punch a hole in a glob you put in `include`. This is a write action.
+            needed to punch a hole in a glob you put in `include`.
+
+            Open relayed tunnels that the resulting scope would decrypt are closed, so a pooled \
+            client reconnects into an intercepted connection rather than staying opaque for the \
+            life of the socket it already holds — without that, a `set_ssl_scope` write looks \
+            like it did nothing until the client's pool turns over. A request in flight on a \
+            closed connection is retried by the client or fails. A host the new scope would \
+            still pass through is left alone. This is a write action.
             """,
             inputSchema: .object([
                 "enabled": .boolean("Master switch for HTTPS interception."),

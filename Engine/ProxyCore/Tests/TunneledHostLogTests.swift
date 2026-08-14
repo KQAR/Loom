@@ -296,6 +296,29 @@ struct RelayedTunnelRegistryTests {
         _ = try? outside.finish()
     }
 
+    /// `setSSLScope` cannot name one host, so closing is "every tunnel the new
+    /// scope would decrypt". A host still unnamed, or still excluded, reconnects
+    /// into another relay and must be left alone.
+    @Test func aScopeClosesOnlyTheTunnelsItWouldDecrypt() throws {
+        let registry = RelayedTunnelRegistry()
+        let decrypted = channel(), unread = channel(), excluded = channel()
+        let wd = ChannelCloseWatch(decrypted), wu = ChannelCloseWatch(unread), we = ChannelCloseWatch(excluded)
+        registry.register(host: "api.example.test", port: 443, client: decrypted)
+        registry.register(host: "other.example.test", port: 443, client: unread)
+        registry.register(host: "pinned.example.test", port: 443, client: excluded)
+
+        let scope = SSLScope(
+            enabled: true, include: ["api.example.test", "pinned.example.test"],
+            exclude: ["pinned.example.test"]
+        )
+        #expect(registry.closeTunnels(interceptedBy: scope) == 1)
+        #expect(isClosed(wd, decrypted))
+        #expect(isClosed(wu, unread) == false)
+        #expect(isClosed(we, excluded) == false, "an exclude still shadows it")
+        _ = try? unread.finish()
+        _ = try? excluded.finish()
+    }
+
     /// Matched case-insensitively, because DNS is and nothing normalizes what a client
     /// put in its `CONNECT` line.
     @Test func hostsMatchCaseInsensitively() throws {
