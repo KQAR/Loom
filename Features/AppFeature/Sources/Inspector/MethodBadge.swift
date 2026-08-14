@@ -3,14 +3,13 @@ import SwiftUI
 struct MethodBadge: View {
     let method: String
     var body: some View {
-        // `nil` for the safe methods, which is what gives them the neutral capsule —
-        // the same split the request table's Method column makes, from the same
-        // function, so the badge and the row cannot disagree about whether replaying
-        // this would change anything (`LoomTheme.methodColor`).
+        // `nil` for CONNECT, which is what gives it the neutral capsule — the
+        // same split the request table's Method column makes, from the same
+        // function, so the badge and the row cannot disagree (`LoomTheme.methodTint`).
         CapsuleBadge(
             text: method,
             font: .caption.monospaced().weight(.semibold),
-            tint: LoomTheme.mutatingMethodColor(method),
+            tint: LoomTheme.methodTint(method),
             hPadding: 7
         )
     }

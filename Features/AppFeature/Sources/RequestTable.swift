@@ -148,7 +148,7 @@ struct RequestTable: NSViewRepresentable {
             case .status: ""
             case .ordinal: "#"
             case .app: "App"
-            case .lock: "Decrypted"
+            case .lock: "SSL"
             case .proto: "Protocol"
             case .method: "Method"
             case .host: "Host"
@@ -161,20 +161,12 @@ struct RequestTable: NSViewRepresentable {
             switch self {
             case .status: 28
             case .ordinal: 30
-            case .app: 36
-            // Sized to its HEADER, not its content: the content is one glyph and would
-            // fit in 26, which is what it was while the header was blank. A column
-            // whose meaning is four states of one symbol needs the word — "Decrypted"
-            // at the header's 11pt is ~62pt plus the ~10pt of inset the header view
-            // adds. It is a fixed width for the same reason Status is: nothing here
-            // grows with the data, so giving it resize handles would only let someone
-            // hide it by accident.
-            case .lock: 72
+            case .app, .lock: 36
             // Sized to the widest token this column can hold — `HTTPS`, 5 mono glyphs —
             // not to the header word, which is the only thing here that wants more room.
             case .proto: 46
             case .method: 52
-            case .host: 110
+            case .host: 140
             // Lower than it reads: Path is the slack sink, so it is back above 300pt the
             // moment the window has room, and this floor only bites in a viewport
             // narrower than the columns want. It came down from 160 when the Decrypted
@@ -191,11 +183,10 @@ struct RequestTable: NSViewRepresentable {
             switch self {
             case .status: 28
             case .ordinal: 38
-            case .app: 36
-            case .lock: 72
+            case .app, .lock: 36
             case .proto: 52
             case .method: 62
-            case .host: 180
+            case .host: 220
             case .path: 320
             case .time: 70
             }
@@ -208,20 +199,19 @@ struct RequestTable: NSViewRepresentable {
             // point it took came off Path, the one column never wide enough.
             case .status: 28
             case .ordinal: 56
-            case .app: 36
-            case .lock: 72
+            case .app, .lock: 36
             case .proto: 64
             case .method: 90
-            case .host: 280
+            case .host: 340
             case .path: 10_000
             case .time: 100
             }
         }
 
         /// The name shown in the header's column menu. Status draws a glyph and has no
-        /// header text, so the menu is the one place it can be named; Decrypted used to
-        /// be the second such column and now carries its own header instead, because
-        /// four states of one symbol are not guessable from the symbol.
+        /// header text, so the menu is the one place it can be named; SSL used to be
+        /// the second such column (blank, then "Decrypted") and now carries its own
+        /// header, because four states of one symbol are not guessable from it.
         var menuTitle: String {
             switch self {
             case .status: "Status"
@@ -315,7 +305,7 @@ struct RequestTable: NSViewRepresentable {
 
     /// What Host takes out of the spare width when it is not the sink.
     ///
-    /// The two absorb in the ratio of their ideal widths (180 : 320), so a wider window reads
+    /// The two absorb in the ratio of their ideal widths (220 : 320), so a wider window reads
     /// as the same table with more room rather than as a different layout — and Host stops at
     /// its `maxWidth`, because a host name has a length and Path does not.
     static func hostWidth(slack: CGFloat) -> CGFloat {
@@ -1459,17 +1449,26 @@ enum FlowEncryption {
     /// other way round — a lock for "secure" — would put the reassuring glyph on the
     /// row whose contents are missing.
     ///
-    /// Only the failure is tinted, and that is the whole colour budget of this column.
-    /// A relayed tunnel was tinted too in an earlier version: the scope decrypts
-    /// everything by default, so a pass-through is a carve-out somebody made
-    /// deliberately, and orange on a configuration working as asked is how a colour
-    /// stops being read — which then costs the one row that needs it.
+    /// Two chromatic states: success-green when Loom read the exchange, warning
+    /// when it tried and the connection failed. A pass-through stays ink — that is
+    /// the configuration working, and tinting it too is how a colour stops being
+    /// read.
     var tint: AnyShapeStyle {
         switch self {
-        case .decrypted: AnyShapeStyle(.tertiary)
+        case .decrypted: AnyShapeStyle(LoomTheme.Palette.success)
         case .decryptionFailed: AnyShapeStyle(LoomTheme.Palette.warning)
         case .tunnelled: AnyShapeStyle(.secondary)
         case .plaintext: AnyShapeStyle(.quaternary)
+        }
+    }
+
+    /// The two states that spend a palette hue. Hierarchical ink is not a `Color`,
+    /// so tests that pin "decrypted is green" read this rather than `tint`.
+    var paletteTint: Color? {
+        switch self {
+        case .decrypted: LoomTheme.Palette.success
+        case .decryptionFailed: LoomTheme.Palette.warning
+        case .tunnelled, .plaintext: nil
         }
     }
 

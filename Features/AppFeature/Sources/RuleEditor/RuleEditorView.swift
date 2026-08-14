@@ -27,7 +27,7 @@ struct RuleEditorView: View {
     @State private var draft: RuleDraft
     @State private var segment: ActionSegment
     @State private var error: String?
-    /// Match-conditions group starts expanded only when host/query/app/device are
+    /// Match-conditions group starts expanded only when query/app/device are
     /// already set, so the common URL-only rule stays uncluttered — and a rule an
     /// agent scoped to one app opens showing that scope rather than hiding it.
     @State private var showMatchConditions: Bool
@@ -51,7 +51,7 @@ struct RuleEditorView: View {
         _draft = State(initialValue: initial)
         _segment = State(initialValue: Self.firstActive(in: initial) ?? .replaceResponse)
         _showMatchConditions = State(
-            initialValue: !initial.hostPattern.isEmpty || !initial.queryItems.isEmpty
+            initialValue: !initial.queryItems.isEmpty
                 || !initial.sourceApp.isEmpty || !initial.deviceIP.isEmpty
         )
         _showAdvanced = State(initialValue: !initial.advancedSummary.isEmpty)
@@ -167,15 +167,20 @@ struct RuleEditorView: View {
         }
     }
 
-    // MARK: Identity (group + name, then the note)
+    // MARK: Identity (name, optional group, then the note)
 
     private var identityRow: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
+            // Name is first and its own row on purpose: a sheet's first field is
+            // what AppKit focuses, and stuffing Group in front of it (same row,
+            // unlabeled) meant the first keystroke — and a click on the left of
+            // "Name" — wrote `draft.group`. An empty group stays empty; the
+            // folder menu never auto-selects an existing one.
             LabeledField("Name") {
-                HStack(spacing: LoomTheme.Space.xs) {
-                    groupControl
-                    LoomTextField(text: $draft.name, prompt: "Untitled")
-                }
+                LoomTextField(text: $draft.name, prompt: "Untitled")
+            }
+            LabeledField("Group") {
+                groupControl
             }
             // Shown on the list row, so it has to be editable here — otherwise a
             // note an agent wrote is read-only to the human it was written for.
@@ -186,6 +191,9 @@ struct RuleEditorView: View {
     }
 
     /// Editable group combo: type a new group, or pick an existing one from the menu.
+    ///
+    /// Empty is ungrouped — the menu's first action is "No group", and nothing
+    /// writes `existingGroups.first` as a default.
     private var groupControl: some View {
         HStack(spacing: LoomTheme.Space.xxs) {
             LoomTextField(text: $draft.group, prompt: "No group")
@@ -207,7 +215,6 @@ struct RuleEditorView: View {
             .accessibilityLabel("Pick an existing group")
             .help("Pick an existing group")
         }
-        .frame(width: 200)
     }
 
     // MARK: URL (methods + pattern + match-style chips)
@@ -222,10 +229,25 @@ struct RuleEditorView: View {
                 // no longer the only one left unlabelled.
                 Text(matchStyleText).font(.callout).foregroundStyle(.tertiary)
             }
+            if let leftover = draft.expiredHostPattern {
+                HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(LoomTheme.Palette.warning)
+                    Text(
+                        "This rule is expired: host “\(leftover)” is no longer a match field, so it will not apply. Fold it into the URL (e.g. https://\(leftover)*) before saving — saving without that makes a * pattern match every host."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, LoomTheme.Space.xs)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Expired host pattern")
+            }
             HStack(spacing: LoomTheme.Space.xs) {
                 methodMenu
                 HStack(spacing: LoomTheme.Space.xxs) {
-                    LoomTextField(text: $draft.urlPattern, prompt: "https://api.example.com/*", mono: true)
+                    LoomTextField(text: $draft.urlPattern, prompt: "https://*.example.com/*", mono: true)
                     // Regex and exact are mutually exclusive; enabling one clears
                     // the other so the model never carries both.
                     ChipToggle(
@@ -337,7 +359,7 @@ struct RuleEditorView: View {
         else { draft.methods.append(method) }
     }
 
-    // MARK: Match conditions (host + origin + query predicates)
+    // MARK: Match conditions (origin + query predicates)
 
     /// A collapsible section header: title, chevron, then a summary badge of what
     /// is inside. Not a `DisclosureGroup` — its chevron is fixed on the leading
@@ -403,9 +425,6 @@ struct RuleEditorView: View {
 
         if showMatchConditions {
             VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
-                LabeledField("Host") {
-                    LoomTextField(text: $draft.hostPattern, prompt: "*.example.com — optional host glob", mono: true)
-                }
                 LabeledField("From app") {
                     LoomTextField(text: $draft.sourceApp, prompt: "bundle id or name — only this app's requests", mono: true)
                 }
@@ -440,10 +459,9 @@ struct RuleEditorView: View {
         }
     }
 
-    /// Compact "host · 2 query" summary so a collapsed group still shows it's set.
+    /// Compact "2 query · app" summary so a collapsed group still shows it's set.
     private var matchConditionsSummary: String {
         var parts: [String] = []
-        if !draft.hostPattern.trimmingCharacters(in: .whitespaces).isEmpty { parts.append("host") }
         let queries = draft.queryItems.filter { !$0.key.trimmingCharacters(in: .whitespaces).isEmpty }.count
         if queries > 0 { parts.append("\(queries) query") }
         if !draft.sourceApp.trimmingCharacters(in: .whitespaces).isEmpty { parts.append("app") }

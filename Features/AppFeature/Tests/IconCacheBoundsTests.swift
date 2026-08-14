@@ -66,3 +66,20 @@ struct IconCacheBoundsTests {
         #expect(loader.icons.count == before + 1)
     }
 }
+
+/// The App column's fallback glyph follows *attribution*, not "has a bundle".
+/// A phone app and a local CLI are both bundle-less; drawing them alike is how
+/// a WeChat row reads as a terminal.
+@Suite struct AppIconFallbackTests {
+    @Test func aUserAgentAppUsesTheDashedQuestionMark() {
+        #expect(AppIconView.fallbackGlyph(for: .fromUserAgent(name: "WeChat")) == "questionmark.app.dashed")
+    }
+
+    @Test func aLocalProcessWithoutABundleUsesTheTerminalGlyph() {
+        #expect(AppIconView.fallbackGlyph(for: SourceApp(name: "curl", pid: 1)) == "terminal")
+    }
+
+    @Test func anUnresolvedOriginUsesTheDashedQuestionMark() {
+        #expect(AppIconView.fallbackGlyph(for: nil) == "questionmark.app.dashed")
+    }
+}

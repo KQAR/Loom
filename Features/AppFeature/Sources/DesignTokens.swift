@@ -237,27 +237,34 @@ public enum LoomTheme {
     public static let slowMS = 1000
     public static let verySlowMS = 3000
 
-    /// HTTP method → ink. **Only methods that change server state get a hue**; the
-    /// safe ones stay `.primary`.
+    /// HTTP method → ink. Every verb has its own hue; **only `CONNECT` stays
+    /// `{colors.ink}`** (white in Dark, the default label in Light).
     ///
-    /// The restraint is the feature. Coloring all seven methods turns the column
-    /// into a legend the reader has to learn, and a `GET` list — the common case —
-    /// would be a wall of one color, which carries no information at all. Tinting
-    /// only the mutating ones means the color appears exactly when it answers the
-    /// question the column is there for: *would replaying this row do something?*
+    /// A CONNECT row is a tunnel, not an exchange — no body, no replay — so it
+    /// recedes into the same ink as the rest of the row. Every other method is a
+    /// verb the operator scans for, and sharing a hue between POST and PUT (or
+    /// leaving GET uncoloured) made two different requests look like one.
+    /// Hues are the existing palette, never a new set: GET is a read (`success`),
+    /// DELETE is a fault-shaped verb (`error`), and so on. One function so the
+    /// table, the Summary row, the Raw pane and `MethodBadge` cannot disagree.
     public static func methodColor(_ method: String) -> Color {
-        mutatingMethodColor(method) ?? .primary
+        methodTint(method) ?? .primary
     }
 
-    /// The same split, but `nil` for the safe methods — for surfaces where "no tint"
-    /// is a different *shape*, not a different hue (`MethodBadge`'s neutral capsule).
-    /// One function so a badge and a table row cannot disagree about which methods
-    /// change server state.
-    public static func mutatingMethodColor(_ method: String) -> Color? {
+    /// The same map, but `nil` for `CONNECT` — for surfaces where "no tint" is a
+    /// different *shape*, not a different hue (`MethodBadge`'s neutral capsule).
+    public static func methodTint(_ method: String) -> Color? {
         switch method.uppercased() {
+        case "CONNECT": return nil
+        case "GET": return Palette.success
+        case "POST": return Palette.accent
+        case "PUT": return Palette.redirect
+        case "PATCH": return Palette.waiting
         case "DELETE": return Palette.error
-        case "POST", "PUT", "PATCH": return Palette.accent
-        default: return nil // GET / HEAD / OPTIONS / TRACE — safe
+        case "HEAD": return Palette.Syntax.bool
+        case "OPTIONS": return Palette.pending
+        case "TRACE": return Color.secondary
+        default: return Palette.pending
         }
     }
 }

@@ -6,11 +6,10 @@ import Synchronization
 /// It lived on `SSLScope` as `matches(pattern:host:)`, which is where it was first
 /// needed — and then everything else came to borrow it. Three of its six callers are
 /// not about the SSL scope and two are not about hosts: `TrafficRule` matches a whole
-/// URL through it (`RuleMatch.matches`), a rule's `hostPattern` goes through it, the
-/// flow filter's `host` goes through it, and `ClientCertificateConfig` picks an
-/// identity with it. So the argument label was answering "host" for a URL, and rule
-/// matching had to reach into the TLS-interception type to ask a question that has
-/// nothing to do with TLS.
+/// URL through it (`RuleMatch.matches`), the flow filter's `host` goes through it, and
+/// `ClientCertificateConfig` picks an identity with it. So the argument label was
+/// answering "host" for a URL, and rule matching had to reach into the TLS-interception
+/// type to ask a question that has nothing to do with TLS.
 ///
 /// Same semantics, moved to a name that describes them. `SSLScope.matches` stays as a
 /// deprecated forwarder because `LoomSharedModels` is a public SPM product and an
