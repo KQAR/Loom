@@ -73,7 +73,7 @@ struct RulesPanelView: View {
     private var summaryText: String {
         let total = store.rulesState.rules.count
         guard total > 0 else { return "No rules" }
-        let active = store.enabledRules.count
+        let active = store.activeRuleCount
         guard store.rulesEnabled else { return "\(total) rules · engine off" }
         return "\(active) of \(total) active"
     }
