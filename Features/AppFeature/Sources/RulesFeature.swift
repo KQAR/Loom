@@ -23,8 +23,16 @@ public struct RulesFeature: Sendable {
         @Presents public var editor: RuleEditorFeature.State?
 
         public var rulesEnabled: Bool { rulesState.enabled }
-        /// Names of rules that currently apply — empty when the master switch is off.
-        public var enabledRules: [String] { rulesState.activeRules.map(\.name) }
+        /// How many rules currently apply — zero when the master switch is off.
+        ///
+        /// A count, not the names: all three call sites (this panel's summary and the
+        /// console's two) asked for `[String]` and then took `.count`, so every render
+        /// built a filtered array of rules *and* an array of their names to throw both
+        /// away. `lazy` keeps the filter from materializing a third.
+        public var activeRuleCount: Int {
+            guard rulesState.enabled else { return 0 }
+            return rulesState.rules.lazy.filter { rulesState.applies($0) }.count
+        }
 
         /// Distinct group names already in use, in first-appearance order.
         public var existingGroups: [String] {
@@ -110,9 +118,9 @@ public struct RulesFeature: Sendable {
             // MARK: Rule CRUD
 
             case let .ruleToggled(id):
-                guard var rule = state.rulesState.rules.first(where: { $0.id == id }) else { return .none }
-                rule.isEnabled.toggle()
-                let updated = rule
+                guard let index = state.rulesState.rules.firstIndex(where: { $0.id == id }) else { return .none }
+                state.rulesState.rules[index].isEnabled.toggle()
+                let updated = state.rulesState.rules[index] // optimistic; re-synced below
                 state.rulesMessage = nil
                 return .run { send in
                     do { try await proxyClient.updateRule(updated) }
@@ -122,6 +130,7 @@ public struct RulesFeature: Sendable {
 
             case let .ruleDeleted(id):
                 state.rulesMessage = nil
+                state.rulesState.rules.removeAll { $0.id == id } // optimistic; re-synced below
                 return .run { send in
                     do { try await proxyClient.deleteRule(id) }
                     catch { await send(.ruleWriteFailed("Couldn’t delete rule: \(error.localizedDescription)")) }
@@ -129,6 +138,11 @@ public struct RulesFeature: Sendable {
                 }
 
             case let .ruleGroupToggled(group, enabled):
+                // Optimistic like the other three writes: a switch that only moves
+                // once the engine actor has answered reads as a switch that ignored
+                // the click. The re-sync below is what makes a rejected write revert.
+                if enabled { state.rulesState.disabledGroups.remove(group) }
+                else { state.rulesState.disabledGroups.insert(group) }
                 return .run { send in
                     await proxyClient.setGroupEnabled(group, enabled)
                     await send(.rulesStateLoaded(proxyClient.rulesState()))

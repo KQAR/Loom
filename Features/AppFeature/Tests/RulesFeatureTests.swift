@@ -196,10 +196,36 @@ import Testing
             $0.proxyClient.updateRule = { _ in }
             $0.proxyClient.rulesState = { loaded }
         }
-        await store.send(.ruleToggled(rule.id))
-        await store.receive(\.rulesStateLoaded) {
-            $0.rulesState = loaded
+        // Optimistic: the checkbox moves on the click, not a round trip later.
+        await store.send(.ruleToggled(rule.id)) {
+            $0.rulesState.rules[0].isEnabled = false
         }
+        // No trailing closure: engine truth agrees with the optimistic guess, so the
+        // re-sync changes nothing. It is what reverts a *rejected* write.
+        await store.receive(\.rulesStateLoaded)
+        #expect(store.state.rulesState == loaded)
+    }
+
+    /// A group switch is optimistic too, and it writes `disabledGroups` rather than
+    /// each member's own flag — the two axes compose, and a scenario switch that
+    /// overwrote member flags is the defect groups were re-shaped to fix.
+    @Test func test_ruleGroupToggled_isOptimistic_thenResyncs() async {
+        let rule = Fixtures.rule(group: "scenario-a")
+        var initial = RulesFeature.State()
+        initial.rulesState = RulesState(enabled: true, rules: [rule])
+        let loaded = RulesState(enabled: true, rules: [rule], disabledGroups: ["scenario-a"])
+        let store = TestStore(initialState: initial) {
+            RulesFeature()
+        } withDependencies: {
+            $0.proxyClient.setGroupEnabled = { _, _ in }
+            $0.proxyClient.rulesState = { loaded }
+        }
+        await store.send(.ruleGroupToggled(group: "scenario-a", enabled: false)) {
+            $0.rulesState.disabledGroups = ["scenario-a"]
+        }
+        #expect(store.state.rulesState.rules[0].isEnabled, "a group switch never writes a member's own flag")
+        await store.receive(\.rulesStateLoaded)
+        #expect(store.state.rulesState == loaded)
     }
 
     @Test func test_ruleDeleted_resyncs() async {
@@ -213,10 +239,11 @@ import Testing
             $0.proxyClient.deleteRule = { _ in }
             $0.proxyClient.rulesState = { loaded }
         }
-        await store.send(.ruleDeleted(rule.id))
-        await store.receive(\.rulesStateLoaded) {
-            $0.rulesState = loaded
+        await store.send(.ruleDeleted(rule.id)) {
+            $0.rulesState.rules = [] // optimistic; the re-sync below is engine truth
         }
+        await store.receive(\.rulesStateLoaded)
+        #expect(store.state.rulesState == loaded)
     }
 
     @Test func test_ruleWriteFailed_setsMessage() async {

@@ -451,6 +451,10 @@ import Testing
             "method", "url", "setHeaders", "removeHeaders", "bodyText", "text",
             // SubstitutionRule ("isRegex" is this type's, not the match's)
             "field", "replacement", "caseSensitive", "isRegex",
+            // RuleMatch's prepared glob: a cache derived from urlPattern + style, not
+            // a field anyone authors, encodes or reads back (RulePreparedPatternTests
+            // pins that it cannot go stale).
+            "preparedGlob",
         ]
         let actual = Self.fieldNames(of: maximalRuleForCensus)
         let added = actual.subtracting(expected)

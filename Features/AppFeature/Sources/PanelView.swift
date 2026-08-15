@@ -213,7 +213,7 @@ public struct PanelView: View {
                 title: "Rules",
                 // The only countable switch here, so the only one with a badge:
                 // a "1" on a boolean would read as a quantity.
-                badge: store.rules.enabledRules.count,
+                badge: store.rules.activeRuleCount,
                 help: rulesHelp
             ) {
                 store.send(.rules(.toggleRulesTapped))
@@ -279,7 +279,7 @@ public struct PanelView: View {
     /// excludes deliberate pass-throughs.
     private var rulesHelp: String {
         guard store.rules.rulesEnabled else { return "Traffic rules are off — tap to enable" }
-        let count = store.rules.enabledRules.count
+        let count = store.rules.activeRuleCount
         if count == 0 { return "Rules are on, but none are defined yet — add them in the main window" }
         return "\(count) rule\(count == 1 ? "" : "s") active — tap to disable all"
     }

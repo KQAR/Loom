@@ -397,6 +397,7 @@ import Testing
             render: RuleMatchRender(match),
             accountedFor: [
                 "style": "renamed to `matchStyle` — one always-present key instead of the two optional booleans it replaced",
+                "preparedGlob": "a cache derived from urlPattern + style so the matcher does not look one up per rule per request; there is nothing for an agent to read that urlPattern does not already say",
             ]
         ))
     }

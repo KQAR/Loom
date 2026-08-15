@@ -444,6 +444,7 @@ import Testing
         "route": "The route is not an object on the wire — it is implied by which of block/mock_response/map_remote/map_local is present, and set_rule rejects more than one.",
         "type": "Route's Codable discriminator, which the flattened wire shape above has no need for.",
         "expiredHostPattern": "Decode leftover from a pre-fold host_pattern; not an authoring field — fold the glob into url_pattern and save to clear it.",
+        "preparedGlob": "A cache derived from url_pattern + match_style; nothing for an agent to send, and sending one could only disagree with the pattern it is derived from.",
     ]
 
     /// Field names the model encodes but the **render** deliberately doesn't emit.
@@ -451,6 +452,7 @@ import Testing
         "type": "Route's Codable discriminator; the render flattens it into the actions key (actions.mockResponse, actions.mapRemote, …).",
         "route": "Flattened for the same reason — there is no `route` object in the rendered actions.",
         "expiredHostPattern": "Only rendered when a leftover host_pattern made the match expired; a freshly authored rule never carries one.",
+        "preparedGlob": "The same cache — an agent reads the pattern it was built from (`urlPattern`), which is the authoritative half.",
     ]
 
     /// camelCase model field → its wire name, where mechanical snake_casing is wrong.

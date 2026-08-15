@@ -179,14 +179,21 @@ final class BreakpointStore: Sendable {
         // breakpoint. This runs on the event loop for every exchange, twice (request
         // phase and response phase).
         var context = RequestMatchContext(method: method, url: url)
-        return state.withLock { state in
-            for bp in state.breakpoints
-            where (phase == .request ? bp.onRequest : bp.onResponse)
-                && bp.match.matches(&context, origin: origin) {
-                return bp
-            }
-            return nil
+        // **The list comes out of the lock; the matching happens outside it.** The
+        // array is COW, so taking it costs one retain, while running the predicates
+        // under the lock held it for a glob (or a regex) per armed breakpoint — on
+        // the event loop, twice per exchange, against a lock that `hold`, `resolve`
+        // and `pendingStream` also take. Same two-section shape the other holders in
+        // this module keep around expensive work.
+        let armed = state.withLock { $0.breakpoints }
+        // By index, for the reason `TrafficRule.matches` records: reaching through
+        // `.match` copies it — prepared glob included — for every candidate.
+        for index in armed.indices
+        where (phase == .request ? armed[index].onRequest : armed[index].onResponse)
+            && armed[index].match.matches(&context, origin: origin) {
+            return armed[index]
         }
+        return nil
     }
 
     // MARK: - Resume (actor-facing)
