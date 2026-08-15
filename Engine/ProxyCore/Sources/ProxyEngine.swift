@@ -77,6 +77,23 @@ public actor ProxyEngine: ProxyControlling {
     /// most a ring's worth of persisted flows.
     let flowCapacity: Int
     var boundPort = 9090
+
+    /// The port the HTTP proxy is bound to, on its own.
+    ///
+    /// `status()` also answers this, and answering it that way costs **four hops
+    /// onto `FlowStore`** (`count`, `retainedCount`, `isRecording`,
+    /// `droppedFlowCount`) plus a `RefusalLog` snapshot — for one `Int` that is a
+    /// stored property of this actor. `FlowStore` is where every capture write
+    /// queues, so those hops wait behind the write path exactly when it is busiest,
+    /// which is the rule the engine's own performance notes state as *a read must
+    /// not hold the write actor* and *a count is a read*.
+    ///
+    /// Every caller that only wants to **point something at Loom** — the system
+    /// proxy, the QUIC pf anchor, a printed address — takes this. A caller
+    /// rendering the engine's state still takes `status()`, which is what that call
+    /// is for.
+    public var proxyPort: Int { boundPort }
+
     /// Interface the proxy is currently bound to. Phone onboarding flips this to
     /// `0.0.0.0` (LAN-reachable) and back to loopback when it ends.
     var currentBindHost = "127.0.0.1"
