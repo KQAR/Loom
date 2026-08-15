@@ -1,6 +1,8 @@
 # ROADMAP.md
 
-Single source of truth for Loom's **positioning** and **iteration order**. When a scope or prioritization question arises, this doc wins over legacy assumptions in code or older notes. The user-facing shape of these phases is specified in [`INTERACTION.md`](INTERACTION.md); the visual system in [`DESIGN.md`](DESIGN.md).
+Single source of truth for Loom's **positioning**, and the record of **why each round happened**. When a scope or prioritization question arises, this doc wins over legacy assumptions in code or older notes. The user-facing shape of these phases is specified in [`INTERACTION.md`](INTERACTION.md); the visual system in [`DESIGN.md`](DESIGN.md).
+
+Note what this is not, any more. Every phase below is **done** and nothing is queued (`AGENTS.md` § Scope — "pick the next round from real usage pain"), so the half of this file below § Positioning is a *ledger*, not a plan: what each round was for, what it cost and which belief it overturned. That is why it is cited from code (`ROADMAP § Structured Channel` for the legacy-era retirement condition, `§ M8` for the sniff, `§ h2c upstream`) and why deleting it would strand those citations. `AGENTS.md` § Scope holds what Loom does **today** and the invariants that go with it; it deliberately no longer mirrors the milestone ledger.
 
 ## Positioning
 
@@ -31,7 +33,7 @@ capture     traffic flows through the proxy into the store
 
 M1 proves this loop on plain HTTP. Each later milestone widens what the agent can capture and act on, and hardens the human's control over it.
 
-## Iteration Phases
+## Iteration Phases (all done — a ledger, not a plan)
 
 ### M1 — AI link (done)
 
