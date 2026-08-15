@@ -22,6 +22,10 @@ to the section whose invariant it produced.
 | [`navigation-split-view.md`](navigation-split-view.md) | `MainView` is a plain `HStack`, and three measured dead ends around it |
 | [`websocket-capture.md`](websocket-capture.md) | Parsing untrusted bytes: decode lengths wide, check remaining by subtraction, and never answer "not yet" and "not frames" the same way |
 | [`write-path-memory.md`](write-path-memory.md) | A footprint figure is not a memory figure — ask `malloc_zone_statistics`, and measure each configuration in its own process |
+| [`ssl-scope-whitelist.md`](ssl-scope-whitelist.md) | Name it, then decrypt — and the unread or refused origin must be visible on all three surfaces |
+| [`rules-drop-stage.md`](rules-drop-stage.md) | `dropFromCapture` is a rule, obeys `RulesState.applies`, and drops rather than filtering on read |
+| [`h2-cookie-crumbs.md`](h2-cookie-crumbs.md) | The model holds one `cookie` field; the crumb split is an encoding applied on the h2 leg |
+| [`h2-header-block-downgrade.md`](h2-header-block-downgrade.md) | Drop ALPN `h2` for a host whose first header block trips the pre-ACK HPACK limit — and mark every flow |
 
 ## Writing one
 
