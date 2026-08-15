@@ -441,16 +441,18 @@ import Testing
     /// accident — it has to be written down here.
     private static let schemaOmissions: [String: String] = [
         "createdAt": "server-stamped on create; an agent-supplied creation time would be a lie",
+        // `Route`'s Codable discriminator (`type`) used to be listed here too. It
+        // is a coding key rather than a stored property, so the census could never
+        // ask about it and the note could only ever be dead — which is what the
+        // stale-omission check reported the day it was added.
         "route": "The route is not an object on the wire — it is implied by which of block/mock_response/map_remote/map_local is present, and set_rule rejects more than one.",
-        "type": "Route's Codable discriminator, which the flattened wire shape above has no need for.",
         "expiredHostPattern": "Decode leftover from a pre-fold host_pattern; not an authoring field — fold the glob into url_pattern and save to clear it.",
         "preparedGlob": "A cache derived from url_pattern + match_style; nothing for an agent to send, and sending one could only disagree with the pattern it is derived from.",
     ]
 
     /// Field names the model encodes but the **render** deliberately doesn't emit.
     private static let renderOmissions: [String: String] = [
-        "type": "Route's Codable discriminator; the render flattens it into the actions key (actions.mockResponse, actions.mapRemote, …).",
-        "route": "Flattened for the same reason — there is no `route` object in the rendered actions.",
+        "route": "Flattened into the actions key (actions.mockResponse, actions.mapRemote, …) — there is no `route` object in the rendered actions, and `Route`'s Codable `type` discriminator is a coding key rather than a stored property, so it never reaches a census at all.",
         "expiredHostPattern": "Only rendered when a leftover host_pattern made the match expired; a freshly authored rule never carries one.",
         "preparedGlob": "The same cache — an agent reads the pattern it was built from (`urlPattern`), which is the authoritative half.",
     ]
@@ -480,22 +482,17 @@ import Testing
         "mock": "mockResponse",
     ]
 
+    /// The rule half of the sweep in `InputSchemaCensusTests`. This was the first
+    /// case and stayed the only one for eight releases; the comparison itself now
+    /// lives in `SchemaCensus` so the seventh tool costs a fixture rather than a
+    /// copy of the plumbing.
     @Test func inputSchema_advertisesEveryModelField() async throws {
-        let schemaKeys = try Self.schemaPropertyNames()
-        for field in try await modelFieldNames() {
-            let expected = Self.schemaAliases[field] ?? Self.snakeCased(field)
-            if schemaKeys.contains(expected) { continue }
-            if let reason = Self.schemaOmissions[field] {
-                #expect(reason.count > 20, "\(field): omission needs a real reason")
-                continue
-            }
-            Issue.record("""
-            TrafficRule field `\(field)` has no `set_rule` schema property \
-            (expected `\(expected)`). Either advertise it or record it in \
-            `schemaOmissions` with a reason — an agent cannot set what the schema \
-            never mentions.
-            """)
-        }
+        try SchemaCensus.check(
+            tool: "set_rule",
+            modelFields: try await modelFieldNames(),
+            aliases: Self.schemaAliases,
+            omissions: Self.schemaOmissions
+        )
     }
 
     @Test func render_emitsEveryModelField() async throws {
@@ -536,51 +533,10 @@ import Testing
         var names: Set<String> = []
         for route in allRoutes {
             let (rule, _, _) = try await storedRule(for: route)
-            names.formUnion(Self.fieldNames(of: rule))
+            names.formUnion(SchemaCensus.fieldNames(of: rule))
         }
         return names
     }
-
-    /// Values whose internals are not model structure — recursing into `UUID`
-    /// exposes its `uuid` byte tuple, into `Date` its `timeIntervalSince…`, and so on.
-    private static func isLeaf(_ value: Any) -> Bool {
-        value is String || value is Int || value is Bool || value is Double
-            || value is UUID || value is Date || value is Data
-    }
-
-    private static func fieldNames(of value: Any) -> Set<String> {
-        if isLeaf(value) { return [] }
-        var names: Set<String> = []
-        let mirror = Mirror(reflecting: value)
-        switch mirror.displayStyle {
-        case .dictionary:
-            return [] // free-form data: keys are values, not fields
-        case .optional:
-            // `nil` has no child, which is fine — the label was recorded by the
-            // parent before it recursed here.
-            if let wrapped = mirror.children.first?.value {
-                names.formUnion(fieldNames(of: wrapped))
-            }
-        default:
-            for child in mirror.children {
-                guard let label = child.label, !label.isEmpty else {
-                    names.formUnion(fieldNames(of: child.value)) // collection element
-                    continue
-                }
-                names.insert(label)
-                guard !freeFormContainers.contains(label) else { continue }
-                names.formUnion(fieldNames(of: child.value))
-            }
-        }
-        return names
-    }
-
-    /// Keys whose *contents* are user data, not model fields — walking into them
-    /// would treat a header name or a query parameter as a field of the model.
-    /// (It also means `HeaderPair`'s own `name`/`value` never reach the census;
-    /// both surfaces represent headers as a name→value object rather than as a
-    /// list of pairs, so there is nothing to compare.)
-    private static let freeFormContainers: Set<String> = ["query", "headers", "setHeaders"]
 
     /// Recursively collect dictionary key names, optionally not descending into
     /// free-form containers (whose keys are data).
@@ -606,56 +562,6 @@ import Testing
         return names
     }
 
-    /// Property names anywhere in `set_rule`'s input schema, recursively — the
-    /// schema is nested (`match`, `actions`, `actions.mock_response`, …), and a
-    /// flat census is what lets it be compared against a flat field list.
-    private static func schemaPropertyNames() throws -> Set<String> {
-        let executor = MCPToolExecutor(engine: StubEngine(), appVersion: "9.9", protocolVersion: "x")
-        let definition = try #require(
-            executor.toolDefinitions.first { $0["name"] as? String == "set_rule" }
-        )
-        let schema = try #require(definition["inputSchema"] as? [String: Any])
-        return propertyNames(in: schema)
-    }
-
-    /// Walk a JSON Schema, collecting only `properties` keys (so schema keywords
-    /// like `type` / `description` / `items` never masquerade as field names).
-    private static func propertyNames(in schema: [String: Any]) -> Set<String> {
-        var names: Set<String> = []
-        if let properties = schema["properties"] as? [String: Any] {
-            for (name, nested) in properties {
-                names.insert(name)
-                if let nested = nested as? [String: Any] {
-                    names.formUnion(propertyNames(in: nested))
-                }
-            }
-        }
-        if let items = schema["items"] as? [String: Any] {
-            names.formUnion(propertyNames(in: items))
-        }
-        return names
-    }
-
-    /// `deviceIP` → `device_ip`, `isRegex` → `is_regex`: lowercase runs of capitals
-    /// as one word so an acronym doesn't become `device_i_p`.
-    static func snakeCased(_ name: String) -> String {
-        var out = ""
-        var previousWasUpper = false
-        for (offset, character) in name.enumerated() {
-            if character.isUppercase {
-                let nextIsLower = name.index(name.startIndex, offsetBy: offset + 1) < name.endIndex
-                    && name[name.index(name.startIndex, offsetBy: offset + 1)].isLowercase
-                if offset > 0, !previousWasUpper || nextIsLower { out.append("_") }
-                out.append(Character(character.lowercased()))
-                previousWasUpper = true
-            } else {
-                out.append(character)
-                previousWasUpper = false
-            }
-        }
-        return out
-    }
-
     @Test(arguments: [
         ("deviceIP", "device_ip"),
         ("isRegex", "is_regex"),
@@ -664,6 +570,6 @@ import Testing
         ("path", "path"),
     ])
     func snakeCasing(input: String, expected: String) {
-        #expect(Self.snakeCased(input) == expected)
+        #expect(SchemaCensus.snakeCased(input) == expected)
     }
 }
