@@ -33,15 +33,6 @@ enum RuleEngine {
         var appliedRules: [AppliedRule] { matched.map { AppliedRule(id: $0.id, name: $0.name) } }
     }
 
-    /// Which active rules match this request, in list order. The one place matching
-    /// happens, so a caller that needs the matches *before* planning (to decide
-    /// whether the body must be buffered) doesn't have to re-derive them — running
-    /// every rule's predicate twice per exchange is the whole reason this is
-    /// separate from `planRequest`.
-    ///
-    /// `origin` (who sent the request) participates in matching, so a rule can be
-    /// scoped to one app or device; nil means "unknown client", which an
-    /// origin-scoped rule deliberately never matches.
     /// The first rule whose `dropFromCapture` matches this flow, or nil.
     ///
     /// **A second stage, not a second engine**: same list, same matcher, same master
@@ -59,12 +50,25 @@ enum RuleEngine {
         guard let url = URL(string: flow.request.url) else { return nil }
         var context = RequestMatchContext(method: flow.request.method, url: url.absoluteString)
         let origin = RequestOrigin(app: flow.sourceApp, device: flow.sourceDevice)
-        for rule in state.rules where rule.actions.dropFromCapture && state.applies(rule) {
-            if rule.match.matches(&context, origin: origin) { return rule }
+        // By index, and matched through `TrafficRule.matches`: both spellings avoid
+        // copying a rule (and its match, with the prepared glob inside) out of the
+        // array for every candidate. See that method for the measurement.
+        for index in state.rules.indices
+        where state.rules[index].actions.dropFromCapture && state.applies(state.rules[index]) {
+            if state.rules[index].matches(&context, origin: origin) { return state.rules[index] }
         }
         return nil
     }
 
+    /// Which live rules match this request, in list order. The one place matching
+    /// happens, so a caller that needs the matches *before* planning (to decide
+    /// whether the body must be buffered) doesn't have to re-derive them — running
+    /// every rule's predicate twice per exchange is the whole reason this is separate
+    /// from `planRequest`.
+    ///
+    /// `origin` (who sent the request) participates in matching, so a rule can be
+    /// scoped to one app or device; nil means "unknown client", which an
+    /// origin-scoped rule deliberately never matches.
     static func matchingRules(
         state: RulesState, method: String, url: URL, origin: RequestOrigin? = nil
     ) -> [TrafficRule] {
@@ -79,9 +83,17 @@ enum RuleEngine {
         // event loop, to produce a result that is usually empty. The three switches
         // still come from `RulesState.applies`, not from a predicate spelled here:
         // spelling it lost the group switch entirely (see that method).
+        //
+        // Walked by index and matched through `TrafficRule.matches`: `for rule in
+        // state.rules` copies each rule (five refcounted fields on its match alone)
+        // to ask a question about it, which at 200 rules is more than twice the cost
+        // of the matching itself — 0.0246 ms/request against 0.0110. Only a rule that
+        // actually matched is copied, into `matched`.
         var matched: [TrafficRule] = []
-        for rule in state.rules where state.applies(rule) {
-            if rule.match.matches(&context, origin: origin) { matched.append(rule) }
+        for index in state.rules.indices where state.applies(state.rules[index]) {
+            if state.rules[index].matches(&context, origin: origin) {
+                matched.append(state.rules[index])
+            }
         }
         return matched
     }
@@ -126,7 +138,7 @@ enum RuleEngine {
                     // header has to follow it or the upstream is asked for one host
                     // under another's name — same reasoning as mapRemote's default.
                     plan.url = newURL
-                    plan.headers.removeAll { $0.name.lowercased() == "host" }
+                    plan.headers.removeAll(named: "host")
                 }
                 plan.headers = applyHeaderEdits(plan.headers, set: rewrite.setHeaders, remove: rewrite.removeHeaders)
                 switch rewrite.body {
@@ -163,7 +175,7 @@ enum RuleEngine {
                         // the forwarder derives it from the mapped URL. keepHostHeader leaves
                         // the original Host in place.
                         if !map.keepHostHeader {
-                            plan.headers.removeAll { $0.name.lowercased() == "host" }
+                            plan.headers.removeAll(named: "host")
                         }
                     } else {
                         // The rule matched and is reported in `appliedRules`, but the
