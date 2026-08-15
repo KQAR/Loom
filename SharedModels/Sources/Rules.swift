@@ -1131,6 +1131,13 @@ public struct RulesState: Equatable, Codable, Sendable {
     /// A dropped exchange carries no `appliedRules` — it has no flow — so this is the
     /// only place a capture rule can be seen to have done anything. Session-scoped,
     /// like the flows it counts.
+    ///
+    /// **Not persisted, and that is enforced by `encode(to:)` rather than assumed.**
+    /// The counts are the store's (`FlowStore.droppedCountsByRule`) and are folded in
+    /// by `ProxyEngine.rulesState()`; a count written to `rules.json` would come back
+    /// on the next launch attached to traffic that never arrived. The decode side
+    /// always ignored the key — so the file *did* carry it, harmlessly but
+    /// asymmetrically, which is one edit away from a reader that trusts it.
     public var droppedCounts: [UUID: Int] = [:]
     /// Groups currently switched off as a unit — `nil` is the ungrouped bucket,
     /// which the UI toggles like any other group.
@@ -1154,6 +1161,11 @@ public struct RulesState: Equatable, Codable, Sendable {
         self.droppedCounts = droppedCounts
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case enabled, rules, disabledGroups
+        // `droppedCounts` deliberately absent — see its declaration.
+    }
+
     // Tolerant decode: a rules file written before groups had a state of their own
     // still loads (as "no group is switched off").
     public init(from decoder: Decoder) throws {
@@ -1161,6 +1173,16 @@ public struct RulesState: Equatable, Codable, Sendable {
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         rules = try c.decodeIfPresent([TrafficRule].self, forKey: .rules) ?? []
         disabledGroups = try c.decodeIfPresent(Set<String?>.self, forKey: .disabledGroups) ?? []
+    }
+
+    /// The session counts are the one field this does not write; everything else is
+    /// the synthesized shape. Encoding is spelled out because the decode side is, and
+    /// a synthesized counterpart is how the two came to disagree.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(rules, forKey: .rules)
+        try c.encode(disabledGroups, forKey: .disabledGroups)
     }
 
     /// Rules that would currently apply to traffic, in evaluation order — the
