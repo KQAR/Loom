@@ -27,6 +27,65 @@ import Testing
         await store.send(.task)
     }
 
+    // MARK: Every capture delegate reaches something
+
+    /// A delegate the parent never handled compiled, ran, and was silently dropped,
+    /// because the per-delegate cases sat in front of a catch-all matching bare
+    /// `.capture`. `ignoreHost` lived like that: an action, a delegate case, and a
+    /// doc comment saying "the parent routes it to the engine" — with no case in the
+    /// parent, no sender in any view, and no test. Nothing failed, so nothing said so.
+    ///
+    /// The structural half of the fix is in `AppFeature`: the delegates are one
+    /// nested `switch`, so the compiler now requires a case per delegate. This is the
+    /// behavioural half — the routing itself was covered by nothing at all, which is
+    /// the reason a dead one could sit there. One test per delegate, so a case that
+    /// exists but routes nowhere is a failure rather than a silence.
+    @Test func stampedRuleDelegate_reachesTheRulesEditor() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        store.exhaustivity = .off
+
+        let rule = TrafficRule(name: "r", match: RuleMatch(urlPattern: "*"), actions: RuleActions())
+        await store.send(.capture(.delegate(.stampedRule(rule))))
+        await store.receive(\.rules.presentEditor)
+        #expect(store.state.rules.editor?.isNew ?? false)
+    }
+
+    @Test func replayFailedDelegate_reachesTheSharedMessageLine() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() }
+        store.exhaustivity = .off
+
+        await store.send(.capture(.delegate(.replayFailed("boom"))))
+        await store.receive(\.rules.ruleWriteFailed)
+        #expect(store.state.rules.rulesMessage?.contains("boom") ?? false)
+    }
+
+    /// The two scope directions are complementary by construction and must stay
+    /// routed to `SetupFeature` — writing either here would be the second writer of
+    /// the scope that the whole routing exists to avoid.
+    @Test func decryptHostDelegate_reachesTheScopeWrite() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.proxyClient.interceptHost = { _ in InterceptOutcome() }
+            // The write re-reads rather than predicting: the console and an agent
+            // are independent writers of the same scope.
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.capture(.delegate(.decryptHost("api.example.test"))))
+        await store.receive(\.setup.interceptHostTapped)
+    }
+
+    @Test func excludeHostDelegate_reachesTheScopeWrite() async {
+        let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+            $0.proxyClient.setSSLScope = { _ in }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.capture(.delegate(.excludeHost("api.example.test"))))
+        await store.receive(\.setup.excludeHostTapped)
+    }
+
     // MARK: Add-Rule-from-flow seam (parent owns the flow store, child owns the editor)
 
     @Test func addRuleFromFlow_stampsRuleAndPresentsEditor() async {
