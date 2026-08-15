@@ -81,4 +81,4 @@ The agent is never a black box the human can't interrupt.
 
 ## What's built vs parked
 
-Iteration order and per-milestone status live in [`ROADMAP.md`](ROADMAP.md) — not mirrored here. The one deliberately **parked** interaction concept: a surface for the human to *drive* the agent from inside Loom (Loom is MCP-first; the agent lives in the user's own client).
+Per-milestone status and the reasoning behind each round live in [`ROADMAP.md`](ROADMAP.md) — not mirrored here. The one deliberately **parked** interaction concept: a surface for the human to *drive* the agent from inside Loom (Loom is MCP-first; the agent lives in the user's own client).
