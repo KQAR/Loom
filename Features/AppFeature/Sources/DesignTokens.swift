@@ -237,16 +237,26 @@ public enum LoomTheme {
     public static let slowMS = 1000
     public static let verySlowMS = 3000
 
-    /// HTTP method → ink. Every verb has its own hue; **only `CONNECT` stays
-    /// `{colors.ink}`** (white in Dark, the default label in Light).
+    /// HTTP method → ink. Six verbs carry a hue of their own, `CONNECT` stays
+    /// `{colors.ink}`, and the metadata verbs share one neutral grey.
     ///
     /// A CONNECT row is a tunnel, not an exchange — no body, no replay — so it
-    /// recedes into the same ink as the rest of the row. Every other method is a
-    /// verb the operator scans for, and sharing a hue between POST and PUT (or
-    /// leaving GET uncoloured) made two different requests look like one.
-    /// Hues are the existing palette, never a new set: GET is a read (`success`),
-    /// DELETE is a fault-shaped verb (`error`), and so on. One function so the
-    /// table, the Summary row, the Raw pane and `MethodBadge` cannot disagree.
+    /// recedes into the same ink as the rest of the row. The six that are named
+    /// individually are the ones an operator scans a capture for, and sharing a hue
+    /// between POST and PUT (or leaving GET uncoloured) made two different requests
+    /// look like one. Hues are the existing palette, **never a new set**: GET is a
+    /// read (`success`), DELETE is a fault-shaped verb (`error`), and so on.
+    ///
+    /// **The collision is deliberate and stated rather than hidden.** The palette
+    /// holds seven distinguishable hues and there are eight standard verbs plus
+    /// whatever a WebDAV or a custom API sends, so something has to share — and the
+    /// honest place to spend the shortage is `OPTIONS` / `TRACE` / an unknown verb,
+    /// which ask *about* a resource rather than acting on one. Claiming "a hue per
+    /// verb" while `PROPFIND` came out identical to `OPTIONS` was the worse of the
+    /// two, because it is the claim a reader trusts when two rows look alike.
+    ///
+    /// One function, so the table, the Summary row, the Raw pane and `MethodBadge`
+    /// cannot disagree.
     public static func methodColor(_ method: String) -> Color {
         methodTint(method) ?? .primary
     }
@@ -262,8 +272,10 @@ public enum LoomTheme {
         case "PATCH": return Palette.waiting
         case "DELETE": return Palette.error
         case "HEAD": return Palette.Syntax.bool
-        case "OPTIONS": return Palette.pending
-        case "TRACE": return Color.secondary
+        // Metadata verbs and anything unrecognised: one grey, from the palette
+        // (`Color.secondary` was the only value here that came from outside it, and
+        // it read as a fourth shade of the same grey anyway).
+        case "OPTIONS", "TRACE": return Palette.pending
         default: return Palette.pending
         }
     }

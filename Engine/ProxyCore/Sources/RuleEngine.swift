@@ -59,9 +59,7 @@ enum RuleEngine {
         guard let url = URL(string: flow.request.url) else { return nil }
         var context = RequestMatchContext(method: flow.request.method, url: url.absoluteString)
         let origin = RequestOrigin(app: flow.sourceApp, device: flow.sourceDevice)
-        for rule in state.rules where rule.isEnabled && state.isGroupEnabled(rule.group)
-            && rule.actions.dropFromCapture
-        {
+        for rule in state.rules where rule.actions.dropFromCapture && state.applies(rule) {
             if rule.match.matches(&context, origin: origin) { return rule }
         }
         return nil
@@ -78,9 +76,11 @@ enum RuleEngine {
         var context = RequestMatchContext(method: method, url: url.absoluteString)
         // One pass, one allocation. `state.activeRules` would build a second array of
         // every enabled rule before this filter touched it — on every exchange, on the
-        // event loop, to produce a result that is usually empty.
+        // event loop, to produce a result that is usually empty. The three switches
+        // still come from `RulesState.applies`, not from a predicate spelled here:
+        // spelling it lost the group switch entirely (see that method).
         var matched: [TrafficRule] = []
-        for rule in state.rules where rule.isEnabled && state.isGroupEnabled(rule.group) {
+        for rule in state.rules where state.applies(rule) {
             if rule.match.matches(&context, origin: origin) { matched.append(rule) }
         }
         return matched

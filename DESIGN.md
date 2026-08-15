@@ -164,7 +164,8 @@ components:
     weaker-than-a-card: "7 %, not {colors.attention-fill}'s 12 %. A row is not a card, and it still has to read as selectable under the system's own selection fill."
     how: "An alpha-animated subview on `NSTableRowView`, in `RequestTable` — the only row-sized rectangle in this stack. (It was a CALayer on the row's own backing layer first, which drew NOTHING: `wantsLayer = true` does not guarantee `layer` is non-nil on the next line, so the insert silently no-op'd and every failed row looked healthy.) It was first built in pure SwiftUI as a fill on every cell with a bleed to cover the inter-column gutter; that is eight rectangles pretending to be one, and it showed seams where the bleed fell short, doubled-opacity bands where two bleeds overlapped, and required every new column to remember to join in. A row is one thing and gets one fill. Do NOT reintroduce the per-cell version."
   method-column:   # the only non-status chromatic channel in the table
-    tint: "one hue per verb, from the existing palette, never a new set: GET {colors.status-success} · POST {colors.accent} · PUT {colors.status-redirect} · PATCH {colors.status-waiting} · DELETE {colors.status-error} · HEAD {colors.syntax-bool} · OPTIONS {colors.status-pending} · TRACE .secondary. CONNECT is the exception — it stays {colors.ink} (white in Dark)."
+    tint: "one hue per ACTING verb, from the existing palette, never a new set: GET {colors.status-success} · POST {colors.accent} · PUT {colors.status-redirect} · PATCH {colors.status-waiting} · DELETE {colors.status-error} · HEAD {colors.syntax-bool}. CONNECT stays {colors.ink} (white in Dark). OPTIONS, TRACE and any unrecognised verb SHARE {colors.status-pending}."
+    why-the-metadata-verbs-share: "the palette holds seven distinguishable hues and there are eight standard verbs plus whatever a WebDAV or a custom API sends, so one group has to share. Spending the shortage on the verbs that ask ABOUT a resource rather than act on it is the reading that loses least — and it is STATED, because the first version claimed a hue per verb while PROPFIND came out identical to OPTIONS. A claim of distinctness is what a reader trusts when two rows look alike, so an unbacked one is worse than a shared grey with a reason."
     why-connect-is-ink: "a CONNECT row is a tunnel, not an exchange: no body, no replay, and under the whitelist it is how the operator meets an origin at all. Colouring it like GET would spend the same ink on 'the request happened' and 'a socket was spliced'. Every other method is a verb; sharing POST/PUT as one accent, or leaving GET uncoloured, made two different requests look like one."
   duration-column: # Time
     what: "under 1 s .secondary · 1–3 s {colors.ink} · over 3 s {colors.status-warning}. 'Why is this slow' is the second question this app answers and the column said nothing about it — 40 ms and 4 s were the same grey."
@@ -257,9 +258,10 @@ utility — closer to the system's own controls than to a themed Electron tool.
   column. Status class is `{colors.status-success}` 2xx, `{colors.status-redirect}` 3xx,
   `{colors.status-error}` 4xx/5xx/error, `{colors.status-pending}` pending — always with the numeric
   code, plus the failed-row wash (`{colors.row-fill-error}`) which is the same fact at row scale.
-  Method is a second chromatic channel (§ `method-column`): one hue per verb, CONNECT stays ink
-  because that row is a tunnel, not an exchange. Not decoration — two different verbs sharing a
-  hue (or GET wearing none) is how a scan misses the write.
+  Method is a second chromatic channel (§ `method-column`): one hue per acting verb, CONNECT stays
+  ink because that row is a tunnel, not an exchange, and the metadata verbs (OPTIONS / TRACE /
+  unrecognised) share one grey because the palette runs out before the verbs do. Not decoration —
+  two *acting* verbs sharing a hue (or GET wearing none) is how a scan misses the write.
 - **Everything from the wire is monospaced.** URLs, headers, bodies, method glyphs, codes, durations.
 - **System-first, with one named exception.** Dynamic Type text styles, SF Symbols, system materials,
   `ContentUnavailableView`, and the semantic *ink and surface* colors. The chromatic tokens are Loom's own

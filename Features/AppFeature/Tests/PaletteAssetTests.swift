@@ -88,21 +88,34 @@ import Testing
         .deletingLastPathComponent()   // AppFeature/
         .appendingPathComponent("Resources/Assets.xcassets")
 
-    /// CONNECT is the only uncoloured method (a tunnel, not a verb). Every other
-    /// standard verb has its own hue, so two different requests cannot look like one.
+    /// CONNECT is the only uncoloured method (a tunnel, not a verb), and the **six
+    /// acting verbs** are mutually distinct. `OPTIONS` / `TRACE` / unknown verbs
+    /// deliberately share one grey — the palette has seven hues and there are more
+    /// verbs than that, so the shortage is spent where it says the least.
     @Test func connectIsTheOnlyUncolouredMethod() {
         #expect(LoomTheme.methodTint("CONNECT") == nil)
         #expect(LoomTheme.methodTint("connect") == nil)
         #expect(LoomTheme.methodColor("CONNECT") == .primary)
 
-        let verbs = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"]
+        let verbs = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
         let colours = verbs.map { LoomTheme.methodColor($0) }
         for (i, left) in colours.enumerated() {
             #expect(LoomTheme.methodTint(verbs[i]) != nil, "\(verbs[i]) must not share CONNECT's uncoloured ink")
             #expect(left != .primary, "\(verbs[i]) must not resolve to CONNECT's ink")
+            #expect(left != LoomTheme.Palette.pending, "\(verbs[i]) is an acting verb, not a metadata one")
             for j in (i + 1) ..< colours.count {
                 #expect(left != colours[j], "\(verbs[i]) and \(verbs[j]) share a hue")
             }
+        }
+    }
+
+    /// The shared grey is one value from the palette, and it is shared *on purpose*
+    /// — pinned so a future edit that gives TRACE a hue of its own has to decide
+    /// which acting verb loses one.
+    @Test func metadataVerbsShareOneGreyFromThePalette() {
+        for verb in ["OPTIONS", "TRACE", "PROPFIND", "MKCALENDAR"] {
+            #expect(LoomTheme.methodColor(verb) == LoomTheme.Palette.pending, "\(verb)")
+            #expect(LoomTheme.methodTint(verb) != nil, "shared grey is still a tint, not CONNECT's ink")
         }
     }
 
@@ -113,9 +126,10 @@ import Testing
         #expect(LoomTheme.methodColor("PATCH") == LoomTheme.Palette.waiting)
         #expect(LoomTheme.methodColor("DELETE") == LoomTheme.Palette.error)
         #expect(LoomTheme.methodColor("HEAD") == LoomTheme.Palette.Syntax.bool)
+        // Metadata verbs and unknown ones recede to one palette grey, never to
+        // CONNECT's ink and never to a colour from outside the palette.
         #expect(LoomTheme.methodColor("OPTIONS") == LoomTheme.Palette.pending)
-        #expect(LoomTheme.methodColor("TRACE") == Color.secondary)
-        // Unknown verbs recede to pending, never to CONNECT's ink.
+        #expect(LoomTheme.methodColor("TRACE") == LoomTheme.Palette.pending)
         #expect(LoomTheme.methodColor("PROPFIND") == LoomTheme.Palette.pending)
     }
 }

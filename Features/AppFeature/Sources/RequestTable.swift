@@ -169,11 +169,15 @@ struct RequestTable: NSViewRepresentable {
             case .host: 140
             // Lower than it reads: Path is the slack sink, so it is back above 300pt the
             // moment the window has room, and this floor only bites in a viewport
-            // narrower than the columns want. It came down from 160 when the Decrypted
-            // column was added — every column costs ~17.5pt of `.inset` padding and
-            // intercell spacing *beyond* its width, so a 9-column table at a 700pt
-            // viewport (a 1000pt window, or a 700pt one with the sidebar collapsed) was
-            // 40pt over even with Host and Path both on their floors.
+            // narrower than the columns want. It came down from 160 when the SSL column
+            // was added at 72pt (headed "Decrypted") — every column costs ~17.5pt of
+            // `.inset` padding and intercell spacing *beyond* its width, so a 9-column
+            // table at a 700pt viewport (a 1000pt window, or a 700pt one with the
+            // sidebar collapsed) was 40pt over even with Host and Path both on their
+            // floors. The column is 36pt now and Host's floor took 30 of the 36 back,
+            // so the nine floors total ~701pt at that viewport: still over, which is
+            // what horizontal scrolling is for, and raising this floor again would
+            // spend the one column that is never wide enough.
             case .path: 120
             case .time: 56
             }
@@ -1453,17 +1457,22 @@ enum FlowEncryption {
     /// when it tried and the connection failed. A pass-through stays ink — that is
     /// the configuration working, and tinting it too is how a colour stops being
     /// read.
+    /// **Derived from `paletteTint`, never a second switch.** A hierarchical style
+    /// is not a `Color`, so what a test can read back is the palette half — and a
+    /// separate `switch` here is one a test cannot see, i.e. exactly where "which
+    /// state is green" would drift away from what ships.
     var tint: AnyShapeStyle {
-        switch self {
-        case .decrypted: AnyShapeStyle(LoomTheme.Palette.success)
-        case .decryptionFailed: AnyShapeStyle(LoomTheme.Palette.warning)
+        if let paletteTint { return AnyShapeStyle(paletteTint) }
+        return switch self {
         case .tunnelled: AnyShapeStyle(.secondary)
         case .plaintext: AnyShapeStyle(.quaternary)
+        // Unreachable: both chromatic states are answered above.
+        case .decrypted, .decryptionFailed: AnyShapeStyle(.secondary)
         }
     }
 
-    /// The two states that spend a palette hue. Hierarchical ink is not a `Color`,
-    /// so tests that pin "decrypted is green" read this rather than `tint`.
+    /// The two states that spend a palette hue; nil is hierarchical ink, whose
+    /// weight `tint` decides.
     var paletteTint: Color? {
         switch self {
         case .decrypted: LoomTheme.Palette.success

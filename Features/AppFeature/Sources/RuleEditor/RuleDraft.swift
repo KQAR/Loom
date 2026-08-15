@@ -29,8 +29,12 @@ struct RuleDraft {
     /// the editor can get into and then have to resolve on save.
     var style: MatchStyle
     /// Leftover host glob from before that field folded into `urlPattern`. Shown
-    /// as a warning; `build()` drops it, so Save turns the rule live again —
-    /// fold the glob into the URL first, or a `*` pattern starts matching every host.
+    /// as a warning, and **`build()` refuses while it is set**: dropping it
+    /// silently is how a rule scoped to one host becomes one that matches every
+    /// host — the old shape is `urlPattern: "*"` plus the glob, so a `.block` or
+    /// `.mock` rule would go from one origin to all traffic on a Save the human
+    /// read as "acknowledge the warning". `foldHostIntoURL()` and
+    /// `widenToEveryHost()` are the two ways out, and each says which it is.
     var expiredHostPattern: String?
     var queryItems: [QueryItem]
     /// Originating app (bundle id or display name) this rule is scoped to; empty = any.
@@ -216,6 +220,16 @@ struct RuleDraft {
     }
 
     func build() -> Result<TrafficRule, RuleDraftError> {
+        // The one refusal that is about what the rule *would do* rather than about
+        // a malformed field: an expired rule's host scope has to be resolved
+        // deliberately, in one of the two directions, before it can apply again.
+        if let leftover = expiredHostPattern {
+            return .failure(RuleDraftError(message: """
+            This rule still carries the old host “\(leftover)”, which is no longer a match field. \
+            Fold it into the URL pattern (\(Self.foldedURLPattern(host: leftover, into: urlPattern) ?? "e.g. https://\(leftover)*")) \
+            so the rule keeps matching that host, or choose to widen it to every host.
+            """))
+        }
         var actions = RuleActions()
         actions.requestSubstitutions = requestSubs.filter { !$0.isEmpty }
         actions.responseSubstitutions = responseSubs.filter { !$0.isEmpty }
@@ -362,8 +376,8 @@ struct RuleDraft {
                 urlPattern: urlPattern,
                 // Glob vs prefix follows the pattern the human just typed — the
                 // authoring inference, applied once, here. Exact and regex are
-                // explicit choices and are left alone. A leftover host glob is
-                // not written back: Save is how an expired rule becomes live.
+                // explicit choices and are left alone. No leftover host glob can
+                // reach this point — `build()` refuses above until it is resolved.
                 style: style == .regex || style == .exact ? style : .inferred(for: urlPattern),
                 methods: methods.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty },
                 query: queryDict.isEmpty ? nil : queryDict,
@@ -375,6 +389,55 @@ struct RuleDraft {
         )
         if let reason = rule.validationError() { return .failure(RuleDraftError(message: reason)) }
         return .success(rule)
+    }
+
+    // MARK: The expired host glob's two exits
+
+    /// The URL pattern that keeps `host`'s scope, or nil when the existing pattern
+    /// is one this cannot rewrite faithfully.
+    ///
+    /// Only the shapes where the answer is unambiguous are offered. The old
+    /// semantics were "pattern matches the whole URL **and** the glob matches the
+    /// host", and a regex or an exact URL composes with a host glob in ways no
+    /// string edit reproduces — so those get no suggestion and the human edits the
+    /// field, with `widenToEveryHost()` still there if dropping the scope is what
+    /// they meant. The result is always a glob, because an authority with a `*` in
+    /// it is one.
+    static func foldedURLPattern(host: String, into pattern: String) -> String? {
+        let host = host.trimmingCharacters(in: .whitespaces)
+        guard !host.isEmpty else { return nil }
+        let tail = pattern.trimmingCharacters(in: .whitespaces)
+        // "any URL on this host": the shape nearly every stored rule has.
+        if tail.isEmpty || tail == "*" { return "https://\(host)*" }
+        // A path-anchored glob: `*/orders*` becomes the same glob with the
+        // authority spelled out. The leading `*` has to go — left between scheme
+        // and host it matches other hosts too, which is the scope being kept here.
+        if tail.hasPrefix("*/") { return "https://\(host)\(tail.dropFirst())" }
+        // Deliberately no branch for a pattern starting with `/`: matching is against
+        // the **whole** URL, so such a pattern never matched anything to begin with,
+        // and folding a host into it would turn a dead rule live.
+        return nil
+    }
+
+    /// The suggestion offered for *this* draft, or nil when there is none to make.
+    var foldedURLSuggestion: String? {
+        expiredHostPattern.flatMap { Self.foldedURLPattern(host: $0, into: urlPattern) }
+    }
+
+    /// Keep the host scope: write the folded pattern into the URL field and clear
+    /// the leftover. The style follows the new pattern, which is a glob.
+    mutating func foldHostIntoURL() {
+        guard let folded = foldedURLSuggestion else { return }
+        urlPattern = folded
+        style = .inferred(for: folded)
+        expiredHostPattern = nil
+    }
+
+    /// Drop the host scope on purpose. Named for what it does to the traffic, not
+    /// for the field it clears — this is the direction that makes a `*` pattern
+    /// match every host, and it must be a choice with that written on it.
+    mutating func widenToEveryHost() {
+        expiredHostPattern = nil
     }
 
     /// The URL row's two chips. Each is a projection of `style`: turning one on

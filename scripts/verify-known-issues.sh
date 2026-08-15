@@ -85,12 +85,18 @@ check "the custom SF Symbols still resolve"        python3 Tools/symbol-template
 # CI timeout. `EngineTeardown.swift` § "Why there is no runBlocking here any more" has
 # the whole story; the compiler will not catch a relapse, because NIO's
 # `@available(*, noasync)` on `wait()` produced no diagnostic for any of the 109 call
-# sites this replaced. The two allowed uses wait on event-loop threads, never on a task.
+# sites this replaced. The allowed uses wait on event-loop threads, never on a task:
+# listener setup/teardown (`bind`/`close`), and activating an `EmbeddedChannel`, whose
+# `EmbeddedEventLoop` completes the future inline on the calling thread — there is no
+# other thread for it to be waiting on, and it is the documented way to make one active.
+# `connect(to: SocketAddress(…))` is that call's spelling; a real bootstrap's
+# `connect(host:port:)` stays caught.
 check "no test body blocks on a future" bash -c '
 ! grep -rn "\.wait()" --include="*.swift" Engine/*/Tests Features/*/Tests Clients/*/Tests SharedModels/Tests \
   | grep -vE ":[0-9]+: *(//|///|\*)" \
   | grep -v "syncShutdownGracefully" \
-  | grep -vE "(bind|close)\(.*\)\.wait\(\)|\.close\(\)\.wait\(\)"'
+  | grep -vE "(bind|close)\(.*\)\.wait\(\)|\.close\(\)\.wait\(\)" \
+  | grep -vE "connect\(to: SocketAddress\(.*\)\.wait\(\)"'
 check "the blocking test bridges stay deleted" bash -c '
 ! grep -rn "func runBlocking\|func awaitFlowBlocking" --include="*.swift" Engine Features Clients SharedModels'
 
