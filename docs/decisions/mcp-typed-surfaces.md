@@ -2,7 +2,7 @@
 
 > Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
 > **record**, not an instruction: what was tried, what it cost, and why the current shape is
-> the shape. The invariants it produced live in `AGENTS.md` § Core Concepts, which links here —
+> the shape. The invariants it produced live in [`AGENTS.md` § Core Concepts](../../AGENTS.md#core-concepts), which links here —
 > read that first; come here when you are about to re-open the question.
 
 Every agent-facing surface had the same defect in a different place: a value the compiler could

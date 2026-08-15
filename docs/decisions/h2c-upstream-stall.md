@@ -1,5 +1,10 @@
 # The h2c upstream leg is built, works, and is switched off
 
+> Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
+> **record**, not an instruction: what was tried, what it cost, and why the current shape is
+> the shape. The invariant it produced lives in [`AGENTS.md` § MCP Tools](../../AGENTS.md#mcp-tools), which links here —
+> read that first; come here when you are about to re-open the question.
+
 *Recorded 0.0.27. The switch is `NIOStreamingForwarder.cleartextHTTP2Upstream`.*
 
 Loom re-originates every exchange, and 0.0.27 made the upstream leg match the

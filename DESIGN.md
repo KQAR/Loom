@@ -258,7 +258,7 @@ utility — closer to the system's own controls than to a themed Electron tool.
   column. Status class is `{colors.status-success}` 2xx, `{colors.status-redirect}` 3xx,
   `{colors.status-error}` 4xx/5xx/error, `{colors.status-pending}` pending — always with the numeric
   code, plus the failed-row wash (`{colors.row-fill-error}`) which is the same fact at row scale.
-  Method is a second chromatic channel (§ `method-column`): one hue per acting verb, CONNECT stays
+  Method is a second chromatic channel ([§ `method-column`](#main-window)): one hue per acting verb, CONNECT stays
   ink because that row is a tunnel, not an exchange, and the metadata verbs (OPTIONS / TRACE /
   unrecognised) share one grey because the palette runs out before the verbs do. Not decoration —
   two *acting* verbs sharing a hue (or GET wearing none) is how a scan misses the write.
@@ -316,7 +316,7 @@ utility — closer to the system's own controls than to a themed Electron tool.
   | in flight | `{colors.status-pending}` | `Color(.systemGray)` | badge shows `ProgressView` |
 
 - **Hairlines** (`separatorColor`): 1px separators between rows and sections — **main window only**.
-  The console has none at all (§ console): its bands are shapes and padding, and a line between two
+  The console has none at all ([§ console](#layout-console)): its bands are shapes and padding, and a line between two
   things that already look different only costs height there. No borders anywhere, **no gradients,
   ever**; depth is the material plus surface change.
 
@@ -334,6 +334,8 @@ utility — closer to the system's own controls than to a themed Electron tool.
 - **Truncate, don't wrap.** Paths middle-truncate with `.lineLimit(1)`; full text lives in the detail pane.
 
 ## Layout
+
+<a id="layout-console"></a>
 
 ### Status-bar console — a fixed `{metrics.console-width}` popover
 
@@ -362,7 +364,7 @@ the hover highlight, which is an interaction state and not a display one. The ba
 own shapes (a strip of tiles, a list of rows, a strip of glyphs) and by the padding
 between them, which is enough; a hairline between two things that already look different
 only adds density on the surface whose scarcest resource is height. This is a rule about
-the console specifically — the main window still uses hairlines (§ Elevation).
+the console specifically — the main window still uses hairlines ([§ Elevation](#elevation--depth)).
 
 **The header holds only what is about the listener itself.** The helper key sits
 immediately after `ip:port` because that is what it is for — it exists so that pointing
@@ -385,7 +387,7 @@ captioned bottom strip, which spent a whole band on two navigations; the header'
 edge, which put a destination in among the listener's own state) and this is the one that
 costs no line at all.
 
-**Which glyph morphs, which pulses, and why System Proxy does neither: § Motion.** The one
+**Which glyph morphs, which pulses, and why System Proxy does neither: [§ Motion](#motion).** The one
 console-specific consequence: the alert channel carries **outcomes only**, never progress —
 the System Proxy tile's pulse already says a change is in flight, and a spinner plus
 "Setting system proxy…" underneath was the same fact twice on the surface where an
@@ -471,7 +473,7 @@ reasoning as the SSL Scope row's `unread` count excluding deliberate pass-throug
 **A row title never wraps** (`lineLimit(1)`), and the widest row is what sets the panel's
 width — not the other way round. When a state string stops fitting, shorten the *string*:
 `1 need attention` became `1 broken` rather than the console staying 300pt wide for it. A
-row that grows to two lines when a count changes is the height jitter § Motion exists to
+row that grows to two lines when a count changes is the height jitter [§ Motion](#motion) exists to
 prevent.
 
 **Config rows must carry a trailing glyph**, and it is the row's only promise about what
@@ -539,7 +541,7 @@ origin's request still reached it, a refused one's never left the client.
 Its card holds the **whitelist and one control that adds to it**, and nothing else —
 the seen-not-decrypted list it used to lead with is gone, because the request table now
 shows those origins one CONNECT row at a time with the action on the row (see
-§ main-window). Keeping it here made the console a second, aggregated rendering of the
+[§ main-window](#layout-main-window)). Keeping it here made the console a second, aggregated rendering of the
 same origins: a 256-host log showing 6 at a time, in a 300pt panel, above the two lines
 someone opened the card to edit. The add control is a trailing-edge **glyph-only `+`**
 (`{components.button-glyph}` — the same affordance and the same reasoning as Reverse
@@ -603,6 +605,8 @@ never by a dialog:
 
 An inline warning caption plus Cancel/Remove was tried for both and rejected on sight: at
 this width that is two truncated buttons over four wrapped lines for a one-word decision.
+
+<a id="layout-main-window"></a>
 
 ### Main window — sidebar + vertical split (standard debugger layout)
 
@@ -840,7 +844,7 @@ rejecting what failed:
   its whole collection ~5× per data change (resizable columns, single selection): status-dot · # · App ·
   Protocol · Method · Host · Path (middle-truncated, `↻` accent glyph if replayed) · Time. Everything from the
   wire is mono. It is updated by **diffing**, never `reloadData()`, and follows the tail as a glide — both per
-  `{components.request-table}` and CLAUDE.md § Performance.
+  `{components.request-table}` and [AGENTS.md § Conventions](AGENTS.md#conventions) (the performance rules).
 - **`status-dot`** — the status column (`StatusDot`), a 9pt status-class dot with an untitled header: the code
   itself is a tooltip and the inspector's Summary row, and a whole *failed* row is washed instead
   (`{components.row-fill}`). An in-flight exchange shows a small `ProgressView` in the dot's place, so "still
@@ -869,7 +873,7 @@ numeric code; monospace everything from the wire; draw sidebar counts as plain t
 increased-contrast/Reduce-Transparency without code branches.
 
 **Don't** — signal a state change with colour alone when an honest same-family glyph pair
-exists (§ Motion); ship a `.symbolEffect(.replace)` on a glyph that never changes; put a
+exists ([§ Motion](#motion)); ship a `.symbolEffect(.replace)` on a glyph that never changes; put a
 progress sentence under a control that already pulses; let a `switch-tile` caption report state instead of naming the control (that is the tint's job,
 and a control needing more than three values belongs in a `config-row`); reuse a glyph already on screen;
 draw a `Divider`, a stroke, a border or a standing fill anywhere in the console; ship a warning tile with no `console-alert` or `fault-card` beside it; make a `console-alert`'s
@@ -893,10 +897,10 @@ SF Symbol on every label).
   non-activating floating `NSPanel` (`level = .floating`, `becomesKeyOnlyIfNeeded`) over an
   `NSVisualEffectView(.popover)` so the vibrant material is preserved; the panel's close button unpins.
   Gap: it opens at a fixed 380×560 top-trailing and isn't resizable yet.
-- **Approval cards were cancelled, not deferred** (owner decision — see [`INTERACTION.md`](INTERACTION.md)
-  § Guardrail): write tools act directly; supervision is the loopback boundary + audit trail. The former
+- **Approval cards were cancelled, not deferred** (owner decision — see
+  [`INTERACTION.md` § Guardrail](INTERACTION.md#the-guardrail-loopback-boundary--full-audit-trail)): write tools act directly; supervision is the loopback boundary + audit trail. The former
   `approval-card` spec was removed with them; `fault-card` shipped and stays.
 - Liquid Glass button styles (`.glassProminent`/`.glass`) are macOS 26-only; on the macOS 14 baseline use
   `.borderedProminent`/`.bordered`. That baseline is now what the app actually renders in — see
-  `system-design` at the top of this file — so those styles would be inert here anyway. The brand mark is now specified (§ Brand mark) and shipping in the menu bar;
+  `system-design` at the top of this file — so those styles would be inert here anyway. The brand mark is now specified ([§ Brand mark](#brand-mark)) and shipping in the menu bar;
   the **app icon** is still unspecified and is the remaining branding gap.

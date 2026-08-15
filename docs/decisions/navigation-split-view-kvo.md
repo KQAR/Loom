@@ -1,6 +1,6 @@
 # NavigationSplitView's quadratic KVO teardown (why `MainView` is not a `NavigationSplitView`)
 
-The conclusion lives in AGENTS.md § Known Issues and DESIGN.md `{components.main-window}.structure`:
+The conclusion lives in [AGENTS.md § Known Issues](../../AGENTS.md#known-issues) and DESIGN.md `{components.main-window}.structure`:
 **do not swap `MainView` back to `NavigationSplitView`.** This page is the full two-round
 investigation record backing that decision, kept so nobody has to re-earn it.
 
@@ -46,7 +46,7 @@ and launch, at deployment targets 14 and 26 alike: `Trace file had no SwiftUI da
 
 **`MainView` now uses `HSplitView` — do not swap it back.** The collapse button
 `NavigationSplitView` provided is hand-rolled (toolbar `sidebar.left`, `.navigation` placement,
-⌃⌘S, `sidebarVisible` state); DESIGN.md § main-window records the container decision. The
+⌃⌘S, `sidebarVisible` state); [DESIGN.md § main-window](../../DESIGN.md#layout-main-window) records the container decision. The
 steady-state half was fixed earlier (PR #156): row bodies re-running for unrelated state, the
 tail-follow scroll firing on renders that added no row, and a 24 ms `NSWorkspace` icon read inside
 a cell.

@@ -2,7 +2,7 @@
 
 > Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
 > **record**, not an instruction: what was tried, what it cost, and why the current shape is
-> the shape. The invariants it produced live in `AGENTS.md` § Known Issues, which links here —
+> the shape. The invariants it produced live in [`AGENTS.md` § Known Issues](../../AGENTS.md#known-issues), which links here —
 > read that first; come here when you are about to re-open the question.
 
 ## The three test bundles that were deliberately on Swift 5 (0.0.16)
@@ -33,7 +33,7 @@ scheduled".
 **That framing was wrong and it cost real time.** The warnings were never about the handlers,
 only about *where handlers were constructed*, and every one of them went away without changing
 a single handler type — two idioms, both now documented at the sites in
-`Engine/ProxyCore/CLAUDE.md` § Sendable escape hatches:
+[`Engine/ProxyCore/CLAUDE.md` § Sendable escape hatches](../../Engine/ProxyCore/CLAUDE.md#sendable-escape-hatches-what-each-kind-actually-promises):
 
 - construct handlers **inside** `channel.eventLoop.makeCompletedFuture { … }` and add them via
   `channel.pipeline.syncOperations` — that body is not `@Sendable`, unlike `flatMap`'s, so

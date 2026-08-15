@@ -1,5 +1,10 @@
 # TSan on macOS 26: a runtime bug, not an OS limitation
 
+> Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
+> **record**, not an instruction: what was tried, what it cost, and why the current shape is
+> the shape. The invariant it produced lives in [`AGENTS.md` § Known Issues](../../AGENTS.md#known-issues), which links here —
+> read that first; come here when you are about to re-open the question.
+
 *Measured 2026-08-12 — macOS 26.5 (25F71), Xcode 26.3, arm64.*
 
 For several releases `AGENTS.md` carried this, in two places:
@@ -123,7 +128,7 @@ xcodebuild line.
 
 **`error: Cycle inside CNIOWASI … 'Copy Module Map'`** — the run landed in the default
 DerivedData, which was generated against a different build graph. This is the same
-stale-products signature AGENTS.md § CI records from the Swift 6 migration, and it reads
+stale-products signature [AGENTS.md § CI](../../AGENTS.md#ci) records from the Swift 6 migration, and it reads
 exactly like a source bug. The script uses its own `-derivedDataPath`
 (`.build/tsan-DerivedData`, overridable via `LOOM_TSAN_DERIVED_DATA`), which is also right on
 its own terms: an instrumented build shares nothing useful with the ordinary Debug one.

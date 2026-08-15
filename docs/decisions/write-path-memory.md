@@ -1,5 +1,10 @@
 # The capture write path's memory: measured, and not a leak
 
+> Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
+> **record**, not an instruction: what was tried, what it cost, and why the current shape is
+> the shape. The invariant it produced lives in [`AGENTS.md` § Conventions](../../AGENTS.md#conventions), which links here —
+> read that first; come here when you are about to re-open the question.
+
 *Investigated 0.0.21. Numbers are Debug, arm64, and each figure below is from a probe
 that was deleted after reading — reproduce by re-writing it rather than trusting the
 numbers to still hold.*

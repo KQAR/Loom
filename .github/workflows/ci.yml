@@ -358,3 +358,38 @@ jobs:
           name: tsan-log
           path: ${{ runner.temp }}/tsan.log
           retention-days: 7
+
+  # The only job that runs on a docs-only change, and that is the point: both
+  # gates protect prose, which is exactly what such a change is made of. It
+  # takes no `needs: changes` guard for the same reason.
+  #
+  # Ubuntu and stock python3 — no Xcode, no Tuist, no SPM resolution. The whole
+  # job is seconds, so it can gate every push without being felt.
+  docs:
+    name: Documentation gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # AGENTS.md loads in full at the start of every session, so its size is
+      # paid per task rather than per read. Nothing measured that before this
+      # gate and it reached ~19 600 words. The ceiling fails on growth only:
+      # relocate, condense, or raise it deliberately (AGENTS.md § Documentation
+      # budgets has the order and the targets).
+      - name: Word budgets
+        run: scripts/verify-doc-budgets.py
+
+      # A rotted link is worse than no link: the sentence still promises the
+      # reasoning is one click away. Anchors rot more quietly than paths — a
+      # renamed heading breaks every `file.md#old-heading` and nothing else in
+      # this repo would notice.
+      - name: Markdown links and anchors
+        run: scripts/verify-md-links.py
+
+      # Both halves of the AGENTS.md-holds-the-invariant / record-holds-the-story
+      # split rot silently: a record nobody points at is a record nobody reads,
+      # and a hand-written index drifts by construction. Both had already
+      # happened when this was added.
+      - name: Decision records indexed and cross-linked
+        run: scripts/verify-decision-records.py

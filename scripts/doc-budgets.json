@@ -1,0 +1,30 @@
+{
+  "_comment": [
+    "Word ceilings for the standing docs, enforced by scripts/verify-doc-budgets.py.",
+    "A ceiling is a ratchet, not a reduction target. The relocate -> condense -> raise",
+    "order lives in AGENTS.md section 'Documentation budgets'. There is deliberately",
+    "no target word count there — what belongs in a doc is decided by a question, not a number.",
+    "docs/decisions/ is deliberately unbudgeted: it is where the stories go, and",
+    "budgeting it would push them back into AGENTS.md, which is the thing being fixed.",
+    "CLAUDE.md is a symlink to AGENTS.md and is budgeted once, under the real file.",
+    "The four over-target docs are frozen at what they measure; the rest carry 5% headroom."
+  ],
+  "AGENTS.md": 10470,
+  "DESIGN.md": 14948,
+  "ROADMAP.md": 12342,
+  "Engine/ProxyCore/CLAUDE.md": 10584,
+  "skills/loom/references/workflows.md": 2086,
+  "INTERACTION.md": 1825,
+  "skills/loom/SKILL.md": 1715,
+  "Engine/ProxyCore/FORWARDING.md": 1327,
+  ".claude/skills/embed-engine/SKILL.md": 796,
+  "skills/loom/references/filing-a-bug.md": 681,
+  ".claude/skills/release/SKILL.md": 901,
+  "Features/AppFeature/CLAUDE.md": 2777,
+  "Clients/PrivilegedHelperClient/CLAUDE.md": 1587,
+  ".github/CLAUDE.md": 316,
+  ".claude/skills/pre-push-checks/SKILL.md": 955,
+  "Engine/MCPServer/CLAUDE.md": 1205,
+  ".claude/skills/docs-standard/SKILL.md": 1326,
+  "README.md": 465
+}

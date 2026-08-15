@@ -2,7 +2,7 @@
 
 > Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
 > **record**, not an instruction: what was tried, what it cost, and why the current shape is
-> the shape. The invariants it produced live in `AGENTS.md` § Architecture § Conventions, which
+> the shape. The invariants it produced live in [`AGENTS.md` § Architecture](../../AGENTS.md#architecture) and [§ Conventions](../../AGENTS.md#conventions), which
 > links here — read that first; come here when you are about to re-open the question.
 
 Every rule in that section carries one number, because a number is what tells you a regression
