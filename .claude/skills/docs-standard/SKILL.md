@@ -1,0 +1,41 @@
+---
+name: docs-standard
+description: Use when writing, moving, trimming or auditing Loom's documentation — deciding which file a fact belongs in, responding to a red doc-budget or link gate, relocating content out of the always-loaded AGENTS.md, or adding a module CLAUDE.md or a decision record.
+---
+
+# Loom's documentation standard
+
+Guidance, not a script. The gates are `scripts/verify-doc-budgets.py`,
+`scripts/verify-md-links.py` and `scripts/verify-decision-records.py`; they run in CI's `docs`
+job and, for the files they read, in `.githooks/pre-commit`. `scripts/audit-doc-shape.py` is
+report-only and says *where* a doc's words are.
+
+## The one question
+
+**Would an agent doing an unrelated task be wrong without this?**
+
+- **Yes** → the root [`AGENTS.md`](../../../AGENTS.md). Standing orders, one to three lines each,
+  linking their home.
+- **Only while touching this module** → that module's own `CLAUDE.md`, which loads when the work
+  is there and costs nothing when it isn't.
+- **Only while doing this task** → a skill under `.claude/skills/`, lazy-loaded.
+- **None of those — it is history** → [`docs/decisions/`](../../../docs/decisions/README.md).
+
+Where an entry has **two readers, it splits by reader, not by subsystem**: a red-CI tell stays
+beside the paragraph that sends someone looking, while the mechanism behind it goes to the module.
+
+Before relocating, verify proposition by proposition that the destination already carries what you
+are about to delete. "This is a duplicate" judged from a matching heading is how a fact gets lost —
+it nearly cost the one sentence naming gRPC as the origin that refuses an h1 request.
+
+**This file loads in full at the start of every session, so its size is paid per *task*, not per read** — and nothing measured that until `scripts/doc-budgets.json` did (`scripts/verify-doc-budgets.py`, `--list` to report without failing). It counts `wc -w` over the raw file, because a smarter count would be a better measure of what a reader pays and a worse gate: it would disagree with the one command anyone can run by hand.
+
+A ceiling is a **ratchet, not a reduction target** — it fails on growth, so the order when it goes red is **relocate → condense → raise**, and a raise is a deliberate manifest diff justified in the PR. The four big docs are frozen at what they measure today; everything else carries 5 % headroom. **There is deliberately no target word count**, because any number worth holding to would have to be derived and none was: what belongs here is decided by one question — *would an agent doing an unrelated task be wrong without this?* Yes is a standing order and stays. Only-when-touching-this-module belongs in that module's own `CLAUDE.md`, which loads when the work is there and costs nothing when it isn't. Only-when-doing-this-task belongs in a skill. Neither, just history, belongs in `docs/decisions/`. The target is whatever survives that pass, and Loom's under-used lever is the second one: this repo has two `CLAUDE.md` files where the subsystems would carry five. **`docs/decisions/` is deliberately unbudgeted**: it is where the stories go, and budgeting it would push them back into this file, which is the thing being fixed. `scripts/audit-doc-shape.py` says *where* the words are (report-only, never a gate) — relocation is the only lever that scales, and it needs a measurement rather than an impression: this file's Known Issues is 32 % of it.
+
+**A relative Markdown link is the checked form of a cross-reference; naming a section in prose is not.** `scripts/verify-md-links.py` resolves every relative link *and* every `#fragment` — heading slugs and explicit `<a id>` — over all tracked `*.md`, ignoring fenced blocks and inline code spans, and never touching the network. A bare `§ Known Issues` survives a rename silently; `[§ Known Issues](AGENTS.md#known-issues)` does not, so every cross-file and cross-section `§` in this repo is a link. Three carve-outs: an external standard keeps its own numbering (`RFC 9113 §3.4`), a pointer at a **source file**'s comment (`EngineTeardown.swift § "…"`) has nothing to resolve, and **DESIGN.md's YAML head is front matter** — GitHub hides it, so a link there is invisible and `§` is the only readable form. Where the cited name is not a heading, the target carries an explicit anchor (`<a id="m2">` on ROADMAP's milestones, `layout-console` / `layout-main-window` in DESIGN.md) rather than a slug that moves when the heading is reworded.
+
+**And the invariant/record split is checked in both directions** (`scripts/verify-decision-records.py`): every file in `docs/decisions/` is a row in its README index and links back to the standing doc whose invariant it produced, and every record is linked *from* one. Both halves rot silently — a record nobody points at is a record nobody reads, a hand-written index drifts by construction — and both already had, twice each, when the gate was written. Prose shape is deliberately **not** checked: an incident, a rejected design and a measurement read differently, and a mandated `## Alternatives considered` heading would be satisfied by an empty one.
+
+**`.githooks/pre-commit` runs the whitespace check and whichever of those three gates the staged files reach** (`scripts/install-hooks.sh` sets `core.hooksPath`; nothing to download, and `--no-verify` is a legitimate mid-work escape because CI runs the same gates anyway). It is deliberately the only hook: a hook slow enough to be worth bypassing is worse than none. **What to run before a push is a selection, not a ritual** — the narrowest check that would fail for *this* diff — and the table is [`.claude/skills/pre-push-checks`](../pre-push-checks/SKILL.md), along with the two traps that make a green local run mean nothing.
+
+**A red run on `main` is not automatically a regression.** Re-run the failed job before diagnosing. The breakpoint-timing flakes and the capture-read races are **fixed rather than tuned** (`BreakpointTests` waits on announcements instead of spinning; `awaitFlow` in `EngineTeardown.swift` waits, bounded, for a flow satisfying a condition), so if one of those goes red now, treat it as real. What is still genuinely flaky: the h2 **upload** stall and infrastructure. **The upload stall has one signature and it is exact** — `consumed = 65535`, with client bytes still outstanding, is the known upstream deadlock ([#99](https://github.com/KQAR/Loom/issues/99), roughly 1 % of h2 bodies over 65535 bytes, reproducible with SwiftNIO alone); **anything else is a new bug**, and reads-issued going flat does *not* distinguish them, because that counter is demand-driven. **A red TSan job also means something**: its one upstream report is suppressed rather than re-run, and a canary proves the suppression still reports a real race — so read it by asking whether Loom code *performs* the racing access, not whether a Loom name appears (a Loom frame atop an otherwise all-NIOCore stack is the function awaiting `EventLoopFuture.get()`). It runs `ProxyCoreTests` only, so every other bundle is structurally exempt and its findings apply there by hand. Both mechanisms: [`Engine/ProxyCore/CLAUDE.md` § Known issues (engine-scoped)](../../../Engine/ProxyCore/CLAUDE.md#known-issues-engine-scoped). `h2RequestIsDecryptedForwardedAndCaptured()` timing out at the suite limit is **still open, with one cause removed** — the test now reports the stalled stage, the timeline, the negotiated ALPN and a stack sample under a bounded 25 s per-stage deadline, so the next red run is worth *reading* rather than re-running (what the removed cause was, and why the timeout outlived it: the record below). "not acquired by Runner" is not your change. A **`cancelled`** job is a third thing again and does not mean anyone cancelled anything: `timeout-minutes` covers "Set up job", so during an Actions outage a job dies there and its dependents report *skipped*. The tell is a step list with nothing completed but "Set up job" — `gh api repos/KQAR/Loom/actions/jobs/<id> --jq '.steps'`, then https://www.githubstatus.com. Note the PR check and the `main` check are separate runs: a green PR does not mean `main` went green. The four incidents behind each of those sentences: [`docs/decisions/ci-red-run-triage.md`](../../../docs/decisions/ci-red-run-triage.md).

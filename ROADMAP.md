@@ -2,7 +2,7 @@
 
 Single source of truth for Loom's **positioning**, and the record of **why each round happened**. When a scope or prioritization question arises, this doc wins over legacy assumptions in code or older notes. The user-facing shape of these phases is specified in [`INTERACTION.md`](INTERACTION.md); the visual system in [`DESIGN.md`](DESIGN.md).
 
-Note what this is not, any more. Every phase below is **done** and nothing is queued (`AGENTS.md` § Scope — "pick the next round from real usage pain"), so the half of this file below § Positioning is a *ledger*, not a plan: what each round was for, what it cost and which belief it overturned. That is why it is cited from code (`ROADMAP § Structured Channel` for the legacy-era retirement condition, `§ M8` for the sniff, `§ h2c upstream`) and why deleting it would strand those citations. `AGENTS.md` § Scope holds what Loom does **today** and the invariants that go with it; it deliberately no longer mirrors the milestone ledger.
+Note what this is not, any more. Every phase below is **done** and nothing is queued ([`AGENTS.md` § Scope](AGENTS.md#scope) — "pick the next round from real usage pain"), so the half of this file below [§ Positioning](#positioning) is a *ledger*, not a plan: what each round was for, what it cost and which belief it overturned. That is why it is cited from code ([§ Structured Channel](#structured-channel--decided) for the legacy-era retirement condition, [§ M8](#m8) for the sniff, and [`docs/decisions/h2c-upstream-stall.md`](docs/decisions/h2c-upstream-stall.md) for the cleartext-h2 upstream) and why deleting it would strand those citations. [`AGENTS.md` § Scope](AGENTS.md#scope) holds what Loom does **today** and the invariants that go with it; it deliberately no longer mirrors the milestone ledger.
 
 ## Positioning
 
@@ -35,6 +35,8 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 
 ## Iteration Phases (all done — a ledger, not a plan)
 
+<a id="m1"></a>
+
 ### M1 — AI link (done)
 
 - SwiftNIO HTTP proxy on `:9090`; CONNECT blind-tunnels HTTPS (uncaptured) so browsing survives.
@@ -42,6 +44,8 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 - Read tools (`get_recent_flows`, `get_flow_detail`) **and one write tool** (`replay_flow` with method/url/header/body overrides).
 - Menu-bar shell + Inspector window (flow list / detail / Replay).
 - **Verified**: capture → list → replay-with-override → target sees the changed request, all via MCP, no GUI.
+
+<a id="m2"></a>
 
 ### M2 — HTTPS interception (interception done; a scoped privileged helper shipped in 0.0.17; system-domain CA trust still ruled out)
 
@@ -51,6 +55,8 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 - **What ships for CA trust, and is sufficient**: **user-domain** trust (the console's "Install & Trust" → `CertificateTrust.installUserTrust`, one login-password prompt). The un-escalated `networksetup` + one-osascript path remains the fallback whenever the helper is absent, unapproved or silent. Consciously given up: non-admin users, and the helper's crash watchdog (a crashed Loom's leftover proxy/QUIC override is instead surfaced and cleared by the next launch's boot sync). The manual system-domain route stays documented: `export_ca_certificate` → `sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <path>`.
 - The two attempts in full — the seven findings that each cost a build, what 0.0.16 deleted and why the belief attached to that deletion was wrong (**a claim about what the platform refuses is a measurement, not a deduction**): [`docs/decisions/privileged-helper.md`](docs/decisions/privileged-helper.md).
 
+<a id="m3"></a>
+
 ### M3 — Write actions, closed loop
 
 - `set_rule` (map local / map remote / block / rewrite header / throttle) — done. `diff_flows` — **done**: structured request/response diff (method/url, header add/remove/change, status, line-level body diff for text); `base` alone diffs a replay against its `replayedFrom` original, closing the capture → modify → replay → diff loop over MCP.
@@ -58,11 +64,15 @@ M1 proves this loop on plain HTTP. Each later milestone widens what the agent ca
 - **Write-action safety**: the MCP control plane binds loopback-only (not the LAN-exposed proxy port) and every write is recorded in a durable audit trail; write tools act directly, with no approval gate (owner decision — see [`INTERACTION.md`](INTERACTION.md)).
 - **Rule-model authoring surfaces — done.** The model has exact-match, query predicates, and base64 (binary) mock bodies. A host glob belongs in `url_pattern` (`https://*.example.com*`); a leftover `host_pattern` expires the rule until it is folded in. The `set_rule` MCP schema exposes `match_style`/`query`/`body_base64`. The SwiftUI Rule editor surfaces the same set: exact-match (`=`) and regex toggles, a collapsible **Match conditions** group (query + origin), and a **Binary (base64)** mock-body mode — all round-tripped through `RuleDraft`.
 
+<a id="m4"></a>
+
 ### M4 — Protocol breadth
 
 - HTTP/2 (`swift-nio-http2`), WebSocket frame capture, GraphQL-aware inspector — **done**.
 - Persistent store — **done** (SQLite, not GRDB): completed flows persist to `~/Library/Application Support/com.loom/flows.sqlite` and reload on launch; HAR **export** ships (`export_har`), and — M6 — HAR **import** (`import_har`, flows labelled `importedFrom`, unusable entries counted) plus **redacted evidence bundles** (`export_har(redact:)`: credential headers and token query params replaced, never deleted; optional body drop keeping sizes).
 - Stream request bodies — **done**: uploads no longer buffer whole in memory. The request handlers bridge inbound body chunks into a back-pressured async stream (`RequestBodyBridge`, built on `NIOThrowingAsyncSequenceProducer` + a high/low-watermark strategy driving `channel.read()` with `autoRead` paused), and `NIOStreamingForwarder` relays chunks awaiting each flush so a slow upstream back-pressures the client — in-flight bytes stay bounded to the watermark, not the body size. Forwarding starts on the request head (lower latency) instead of after the last byte. A capped `RequestBodyCapture` tees the body for the inspector. Pure passthrough streams; a request-body-mutating rule / short-circuit / matching breakpoint buffers (`RequestBody.collect()`). Applies to **both HTTP/1.1 and HTTP/2** — the stream starts lazily on the first body chunk, so an h2 DATA body with no Content-Length streams too, and the bridge's `read()` replenishes the h2 flow-control window. WebSocket was already streamed (a separate byte-transparent frame splice, never buffered). (There was never a real 413 cap — this replaces unbounded buffering with bounded streaming.)
+
+<a id="m5"></a>
 
 ### M5 — Operability, quality & correctness (done)
 
@@ -73,6 +83,8 @@ Hardening the AI-operated loop for sustained real use. The operator is an agent 
 - **Logging & audit trail — done.** The MCP write surface (replay / rules / breakpoints / ssl-scope / har) now records a durable **audit log of write actions** — the choke point is `MCPToolExecutor.call`, entries persist to `audit.sqlite` (row-capped, survives relaunch), and the trail is surfaced to the supervising human in the main-window **sidebar → Audit** panel and to an agent via the `get_audit_log` MCP read tool. Reads are never logged; a test pins the audited set to the "write action"-marked definitions so a write can't slip past. The **fail-open paths now log at error level** (`Log.audit`/`Log.rules` join `proxy`/`tls`/`forward`/`store`/`websocket`): a corrupt or unreadable CA store — which silently regenerates a root CA and invalidates the trusted one — an unopenable flow/audit database, a dropped persistence write or undecodable row, an unreadable rules file (every rule vanishing, so "mocked" traffic quietly hits the real upstream), an undecodable SSL scope (interception silently off), a `mapRemote` whose destination doesn't parse (reported as applied while the request went to the original origin), and an unreadable `mapLocal` file. `os.Logger` stays; a pluggable backend waits until a non-Apple embedder needs it.
 - **CI gate — done.** Until now the only workflow was tag-driven `Release`, which archives and never tests: ~425 tests ran on developer machines and nowhere else. `.github/workflows/ci.yml` now runs on every PR and push to main — the full Tuist graph + all five test bundles, plus `swift build`/`swift test` on the root `Package.swift` so the embeddable-library graph can't rot unnoticed. The gate is **not** xcodebuild's exit code: `scripts/assert-tests-ran.sh` reads the result bundle and fails unless every expected bundle actually executed, because a stale project makes xcodebuild print `** TEST SUCCEEDED **` after running zero tests. **Thread Sanitizer** on `ProxyCoreTests` is blocking and its baseline is clean — 229 instrumented tests, zero races, the first real check on the Swift-5 `@unchecked Sendable` channel handlers. It only runs in CI: TSan's runtime segfaults during its own init on macOS 26, so an incomplete run is reported inconclusive rather than clean.
 - **Correctness guarantees — done.** The five invariants that, if violated, corrupt what the agent believes are now named and pinned in `EngineInvariantTests.swift`, one suite each: **one write path** (a replay obeys the rules and breakpoints armed for live traffic, and stays visible/resumable while held), **body hydration** (the same bytes come back whether a body is live in the ring, slimmed by the byte budget, or evicted to SQLite — and the list read never hydrates while detail/export do), **one rule choke point** (buffered and streaming forwarding reach identical verdicts, including short-circuits), **breakpoints always release** (every exit — resume, abort, disarm, timeout, client hang-up — frees the exchange, and racing resolvers claim it at most once), **replay links its flow** (succeeded, rule-answered or failed, each records exactly one flow pointing back at its source, even while capture is paused). Each was mutation-checked: breaking the invariant in the source makes exactly its test fail, so none of them pass vacuously. Fault injection now also covers the durable stores — an unopenable database, a file SQLite opens but can't use (writes silently dropped), an undecodable row, and the same on the audit trail — alongside the CA / rules / SSL-scope faults already there.
+
+<a id="m6"></a>
 
 ### M6 — Cheaper agent loops (done)
 
@@ -106,6 +118,8 @@ loop, a guess, or an arithmetic detour:
   `SystemRoutingControlling` is injected by the app, keeping the layering one-way.
 - **HAR both ways** — import (above) and redacted export, so a capture can arrive
   from a colleague and leave for a ticket.
+
+<a id="m7"></a>
 
 ### M7 — Cross-surface parity (done)
 
@@ -221,6 +235,8 @@ about. All four items are now settled:
    *fifth* surface appears (a rule-import format, a config file), collapse before
    adding it.
 
+<a id="m8"></a>
+
 ### M8 — Capture reach (done, 0.0.10)
 
 M1–M7 assumed the traffic arrives. This round is about the traffic that never
@@ -315,7 +331,7 @@ three real gaps — not protocol-parsing gaps, *arrival* gaps:
 
 ### Known-Issues audit (done, 0.0.11)
 
-No new capability — a pass over every entry in AGENTS.md § Known Issues, checking
+No new capability — a pass over every entry in [AGENTS.md § Known Issues](AGENTS.md#known-issues), checking
 each claim against the code rather than trusting it. All 16 entries were real and
 broadly accurate, which was the reassuring half. The other half: **four of the
 described fixes didn't work, and three entries described code that doesn't exist.**
@@ -410,7 +426,7 @@ AGENTS.md was mirroring ROADMAP narrative instead of pointing at it, and a skill
 claimed `set_system_proxy` restores the previous proxy owner — the opposite of the
 written decision. Same failure mode as the 0.0.11 audit, one layer up. CI now skips
 the build jobs on docs-only changes, and **ad-hoc signing is recorded as a decision**
-rather than a gap, which parks *system-domain CA trust* for good (§ M2 — the system-proxy helper is a different question, and shipped in 0.0.17).
+rather than a gap, which parks *system-domain CA trust* for good ([§ M2](#m2) — the system-proxy helper is a different question, and shipped in 0.0.17).
 
 ### What the agent can see (done, 0.0.13)
 
@@ -482,7 +498,7 @@ actually missing was the escape hatch for the *other* half.
 
 Why this shape rather than the alternatives:
 
-1. **Not transparent interception.** M8 § 4 still stands — pf `rdr` plus
+1. **Not transparent interception.** [§ M8](#m8) item 4 still stands — pf `rdr` plus
    `DIOCNATLOOK` is the most expensive item on the list and the one an agent can
    never perceive. A reverse endpoint reaches the same clients for a fraction of the
    cost, and an agent can create one itself.
@@ -719,7 +735,7 @@ promise — and it is resolved by keeping *one* spelling rather than by completi
 because `list_pending` renders an `id` on both an armed breakpoint and a held exchange:
 the argument name meant to make copying safe is the one that cannot say which of the two
 was copied, and the wrong one comes back as "no such hold", i.e. as a hold that resolved on
-its own. Detail in AGENTS.md § MCP Tools.
+its own. Detail in [AGENTS.md § MCP Tools](AGENTS.md#mcp-tools).
 
 **Rule matching was Foundation string search, on the event loop, per rule, per request.**
 `Glob` lowercased both sides and walked interior segments with `String.range(of:)`;
@@ -753,7 +769,7 @@ time is now the pattern-cache lookup, which only a prepared rule list owned by
 `List` dims its rows when the window stops being key, and a row that *names* `.primary`
 opts out and stays lit alone. The sidebar's Breakpoints row — the one category that turns
 orange when it has something to report — was the only bright row in an unfocused window,
-reporting nothing. DESIGN.md § Colors carries the rule, including where naming an ink is
+reporting nothing. [DESIGN.md § Colors](DESIGN.md#colors) carries the rule, including where naming an ink is
 correct (overriding a `Button` label's accent).
 
 ### The window's width reaches the columns, and a "can't" turns out to be a wrong diagnosis (0.0.25)
@@ -780,7 +796,7 @@ view to the viewport, so the frame reports the width the table was *given* rathe
 width its columns occupy — `lastMaxX=927` at a 900pt viewport and again at 1900pt, with the
 frame reading 900 and 1900. The first version computed the gap from the frame, which is
 identically zero, and shipped a no-op that read correctly; the test harness's own
-`trailingGap` had the same bug and reported green through it. DESIGN.md § request-table
+`trailingGap` had the same bug and reported green through it. [DESIGN.md § request-table](DESIGN.md#main-window)
 carries the rule and the trap.
 
 **And ThreadSanitizer runs locally, which AGENTS.md said for several releases it could not.**

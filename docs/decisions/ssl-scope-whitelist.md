@@ -2,10 +2,10 @@
 
 > Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
 > **record**, not an instruction: what was tried, what it cost, and why the current shape is
-> the shape. The invariants it produced live in `AGENTS.md` § Known Issues, which links here —
+> the shape. The invariants it produced live in [`AGENTS.md` § Known Issues](../../AGENTS.md#known-issues), which links here —
 > read that first; come here when you are about to re-open the question.
 
-The entry that sent you here was 18 KB, a third of § Known Issues, and most of it was this:
+The entry that sent you here was 18 KB, a third of [§ Known Issues](../../AGENTS.md#known-issues), and most of it was this:
 five rejected surfaces, three tool comparisons and the measurements that settled them.
 
 ## Why a whitelist at all

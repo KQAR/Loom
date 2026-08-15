@@ -1,0 +1,46 @@
+#!/bin/bash
+# Loom pre-commit. Deliberately narrow and fast — CI owns the exhaustive matrix
+# (the build, five test bundles, TSan, the SPM graph). A hook that takes a minute
+# gets bypassed with --no-verify, which is worse than no hook.
+#
+# Install: scripts/install-hooks.sh (sets core.hooksPath; nothing to download).
+# Bypass:  git commit --no-verify — legitimate mid-work; CI still gates.
+
+set -uo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root" || exit 1
+
+failed=0
+
+# Trailing whitespace, missing final newline, stray conflict markers — cheap,
+# and the "files end with exactly one trailing newline" convention has no other
+# enforcement.
+if ! git diff --cached --check; then
+  echo "pre-commit: whitespace errors above (git diff --cached --check)." >&2
+  failed=1
+fi
+
+# The three documentation gates, but only when the commit touches something they
+# read. A Swift-only commit pays nothing.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if grep -qE '(\.md$|^scripts/doc-budgets\.json$)' <<<"$staged"; then
+  scripts/verify-doc-budgets.py >/dev/null || failed=1
+  scripts/verify-md-links.py >/dev/null || failed=1
+fi
+
+if grep -qE '^docs/decisions/' <<<"$staged"; then
+  scripts/verify-decision-records.py >/dev/null || failed=1
+fi
+
+if [ "$failed" -ne 0 ]; then
+  echo >&2
+  echo "pre-commit failed. Run the gate directly for the full report:" >&2
+  echo "  scripts/verify-doc-budgets.py --list" >&2
+  echo "  scripts/verify-md-links.py" >&2
+  echo "  scripts/verify-decision-records.py" >&2
+  exit 1
+fi
+
+exit 0

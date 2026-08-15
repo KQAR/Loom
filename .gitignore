@@ -26,3 +26,6 @@ xcuserdata/
 # a snapshot of "what was wrong on 2026-07-29" rots in the tree. Ignored because
 # a `git add -A` swept one such batch in by accident (#127).
 scratch/
+
+# Python bytecode from the documentation gates in scripts/.
+__pycache__/

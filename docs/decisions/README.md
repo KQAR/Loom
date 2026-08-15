@@ -28,9 +28,11 @@ to the section whose invariant it produced.
 | [`h2-cookie-crumbs.md`](h2-cookie-crumbs.md) | The model holds one `cookie` field; the crumb split is an encoding applied on the h2 leg |
 | [`swift6-language-mode-migration.md`](swift6-language-mode-migration.md) | The four shapes the last test bundles cost, and why ~25 warnings were never the `NIOAsyncChannel` rework |
 | [`entitlements-modified-during-build.md`](entitlements-modified-during-build.md) | Never `.dictionary` — Tuist rewrites the mtime, Xcode calls that "modified", and the failure sticks |
-| [`capture-path-performance.md`](capture-path-performance.md) | Every number in § Architecture's performance rules, plus the six versions that were wrong (one slower than what it replaced) |
+| [`capture-path-performance.md`](capture-path-performance.md) | Every number in [§ Architecture](../../AGENTS.md#architecture)'s performance rules, plus the six versions that were wrong (one slower than what it replaced) |
 | [`mcp-typed-surfaces.md`](mcp-typed-surfaces.md) | One hole — a dictionary the compiler can't see into — closed in three passes: render, schema, arguments |
 | [`h2-header-block-downgrade.md`](h2-header-block-downgrade.md) | Drop ALPN `h2` for a host whose first header block trips the pre-ACK HPACK limit — and mark every flow |
+| [`h2c-upstream-stall.md`](h2c-upstream-stall.md) | The cleartext-h2 upstream leg works and is switched off — a hang with nothing on any surface is the failure this proxy exists to prevent |
+| [`tsan-local-runtime.md`](tsan-local-runtime.md) | The local TSan segfault is a sanitizer-runtime bug, not an OS limitation — and one identical-looking signature is a suppressions-file TCC failure instead |
 
 ## Writing one
 

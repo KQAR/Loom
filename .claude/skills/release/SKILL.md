@@ -77,7 +77,7 @@ What ad-hoc signing rules out is narrower than this file used to claim. It does 
 privileged helper — that shipped in 0.0.17 and works on an ad-hoc build (measured: registers,
 launches as uid 0, serves the system-proxy toggle). What it rules out is *system-domain CA trust*,
 because an ad-hoc caller check is forgeable and a root process installing a trusted root CA on a
-forgeable caller's word is machine-wide MITM. See ROADMAP § M2.
+forgeable caller's word is machine-wide MITM. See [ROADMAP § M2](../../../ROADMAP.md#m2).
 
 ## Sparkle tools
 
@@ -89,3 +89,7 @@ Fetched by `tuist install` into `Tuist/.build/artifacts/sparkle/Sparkle/bin`:
 Sparkle's transitive framework module must be listed as an explicit `.external(name: "Sparkle")`
 dep on any test target that `@testable import`s AppFeature (see `AppFeatureTests`), or the import
 fails with "Unable to find module dependency: 'Sparkle'".
+
+## Signing and auto-update: the standing decision
+
+- **Auto-update (Sparkle) is armed end-to-end and stays on ad-hoc signing by decision.** *(verified 0.0.24 for the committed config — the key, the ad-hoc identity, the feed URL. Whether a published appcast still installs is not re-checked here; that needs a release.)* `UpdaterClient`/`UpdaterCoordinator` + the panel footer "Update" button work in-app: a silent probe runs at most once a day (self-gated on `com.loom.lastUpdateCheck` in UserDefaults; `SUEnableAutomaticChecks` is deliberately off so the probe stays UI-less), and a user-initiated tap shows Sparkle's install UI. `SUPublicEDKey` in `Project.swift` is a real EdDSA public key (the matching private key is in this machine's login Keychain). The `SPARKLE_EDDSA_KEY` repo secret **is set**, so the `Release` workflow builds → DMGs → signs + generates `appcast.xml` → publishes both to the GitHub release (verified: `v0.0.4` carries an `appcast.xml` asset). The CI archive is ad-hoc (`CODE_SIGN_IDENTITY="-"`) and that is the standing choice, not a gap to close: no Developer ID certificate is being bought. Consequence to state honestly rather than fix — a fresh install is not Gatekeeper-clean (first launch needs the right-click → Open dance), and Sparkle's EdDSA signature, not a Developer ID chain, is what authenticates an update. Same decision parks the privileged helper (see the HTTPS-interception entry). Sparkle's transitive framework module must also be listed as an explicit `.external(name: "Sparkle")` dep on any test target that `@testable import`s AppFeature (see `AppFeatureTests`).
