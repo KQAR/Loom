@@ -13,6 +13,8 @@ The rule underneath most of them: **the engine has a second writer.** An agent c
 state through MCP while a view is on screen, so a fact the engine owns is read from `status`, never
 mirrored into a stored property that nothing reconciles ([root § Known Issues](../../AGENTS.md#known-issues) has what that cost when `isRecording` was a local flag).
 
+**A child's delegates are one nested `switch` in the parent, never a case each.** The parent's reducer ends in a catch-all listing every child (`case .binding, .setup, .rules, …, .capture: return .none`), so a per-delegate case sitting in front of it means a delegate nobody wrote a case for compiles, runs and is dropped silently. `CaptureFeature.Delegate.ignoreHost` lived there: an action, a delegate case, and a doc comment saying the parent routed it to the engine — with no case, no sender in any view, and no test. Matching `case let .capture(.delegate(delegate))` once and switching inside makes the compiler require a case per delegate. It was deleted rather than wired, because "stop capturing this host" is already `RuleActions.dropFromCapture` and a second write path to one outcome is what this codebase does not do.
+
 ## The SSL scope's human surfaces
 
 The whitelist decision is in the root [`AGENTS.md` § Known Issues](../../AGENTS.md#known-issues);

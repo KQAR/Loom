@@ -407,24 +407,42 @@ public struct AppFeature: Sendable {
             case .reverseProxy(.delegate(.needsStatusRefresh)):
                 return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
 
-            // A replay the capture surface started failed. The message line lives on
-            // the rules panel (rule writes report there too), so the routing is here
-            // rather than in either child: whoever writes it last wins, and only the
-            // parent can see both writers.
-            case let .capture(.delegate(.stampedRule(rule))):
-                return .send(.rules(.presentEditor(rule: rule, isNew: true)))
+            // Everything the capture surface asks the parent for, in **one**
+            // exhaustive switch rather than a case per delegate.
+            //
+            // Not a tidying. A case per delegate sits in front of the catch-all
+            // below, which matches bare `.capture` — so a delegate nobody wrote a
+            // case for compiles, runs, and is silently dropped. `ignoreHost` was
+            // exactly that: an action, a delegate, and a doc comment saying "the
+            // parent routes it to the engine", with no case here, no sender in any
+            // view and no test. It is deleted rather than wired, because "stop
+            // capturing this host" already exists as `RuleActions.dropFromCapture`
+            // and a second write path to the same outcome is the thing this
+            // codebase does not do.
+            //
+            // Nested like this, the compiler requires a case per delegate, so the
+            // next one cannot arrive unhandled.
+            case let .capture(.delegate(delegate)):
+                switch delegate {
+                // The message line lives on the rules panel (rule writes report
+                // there too), so the routing is here rather than in either child:
+                // whoever writes it last wins, and only the parent sees both writers.
+                case let .stampedRule(rule):
+                    return .send(.rules(.presentEditor(rule: rule, isNew: true)))
 
-            case let .capture(.delegate(.replayFailed(message))):
-                return .send(.rules(.ruleWriteFailed(message)))
+                case let .replayFailed(message):
+                    return .send(.rules(.ruleWriteFailed(message)))
 
-            // Both directions of the scope, picked off a row in the request table.
-            // Routed through `SetupFeature` rather than written here, so the table and
-            // the console card cannot disagree about what either one does.
-            case let .capture(.delegate(.excludeHost(host))):
-                return .send(.setup(.excludeHostTapped(host)))
+                // Both directions of the scope, picked off a row in the request
+                // table. Routed through `SetupFeature` rather than written here, so
+                // the table and the console card cannot disagree about what either
+                // one does.
+                case let .excludeHost(host):
+                    return .send(.setup(.excludeHostTapped(host)))
 
-            case let .capture(.delegate(.decryptHost(host))):
-                return .send(.setup(.interceptHostTapped(host)))
+                case let .decryptHost(host):
+                    return .send(.setup(.interceptHostTapped(host)))
+                }
 
             // Starting a replay clears the shared line, for the same reason.
             case .capture(.replayTapped):

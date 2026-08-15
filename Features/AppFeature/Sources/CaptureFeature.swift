@@ -660,9 +660,6 @@ public struct CaptureFeature: Sendable {
         /// "Loom passed this through and I want to read it", and the primary one under
         /// a whitelist scope.
         case decryptHostTapped(String)
-        /// Stop capturing a host entirely. A different axis from the two above: those
-        /// decide whether Loom decrypts, this decides whether it records.
-        case ignoreHostTapped(String)
         case flowReceived(Flow)
         /// The engine's counts landed (boot, and after each capture burst).
         case flowAggregatesRefreshed(FlowAggregates, coversHistory: Bool)
@@ -739,9 +736,6 @@ public struct CaptureFeature: Sendable {
             /// it atomically through the engine (`intercept_host`'s path), because the
             /// console and an agent are independent writers of the same scope.
             case decryptHost(String)
-            /// Drop this host's traffic on arrival. The parent routes it to the engine;
-            /// the list is engine state so the window and an agent cannot disagree.
-            case ignoreHost(String)
         }
     }
 
@@ -823,9 +817,6 @@ public struct CaptureFeature: Sendable {
 
             case let .decryptHostTapped(host):
                 return .send(.delegate(.decryptHost(host)))
-
-            case let .ignoreHostTapped(host):
-                return .send(.delegate(.ignoreHost(host)))
 
             case let .flowAggregatesRefreshed(aggregates, coversHistory):
                 state.aggregates = aggregates
