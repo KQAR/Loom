@@ -124,9 +124,12 @@ final class RuleApplyingForwarder: UpstreamForwarding {
             case .block, .mock, .mapLocal: return true // short-circuit: drain + capture the body
             }
             if a.rewriteRequest?.bodyText != nil { return true }
-            if a.activeRequestSubstitutions.contains(where: { $0.field == .body }) { return true }
+            // `contains`, never `activeRequestSubstitutions.contains` — the latter
+            // builds a filtered array per matched rule per exchange to ask a
+            // yes/no question.
+            if a.requestSubstitutions.contains(where: { !$0.isEmpty && $0.field == .body }) { return true }
             if a.rewriteResponse?.isEmpty == false { return true }
-            if !a.activeResponseSubstitutions.isEmpty { return true }
+            if a.hasActiveResponseSubstitutions { return true }
             return false
         }
 
