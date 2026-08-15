@@ -144,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let helper = PrivilegedHelperClient.liveValue
         Task.detached {
-            let port = await ProxyEngine.shared.status().port
+            let port = await ProxyEngine.shared.proxyPort
             if await helper.restoreOrphanedQUICBlock(port) {
                 NSLog("Loom: cleared a QUIC firewall block left over from a previous session.")
             }
@@ -177,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let helper = PrivilegedHelperClient.liveValue
         Task.detached {
-            let port = await ProxyEngine.shared.status().port
+            let port = await ProxyEngine.shared.proxyPort
             if await helper.isSystemProxyActive(port) {
                 _ = await helper.setSystemProxy(false, port)
             }

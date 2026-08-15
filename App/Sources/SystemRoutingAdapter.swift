@@ -24,12 +24,12 @@ struct SystemRoutingAdapter: SystemRoutingControlling {
     }
 
     func isSystemProxyActive() async -> Bool {
-        let port = await ProxyEngine.shared.status().port
+        let port = await ProxyEngine.shared.proxyPort
         return await helper.isSystemProxyActive(port)
     }
 
     func systemProxyRouting() async -> SystemProxyRouting {
-        let port = await ProxyEngine.shared.status().port
+        let port = await ProxyEngine.shared.proxyPort
         return await helper.systemProxySnapshot().routing(loomPort: port)
     }
 
@@ -52,7 +52,7 @@ struct SystemRoutingAdapter: SystemRoutingControlling {
     }
 
     func setSystemProxy(enabled: Bool) async -> SystemRoutingResult {
-        let port = await ProxyEngine.shared.status().port
+        let port = await ProxyEngine.shared.proxyPort
         let outcome = await helper.setSystemProxy(enabled, port)
         return SystemRoutingResult(ok: outcome.ok, message: outcome.message)
     }
