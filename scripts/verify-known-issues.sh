@@ -1,7 +1,9 @@
 #!/bin/bash
-# Re-check the AGENTS.md § Known Issues entries that a machine can check.
+# Re-check the § Known Issues entries that a machine can check. They live in two files:
+# the root AGENTS.md, and Engine/ProxyCore/CLAUDE.md § Known issues (engine-scoped) for the
+# six that are only wrong to not know while editing that module.
 #
-# § Known Issues asks every entry to carry the version it was last *verified* in,
+# Both ask every entry to carry the version it was last *verified* in,
 # because these are claims about tooling, an OS and upstream libraries, all of which
 # move — and an unstamped entry is indistinguishable from one that stopped being true
 # two releases ago. That convention only survives if re-checking is cheap. This is what
@@ -35,7 +37,7 @@ check() { # name, command...
 
 has() { grep -q "$1" "$2"; }
 
-echo "AGENTS.md § Known Issues — mechanical checks"
+echo "§ Known Issues (AGENTS.md + Engine/ProxyCore/CLAUDE.md) — mechanical checks"
 
 check "Tuist is pinned to 4.202.5 or later"        has 'tuist = "4\.20[2-9]\|tuist = "4\.[3-9]' mise.toml
 

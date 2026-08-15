@@ -2,7 +2,7 @@
 
 > Moved out of `AGENTS.md` on 2026-08-07 (0.0.18), unedited. It is a **record**, not
 > an instruction: what was tried, what it cost, and why the current shape is the
-> shape. The invariants these produced live in `AGENTS.md` § MCP Tools, which links
+> shape. The invariants these produced live in [`AGENTS.md` § MCP Tools](../../AGENTS.md#mcp-tools), which links
 > here — read that first; come here when you are about to re-open the question.
 
 All three shipped in 0.0.16. The third one generalizes past WebSocket, and that is the

@@ -2,7 +2,7 @@
 
 > Moved out of `AGENTS.md` on 2026-08-15, unedited but for the linking sentences. It is a
 > **record**, not an instruction: what was tried, what it cost, and why the current shape is
-> the shape. The invariant it produced lives in `AGENTS.md` § Known Issues, which links here —
+> the shape. The invariant it produced lives in [`AGENTS.md` § Known Issues](../../AGENTS.md#known-issues), which links here —
 > read that first; come here when you are about to re-open the question.
 
 ## What the entry used to say
@@ -10,7 +10,7 @@
 > *signing cache stuck after switching branches; delete DerivedData*
 
 That is the bandage, not the diagnosis, and it stood for two releases while
-`tuist generate` re-armed the failure on a schedule — the workflow in § Build Commands
+`tuist generate` re-armed the failure on a schedule — the workflow in [§ Build Commands](../../AGENTS.md#build-commands)
 *requires* a `generate` after adding a test file.
 
 ## The cause, in two halves
