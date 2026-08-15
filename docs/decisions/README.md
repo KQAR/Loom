@@ -20,6 +20,7 @@ to the section whose invariant it produced.
 | [`tsan-continuation-race.md`](tsan-continuation-race.md) | A red TSan job means something now: ask whether Loom code *performs* the racing access |
 | [`h2-upload-stall.md`](h2-upload-stall.md) | The stall signature is `consumed = 65535` exactly; reads-issued does not distinguish it |
 | [`navigation-split-view.md`](navigation-split-view.md) | `MainView` is a plain `HStack`, and three measured dead ends around it |
+| [`navigation-split-view-kvo.md`](navigation-split-view-kvo.md) | The two-round investigation behind the entry above — sample stacks, A/B matrix, lldb findings |
 | [`websocket-capture.md`](websocket-capture.md) | Parsing untrusted bytes: decode lengths wide, check remaining by subtraction, and never answer "not yet" and "not frames" the same way |
 | [`write-path-memory.md`](write-path-memory.md) | A footprint figure is not a memory figure — ask `malloc_zone_statistics`, and measure each configuration in its own process |
 | [`ssl-scope-whitelist.md`](ssl-scope-whitelist.md) | Name it, then decrypt — and the unread or refused origin must be visible on all three surfaces |
