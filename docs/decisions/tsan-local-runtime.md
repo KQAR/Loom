@@ -176,3 +176,24 @@ closed in 2023 as no longer reproducing. The filing tracked in issue #231 can no
 than "it happens again": there is a deterministic ten-line reproduction, a full backtrace
 naming the re-entrant call, a version window (broken in clang 17.0.0 / Xcode 26.3, fixed by
 clang 21.0.0), and the shape of the fix (the memory-map walk left `CheckAndProtect`).
+
+---
+
+## Later note (0.0.27): the local run stopped working again, for a different reason
+
+Re-run on this machine and `scripts/tsan-local.sh` fails before a single line of Loom code
+runs — at the commit that produced this record too, so it is not a regression in whatever is
+being tested:
+
+```
+Failed to create a bundle instance representing … ProxyCoreTests.xctest
+```
+
+`dlopen` explains it as `Library not loaded: @rpath/LoomProxyCore.framework` — a bundle-load
+failure, not a race and not the init segfault above. Without the runtime override the runner
+still dies with the documented init-segfault signature, so the override itself is still doing
+its job. The suspect is that the separately installed Command Line Tools have moved to clang
+21.0.0 since this record was written, i.e. the very version window that fixed the original bug.
+
+Not chased further, because the CI job is unaffected and is the one that gates. Whoever needs a
+local run next: start there, and re-stamp the `AGENTS.md` entry.

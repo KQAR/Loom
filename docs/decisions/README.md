@@ -26,6 +26,8 @@ to the section whose invariant it produced.
 | [`ssl-scope-whitelist.md`](ssl-scope-whitelist.md) | Name it, then decrypt — and the unread or refused origin must be visible on all three surfaces |
 | [`rules-drop-stage.md`](rules-drop-stage.md) | `dropFromCapture` is a rule, obeys `RulesState.applies`, and drops rather than filtering on read |
 | [`h2-cookie-crumbs.md`](h2-cookie-crumbs.md) | The model holds one `cookie` field; the crumb split is an encoding applied on the h2 leg |
+| [`swift6-language-mode-migration.md`](swift6-language-mode-migration.md) | The four shapes the last test bundles cost, and why ~25 warnings were never the `NIOAsyncChannel` rework |
+| [`entitlements-modified-during-build.md`](entitlements-modified-during-build.md) | Never `.dictionary` — Tuist rewrites the mtime, Xcode calls that "modified", and the failure sticks |
 | [`h2-header-block-downgrade.md`](h2-header-block-downgrade.md) | Drop ALPN `h2` for a host whose first header block trips the pre-ACK HPACK limit — and mark every flow |
 
 ## Writing one
