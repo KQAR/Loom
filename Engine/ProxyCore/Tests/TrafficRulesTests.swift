@@ -107,6 +107,42 @@ import Foundation
         #expect(fromMatched.appliedRules.map(\.name) == fromState.appliedRules.map(\.name))
     }
 
+    /// **The group switch reaches live traffic**, which it did not: `matchingRules`
+    /// spelled its own `rule.isEnabled` predicate and never consulted
+    /// `disabledGroups`, so switching a scenario off left every one of its rules
+    /// acting on traffic while `RulesState.activeRules` — the only thing the group
+    /// tests asserted on, and a projection the engine deliberately does not use —
+    /// reported them inert. `RulesState.applies` is the one definition both sides
+    /// read now.
+    @Test func aSwitchedOffGroupMatchesNothing() {
+        let grouped = TrafficRule(
+            name: "grouped", group: "scenario A",
+            match: RuleMatch(urlPattern: "*/v1/*"), actions: RuleActions(route: .block)
+        )
+        let ungrouped = TrafficRule(
+            name: "solo", match: RuleMatch(urlPattern: "*/v1/*"), actions: RuleActions(delayMilliseconds: 5)
+        )
+        let live = RulesState(enabled: true, rules: [grouped, ungrouped])
+        #expect(RuleEngine.matchingRules(state: live, method: "GET", url: url).map(\.name) == ["grouped", "solo"])
+
+        let off = RulesState(enabled: true, rules: [grouped, ungrouped], disabledGroups: ["scenario A"])
+        #expect(RuleEngine.matchingRules(state: off, method: "GET", url: url).map(\.name) == ["solo"])
+        #expect(off.activeRules.map(\.name) == ["solo"], "and the projection still agrees")
+    }
+
+    /// An expired rule (a leftover `host_pattern`) never matches, from either entry
+    /// point — `RuleMatch.matches` gates it and `RulesState.applies` skips it.
+    @Test func anExpiredRuleMatchesNothing() {
+        let expired = TrafficRule(
+            name: "expired",
+            match: RuleMatch(urlPattern: "*", expiredHostPattern: "*.example.test"),
+            actions: RuleActions(route: .block)
+        )
+        let state = RulesState(enabled: true, rules: [expired])
+        #expect(RuleEngine.matchingRules(state: state, method: "GET", url: url).isEmpty)
+        #expect(state.activeRules.isEmpty)
+    }
+
     /// Header edits fold case without allocating a lowercased copy per comparison
     /// now; the semantics they had must not move — removals are case-insensitive and
     /// take repeats, and a set header replaces every same-named one and lands last.

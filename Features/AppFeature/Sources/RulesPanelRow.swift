@@ -70,9 +70,16 @@ struct RulesPanelRow: View {
             .help("Delete this rule")
         }
         .padding(.vertical, 2)
-        .opacity(engineEnabled && groupEnabled ? 1 : 0.55)
+        // Dimmed for the reasons the row's own controls do NOT already show: the
+        // master switch, the group's switch, and an expired match. A rule the human
+        // turned off stays full strength because its unchecked box says so — but
+        // expiry has no control of its own, and it dimmed the name while leaving the
+        // row at full strength, which is two signals disagreeing.
+        .opacity(engineEnabled && groupEnabled && !rule.match.isExpired ? 1 : 0.55)
     }
 
+    /// Nothing about this rule is reaching traffic — its own switch, the master
+    /// switch, its group's switch, or an expired match.
     private var dimmed: Bool {
         !rule.isEnabled || !engineEnabled || !groupEnabled || rule.match.isExpired
     }

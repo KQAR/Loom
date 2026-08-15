@@ -219,6 +219,45 @@ struct RuleEditorView: View {
 
     // MARK: URL (methods + pattern + match-style chips)
 
+    /// The expired-rule warning, with **both** ways out on it. Save refuses while
+    /// the leftover is set (`RuleDraft.build()`), so a warning with nothing beside
+    /// it would be a dead end — and the direction that reads as "just save it" is
+    /// the one that widens a one-host rule to every host, which is why it is a
+    /// button that says so rather than the default.
+    @ViewBuilder
+    private func expiredHostWarning(_ leftover: String) -> some View {
+        VStack(alignment: .leading, spacing: LoomTheme.Space.xs) {
+            HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(LoomTheme.Palette.warning)
+                Text(
+                    "This rule is expired: host “\(leftover)” is no longer a match field, so it does not apply. Keep that scope by folding the host into the URL pattern, or widen the rule to every host."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: LoomTheme.Space.xs) {
+                if let folded = draft.foldedURLSuggestion {
+                    Button("Fold into URL") { draft.foldHostIntoURL() }
+                        .help("Set the URL pattern to \(folded)")
+                } else {
+                    // No faithful rewrite for a regex or an exact URL — the human
+                    // edits the field, and the warning stays until they have.
+                    Text("Edit the URL pattern to include the host.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                Button("Match every host") { draft.widenToEveryHost() }
+                    .help("Drop the host scope: this rule will match every host its URL pattern allows")
+            }
+            .controlSize(.small)
+        }
+        .padding(.vertical, LoomTheme.Space.xs)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Expired host pattern")
+    }
+
     private var urlRow: some View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.xxs) {
             HStack {
@@ -230,19 +269,7 @@ struct RuleEditorView: View {
                 Text(matchStyleText).font(.callout).foregroundStyle(.tertiary)
             }
             if let leftover = draft.expiredHostPattern {
-                HStack(alignment: .top, spacing: LoomTheme.Space.xs) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(LoomTheme.Palette.warning)
-                    Text(
-                        "This rule is expired: host “\(leftover)” is no longer a match field, so it will not apply. Fold it into the URL (e.g. https://\(leftover)*) before saving — saving without that makes a * pattern match every host."
-                    )
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.vertical, LoomTheme.Space.xs)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Expired host pattern")
+                expiredHostWarning(leftover)
             }
             HStack(spacing: LoomTheme.Space.xs) {
                 methodMenu

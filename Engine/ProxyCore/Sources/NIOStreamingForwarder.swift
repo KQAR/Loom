@@ -305,7 +305,6 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // Whether the request's final flush succeeded — the fact the retry
         // decision (RFC 9110 §9.2.2) and the release decision below both need.
         var requestWritten = false
-        var requestSendMS: Int?
         let sendStartedAt = NIODeadline.now()
         do {
             try await Self.writeRequest(
@@ -325,7 +324,6 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             let waitedForHandshake = !reused && connection.tlsInfo.handshakeMS != nil
             if !waitedForHandshake {
                 let measured = UpstreamTLSObserver.milliseconds(since: sendStartedAt)
-                requestSendMS = measured
                 // Its own instalment, yielded straight to the consumer: the
                 // head-time closure was captured before the write and cannot see
                 // this. Order against the other instalments does not matter — they

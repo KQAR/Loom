@@ -1105,7 +1105,23 @@ public struct RulesState: Equatable, Codable, Sendable {
     /// three switches ANDed: master, group, rule.
     public var activeRules: [TrafficRule] {
         guard enabled else { return [] }
-        return rules.filter { $0.isEnabled && !$0.match.isExpired && !disabledGroups.contains($0.group) }
+        return rules.filter { applies($0) }
+    }
+
+    /// Would this rule apply to traffic *if the request matched it*? The three
+    /// switches ANDed (master, group, rule), plus expiry.
+    ///
+    /// **The engine's matchers must ask this, not `rule.isEnabled`.** They walk
+    /// `rules` directly rather than `activeRules` — that projection allocates a
+    /// second array on the event loop for every exchange — and each one that
+    /// spelled the predicate itself got the group switch wrong: `matchingRules`
+    /// and `captureDropRule` checked only the rule's own flag, so switching a
+    /// scenario off left every one of its rules acting on live traffic while
+    /// `activeRules` (the only thing the group tests asserted on) said otherwise.
+    /// One definition, so a surface reading `activeRules` and the forwarder
+    /// deciding what to apply cannot disagree.
+    public func applies(_ rule: TrafficRule) -> Bool {
+        rule.isEnabled && !rule.match.isExpired && isGroupEnabled(rule.group)
     }
 
     /// Whether a group's switch is on. `nil` = the ungrouped bucket.

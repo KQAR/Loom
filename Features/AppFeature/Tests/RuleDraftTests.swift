@@ -525,20 +525,81 @@ import Testing
         #expect(out.query == ["ab_test": .equals("on"), "debug": .present])
     }
 
-    /// A leftover host glob is a warning, not an editor field. Save drops it so
-    /// the rule can apply again — fold the glob into the URL first.
-    @Test func expiredHostPattern_isShownAndSaveClearsIt() {
-        let rule = TrafficRule(
+    /// A leftover host glob is a warning, and **Save refuses until it is
+    /// resolved**. The old shape is `urlPattern: "*"` plus the glob, so silently
+    /// dropping it turns "block this one origin" into "block everything" on a
+    /// keystroke the human read as acknowledging a warning.
+    @Test func expiredHostPattern_blocksSaveUntilResolved() {
+        let rule = expiredRule()
+        let draft = RuleDraft(rule: rule)
+        #expect(draft.expiredHostPattern == "*.example.com")
+        guard case let .failure(error) = draft.build() else {
+            Issue.record("an expired rule must not save as-is")
+            return
+        }
+        #expect(error.message.contains("*.example.com"))
+        #expect(error.message.contains("https://*.example.com*"), "the message carries the folded pattern")
+    }
+
+    @Test func foldHostIntoURL_keepsTheHostScope() {
+        var draft = RuleDraft(rule: expiredRule())
+        #expect(draft.foldedURLSuggestion == "https://*.example.com*")
+        draft.foldHostIntoURL()
+        #expect(draft.expiredHostPattern == nil)
+        guard case let .success(out) = draft.build() else {
+            Issue.record("build failed after folding")
+            return
+        }
+        #expect(out.match.urlPattern == "https://*.example.com*")
+        #expect(out.match.style == .glob)
+        #expect(out.match.isExpired == false)
+        #expect(out.match.matches(method: "GET", url: "https://api.example.com/x"))
+        #expect(!out.match.matches(method: "GET", url: "https://api.other.com/x"))
+    }
+
+    /// The other exit exists, and it is a named choice rather than what Save does
+    /// by default.
+    @Test func widenToEveryHost_isDeliberateAndSaves() {
+        var draft = RuleDraft(rule: expiredRule())
+        draft.widenToEveryHost()
+        guard case let .success(out) = draft.build() else {
+            Issue.record("build failed after widening")
+            return
+        }
+        #expect(out.match.isExpired == false)
+        #expect(out.match.urlPattern == "*")
+        #expect(out.match.matches(method: "GET", url: "https://api.other.com/x"))
+    }
+
+    /// A path-anchored pattern folds too; a regex or an exact URL gets no
+    /// suggestion, because no string edit reproduces "this regex AND that host".
+    @Test func foldedSuggestion_onlyForShapesItCanRewriteFaithfully() {
+        #expect(RuleDraft.foldedURLPattern(host: "api.test", into: "") == "https://api.test*")
+        #expect(RuleDraft.foldedURLPattern(host: "api.test", into: "*") == "https://api.test*")
+        #expect(RuleDraft.foldedURLPattern(host: "api.test", into: "*/orders*") == "https://api.test/orders*")
+        // A pattern anchored at `/` never matched a whole URL, so folding a host
+        // into it would turn a dead rule live rather than preserve a scope.
+        #expect(RuleDraft.foldedURLPattern(host: "api.test", into: "/orders*") == nil)
+        #expect(RuleDraft.foldedURLPattern(host: "api.test", into: "https://other.test/x") == nil)
+        #expect(RuleDraft.foldedURLPattern(host: "", into: "*") == nil)
+
+        var regexDraft = RuleDraft(rule: TrafficRule(
+            name: "regex + host",
+            match: RuleMatch(urlPattern: ".*/orders", style: .regex, expiredHostPattern: "*.example.com"),
+            actions: RuleActions(route: .block)
+        ))
+        #expect(regexDraft.foldedURLSuggestion == nil)
+        regexDraft.foldHostIntoURL()
+        #expect(regexDraft.expiredHostPattern == "*.example.com", "nothing to fold means nothing changes")
+        if case .success = regexDraft.build() { Issue.record("an unresolved leftover must not save") }
+    }
+
+    private func expiredRule() -> TrafficRule {
+        TrafficRule(
             name: "old host glob",
             match: RuleMatch(urlPattern: "*", expiredHostPattern: "*.example.com"),
             actions: RuleActions(route: .block)
         )
-        let draft = RuleDraft(rule: rule)
-        #expect(draft.expiredHostPattern == "*.example.com")
-        let out = built(rule)
-        #expect(out.match.expiredHostPattern == nil)
-        #expect(out.match.isExpired == false)
-        #expect(out.match.urlPattern == "*")
     }
 
     /// A rule an agent scoped to one app or device must survive a human opening it in

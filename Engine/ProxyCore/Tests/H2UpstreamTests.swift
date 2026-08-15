@@ -5,6 +5,7 @@ import NIOHTTP2
 import NIOPosix
 import NIOSSL
 import NIOTLS
+import Synchronization
 import Testing
 @testable import LoomProxyCore
 import LoomSharedModels
@@ -279,24 +280,31 @@ private final class ALPNOrigin {
     func stop() { try? channel.close().wait() }
 }
 
-/// What the origin saw. A class with a lock rather than plain vars: the accepting
+/// What the origin saw. State behind a lock rather than plain vars: the accepting
 /// loop writes it while the test's task reads it.
-private final class ALPNObservations: @unchecked Sendable {
-    private let lock = NSLock()
-    private var negotiatedName: String?
-    private var connectionTotal = 0
-    private var cookieFields: [String] = []
-    private var transferEncodingField: String?
-    private var bodyText = ""
+///
+/// A `Mutex`, like every other holder in this repo since the floor rose to macOS 15
+/// — so there is no mutable stored property left for an `@unchecked` to vouch for
+/// and the conformance is plain `Sendable`.
+private final class ALPNObservations: Sendable {
+    private struct State {
+        var negotiatedName: String?
+        var connectionTotal = 0
+        var cookieFields: [String] = []
+        var transferEncodingField: String?
+        var bodyText = ""
+    }
 
-    var negotiated: String? { lock.withLock { negotiatedName } }
-    var connections: Int { lock.withLock { connectionTotal } }
-    var cookies: [String] { lock.withLock { cookieFields } }
-    var transferEncoding: String? { lock.withLock { transferEncodingField } }
-    var body: String { lock.withLock { bodyText } }
+    private let state = Mutex(State())
 
-    func record(_ name: String) { lock.withLock { negotiatedName = name } }
-    func countConnection() { lock.withLock { connectionTotal += 1 } }
+    var negotiated: String? { state.withLock { $0.negotiatedName } }
+    var connections: Int { state.withLock { $0.connectionTotal } }
+    var cookies: [String] { state.withLock { $0.cookieFields } }
+    var transferEncoding: String? { state.withLock { $0.transferEncodingField } }
+    var body: String { state.withLock { $0.bodyText } }
+
+    func record(_ name: String) { state.withLock { $0.negotiatedName = name } }
+    func countConnection() { state.withLock { $0.connectionTotal += 1 } }
 
     func record(head: HTTPRequestHead) {
         // `headers[name]`, not `canonicalForm`: the latter splits list-typed fields
@@ -306,14 +314,14 @@ private final class ALPNObservations: @unchecked Sendable {
     }
 
     func record(cookies: [String], transferEncoding: String?) {
-        lock.withLock {
-            cookieFields = cookies
-            transferEncodingField = transferEncoding
-            bodyText = ""
+        state.withLock {
+            $0.cookieFields = cookies
+            $0.transferEncodingField = transferEncoding
+            $0.bodyText = ""
         }
     }
 
-    func append(body chunk: String) { lock.withLock { bodyText += chunk } }
+    func append(body chunk: String) { state.withLock { $0.bodyText += chunk } }
 }
 
 /// Reads the HEADERS frame as it arrived, before any h2↔h1 conversion — the only
