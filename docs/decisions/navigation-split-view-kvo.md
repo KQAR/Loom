@@ -8,7 +8,7 @@ investigation record backing that decision, kept so nobody has to re-earn it.
 > so throughout. `HSplitView` was dropped afterwards as well — a bare `NSSplitView` has no collapse
 > semantics, so the sidebar could only be inserted and removed, which pops. `MainView` is a plain
 > `HStack` animating the pane's width; see
-> [`../decisions/navigation-split-view.md`](../decisions/navigation-split-view.md). Nothing below
+> [`navigation-split-view.md`](navigation-split-view.md). Nothing below
 > changes: the measurement, the stacks and the A/B matrix are all about `NavigationSplitView`, and
 > that half of the conclusion is unaffected. Per `docs/decisions/README.md`, a record earns a note
 > rather than a rewrite.
