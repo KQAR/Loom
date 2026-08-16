@@ -118,12 +118,34 @@ struct MCPToolExecutor {
     /// into a second copy of the operator's key material. The argument *name* still
     /// appears, so "a certificate was installed for this host" stays visible, which
     /// is the part supervision needs.
+    /// Kept in step with the advertised schema by `AuditRedactionCensusTests`, which
+    /// fails on any tool property whose *name* reads like a credential and is neither
+    /// listed here nor recorded there with the reason it is safe. A list of secrets
+    /// maintained by remembering is a list that leaks the next one.
     static let redactedArgumentNames: Set<String> = ["pkcs12_base64", "passphrase"]
 
+    /// Redaction is **by key at any depth**, not just at the top level.
+    ///
+    /// Every argument carrying key material today is a top-level property of
+    /// `set_client_certificate`, so a flat pass was correct — and correct only for as
+    /// long as that stayed true. A tool that grouped its inputs (`identity: {…}`), or
+    /// a free-form map an agent happened to put a `passphrase` key in, would have
+    /// written the value into `audit.sqlite` verbatim. The trail is durable, on disk,
+    /// and readable by anyone with the file; the cost of walking the tree is a
+    /// recursion over an argument object that has already been parsed once.
     private static func redactingSecrets(_ arguments: [String: JSONValue]) -> [String: JSONValue] {
-        guard arguments.keys.contains(where: redactedArgumentNames.contains) else { return arguments }
-        return arguments.reduce(into: [:]) { result, pair in
-            result[pair.key] = redactedArgumentNames.contains(pair.key) ? .string("<redacted>") : pair.value
+        arguments.reduce(into: [:]) { result, pair in
+            result[pair.key] = redactedArgumentNames.contains(pair.key)
+                ? .string("<redacted>")
+                : redactingSecrets(pair.value)
+        }
+    }
+
+    private static func redactingSecrets(_ value: JSONValue) -> JSONValue {
+        switch value {
+        case let .object(members): .object(redactingSecrets(members))
+        case let .array(elements): .array(elements.map(redactingSecrets))
+        case .string, .int, .double, .bool, .null: value
         }
     }
 
