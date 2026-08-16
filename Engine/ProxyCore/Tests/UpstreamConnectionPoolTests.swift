@@ -289,6 +289,51 @@ final class UpstreamConnectionPoolTests {
 
     // MARK: - Retry discipline
 
+    /// The retry decision, decided on its own rather than through twenty rounds of
+    /// a socket race.
+    ///
+    /// `aStalePoolNeverFailsAPost_whoseWriteNeverLanded` below drives the real
+    /// thing, and it is a coin flip per round by construction — which is what made
+    /// it fail intermittently in CI and what made the underlying rule hard to see.
+    /// These pin the rule itself, so a change to it fails deterministically here and
+    /// the socket test stays the end-to-end check rather than the specification.
+    @Test func aReapedPooledConnection_letsANonIdempotentRequestRetry() {
+        // The shape the old rule got wrong: the flush *succeeded* (into the send
+        // buffer of a socket the peer had already closed) and the connection then
+        // died. `requestWritten` reads true for a request no origin ever saw.
+        let reset = UpstreamAttemptFailure(
+            underlying: IOError(errnoCode: ECONNRESET, reason: "read"),
+            didYield: false, requestWritten: true
+        )
+        #expect(NIOStreamingForwarder.mayRetry(method: "POST", after: reset))
+        #expect(NIOStreamingForwarder.mayRetry(method: "PATCH", after: reset))
+
+        let closed = UpstreamAttemptFailure(
+            underlying: ForwarderError.connectionClosed, didYield: false, requestWritten: true
+        )
+        #expect(NIOStreamingForwarder.mayRetry(method: "POST", after: closed))
+    }
+
+    /// The half that must not move. A failure that is *not* the transport going
+    /// away can follow an origin having read and acted on the request, so a
+    /// non-idempotent method is still not re-run.
+    @Test func aNonTeardownFailure_stillDoesNotRerunAPost() {
+        struct DecoderGaveUp: Error {}
+        let applicationLevel = UpstreamAttemptFailure(
+            underlying: DecoderGaveUp(), didYield: false, requestWritten: true
+        )
+        #expect(!NIOStreamingForwarder.mayRetry(method: "POST", after: applicationLevel))
+        // An idempotent method is unaffected either way — repeating it re-asserts
+        // the same state, which is what the RFC's set means.
+        #expect(NIOStreamingForwarder.mayRetry(method: "GET", after: applicationLevel))
+        // And a request whose flush never landed is still retryable whatever killed
+        // it: nothing can have been applied.
+        #expect(NIOStreamingForwarder.mayRetry(
+            method: "POST",
+            after: UpstreamAttemptFailure(underlying: DecoderGaveUp(), didYield: false, requestWritten: false)
+        ))
+    }
+
     @Test func isIdempotent_isRFC9110sSet() {
         for method in ["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE", "get"] {
             #expect(NIOStreamingForwarder.isIdempotent(method), Comment(rawValue: method))
@@ -300,11 +345,22 @@ final class UpstreamConnectionPoolTests {
 
     @Test func aStalePoolNeverFailsAPost_whoseWriteNeverLanded() async throws {
         // The idempotency gate must not regress the stale-lease fix for POST-heavy
-        // clients: a FIN'd socket fails the request's *flush*, which proves the
-        // origin never read a complete request — so the retry is still allowed
-        // (RFC 9110 §9.2.2's "never reached the origin" branch), and every round
-        // here succeeds. What the gate forbids is retrying a POST that was fully
-        // written and then went dark, which no local server can stage honestly.
+        // clients: every round here succeeds.
+        //
+        // This comment used to say the flush *fails* against a FIN'd socket, and
+        // that the retry was therefore allowed under RFC 9110 §9.2.2's "never
+        // reached the origin" branch. **That was wrong, and it is why this test
+        // failed intermittently in CI rather than never.** A write to a socket
+        // whose peer has closed succeeds — it lands in this host's send buffer,
+        // FIN having ended only the peer→us direction — and the RST arrives later,
+        // on the read. So roughly half these rounds produce `requestWritten == true`
+        // for a request no origin ever saw, and under the old rule they failed.
+        //
+        // The gate reads the *failure* now, not the write (`mayRetry`), which is
+        // what makes this deterministic. What it still forbids is re-running a POST
+        // that died of something other than the transport going away — pinned in
+        // `aNonTeardownFailure_stillDoesNotRerunAPost`, since no local server can
+        // stage that honestly.
         let forwarder = NIOStreamingForwarder(group: group)
         for index in 0..<20 {
             let result = try await forwarder.forward(
