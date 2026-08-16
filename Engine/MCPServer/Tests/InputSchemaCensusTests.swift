@@ -164,6 +164,53 @@ import Testing
         )
     }
 
+    // MARK: - The flow filter
+
+    /// The one case that is not a write tool, and the reason the scope line for this
+    /// suite is "arguments mirror a model" rather than "write tool".
+    ///
+    /// `flowFilterProperties` is shared verbatim by `get_recent_flows`,
+    /// `wait_for_flow` and `get_stats`, and it mirrors `FlowQuery` — which is
+    /// `Codable` and grows for free while the schema does not. A `FlowQuery` field
+    /// no schema advertises is a filter the engine can apply and the agent cannot
+    /// ask for; worse than a missing write, because the agent's fallback is to pull
+    /// a large list and scan it itself, which the tool descriptions explicitly tell
+    /// it not to do.
+    ///
+    /// Censused through `get_recent_flows` — the three tools embed the same value,
+    /// so one covers all of them, which is the point of it being one value.
+    @Test func flowFilter_advertisesEveryQueryField() throws {
+        try SchemaCensus.check(
+            tool: "get_recent_flows",
+            modelFields: SchemaCensus.fieldNames(
+                of: FlowQuery(
+                    host: "api.example.test",
+                    methods: ["GET"],
+                    urlContains: "orders",
+                    statusMin: 400,
+                    statusMax: 599,
+                    onlyErrors: true,
+                    since: Date(timeIntervalSince1970: 0),
+                    deviceIP: "192.168.1.9",
+                    sourceApp: "com.example.app",
+                    headerContains: "x-env: staging",
+                    headerSide: .request,
+                    bodyContains: "order-7",
+                    bodySide: .request
+                )
+            ),
+            aliases: [
+                // Singular on the wire: the argument takes a string *or* an array,
+                // and `method: "GET"` is what an agent writes far more often.
+                "methods": "method",
+                // `…_in` rather than `…_side`: it reads as a place in the exchange,
+                // which is the question ("was this header in the request?").
+                "headerSide": "header_in",
+                "bodySide": "body_in",
+            ]
+        )
+    }
+
     // MARK: - SSL scope
 
     @Test func setSSLScope_advertisesEveryScopeField() throws {
