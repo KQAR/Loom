@@ -90,6 +90,9 @@ public enum HARImport {
             // is taken as-is and only an empty one is dropped.
             httpVersion: (request["httpVersion"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             headers: headers(request["headers"]), body: requestBody,
+            fullBodyBytes: wireBytes(
+                declared: request["bodySize"], truncated: request["_bodyTruncated"], captured: requestBody
+            ),
             // Loom's own `_trailers` extension (§ HARExport). Absent from every
             // other exporter's output, which is the honest answer there: HAR 1.2
             // has no trailer section, so a file without the extension genuinely
@@ -109,12 +112,25 @@ public enum HARImport {
         if let response = entry["response"] as? [String: Any],
            let status = (response["status"] as? Int) ?? (response["status"] as? Double).map(Int.init),
            status > 0 {
+            let responseBody = content(response["content"])
             outcome = .completed(
                 CapturedResponse(
                     statusCode: status,
                     httpVersion: response["httpVersion"] as? String,
                     headers: headers(response["headers"]),
-                    body: content(response["content"]),
+                    body: responseBody,
+                    // `content.size` rather than `bodySize`: HAR defines the first as
+                    // the *uncompressed* payload and the second as what came off the
+                    // wire after transfer encodings, and Loom's body is decompressed
+                    // by the time it is captured. Loom's own export writes the same
+                    // number into both, so a round trip is unaffected either way; a
+                    // foreign gzipped entry is the case where they differ, and the
+                    // decoded size is the one the body can be compared against.
+                    fullBodyBytes: wireBytes(
+                        declared: (response["content"] as? [String: Any])?["size"],
+                        truncated: response["_bodyTruncated"],
+                        captured: responseBody
+                    ),
                     trailers: optionalHeaders(response["_trailers"])
                 ),
                 at: completedAt
@@ -194,6 +210,56 @@ public enum HARImport {
             return decoded
         }
         return Data(text.utf8)
+    }
+
+    /// `CapturedRequest`/`CapturedResponse.fullBodyBytes` for an imported entry —
+    /// the bytes that crossed the wire, set **only** when the body in hand is a
+    /// prefix of them.
+    ///
+    /// ## Why this exists
+    ///
+    /// `HARExport` writes `bodySize` / `content.size` as the wire size and marks a
+    /// capped body with the `_bodyTruncated` vendor extension. Import read neither,
+    /// so every imported flow came back with `fullBodyBytes == nil`, which
+    /// `isBodyTruncated` reads as "this body is the whole payload".
+    ///
+    /// That is not a thin answer, it is a wrong one. `FlowComparison.compareBodies`
+    /// takes both sides' `fullBodyBytes` precisely so two bodies capped at the same
+    /// length are reported as `.tailNotCaptured` rather than identical — the prefixes
+    /// match whatever the tails did. With the field dropped on import, `diff_flows`
+    /// on a re-imported capture answers a confident "no difference" for two bodies
+    /// that differ, which is the exact defect that check was added for. It also took
+    /// `captureTruncated` off `get_recent_flows` and the truncation notice out of the
+    /// Inspector for imported flows.
+    ///
+    /// ## Two sources, and one inference deliberately not made
+    ///
+    /// - **`_bodyTruncated: true`** is Loom's own marker and is authoritative: the
+    ///   declared size is the wire size and the body is a prefix of it.
+    /// - **No body but a declared size** is the foreign-HAR case worth reading —
+    ///   DevTools omits `content.text` for large or unavailable payloads while still
+    ///   reporting the size. An empty prefix is still a prefix, and saying so is what
+    ///   keeps two such entries from comparing equal.
+    /// - **A size that merely disagrees with a present body's length is ignored.**
+    ///   For a foreign entry the two legitimately differ — compression, transfer
+    ///   encodings, an exporter counting characters rather than bytes — so inferring
+    ///   truncation from the mismatch would mark ordinary gzipped exchanges as
+    ///   partial. A false "truncated" is cheaper than a false "complete", but it is
+    ///   still a wrong claim on the surface whose whole job is to say when a
+    ///   comparison cannot be trusted.
+    private static func wireBytes(declared: Any?, truncated: Any?, captured: Data?) -> Int? {
+        guard let size = positiveInt(declared), size > 0 else { return nil }
+        let capturedCount = captured?.count ?? 0
+        if truncated as? Bool == true { return max(size, capturedCount) }
+        return capturedCount == 0 ? size : nil
+    }
+
+    private static func positiveInt(_ raw: Any?) -> Int? {
+        switch raw {
+        case let number as Int: return number >= 0 ? number : nil
+        case let number as Double: return number >= 0 ? Int(number) : nil
+        default: return nil
+        }
     }
 
     private static func isBase64(_ raw: Any?) -> Bool {
