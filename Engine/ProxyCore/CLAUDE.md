@@ -136,15 +136,36 @@ Seven rules, each of which is a way to get this wrong rather than a preference:
   next. Interim heads and their ends are swallowed in the slot; 101 is deliberately
   not interim (it ends HTTP framing; the forwarder strips `Upgrade`, so an origin
   sending one is answering a request Loom never made) and can never pool.
-- **A leased connection may be dead, so the retry is load-bearing — and it is
-  gated on RFC 9110 §9.2.2.** A pooled attempt that fails **having yielded
-  nothing** is retried once on a fresh connection *if* the method is idempotent
-  or the request's final flush never succeeded (so the origin cannot have read a
-  complete request). A POST that was fully written and then went dark may have
-  been acted on; re-executing it is the caller's decision, never the pool's.
-  `UpstreamAttemptFailure` carries both facts (`didYield`, `requestWritten`), and
-  the relay reports the outcome instead of finishing the caller's stream itself —
-  a relay that had already finished it would have spent the choice.
+- **A leased connection may be dead, so the retry is load-bearing — and the
+  evidence it is gated on is *what killed the connection*, not whether the write
+  landed.** A pooled attempt that fails **having yielded nothing** is retried once
+  on a fresh connection when the method is idempotent, when the final flush never
+  succeeded, or — the case that was wrong until 0.0.28 — when the failure is
+  **transport teardown** (`NIOStreamingForwarder.mayRetry` / `isTransportTeardown`,
+  the same tiering as `HTTP2ConnectionErrorReporter.classify`).
+
+  The old rule allowed a non-idempotent retry only on `!requestWritten`, reading a
+  successful final flush as proof that the origin had read a complete request.
+  **It proves no such thing**: a write to a socket whose peer has already closed
+  succeeds, landing in this host's send buffer — FIN ends only the peer→us
+  direction — and the RST arrives later, on the read. So an origin reaping an idle
+  keep-alive connection produced `requestWritten == true` for a request no origin
+  saw, and a POST on that socket failed while the identical POST on a fresh one
+  succeeded. That is the idle-connection race every HTTP client has to answer, and
+  it surfaced as `aStalePoolNeverFailsAPost_whoseWriteNeverLanded` failing
+  intermittently on CI (`errno 54`, ECONNRESET on read) and never locally.
+
+  What still holds: anything that is **not** the transport going away — a protocol
+  error, a decoder failure — does not re-run a non-idempotent method, because those
+  can follow an origin having read and acted. The residual risk is stated rather
+  than hidden: an origin could read, act, and reset without sending a byte, which
+  Loom cannot distinguish from a reap; the rule it replaces failed *every* reaped
+  POST to avoid that one. A **fresh** connection keeps the strict rule — there a
+  failure after a successful write genuinely may mean the origin acted.
+  `UpstreamAttemptFailure` carries all three facts (`didYield`, `requestWritten`,
+  `underlying`), and the relay reports the outcome instead of finishing the
+  caller's stream itself — a relay that had already finished it would have spent
+  the choice.
 - **Only a `.bytes` body may lease.** The retry needs a request it can re-send; a
   `.stream` body is a live back-pressured pull from the client, consumed exactly
   once. Streamed requests connect fresh and still *release* into the pool.

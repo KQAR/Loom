@@ -208,13 +208,10 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             } catch let failure as UpstreamAttemptFailure {
                 guard !failure.didYield else { throw failure.underlying }
                 // Bytes-in-hand makes the request *re-sendable*; it does not make
-                // it *re-executable*. RFC 9110 §9.2.2: an automatic retry is only
-                // allowed for an idempotent method, or when the request provably
-                // never reached the origin — here, when its final flush failed,
-                // so the origin cannot have read a complete request. A POST that
-                // was fully written and then went dark may have been acted on,
-                // and running it twice is the caller's decision, never the pool's.
-                guard Self.isIdempotent(method) || !failure.requestWritten else {
+                // it *re-executable*. RFC 9110 §9.2.2 allows an automatic retry
+                // for an idempotent method, or when there is a means to detect
+                // that the original request was never applied.
+                guard Self.mayRetry(method: method, after: failure) else {
                     throw failure.underlying
                 }
                 Log.forward.debug(
@@ -867,6 +864,62 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         case "GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE": return true
         default: return false
         }
+    }
+
+    /// Whether a **pooled** attempt that yielded nothing may be re-run on a fresh
+    /// connection.
+    ///
+    /// ## What was wrong before, and why it wasn't strictness
+    ///
+    /// The rule used to be `isIdempotent(method) || !failure.requestWritten`, on the
+    /// reading that a successful final flush proves the origin read a complete
+    /// request. **It proves no such thing.** A write to a socket whose peer has
+    /// already closed succeeds locally — it lands in this host's send buffer, and
+    /// FIN only ends the peer→us direction — and the RST comes back afterwards, on
+    /// the read. So the common case of an origin reaping an idle keep-alive
+    /// connection produces `requestWritten == true` for a request no origin ever
+    /// saw, and a POST on that connection failed while the identical POST on a fresh
+    /// one succeeded. That is the classic idle-connection race every HTTP client has
+    /// to answer, and Loom answered it with a flag that cannot carry the meaning it
+    /// was being read for.
+    ///
+    /// ## The evidence that does hold
+    ///
+    /// This is only ever asked on the pooled branch, with nothing yielded — so the
+    /// connection was **parked idle before this exchange** and died before one byte
+    /// of reply. What remains is *what killed it*, and that is the discriminator:
+    ///
+    /// - **Transport teardown** (`ForwarderError.connectionClosed`, `IOError` —
+    ///   ECONNRESET/EPIPE — `ChannelError`, `NIOSSLError`) is the reaped-socket
+    ///   shape. A peer that had already fully closed has no socket left to deliver
+    ///   to, so the kernel answers the write with RST and the bytes reach no
+    ///   application. RFC 9110 §9.2.2's "means to detect that the original request
+    ///   was never applied" is exactly this, and it is what every mainstream client
+    ///   retries on.
+    /// - **Anything else** — a protocol error, a decoder failure, a timeout — is not
+    ///   retried for a non-idempotent method. Those can follow an origin having read
+    ///   and acted on the request, and running a POST twice stays the caller's
+    ///   decision.
+    ///
+    /// The residual risk is stated rather than hidden: an origin *could* read a
+    /// request, act on it, and reset without sending a byte. Loom cannot distinguish
+    /// that from a reap, and the alternative — the old rule — failed every reaped
+    /// POST to avoid it. A fresh connection keeps the strict rule, because there a
+    /// failure after a successful write genuinely may mean the origin acted.
+    static func mayRetry(method: String, after failure: UpstreamAttemptFailure) -> Bool {
+        if isIdempotent(method) { return true }
+        if !failure.requestWritten { return true }
+        return isTransportTeardown(failure.underlying)
+    }
+
+    /// The connection died under the request, as opposed to answering it badly.
+    ///
+    /// Same tiering as `HTTP2ConnectionErrorReporter.classify`, and deliberately the
+    /// same set of types: "the transport underneath is gone" is one question, and two
+    /// answers to it in one module is how they come to disagree.
+    static func isTransportTeardown(_ error: Error) -> Bool {
+        if case ForwarderError.connectionClosed = error { return true }
+        return error is IOError || error is ChannelError || error is NIOSSLError
     }
 
     private static func httpMethod(_ raw: String) -> HTTPMethod {
