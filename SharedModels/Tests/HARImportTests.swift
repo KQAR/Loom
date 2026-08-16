@@ -148,4 +148,98 @@ import LoomSharedModels
         #expect(flow.ttfbMS == original.ttfbMS)
         #expect(flow.id != original.id, "a fresh id — the file's ids may collide with the store's")
     }
+
+    // MARK: - A capped body must not come back looking whole
+
+    /// `HARExport` writes the wire size and marks a capped body with
+    /// `_bodyTruncated`; import read neither, so every imported flow came back with
+    /// `fullBodyBytes == nil` — which `isBodyTruncated` reads as "this is the whole
+    /// payload".
+    ///
+    /// The consequence is a wrong answer rather than a thin one:
+    /// `FlowComparison.compareBodies` takes both sides' `fullBodyBytes` exactly so
+    /// two bodies capped at the same length report `.tailNotCaptured` instead of
+    /// identical. Dropped on import, `diff_flows` over a re-imported capture says
+    /// "no difference" about two bodies that differ.
+    @Test func loomsOwnTruncationSurvivesTheRoundTrip() throws {
+        let original = Flow(
+            request: CapturedRequest(
+                method: "POST", url: "https://api.example.com/upload", headers: [],
+                body: Data(repeating: 0x41, count: 16), fullBodyBytes: 4096
+            ),
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            outcome: .completed(
+                CapturedResponse(
+                    statusCode: 200, headers: [],
+                    body: Data(repeating: 0x42, count: 16), fullBodyBytes: 900_000
+                ),
+                at: Date(timeIntervalSince1970: 1_700_000_001)
+            )
+        )
+        let exported = HARExport.encode([original], appVersion: "9.9")
+        let flow = try #require(try HARImport.decode(exported, label: "loom.har").flows.first)
+
+        #expect(flow.request.fullBodyBytes == 4096)
+        #expect(flow.request.isBodyTruncated)
+        #expect(flow.response?.fullBodyBytes == 900_000)
+        #expect(flow.response?.isBodyTruncated == true)
+    }
+
+    /// The failure the field exists to prevent, end to end: two exchanges whose
+    /// captured prefixes are identical and whose full bodies are not.
+    @Test func twoTruncatedImportsDoNotCompareIdentical() throws {
+        func flow(wireBytes: Int) -> Flow {
+            Flow(
+                request: CapturedRequest(method: "GET", url: "https://api.example.com/x", headers: []),
+                startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                outcome: .completed(
+                    CapturedResponse(
+                        statusCode: 200, headers: [],
+                        body: Data("the same first sixteen".utf8), fullBodyBytes: wireBytes
+                    ),
+                    at: Date(timeIntervalSince1970: 1_700_000_001)
+                )
+            )
+        }
+        let exported = HARExport.encode([flow(wireBytes: 5000), flow(wireBytes: 9000)], appVersion: "9.9")
+        let imported = try HARImport.decode(exported, label: "loom.har").flows
+        #expect(imported.count == 2)
+
+        let comparison = FlowComparison.compare(base: imported[0], compared: imported[1])
+        #expect(comparison.isPartial, "a capped body can never qualify as an identical one")
+    }
+
+    /// The foreign-HAR case: DevTools omits `content.text` for large or unavailable
+    /// payloads and still reports the size. An empty prefix is a prefix, and saying
+    /// so is what keeps two such entries from comparing equal.
+    @Test func aDeclaredSizeWithNoBodyIsRecordedAsTheWireSize() throws {
+        let entry = """
+        {"startedDateTime":"2026-07-20T10:00:00.000Z","time":10,
+         "request":{"method":"GET","url":"https://api.example.com/big","headers":[]},
+         "response":{"status":200,"httpVersion":"HTTP/1.1","headers":[],
+                     "content":{"size":1048576,"mimeType":"video/mp4"}}}
+        """
+        let flow = try #require(try HARImport.decode(har(entries: entry), label: "devtools.har").flows.first)
+        #expect(flow.response?.fullBodyBytes == 1_048_576)
+        #expect(flow.response?.body == nil)
+    }
+
+    /// The inference deliberately **not** made. A foreign exporter's size and its
+    /// body length differ for ordinary reasons — compression, transfer encodings, an
+    /// exporter counting characters — so a mismatch alone must not mark an exchange
+    /// partial. A false "truncated" is cheaper than a false "complete" and still a
+    /// wrong claim on the surface whose job is to say when a comparison can't be
+    /// trusted.
+    @Test func aSizeDisagreeingWithAPresentBodyIsNotTreatedAsTruncation() throws {
+        let entry = """
+        {"startedDateTime":"2026-07-20T10:00:00.000Z","time":10,
+         "request":{"method":"GET","url":"https://api.example.com/z","headers":[]},
+         "response":{"status":200,"httpVersion":"HTTP/1.1","headers":[],
+                     "content":{"size":99999,"mimeType":"application/json","text":"{\\"ok\\":true}"}}}
+        """
+        let flow = try #require(try HARImport.decode(har(entries: entry), label: "devtools.har").flows.first)
+        #expect(flow.response?.body == Data(#"{"ok":true}"#.utf8))
+        #expect(flow.response?.fullBodyBytes == nil)
+        #expect(flow.response?.isBodyTruncated == false)
+    }
 }
