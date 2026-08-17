@@ -106,10 +106,11 @@ public enum TunnelReason: String, Codable, Sendable, CaseIterable {
     /// Client-facing TLS did not complete after Loom began interception.
     ///
     /// The one reason on this list where the traffic did not merely go *unread*: it
-    /// did not happen. `clientTLS.lastFailureCode` says whether Loom saw an explicit
-    /// certificate alert or only an inconclusive abort; neither is silently promoted
-    /// to pinning. An include cannot fix it; the remedy is pass-through or making the
-    /// client trust Loom's CA.
+    /// did not happen. `clientTLS.lastFailureCode` / `lastFailureAlert` name the
+    /// alert when there was one: `certificate_unknown` is inconclusive (also sent
+    /// by apps that ignore user CAs), not proof the leaf is invalid or that the
+    /// host is pinned. An include cannot fix it; the remedy is pass-through or
+    /// making that specific client trust Loom's CA.
     case clientHandshakeFailed
     /// The decrypted stream broke a protocol rule Loom's codec enforces, so the
     /// exchange could not be read and the connection was closed.

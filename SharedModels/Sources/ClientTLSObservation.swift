@@ -19,6 +19,8 @@ public extension TunneledHost {
         public var lastFailureAt: Date
         public var lastSuccessAt: Date?
         public var lastFailureCode: FlowError.Code
+        /// Parsed alert from the latest failure, when the handshake error named one.
+        public var lastFailureAlert: TLSClientAlert?
 
         public var status: Status {
             failureCount > 0 && successCount > 0 ? .mixed : .stillFailing
@@ -34,13 +36,15 @@ public extension TunneledHost {
             successCount: Int = 0,
             lastFailureAt: Date,
             lastSuccessAt: Date? = nil,
-            lastFailureCode: FlowError.Code
+            lastFailureCode: FlowError.Code,
+            lastFailureAlert: TLSClientAlert? = nil
         ) {
             self.failureCount = failureCount
             self.successCount = successCount
             self.lastFailureAt = lastFailureAt
             self.lastSuccessAt = lastSuccessAt
             self.lastFailureCode = lastFailureCode
+            self.lastFailureAlert = lastFailureAlert
         }
     }
 }

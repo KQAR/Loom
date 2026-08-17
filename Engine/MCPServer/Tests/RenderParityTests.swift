@@ -143,6 +143,7 @@ import Testing
                 "message": "renamed to `error`",
                 "code": "renamed to `errorCode`",
                 "detail": "renamed to `errorDetail`",
+                "tlsAlert": "renamed to `errorTlsAlert`",
             ]
         ))
     }

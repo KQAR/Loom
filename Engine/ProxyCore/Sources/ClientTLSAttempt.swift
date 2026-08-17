@@ -34,17 +34,20 @@ final class ClientTLSAttempt {
     /// origins are unread" for the console and an agent, and neither is what the
     /// operator is looking at when a request produced nothing.
     func report(
-        host: String, port: Int, code: FlowError.Code, detail: String, summary: String,
+        host: String, port: Int, code: FlowError.Code, detail: String,
+        tlsAlert: TLSClientAlert? = nil, summary: String,
         client: Channel?, startedAt: Date, log: TunneledHostLog, store: FlowStore?
     ) {
         guard !reported else { return }
         reported = true
-        log.recordClientFailure(host: host, port: port, code: code, detail: detail)
+        log.recordClientFailure(
+            host: host, port: port, code: code, detail: detail, tlsAlert: tlsAlert
+        )
         guard let store else { return }
         TunnelFlow.recordFailure(
             host: host, port: port, startedAt: startedAt, client: client,
             reason: .clientHandshakeFailed,
-            error: FlowError(summary, code: code, detail: detail),
+            error: FlowError(summary, code: code, detail: detail, tlsAlert: tlsAlert),
             store: store
         )
     }

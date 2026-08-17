@@ -38,6 +38,8 @@ struct FlowSummaryRender: Encodable {
     var error: String?
     var errorCode: String?
     var errorDetail: String?
+    /// Parsed client TLS alert, when the handshake error named one.
+    var errorTlsAlert: String?
     var tunnel: TunnelDiagnosticRender?
     var replayedFrom: String?
     /// Loaded from a file, not observed here — the one thing that must never be
@@ -73,6 +75,7 @@ struct FlowSummaryRender: Encodable {
         error = flow.error
         errorCode = flow.flowError?.code?.rawValue
         errorDetail = flow.flowError?.detail
+        errorTlsAlert = flow.flowError?.tlsAlert?.rawValue
         tunnel = flow.effectiveTunnelDiagnostic.map(TunnelDiagnosticRender.init)
         replayedFrom = flow.replayedFrom?.uuidString
         importedFrom = flow.importedFrom
@@ -734,6 +737,7 @@ struct ClientTLSObservationRender: Encodable {
     var lastFailureAt: Date
     var lastSuccessAt: Date?
     var lastFailureCode: String
+    var lastFailureAlert: String?
 
     init(_ observation: TunneledHost.ClientTLS) {
         status = observation.status.rawValue
@@ -743,6 +747,7 @@ struct ClientTLSObservationRender: Encodable {
         lastFailureAt = observation.lastFailureAt
         lastSuccessAt = observation.lastSuccessAt
         lastFailureCode = observation.lastFailureCode.rawValue
+        lastFailureAlert = observation.lastFailureAlert?.rawValue
     }
 }
 

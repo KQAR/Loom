@@ -79,7 +79,7 @@ struct TunneledHostLogTests {
 
         log.recordClientFailure(
             host: "api.example.test", port: 443,
-            code: .clientCertificateRejected,
+            code: .clientCertificateUnknown,
             detail: "certificate_unknown",
             at: failedAt
         )
@@ -95,7 +95,8 @@ struct TunneledHostLogTests {
         #expect(entry.clientTLS?.successCount == 1)
         #expect(entry.clientTLS?.lastFailureAt == failedAt)
         #expect(entry.clientTLS?.lastSuccessAt == recoveredAt)
-        #expect(entry.clientTLS?.lastFailureCode == .clientCertificateRejected)
+        #expect(entry.clientTLS?.lastFailureCode == .clientCertificateUnknown)
+        #expect(entry.clientTLS?.lastFailureAlert == .certificateUnknown)
         #expect(entry.detail == "certificate_unknown")
     }
 
