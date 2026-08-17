@@ -29,7 +29,15 @@ final class TunneledHostLog: Sendable {
 
     private struct State {
         var hosts: [String: TunneledHost] = [:]
+        var clientSuccesses: [String: SuccessEvidence] = [:]
         var evicted = 0
+        var clientSuccessesEvicted = 0
+    }
+
+    private struct SuccessEvidence {
+        var count: Int
+        var firstSeen: Date
+        var lastSeen: Date
     }
 
     private let state = Mutex(State())
@@ -38,15 +46,32 @@ final class TunneledHostLog: Sendable {
     func record(
         host: String, port: Int, reason: TunnelReason, detail: String? = nil, at date: Date = Date()
     ) {
+        if reason == .clientHandshakeFailed {
+            recordClientFailure(
+                host: host, port: port, code: .clientHandshakeFailed,
+                detail: detail, at: date
+            )
+            return
+        }
         let key = "\(host.lowercased()):\(port)"
         state.withLock {
             if var existing = $0.hosts[key] {
+                guard existing.reason == reason else {
+                    guard date >= existing.lastSeen else { return }
+                    existing.reason = reason
+                    existing.detail = detail
+                    existing.lastSeen = date
+                    existing.connections = 1
+                    // `clientTLS` is independent historical evidence. A later codec
+                    // or scope verdict must not erase it.
+                    $0.hosts[key] = existing
+                    return
+                }
                 existing.connections += 1
-                existing.lastSeen = date
-                // Latest reason wins — see `TunneledHost.reason` — and the detail
-                // travels with it rather than outliving the reason that explained it.
-                existing.reason = reason
-                existing.detail = detail
+                if date >= existing.lastSeen {
+                    existing.lastSeen = date
+                    existing.detail = detail
+                }
                 $0.hosts[key] = existing
                 return
             }
@@ -64,31 +89,100 @@ final class TunneledHostLog: Sendable {
         }
     }
 
-    /// Drop a host's failure verdict once a client demonstrably trusts Loom again.
-    ///
-    /// `clientHandshakeFailed` and `protocolError` are the two reasons with no
-    /// scope-change recovery path: `pending()` keeps them forever (correctly — no
-    /// scope edit fixes them), so after the operator installs the CA into the
-    /// client, the "client refused" entry and the orange console icon would
-    /// outlive the problem until relaunch. A **completed** client handshake on an
-    /// intercepted tunnel to the same host:port is the evidence that clears both
-    /// — and if the codec still chokes on the next request, the failure re-records
-    /// itself immediately, so the window where a cleared entry hides a live
-    /// problem is one connection wide.
-    func clearClientVerdicts(host: String, port: Int) {
+    /// Record one failed client-facing TLS attempt without losing success evidence.
+    func recordClientFailure(
+        host: String, port: Int, code: FlowError.Code,
+        detail: String? = nil, at date: Date = Date()
+    ) {
         let key = "\(host.lowercased()):\(port)"
         state.withLock {
-            guard let entry = $0.hosts[key],
-                  entry.reason == .clientHandshakeFailed || entry.reason == .protocolError
-            else { return }
+            if var existing = $0.hosts[key], existing.reason == .clientHandshakeFailed {
+                var observation = existing.clientTLS ?? TunneledHost.ClientTLS(
+                    failureCount: existing.connections,
+                    lastFailureAt: existing.lastSeen,
+                    lastFailureCode: code
+                )
+                observation.failureCount += 1
+                if date >= observation.lastFailureAt {
+                    observation.lastFailureAt = date
+                    observation.lastFailureCode = code
+                    existing.detail = detail
+                }
+                existing.connections = observation.failureCount
+                existing.lastSeen = max(existing.lastSeen, date)
+                existing.clientTLS = observation
+                $0.hosts[key] = existing
+                return
+            }
+            let successes = $0.clientSuccesses.removeValue(forKey: key)
+            $0.hosts[key] = TunneledHost(
+                host: host, port: port,
+                firstSeen: min(successes?.firstSeen ?? date, date),
+                lastSeen: max(successes?.lastSeen ?? date, date),
+                reason: .clientHandshakeFailed, detail: detail,
+                clientTLS: TunneledHost.ClientTLS(
+                    successCount: successes?.count ?? 0,
+                    lastFailureAt: date,
+                    lastSuccessAt: successes?.lastSeen,
+                    lastFailureCode: code
+                )
+            )
+            evictIfNeeded(&$0)
+        }
+    }
+
+    /// Retain a success beside the failures already observed for this origin.
+    ///
+    /// Healthy origins are not inserted: this log remains bounded by problems the
+    /// operator actually encountered rather than becoming a second host census.
+    func recordClientSuccess(host: String, port: Int, at date: Date = Date()) {
+        let key = "\(host.lowercased()):\(port)"
+        state.withLock {
+            guard var existing = $0.hosts[key],
+                  existing.reason == .clientHandshakeFailed,
+                  var observation = existing.clientTLS
+            else {
+                if var successes = $0.clientSuccesses[key] {
+                    successes.count += 1
+                    successes.lastSeen = max(successes.lastSeen, date)
+                    $0.clientSuccesses[key] = successes
+                } else {
+                    $0.clientSuccesses[key] = SuccessEvidence(
+                        count: 1, firstSeen: date, lastSeen: date
+                    )
+                    evictSuccessIfNeeded(&$0)
+                }
+                return
+            }
+            observation.successCount += 1
+            let lastSuccess = max(observation.lastSuccessAt ?? .distantPast, date)
+            observation.lastSuccessAt = lastSuccess
+            existing.lastSeen = max(existing.lastSeen, date)
+            existing.clientTLS = observation
+            $0.hosts[key] = existing
+        }
+    }
+
+    /// A decoded HTTP/2 stream proves the prior connection-level codec verdict no
+    /// longer describes this host. A TLS handshake alone cannot prove that.
+    func clearProtocolErrorAfterDecodedStream(host: String, port: Int) {
+        let key = "\(host.lowercased()):\(port)"
+        state.withLock {
+            guard $0.hosts[key]?.reason == .protocolError else { return }
             $0.hosts.removeValue(forKey: key)
         }
     }
 
     /// Every entry, most recent activity first, plus how many were evicted.
-    func snapshot() -> (hosts: [TunneledHost], evicted: Int) {
+    func snapshot() -> (
+        hosts: [TunneledHost], evicted: Int, clientSuccessesEvicted: Int
+    ) {
         state.withLock {
-            ($0.hosts.values.sorted { $0.lastSeen > $1.lastSeen }, $0.evicted)
+            (
+                $0.hosts.values.sorted { $0.lastSeen > $1.lastSeen },
+                $0.evicted,
+                $0.clientSuccessesEvicted
+            )
         }
     }
 
@@ -112,5 +206,24 @@ final class TunneledHostLog: Sendable {
     /// engine in one process.
     func reset() {
         state.withLock { $0 = State() }
+    }
+
+    private func evictIfNeeded(_ state: inout State) {
+        guard state.hosts.count > Self.capacity else { return }
+        if let stalest = state.hosts.min(by: { $0.value.lastSeen < $1.value.lastSeen })?.key {
+            state.hosts.removeValue(forKey: stalest)
+            state.evicted += 1
+        }
+    }
+
+    private func evictSuccessIfNeeded(_ state: inout State) {
+        guard state.clientSuccesses.count > Self.capacity else { return }
+        if let stalest = state.clientSuccesses.min(by: {
+            $0.value.lastSeen < $1.value.lastSeen
+        })?.key {
+            if let removed = state.clientSuccesses.removeValue(forKey: stalest) {
+                state.clientSuccessesEvicted += removed.count
+            }
+        }
     }
 }

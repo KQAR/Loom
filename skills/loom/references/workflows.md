@@ -31,7 +31,8 @@ arguments; this file is about sequence and interpretation.
   `since_seconds` (and `group_by: endpoint` once you know the host). Read the
   error rate and the TTFB p95 — high TTFB is server think-time, high receive is
   payload transfer — then `get_flow_detail` on an id from `slowest`. Don't page
-  through summaries computing averages.
+  through summaries computing averages. Those rates cover HTTP exchanges only;
+  CONNECT/tunnel records appear separately under `connectionDiagnostics`.
   On that one flow, read `transport` before blaming the server: a
   `connectionReused: false` exchange also paid the connection's opening cost, and
   `transport.setup` splits it into `dnsMS` / `tcpMS` / `tlsHandshakeMS` — TTFB
@@ -76,10 +77,9 @@ arguments; this file is about sequence and interpretation.
   `intercept_host` away; `notTLSOrHTTP` (SSH, SMTP, a server-first
   protocol), `noCertificateAuthority` and `leafMintFailed` are not. Two more mean
   the request never happened at all — the client is broken with Loom in the path,
-  not merely unread: `clientHandshakeFailed` (it refused Loom's leaf and hung up
-  before sending anything — it carries its own trust store or pins the host; the
-  fix is to take the host back out of `include`, or to trust Loom's CA in *that*
-  client) and
+  not merely unread: `clientHandshakeFailed` (read `clientTLS.lastFailureCode` —
+  only `clientCertificateRejected` proves a certificate alert; an abort does not
+  prove pinning — then either pass the host through or fix trust in that client) and
   `protocolError` (Loom's HTTP/2 codec could not read the connection and closed
   it — `detail` carries the codec's own error, and it is worth filing). Say which
   it is rather than adding globs and hoping.
@@ -90,9 +90,9 @@ arguments; this file is about sequence and interpretation.
   all: a client carrying its own trust store (a JVM, Python, Go — a Gradle build or
   a `pip install`) and a pinned host both keep working until someone decrypts them.
   When it does happen, Loom sees the refusal — that host
-  appears in `get_ssl_scope`'s `tunneledHosts` as `clientHandshakeFailed` with the
-  handshake error in `detail`, so you can name the host instead of asking the user
-  which one broke.
+  appears in `get_ssl_scope` as `clientHandshakeFailed`, retaining failure/success
+  counts. `status` is `stillFailing` or `mixed`; `latestResult` says which outcome
+  happened last without erasing the other one.
 - **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
   filter; return the path. If it's going into a ticket or a chat, pass **both**
   `redact: true` and `redact_bodies: true` — headers alone leave every payload

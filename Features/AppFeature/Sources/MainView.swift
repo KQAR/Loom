@@ -179,6 +179,14 @@ public struct MainView: View {
         List(selection: $store.capture.selection.sending(\.capture.categoriesSelected)) {
             countedRow(count: store.capture.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
                 .tag(FlowCategory.all)
+            countedRow(count: store.capture.requestCount) { Text("Requests") } icon: { categoryIcon("doc.text") }
+                .tag(FlowCategory.requests)
+            countedRow(count: store.capture.connectionCount) { Text("Connections") } icon: { categoryIcon("link") }
+                .tag(FlowCategory.connections)
+                .help(
+                    "\(store.capture.connectionFailureCount) failed · "
+                        + "\(store.capture.relayedConnectionCount) relayed"
+                )
             // The only tinted count in the sidebar: a non-zero Errors bucket is the one
             // number here that is a fault rather than a size, and it is the number a
             // human opens this window to check.
@@ -408,6 +416,14 @@ public struct MainView: View {
             if store.capture.search.isPresented {
                 FlowFilterBar(store: captureStore)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            if store.capture.selection.contains(.connections) {
+                ConnectionSummaryBar(
+                    connections: store.capture.connectionCount,
+                    failed: store.capture.connectionFailureCount,
+                    relayed: store.capture.relayedConnectionCount,
+                    coversHistory: store.capture.aggregatesCoverHistory
+                )
             }
             Group {
                 // O(1) aggregate probe — `displayFlows.isEmpty` would filter the whole
@@ -873,12 +889,12 @@ public struct MainView: View {
             // apart rather than sharing one half-true sentence: the engine scopes read
             // through to stored history, the URL scope filters this window's own rows.
             ContentUnavailableView {
-                Label("No matching requests", systemImage: "line.3.horizontal.decrease")
+                Label("No matching \(selectedRecordNoun)", systemImage: "line.3.horizontal.decrease")
             } description: {
                 if store.capture.search.scope.needsEngine {
                     Text("""
                     Nothing in the stored capture matches “\(store.capture.search.text)” in \
-                    \(store.capture.search.scope.label.lowercased()). Exchanges pruned past the \
+                    \(store.capture.search.scope.label.lowercased()). Records pruned past the \
                     store's row cap aren't searched.
                     """)
                 } else {
@@ -899,7 +915,7 @@ public struct MainView: View {
             // than one row ever did, and the honest message is the one that names
             // what was picked and offers the way out.
             ContentUnavailableView {
-                Label("No requests in this selection", systemImage: "line.3.horizontal.decrease")
+                Label("No \(selectedRecordNoun) in this selection", systemImage: "line.3.horizontal.decrease")
             } description: {
                 Text(
                     "Nothing captured matches \(selectionSummary). Picking more rows in the "
@@ -932,6 +948,8 @@ public struct MainView: View {
     private var selectionSummary: String {
         let names = store.capture.selection.compactMap { category -> String? in
             switch category {
+            case .requests: "Requests"
+            case .connections: "Connections"
             case .errors: "Errors"
             case let .host(host): host
             case let .device(ip): deviceName(ip) ?? ip
@@ -943,6 +961,14 @@ public struct MainView: View {
         // the two rows share a group, and a summary that picked one word would be
         // wrong half the time. The sentence after it explains the rule instead.
         return names.sorted().joined(separator: " + ")
+    }
+
+    private var selectedRecordNoun: String {
+        let requests = store.capture.selection.contains(.requests)
+        let connections = store.capture.selection.contains(.connections)
+        if connections, !requests { return "connections" }
+        if requests, !connections { return "requests" }
+        return "flows"
     }
 
     private func deviceName(_ ip: String) -> String? {

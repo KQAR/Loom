@@ -458,7 +458,7 @@ public struct PanelView: View {
                 kind: .expand(isExpanded: store.setup.sslScopeExpanded),
                 icon: "list.bullet.rectangle",
                 iconTint: store.setup.unexpectedlyUnreadHosts.isEmpty
-                    && store.setup.brokenHosts.isEmpty ? nil : LoomTheme.Palette.warning,
+                    ? nil : LoomTheme.Palette.warning,
                 title: "SSL Scope",
                 detail: sslScopeDetail,
                 help: "Hosts Loom passes through instead of decrypting, and what it saw but couldn't read"
@@ -473,8 +473,7 @@ public struct PanelView: View {
         }
     }
 
-    /// The scope in one phrase, plus anything unread that nobody asked for, plus
-    /// anything Loom outright broke.
+    /// The scope in one phrase, plus anything unread that nobody asked for.
     ///
     /// Those trailing numbers are the load-bearing half — they are the only hint on a
     /// collapsed console that a capture is thinner than it looks — and `unread`
@@ -482,15 +481,9 @@ public struct PanelView: View {
     /// configuration working whatever the scope, and counting
     /// it here would teach the human to ignore the number — and under a whitelist so
     /// is a host nobody named, which is what `unexpectedlyUnreadHosts` is scope-aware
-    /// for. `refused` is a different event, not a subset: an unread origin's request
-    /// still reached it, a refused one's never left the client.
-    ///
-    /// `refused` is a separate word from `unread` because it is a separate event: an
-    /// unread origin's request still reached it, a refused one's never left the
-    /// client. Collapsing them would make the console say "3 unread" about traffic
-    /// that did not happen. It comes first for the same reason.
+    /// for. Connection failures stay on the request table and the MCP surface; this
+    /// configuration row does not duplicate their count or warning state.
     private var sslScopeDetail: String {
-        let broken = store.setup.brokenHosts.count
         let unread = store.setup.unexpectedlyUnreadHosts.count
         let head: String
         if store.setup.interceptsEverything {
@@ -501,7 +494,6 @@ public struct PanelView: View {
             head = covered == 0 ? "none" : "\(covered) host\(covered == 1 ? "" : "s")"
         }
         var flags: [String] = [head]
-        if broken > 0 { flags.append("\(broken) refused") }
         if unread > 0 { flags.append("\(unread) unread") }
         return flags.joined(separator: " · ")
     }

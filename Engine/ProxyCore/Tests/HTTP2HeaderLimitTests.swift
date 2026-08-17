@@ -1,6 +1,7 @@
 import Foundation
 import NIOCore
 import NIOEmbedded
+import NIOHPACK
 import NIOHTTP1
 import NIOHTTP2
 import NIOPosix
@@ -148,13 +149,12 @@ struct HTTP2HeaderLimitTests {
 /// The recovery half: a failure verdict on a host must not outlive the failure.
 @Suite("Client verdict recovery")
 struct ClientVerdictRecoveryTests {
-    @Test func aCompletedHandshakeClearsTheHostsFailureVerdict() throws {
-        // `clientHandshakeFailed` and `protocolError` have no scope-change recovery
-        // path — `pending()` keeps them deliberately. The evidence that clears them
-        // is a client completing a handshake against Loom's leaf, which is exactly
-        // what installing the CA produces.
+    @Test func aCompletedHandshakePreservesBothOutcomesAsMixed() throws {
         let log = TunneledHostLog()
-        log.record(host: "pinned.example.test", port: 443, reason: .clientHandshakeFailed)
+        log.recordClientFailure(
+            host: "pinned.example.test", port: 443,
+            code: .clientCertificateRejected, detail: "certificate_unknown"
+        )
         #expect(log.snapshot().hosts.count == 1)
 
         let channel = EmbeddedChannel()
@@ -164,32 +164,87 @@ struct ClientVerdictRecoveryTests {
         channel.pipeline.fireUserInboundEventTriggered(TLSUserEvent.handshakeCompleted(negotiatedProtocol: "h2"))
         channel.embeddedEventLoop.run()
 
-        #expect(log.snapshot().hosts.isEmpty,
-                "the operator who just installed the CA must see the entry go, not haunt until relaunch")
+        let evidence = try #require(log.snapshot().hosts.first)
+        #expect(evidence.clientTLS?.status == .mixed)
+        #expect(evidence.clientTLS?.latestResult == .succeeded)
+        #expect(evidence.clientTLS?.failureCount == 1)
+        #expect(evidence.clientTLS?.successCount == 1)
+        #expect(evidence.brokeTheClient)
         _ = try? channel.finish()
     }
 
-    @Test func aHandshakeClearsOnlyClientVerdicts_neverAScopeDecision() {
-        // An `excluded` entry is the configuration working; a handshake elsewhere
-        // on the same host:port (impossible for excluded hosts today, but the
-        // guard is the contract) must not un-list it.
+    @Test func aHandshakeChangesOnlyClientVerdicts_neverAScopeDecision() {
         let log = TunneledHostLog()
         log.record(host: "carved-out.example.test", port: 443, reason: .excluded)
-        log.clearClientVerdicts(host: "carved-out.example.test", port: 443)
+        log.recordClientSuccess(host: "carved-out.example.test", port: 443)
         #expect(log.snapshot().hosts.count == 1)
+        #expect(log.snapshot().hosts.first?.reason == .excluded)
     }
 
-    @Test func aFailureAfterRecoveryRecordsItselfAgain() {
-        // The window where a cleared entry hides a live problem is one connection
-        // wide: the next failure re-records immediately.
+    @Test func aFailureAfterSuccessStaysMixedAndReportsTheLatestFailure() {
         let log = TunneledHostLog()
-        log.record(host: "flaky.example.test", port: 443, reason: .protocolError, detail: "first")
-        log.clearClientVerdicts(host: "flaky.example.test", port: 443)
-        log.record(host: "flaky.example.test", port: 443, reason: .protocolError, detail: "second")
+        log.recordClientFailure(
+            host: "flaky.example.test", port: 443,
+            code: .clientCertificateRejected, detail: "first"
+        )
+        log.recordClientSuccess(host: "flaky.example.test", port: 443)
+        log.recordClientFailure(
+            host: "flaky.example.test", port: 443,
+            code: .clientHandshakeAborted, detail: "second"
+        )
         let entry = log.snapshot().hosts.first
-        #expect(entry?.reason == .protocolError)
+        #expect(entry?.reason == .clientHandshakeFailed)
         #expect(entry?.detail == "second")
-        #expect(entry?.connections == 1, "recovery reset the count — these are new refusals, not a running total")
+        #expect(entry?.clientTLS?.status == .mixed)
+        #expect(entry?.clientTLS?.latestResult == .failed)
+        #expect(entry?.clientTLS?.failureCount == 2)
+        #expect(entry?.clientTLS?.successCount == 1)
+        #expect(entry?.brokeTheClient == true)
+    }
+
+    @Test func certificateAlertsAreSeparatedFromInconclusiveHandshakeFailures() {
+        #expect(ClientTLSFailureReporter.failureCode(
+            forDetail: "SSLV3_ALERT_CERTIFICATE_UNKNOWN"
+        ) == .clientCertificateRejected)
+        #expect(ClientTLSFailureReporter.failureCode(
+            forDetail: "eofDuringHandshake"
+        ) == .clientHandshakeFailed)
+        #expect(ClientTLSFailureReporter.failureCode(
+            forDetail: "SSLV3_ALERT_HANDSHAKE_FAILURE"
+        ) == .clientHandshakeFailed)
+    }
+
+    @Test func protocolErrorNeedsADecodedStream_notMerelyATLSHandshake() throws {
+        let log = TunneledHostLog()
+        log.record(host: "h2.example.test", port: 443, reason: .protocolError)
+
+        let tls = EmbeddedChannel()
+        try tls.pipeline.syncOperations.addHandler(
+            ClientTLSFailureReporter(host: "h2.example.test", port: 443, log: log)
+        )
+        tls.pipeline.fireUserInboundEventTriggered(
+            TLSUserEvent.handshakeCompleted(negotiatedProtocol: "h2")
+        )
+        tls.embeddedEventLoop.run()
+        #expect(log.snapshot().hosts.first?.reason == .protocolError)
+
+        let h2 = EmbeddedChannel()
+        try h2.pipeline.syncOperations.addHandler(
+            HTTP2ConnectionErrorReporter(host: "h2.example.test", port: 443, log: log)
+        )
+        try h2.writeInbound(HTTP2Frame(streamID: 1, payload: .rstStream(.cancel)))
+        #expect(log.snapshot().hosts.first?.reason == .protocolError)
+        let headers = HPACKHeaders([
+            (":method", "GET"), (":scheme", "https"),
+            (":path", "/"), (":authority", "h2.example.test"),
+        ])
+        try h2.writeInbound(HTTP2Frame(
+            streamID: 3,
+            payload: .headers(.init(headers: headers, endStream: true))
+        ))
+        #expect(log.snapshot().hosts.isEmpty)
+        _ = try? tls.finish()
+        _ = try? h2.finish()
     }
 }
 
@@ -225,8 +280,8 @@ struct FailedInterceptionFlowTests {
             if flow == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         }
         #expect(flow?.request.url == "https://pinned.example.test:443")
-        #expect(flow?.error?.contains("refused Loom's certificate") == true,
-                "the row has to name what Loom did, or it reads as the origin's fault")
+        #expect(flow?.flowError?.code == .clientHandshakeFailed)
+        #expect(flow?.effectiveTunnelDiagnostic?.reason == .clientHandshakeFailed)
         // And the aggregate still exists — the two surfaces answer different questions.
         #expect(log.snapshot().hosts.first?.reason == .clientHandshakeFailed)
         _ = try? channel.finish()
@@ -304,8 +359,8 @@ struct FailedInterceptionFlowTests {
             if flow == nil { try? await Task.sleep(nanoseconds: 5_000_000) }
         }
         #expect(flow?.request.url == "https://pinned.example.test:443")
-        #expect(flow?.error?.contains("pins this host") == true,
-                "the row has to name the operator's next move, not just say the socket closed")
+        #expect(flow?.flowError?.code == .clientHandshakeAborted)
+        #expect(flow?.error?.contains("closed during the TLS handshake") == true)
         #expect(log.snapshot().hosts.first?.reason == .clientHandshakeFailed)
     }
 

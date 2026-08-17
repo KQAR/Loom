@@ -49,6 +49,24 @@ import LoomSharedModels
         )
     }
 
+    private func tunnel(_ n: Int, failed: Bool) -> Flow {
+        let started = Date(timeIntervalSince1970: TimeInterval(n))
+        return Flow(
+            request: CapturedRequest(
+                method: "CONNECT", url: "https://tunnel.test:443", headers: []
+            ),
+            startedAt: started,
+            outcome: failed
+                ? .failed(FlowError("TLS failed"), at: started, partialResponse: nil)
+                : .completed(CapturedResponse(statusCode: 200, headers: []), at: started),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: "tunnel.test",
+                port: 443,
+                reason: failed ? .clientHandshakeFailed : .notInScope
+            )
+        )
+    }
+
     /// A capture with every shape the fold distinguishes: several hosts, several apps,
     /// a device whose typing arrives across two flows, a 4xx, a 5xx and a transport
     /// failure that answered 200 before dying.
@@ -66,6 +84,8 @@ import LoomSharedModels
         flows.append(flow(23, host: "other.test", failed: true))
         flows.append(flow(24, host: "api.test", device: untyped))
         flows.append(flow(25, host: "api.test", device: typed))
+        flows.append(tunnel(26, failed: true))
+        flows.append(tunnel(27, failed: false))
         return flows
     }
 
@@ -91,6 +111,10 @@ import LoomSharedModels
         #expect(aggregates.appReps == expected.appReps)
         #expect(aggregates.deviceCounts == expected.deviceCounts)
         #expect(aggregates.errorCount == expected.errorCount)
+        #expect(aggregates.exchangeCount == expected.exchangeCount)
+        #expect(aggregates.connectionCount == expected.connectionCount)
+        #expect(aggregates.connectionFailureCount == expected.connectionFailureCount)
+        #expect(aggregates.relayedConnectionCount == expected.relayedConnectionCount)
         // The device's typing arrived on the second of its two flows; the merge has to
         // survive being applied per *distinct value* instead of per row.
         #expect(aggregates.deviceReps["192.168.1.9"]?.platform == "iOS")
@@ -100,6 +124,20 @@ import LoomSharedModels
     @Test func anEmptyTableAggregatesToNothing() throws {
         let persistence = try #require(FlowPersistence(fileURL: fileURL))
         #expect(persistence.aggregate() == FlowAggregates())
+    }
+
+    @Test func explicitRecordKindWinsOverTheCompatibilityMethod() throws {
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        var diagnostic = flow(1)
+        diagnostic.tunnelDiagnostic = Flow.TunnelDiagnostic(
+            host: "api.test", port: 443, reason: .notInScope
+        )
+        persistence.save(diagnostic)
+        persistence.flush()
+
+        let aggregates = persistence.aggregate()
+        #expect(aggregates.exchangeCount == 0)
+        #expect(aggregates.connectionCount == 1)
     }
 
     /// A replaced flow (the same id upserted again as it completes) must be counted

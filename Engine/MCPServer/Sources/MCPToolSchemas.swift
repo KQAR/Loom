@@ -77,6 +77,10 @@ extension MCPToolExecutor {
             [.string(), .array(of: .string())],
             description: "HTTP method(s) to include, case-insensitive. A string or an array of strings."
         ),
+        "record_type": .string(
+            "Only HTTP `exchange` records or connection-level `tunnel` diagnostics.",
+            allowed: Flow.RecordKind.allCases.map(\.rawValue)
+        ),
         "url_contains": .string("Case-insensitive substring of the full URL (path, query, …)."),
         "header_contains": .string("""
             Case-insensitive substring of a header. Plain text matches a header name or \
@@ -321,14 +325,14 @@ extension MCPToolExecutor {
         MCPTool(
             name: "get_recent_flows",
             description: """
-            List captured HTTP flows, newest first, with method, url, status, timing and startedAt. \
-            A `CONNECT` entry is **not an exchange**: it is one HTTPS connection Loom did not \
-            decrypt. It has no headers or body by construction — the row *is* the record. Its \
-            `error` says which kind: absent means relayed (nobody named the host — the scope is a \
-            whitelist, so this is the ordinary state — or it was excluded), present means Loom \
-            tried and the connection failed, i.e. that request never reached the origin. \
+            List captured records, newest first, with `recordType` (`exchange` or `tunnel`), \
+            method, url, status, timing and startedAt. A tunnel record is **not an exchange**: \
+            it is one HTTPS connection Loom did not decrypt. Its typed `tunnel.reason` says why; \
+            `errorCode` distinguishes a conclusive certificate rejection from an inconclusive \
+            handshake abort. It has no headers or body by construction — the row *is* the record. \
+            Legacy CONNECT rows may have no reason because older captures never persisted it. \
             `intercept_host` the host and have the client run again to get real exchanges, or \
-            filter these out with `method: ["GET", "POST", ...]` when you only want content. \
+            pass `record_type: "exchange"` when you only want HTTP content. \
             Filters (all optional, ANDed) are applied across every retained flow BEFORE `limit`, \
             so a match that isn't among the newest exchanges is still found — prefer filtering here \
             over pulling a big list and scanning it yourself. "Retained" means memory **and** the \
@@ -398,8 +402,12 @@ extension MCPToolExecutor {
 
             Takes the same filters as `get_recent_flows` (`since_seconds` + `host` scopes it), \
             aggregates every retained flow that matches — memory and the durable store both — and \
-            reports `flowsConsidered` as the sample size behind the numbers, with `flowsRetained` \
-            as the denominator it came out of. `historyScanTruncated: true` (present only when it \
+            reports `flowsConsidered` as the **HTTP exchange** sample behind the rates and \
+            percentiles. CONNECT/tunnel records are a different grain and never enter those \
+            numbers; when present they are returned separately as `connectionDiagnostics` \
+            (`connections`, `failed`, `relayed`, `reasons`) and `recordsConsidered` counts both \
+            kinds. Query them individually with `get_recent_flows(method: "CONNECT")`. \
+            `flowsRetained` is the store-wide denominator. `historyScanTruncated: true` (present only when it \
             happened) means the history walk stopped at its row budget, so the numbers are over a \
             partial sample: narrow with `host` / `since_seconds` and ask again rather than \
             reporting them as the whole picture. `sizeUnknownFlows` on a bucket means its byte \
@@ -423,7 +431,8 @@ extension MCPToolExecutor {
         MCPTool(
             name: "get_flow_detail",
             description: """
-                Get full request and response detail for one flow by id, including headers and body. \
+                Get full detail for one record by id. HTTP exchanges include headers and bodies; \
+                connection diagnostics have `recordType: "tunnel"` plus typed `tunnel` evidence. \
                 Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, \
                 bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A \
                 body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.
@@ -711,15 +720,18 @@ extension MCPToolExecutor {
             `intercept_host` would fix it (`interceptable: true`); `notTLSOrHTTP` (SSH, \
             SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
             scope change will. Two reasons mean the traffic did not merely go unread — the \
-            request never happened and the operator's page is broken: `clientHandshakeFailed` \
-            (the client refused Loom's leaf and hung up before sending anything; fix is trusting \
-            Loom's CA in that client, or removing the host from `include` so it is relayed \
-            untouched) and `protocolError` (Loom's \
+            request never happened: `clientHandshakeFailed` and `protocolError`. For a client \
+            handshake, `clientTLS.lastFailureCode` distinguishes an explicit certificate rejection \
+            from an inconclusive abort; neither proves pinning. `clientTLS` retains failure/success \
+            counts and timestamps. `status` is `stillFailing` when only failures were seen and \
+            `mixed` once both outcomes exist; `latestResult` separately says which happened last. \
+            A success never erases failures or claims every client recovered. `protocolError` means Loom's \
             HTTP/2 codec could not read the connection and closed it; `detail` carries the \
-            codec's own error). Both carry `detail`, and both clear themselves once a client \
-            completes a handshake against Loom's leaf on that host. Read this before concluding \
+            codec's own error. Read this before concluding \
             a client made no requests. \
-            `tunneledHostsEvicted` counts entries dropped past the 256-host cap.
+            `tunneledHostsEvicted` counts visible host entries dropped past the cap; \
+            `clientTLSSuccessesEvicted` counts hidden pre-failure successes that were \
+            bounded away, so a later host aggregate may under-count mixed evidence.
             """,
             inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetSSLScope(args) }

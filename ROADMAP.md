@@ -857,14 +857,19 @@ that never ran.
 sidebar's Devices and Apps became one tree because "this app, on this device" was previously
 unaskable. The human window also gained a Query tab and a scoped flow summary.
 
-**And the doc surfaces had to catch up, which is the part worth recording.** LAN app
-attribution flows into origin-scoped rules, so a rule scoped to a phone's app matches now —
-while `set_rule`'s own schema still told the agent that such traffic "never matches an
-app-scoped rule". Nothing failed; the agent was simply told not to try. Same shape as the
-0.0.19 render census and the 0.0.24 schema typing, on the one representation neither of those
-can check: **prose ships to the agent as surely as a field does, and only a reader notices
-when it stops being true.** Fixed here, along with the skill's tunnel-reason list and its
-"why is this slow" recipe, which now says to read `transport` before blaming the server.
+**Prose is an agent-facing surface too.** LAN app attribution reached origin-scoped rules
+while `set_rule` still said phone traffic could never match; the skill's tunnel reasons and
+latency recipe had drifted likewise. Typed render/schema censuses cannot catch prose, so this
+round corrected all three beside the code.
+
+### Connection diagnostics stop masquerading as requests (done, 0.0.28)
+
+OPPO traffic showed 76 rejected connections followed by a successful WebView connection:
+`get_ssl_scope` erased evidence and `get_stats` mixed connections with HTTP requests. Typed
+tunnel records retain both outcomes (`mixed` + `latestResult`), exchange statistics report
+connections separately, and the console stays configuration-only. `All Flows` remains the raw
+Charles-style sequence; Requests / Connections filters and exact retained counts prevent CONNECT
+bursts from making the evidence unusable.
 
 ## Structured Channel — decided
 

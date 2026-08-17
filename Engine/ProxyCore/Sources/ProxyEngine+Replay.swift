@@ -16,6 +16,11 @@ extension ProxyEngine {
     /// an embedder that owns its own retention (see the protocol doc). Shares the
     /// override-application + forward + capture path with `replay(id:)`.
     public func replay(flow source: Flow, overrides: ReplayOverrides) async throws -> Flow {
+        guard source.recordKind == .exchange else {
+            throw ProxyControlError.replayFailed(
+                "connection diagnostics are not HTTP exchanges and cannot be replayed"
+            )
+        }
         let id = source.id
         let method = overrides.method ?? source.request.method
         let urlString = overrides.url ?? source.request.url

@@ -48,6 +48,12 @@ struct FlowSummary: View {
         VStack(alignment: .leading, spacing: LoomTheme.Space.lg) {
             group {
                 row("Status", statusText)
+                if let diagnostic = flow.effectiveTunnelDiagnostic {
+                    row("Record", "Connection diagnostic")
+                    if let reason = diagnostic.reason {
+                        row("Reason", reason.rawValue)
+                    }
+                }
                 row("Method", flow.request.method, color: LoomTheme.methodColor(flow.request.method))
                 // Same hue the table's status dot uses for the same code. Two renderings of
                 // one fact used to disagree — a red dot in the list, plain ink here.
@@ -92,7 +98,12 @@ struct FlowSummary: View {
             }
 
             if let error = flow.error {
-                group { row("Error", error, color: LoomTheme.Palette.error) }
+                group {
+                    if let code = flow.flowError?.code {
+                        row("Error kind", code.rawValue)
+                    }
+                    row("Error", error, color: LoomTheme.Palette.error)
+                }
             }
         }
         .font(.callout)

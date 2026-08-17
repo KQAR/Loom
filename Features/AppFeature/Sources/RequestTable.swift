@@ -1396,12 +1396,9 @@ enum RowDiff: Equatable {
 
 /// Whether Loom read this exchange's contents, for the request table's lock column.
 ///
-/// Derived from the flow, not stored: a `CONNECT` flow is one Loom did not read
-/// (Loom never *proxies* a CONNECT it decrypted — the intercepted path replaces it with
-/// the requests inside), its `error` says whether that was a decision or a failure, and
-/// a scheme says whether there was any TLS to read at all. Nothing in `Flow` had to
-/// grow for this, which matters because a field would then need a render, a census
-/// entry and a reason for every other consumer.
+/// Derived from the typed tunnel diagnostic. Legacy CONNECT rows are projected by
+/// `Flow.effectiveTunnelDiagnostic`, so old captures keep the same rendering without
+/// making the method string the model for new traffic.
 ///
 /// **Three answers about decryption, and the third is why this is not a `Bool`.**
 /// Succeeded, failed and deliberately-not-attempted are different events with
@@ -1428,11 +1425,13 @@ enum FlowEncryption {
     case plaintext
 
     init(_ flow: Flow) {
-        if flow.request.method.uppercased() == "CONNECT" {
-            // The error is the discriminator, and it is the flow's own rather than a
-            // second field: `TunnelFlow.record` completes a relayed tunnel with a
-            // `200`, `recordFailure` fails it with what Loom did wrong.
-            self = flow.error == nil ? .tunnelled : .decryptionFailed
+        if let diagnostic = flow.effectiveTunnelDiagnostic {
+            switch diagnostic.reason {
+            case .clientHandshakeFailed?, .protocolError?:
+                self = .decryptionFailed
+            default:
+                self = flow.error == nil ? .tunnelled : .decryptionFailed
+            }
             return
         }
         let url = flow.request.url.lowercased()

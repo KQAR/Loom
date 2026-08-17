@@ -42,6 +42,24 @@ import Testing
         )
     }
 
+    private func tunnel(failed: Bool) -> Flow {
+        let started = Date(timeIntervalSince1970: 2_000)
+        return Flow(
+            request: CapturedRequest(
+                method: "CONNECT", url: "https://tunnel.test:443", headers: []
+            ),
+            startedAt: started,
+            outcome: failed
+                ? .failed(FlowError("TLS failed"), at: started, partialResponse: nil)
+                : .completed(CapturedResponse(statusCode: 200, headers: []), at: started),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: "tunnel.test",
+                port: 443,
+                reason: failed ? .clientHandshakeFailed : .notInScope
+            )
+        )
+    }
+
     /// Record flows into the window *and* set the counts the engine would report for
     /// them — the two halves that used to be one call.
     private func state(_ flows: [Flow]) -> CaptureFeature.State {
@@ -84,6 +102,22 @@ import Testing
 
         #expect(aggregates.hostCounts["a.test"] == 1)
         #expect(aggregates.errorCount == 0)
+    }
+
+    @Test func recordKindCountsContributeAndRetractSymmetrically() {
+        var aggregates = FlowAggregates()
+        let exchange = flow()
+        let failed = tunnel(failed: true)
+        let relayed = tunnel(failed: false)
+        [exchange, failed, relayed].forEach { aggregates.contribute($0) }
+
+        #expect(aggregates.exchangeCount == 1)
+        #expect(aggregates.connectionCount == 2)
+        #expect(aggregates.connectionFailureCount == 1)
+        #expect(aggregates.relayedConnectionCount == 1)
+
+        [exchange, failed, relayed].forEach { aggregates.retract($0) }
+        #expect(aggregates == FlowAggregates())
     }
 
     /// pending → 500 must *become* an error, and 500 → (re-sent as) 200 must stop
@@ -134,8 +168,9 @@ import Testing
         // The trim cuts below the cap rather than to it (`State.trimSlack`), so the
         // window holds somewhere in that band — the point of this test is the counts,
         // which do not move either way.
-        #expect(state.allCount <= CaptureFeature.State.displayCap, "the window cap holds")
-        #expect(state.allCount >= CaptureFeature.State.displayCap - CaptureFeature.State.trimSlack)
+        #expect(state.windowCount <= CaptureFeature.State.displayCap, "the window cap holds")
+        #expect(state.windowCount >= CaptureFeature.State.displayCap - CaptureFeature.State.trimSlack)
+        #expect(state.allCount == old.count + new.count, "retained count is not the window size")
         #expect(state.droppedFlowCount > 0, "and it dropped rows to hold it")
         #expect(state.hosts.first(where: { $0.host == "old.test" })?.count == CaptureFeature.State.displayCap,
                 "every one of them is still retained, so still counted")
@@ -316,8 +351,8 @@ import Testing
             abs(batched.flows.count - perFlow.flows.count) <= CaptureFeature.State.trimSlack,
             "and they differ by at most the trim slack"
         )
-        #expect(batched.allCount <= CaptureFeature.State.displayCap, "the cap holds")
-        #expect(perFlow.allCount <= CaptureFeature.State.displayCap)
+        #expect(batched.windowCount <= CaptureFeature.State.displayCap, "the cap holds")
+        #expect(perFlow.windowCount <= CaptureFeature.State.displayCap)
         #expect(
             batched.hostByRow.filter { batched.flows[id: $0.key] != nil }
                 == perFlow.hostByRow.filter { batched.flows[id: $0.key] != nil },

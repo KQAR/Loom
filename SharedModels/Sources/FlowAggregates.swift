@@ -1,7 +1,7 @@
 import Foundation
 
-/// Per-host / per-app / per-device counters and the error count, maintained
-/// incrementally as flows arrive.
+/// Per-host / per-app / per-device / record-kind counters and the error count,
+/// maintained incrementally as flows arrive.
 ///
 /// **Owned by the engine, over everything retained.** It used to be the window's, over
 /// the flows the window happened to hold — which made every sidebar badge a count of
@@ -17,7 +17,7 @@ import Foundation
 /// render was four separate O(n) passes — hosts, apps, devices, errors — and the host
 /// pass parsed 2000 URLs through `URLComponents` every time.
 ///
-/// **Why one type**: the seven fields are not seven independent counters, they are one
+/// **Why one type**: these fields are not independent counters, they are one
 /// projection of the flow list, and three operations have to agree about them.
 /// `contribute` and `retract` must stay exact mirror images or a replaced flow leaks a
 /// count; `removeAll` must clear exactly this set or a cleared capture leaves a
@@ -48,6 +48,11 @@ public struct FlowAggregates: Equatable, Sendable {
     public private(set) var deviceReps: [String: SourceDevice] = [:]
     /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge.
     public private(set) var errorCount = 0
+    /// HTTP exchanges and connection diagnostics are two grains in one retained store.
+    public private(set) var exchangeCount = 0
+    public private(set) var connectionCount = 0
+    public private(set) var connectionFailureCount = 0
+    public private(set) var relayedConnectionCount = 0
     /// Deliberately **not** here: a `flow id → host` map. It used to live alongside
     /// these counters and it is the one field that scales with the number of flows
     /// rather than the number of distinct hosts — which is precisely what an aggregate
@@ -74,6 +79,16 @@ public struct FlowAggregates: Equatable, Sendable {
 
     /// Fold one flow in.
     public mutating func contribute(_ flow: Flow) {
+        if flow.recordKind == .tunnel {
+            connectionCount += 1
+            if Self.isError(flow) {
+                connectionFailureCount += 1
+            } else {
+                relayedConnectionCount += 1
+            }
+        } else {
+            exchangeCount += 1
+        }
         if Self.isError(flow) { errorCount += 1 }
         if let host = flow.host {
             hostCounts[host, default: 0] += 1
@@ -146,10 +161,29 @@ public struct FlowAggregates: Equatable, Sendable {
         errorCount += count
     }
 
+    public mutating func addRecordCounts(
+        exchanges: Int, connections: Int, connectionFailures: Int
+    ) {
+        exchangeCount += max(0, exchanges)
+        connectionCount += max(0, connections)
+        connectionFailureCount += max(0, connectionFailures)
+        relayedConnectionCount += max(0, connections - connectionFailures)
+    }
+
     /// Undo `contribute` — for a replaced or evicted flow. A key that reaches zero is
     /// removed along with its representative, so an emptied host/app/device disappears
     /// from the sidebar instead of lingering at 0.
     public mutating func retract(_ flow: Flow) {
+        if flow.recordKind == .tunnel {
+            connectionCount = max(0, connectionCount - 1)
+            if Self.isError(flow) {
+                connectionFailureCount = max(0, connectionFailureCount - 1)
+            } else {
+                relayedConnectionCount = max(0, relayedConnectionCount - 1)
+            }
+        } else {
+            exchangeCount = max(0, exchangeCount - 1)
+        }
         if Self.isError(flow) { errorCount = max(0, errorCount - 1) }
         if let host = flow.host {
             _ = Self.decrement(&hostCounts, key: host)

@@ -286,12 +286,16 @@ enum TunnelFlow {
     ///   table to a device (the sidebar's most-used filter, and `get_recent_flows`'s
     ///   `device_ip`) dropped every CONNECT row, so "what is this phone not showing me"
     ///   answered nothing.
-    static func record(host: String, port: Int, startedAt: Date, client: Channel?, store: FlowStore) {
+    static func record(
+        host: String, port: Int, reason: TunnelReason,
+        startedAt: Date, client: Channel?, store: FlowStore
+    ) {
         let flow = Flow(
             request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
             startedAt: startedAt,
             outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
-            sourceDevice: device(of: client)
+            sourceDevice: device(of: client),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(host: host, port: port, reason: reason)
         )
         Task { await store.upsert(flow) }
     }
@@ -323,13 +327,16 @@ enum TunnelFlow {
     /// offers the second.
     static func recordFailure(
         host: String, port: Int, startedAt: Date, client: Channel?,
-        error: String, store: FlowStore
+        reason: TunnelReason, error: FlowError, store: FlowStore
     ) {
         let flow = Flow(
             request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
             startedAt: startedAt,
-            outcome: .failed(FlowError(error), at: Date(), partialResponse: nil),
-            sourceDevice: device(of: client)
+            outcome: .failed(error, at: Date(), partialResponse: nil),
+            sourceDevice: device(of: client),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: host, port: port, reason: reason, detail: error.detail
+            )
         )
         Task { await store.upsert(flow) }
     }

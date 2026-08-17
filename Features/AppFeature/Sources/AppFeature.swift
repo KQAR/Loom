@@ -9,6 +9,8 @@ import UpdaterClient
 /// `.app` by the originating local app (its bundle id or name).
 public enum FlowCategory: Hashable, Sendable {
     case all
+    case requests
+    case connections
     case errors
     /// Not a flow filter: selecting it swaps the detail area for the rules panel.
     case rules
@@ -33,7 +35,7 @@ public enum FlowCategory: Hashable, Sendable {
     public var isPanel: Bool {
         switch self {
         case .rules, .audit, .breakpoints: true
-        case .all, .errors, .host, .app, .device: false
+        case .all, .requests, .connections, .errors, .host, .app, .device: false
         }
     }
 
@@ -42,7 +44,7 @@ public enum FlowCategory: Hashable, Sendable {
     public var isFilter: Bool {
         switch self {
         case .all, .rules, .audit, .breakpoints: false
-        case .errors, .host, .app, .device: true
+        case .requests, .connections, .errors, .host, .app, .device: true
         }
     }
 
@@ -60,6 +62,7 @@ public enum FlowCategory: Hashable, Sendable {
         /// Devices and the apps nested under them.
         case origin
         case host
+        case recordKind
         /// Not really an axis — a modifier that ANDs with whatever else is picked,
         /// so "errors, on this host" is one selection rather than two steps.
         case errors
@@ -68,6 +71,7 @@ public enum FlowCategory: Hashable, Sendable {
     public var dimension: Dimension? {
         switch self {
         case .all, .rules, .audit, .breakpoints: nil
+        case .requests, .connections: .recordKind
         case .errors: .errors
         case .host: .host
         case .app, .device: .origin

@@ -61,6 +61,29 @@ import LoomSharedModels
         #expect(found.map(\.id) == [old.id], "evicted from the ring, still on disk, still findable")
     }
 
+    @Test func recordKindFilterReadsConnectionsThroughFromDisk() async throws {
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        let store = FlowStore(capacity: 2, persistence: persistence)
+        let connection = flow(1, host: "tunnel.test", method: "CONNECT")
+        var explicit = flow(2, host: "explicit.test")
+        explicit.tunnelDiagnostic = Flow.TunnelDiagnostic(
+            host: "explicit.test", port: 443, reason: .notInScope
+        )
+        await store.upsert(connection)
+        await store.upsert(explicit)
+        for n in 3...6 { await store.upsert(flow(n)) }
+        await store.flush()
+
+        let connections = await store.recent(
+            matching: FlowQuery(recordKind: .tunnel), limit: 10
+        )
+        #expect(connections.map(\.id) == [explicit.id, connection.id])
+        let exchanges = await store.recent(
+            matching: FlowQuery(recordKind: .exchange), limit: 10
+        )
+        #expect(exchanges.allSatisfy { $0.recordKind == .exchange })
+    }
+
     @Test func bodySearch_findsAFlowThatAgedOutOfTheRing() async throws {
         let persistence = try #require(FlowPersistence(fileURL: fileURL))
         let store = FlowStore(capacity: 2, persistence: persistence)
