@@ -92,7 +92,7 @@ final class TunneledHostLog: Sendable {
     /// Record one failed client-facing TLS attempt without losing success evidence.
     func recordClientFailure(
         host: String, port: Int, code: FlowError.Code,
-        detail: String? = nil, at date: Date = Date()
+        detail: String? = nil, tlsAlert: TLSClientAlert? = nil, at date: Date = Date()
     ) {
         let key = "\(host.lowercased()):\(port)"
         state.withLock {
@@ -100,12 +100,14 @@ final class TunneledHostLog: Sendable {
                 var observation = existing.clientTLS ?? TunneledHost.ClientTLS(
                     failureCount: existing.connections,
                     lastFailureAt: existing.lastSeen,
-                    lastFailureCode: code
+                    lastFailureCode: code,
+                    lastFailureAlert: tlsAlert ?? detail.flatMap(TLSClientAlert.parse)
                 )
                 observation.failureCount += 1
                 if date >= observation.lastFailureAt {
                     observation.lastFailureAt = date
                     observation.lastFailureCode = code
+                    observation.lastFailureAlert = tlsAlert ?? detail.flatMap(TLSClientAlert.parse)
                     existing.detail = detail
                 }
                 existing.connections = observation.failureCount
@@ -124,7 +126,8 @@ final class TunneledHostLog: Sendable {
                     successCount: successes?.count ?? 0,
                     lastFailureAt: date,
                     lastSuccessAt: successes?.lastSeen,
-                    lastFailureCode: code
+                    lastFailureCode: code,
+                    lastFailureAlert: tlsAlert ?? detail.flatMap(TLSClientAlert.parse)
                 )
             )
             evictIfNeeded(&$0)

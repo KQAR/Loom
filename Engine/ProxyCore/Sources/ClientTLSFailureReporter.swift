@@ -75,16 +75,16 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
         guard !attempt.handshakeCompleted, !attempt.reported else { return }
         guard Self.isHandshakeFailure(error) else { return }
         let detail = Self.describe(error)
-        let code = Self.failureCode(forDetail: detail)
-        let summary = code == .clientCertificateRejected
-            ? "Client rejected Loom's certificate"
-            : "Client TLS handshake failed before an HTTP request was sent"
+        let alert = TLSClientAlert.parse(detail)
+        let code = alert?.failureCode ?? .clientHandshakeFailed
+        let summary = alert?.summary
+            ?? "Client TLS handshake failed before an HTTP request was sent"
         // Recorded in both places — the console's aggregate and a row in the request
         // table. Without the row a refused handshake is a client-side certificate
         // error against a capture holding nothing for that host at all, which is what
         // "Loom lost it" and "the app never asked" look like alike.
         attempt.report(
-            host: host, port: port, code: code, detail: detail,
+            host: host, port: port, code: code, detail: detail, tlsAlert: alert,
             summary: "\(summary) — \(detail)",
             client: client, startedAt: startedAt, log: log, store: store
         )
@@ -106,8 +106,9 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
         return false
     }
 
-    /// The alert as BoringSSL named it, which is what separates "this host is
-    /// pinned" from "your CA is not installed in this client".
+    /// The BoringSSL / NIOSSL text. Classification is `TLSClientAlert.parse`,
+    /// which does **not** treat `certificate_unknown` as proof of pinning or of
+    /// an invalid leaf — those two look identical on the wire.
     static func describe(_ error: Error) -> String {
         guard case let .handshakeFailed(underlying)? = error as? NIOSSLError else {
             return String(describing: error)
@@ -115,16 +116,10 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
         return String(describing: underlying)
     }
 
-    /// Classify only alerts that explicitly reject the certificate. Every other
-    /// handshake error stays generic; an EOF or protocol mismatch is not pinning.
+    /// Map a handshake error string to a flow code. `certificate_unknown` is
+    /// its own inconclusive code; only `unknown_ca` / `bad_certificate` are a
+    /// rejection of the cert itself. An EOF or protocol mismatch is not either.
     static func failureCode(forDetail detail: String) -> FlowError.Code {
-        let lowered = detail.lowercased()
-        let certificateAlerts = [
-            "alert_certificate_unknown", "alert_unknown_ca", "alert_bad_certificate",
-            "certificate_unknown", "unknown_ca", "bad_certificate",
-        ]
-        return certificateAlerts.contains(where: lowered.contains)
-            ? .clientCertificateRejected
-            : .clientHandshakeFailed
+        TLSClientAlert.parse(detail)?.failureCode ?? .clientHandshakeFailed
     }
 }

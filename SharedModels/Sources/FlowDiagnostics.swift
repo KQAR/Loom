@@ -8,8 +8,11 @@ import Foundation
 public struct FlowError: Equatable, Codable, Sendable {
     /// Failure categories whose distinction changes the operator's next action.
     public enum Code: String, Codable, Sendable, CaseIterable {
-        /// The peer sent a certificate-related TLS alert after Loom offered its leaf.
+        /// The peer sent `unknown_ca` or `bad_certificate` after Loom offered its leaf.
         case clientCertificateRejected
+        /// The peer sent `certificate_unknown`. That alert is inconclusive: it is
+        /// also what an app that ignores user CAs, and a pinned client, both send.
+        case clientCertificateUnknown
         /// The peer closed after starting TLS, without a conclusive alert.
         case clientHandshakeAborted
         /// TLS failed for another reason before an HTTP request existed.
@@ -22,11 +25,17 @@ public struct FlowError: Equatable, Codable, Sendable {
     public var code: Code?
     /// Underlying library text retained for diagnosis, never used as the category.
     public var detail: String?
+    /// Parsed client TLS alert, when the handshake error named one.
+    public var tlsAlert: TLSClientAlert?
 
-    public init(_ message: String, code: Code? = nil, detail: String? = nil) {
+    public init(
+        _ message: String, code: Code? = nil, detail: String? = nil,
+        tlsAlert: TLSClientAlert? = nil
+    ) {
         self.message = message
         self.code = code
         self.detail = detail
+        self.tlsAlert = tlsAlert
     }
 }
 
