@@ -308,7 +308,8 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                 TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
                 if observeTunnels {
                     TunnelFlow.record(
-                        host: host, port: port, startedAt: startedAt, client: client, store: store
+                        host: host, port: port, reason: .notTLSOrHTTP,
+                        startedAt: startedAt, client: client, store: store
                     )
                 }
                 // Order matters: whatever the client managed to say before the
@@ -455,7 +456,8 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
             .flatMap { upstream in
                 if observeTunnels {
                     TunnelFlow.record(
-                        host: host, port: port, startedAt: startedAt, client: channel, store: store
+                        host: host, port: port, reason: reason,
+                        startedAt: startedAt, client: channel, store: store
                     )
                 }
                 return TunnelFlow.glue(client: channel, upstream: upstream, host: host, port: port)

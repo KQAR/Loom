@@ -108,37 +108,22 @@ public enum HARImport {
         let firstByteAt = waitMS.map { startedAt.addingTimeInterval($0 / 1000) }
         let completedAt = startedAt.addingTimeInterval((totalMS ?? 0) / 1000)
 
+        let capturedResponse = response(from: entry)
         let outcome: FlowOutcome
-        if let response = entry["response"] as? [String: Any],
-           let status = (response["status"] as? Int) ?? (response["status"] as? Double).map(Int.init),
-           status > 0 {
-            let responseBody = content(response["content"])
-            outcome = .completed(
-                CapturedResponse(
-                    statusCode: status,
-                    httpVersion: response["httpVersion"] as? String,
-                    headers: headers(response["headers"]),
-                    body: responseBody,
-                    // `content.size` rather than `bodySize`: HAR defines the first as
-                    // the *uncompressed* payload and the second as what came off the
-                    // wire after transfer encodings, and Loom's body is decompressed
-                    // by the time it is captured. Loom's own export writes the same
-                    // number into both, so a round trip is unaffected either way; a
-                    // foreign gzipped entry is the case where they differ, and the
-                    // decoded size is the one the body can be compared against.
-                    fullBodyBytes: wireBytes(
-                        declared: (response["content"] as? [String: Any])?["size"],
-                        truncated: response["_bodyTruncated"],
-                        captured: responseBody
-                    ),
-                    trailers: optionalHeaders(response["_trailers"])
-                ),
-                at: completedAt
-            )
-        } else if let error = entry["_error"] as? String {
+        if let error = entry["_error"] as? String {
             // Loom's own export marks a failed exchange this way; keep it a failure
-            // rather than inventing a status code for it.
-            outcome = .failed(FlowError(error), at: completedAt, partialResponse: nil)
+            // even when a partial response arrived before the error.
+            outcome = .failed(
+                FlowError(
+                    error,
+                    code: (entry["_errorCode"] as? String).flatMap(FlowError.Code.init(rawValue:)),
+                    detail: entry["_errorDetail"] as? String
+                ),
+                at: completedAt,
+                partialResponse: capturedResponse
+            )
+        } else if let capturedResponse {
+            outcome = .completed(capturedResponse, at: completedAt)
         } else {
             outcome = .failed(FlowError("no response recorded in the HAR entry"), at: completedAt, partialResponse: nil)
         }
@@ -154,8 +139,38 @@ public enum HARImport {
             // so a round trip keeps it. A foreign HAR has no such key and at most a
             // `serverIPAddress`, which is worth reading on its own — it is the one
             // transport fact the format standardizes.
-            transport: transport(entry)
+            transport: transport(entry),
+            tunnelDiagnostic: tunnel(entry)
         ))
+    }
+
+    private static func tunnel(_ entry: [String: Any]) -> Flow.TunnelDiagnostic? {
+        guard let raw = entry["_tunnel"],
+              let data = try? JSONSerialization.data(withJSONObject: raw)
+        else { return nil }
+        return try? JSONDecoder().decode(Flow.TunnelDiagnostic.self, from: data)
+    }
+
+    private static func response(from entry: [String: Any]) -> CapturedResponse? {
+        guard let response = entry["response"] as? [String: Any],
+              let status = (response["status"] as? Int)
+                ?? (response["status"] as? Double).map(Int.init),
+              status > 0
+        else { return nil }
+        let responseBody = content(response["content"])
+        return CapturedResponse(
+            statusCode: status,
+            httpVersion: response["httpVersion"] as? String,
+            headers: headers(response["headers"]),
+            body: responseBody,
+            // `content.size` is decoded payload size; HAR `bodySize` is encoded.
+            fullBodyBytes: wireBytes(
+                declared: (response["content"] as? [String: Any])?["size"],
+                truncated: response["_bodyTruncated"],
+                captured: responseBody
+            ),
+            trailers: optionalHeaders(response["_trailers"])
+        )
     }
 
     /// `_transport` when Loom wrote the file, otherwise whatever the standard

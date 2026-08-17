@@ -53,12 +53,11 @@ struct DiffView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         VStack(alignment: .leading, spacing: LoomTheme.Space.sm) {
+                            section("Record", rows: recordRows(comparison))
                             section("Request", rows: requestRows(comparison.request))
                             section("Response", rows: responseRows(comparison.response))
                             section("WebSocket", rows: webSocketRows(comparison.webSocket))
-                            if let error = comparison.error {
-                                section("Error", rows: [.change(label: "error", change: error.strings)])
-                            }
+                            section("Error", rows: errorRows(comparison))
                         }
                     }
                 }
@@ -98,6 +97,31 @@ struct DiffView: View {
         case change(label: String, change: (base: String?, compared: String?))
         case note(String)
         case bodyLine(added: Bool, text: String)
+    }
+
+    private func recordRows(_ comparison: FlowComparison) -> [Row] {
+        var rows: [Row] = []
+        if let kind = comparison.recordKind {
+            rows.append(.change(label: "type", change: kind.strings))
+        }
+        if let tunnel = comparison.tunnel {
+            rows.append(.change(label: "tunnel", change: tunnel.strings))
+        }
+        return rows
+    }
+
+    private func errorRows(_ comparison: FlowComparison) -> [Row] {
+        var rows: [Row] = []
+        if let error = comparison.error {
+            rows.append(.change(label: "error", change: error.strings))
+        }
+        if let code = comparison.errorCode {
+            rows.append(.change(label: "kind", change: code.strings))
+        }
+        if let detail = comparison.errorDetail {
+            rows.append(.change(label: "detail", change: detail.strings))
+        }
+        return rows
     }
 
     private func requestRows(_ request: FlowComparison.MessageComparison) -> [Row] {
@@ -235,4 +259,29 @@ private extension FlowComparison.ValueChange where Value == String {
 
 private extension FlowComparison.ValueChange where Value == Int {
     var strings: (base: String?, compared: String?) { (base.map(String.init), compared.map(String.init)) }
+}
+
+private extension FlowComparison.ValueChange where Value == Flow.RecordKind {
+    var strings: (base: String?, compared: String?) {
+        (base?.rawValue, compared?.rawValue)
+    }
+}
+
+private extension FlowComparison.ValueChange where Value == FlowError.Code {
+    var strings: (base: String?, compared: String?) {
+        (base?.rawValue, compared?.rawValue)
+    }
+}
+
+private extension FlowComparison.ValueChange where Value == Flow.TunnelDiagnostic? {
+    var strings: (base: String?, compared: String?) {
+        func describe(_ value: Flow.TunnelDiagnostic?) -> String? {
+            value.map {
+                let reason = $0.reason?.rawValue ?? "legacyUnknown"
+                return "\($0.host):\($0.port) — \(reason)"
+                    + ($0.detail.map { " — \($0)" } ?? "")
+            }
+        }
+        return (describe(base ?? nil), describe(compared ?? nil))
+    }
 }

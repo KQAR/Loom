@@ -103,16 +103,13 @@ public enum TunnelReason: String, Codable, Sendable, CaseIterable {
     /// or the connection is server-first and said nothing before the sniff deadline.
     /// Being in the SSL scope does not make these readable.
     case notTLSOrHTTP
-    /// Loom presented its leaf and the **client aborted the handshake** — a pinned
-    /// host, or a client whose trust store doesn't have Loom's CA (a JVM, Python,
-    /// Go, an app with its own store).
+    /// Client-facing TLS did not complete after Loom began interception.
     ///
     /// The one reason on this list where the traffic did not merely go *unread*: it
-    /// did not happen. The client sent a fatal alert (RFC 8446 §6.2 —
-    /// `unknown_ca` / `bad_certificate` / `certificate_unknown`) and hung up before
-    /// any request, so the operator's page is broken rather than opaque. An include
-    /// cannot fix it; the remedy is an `exclude` entry (which makes the host work
-    /// again, relayed and visibly listed) or trusting Loom's CA in that client.
+    /// did not happen. `clientTLS.lastFailureCode` says whether Loom saw an explicit
+    /// certificate alert or only an inconclusive abort; neither is silently promoted
+    /// to pinning. An include cannot fix it; the remedy is pass-through or making the
+    /// client trust Loom's CA.
     case clientHandshakeFailed
     /// The decrypted stream broke a protocol rule Loom's codec enforces, so the
     /// exchange could not be read and the connection was closed.
@@ -136,7 +133,8 @@ public enum TunnelReason: String, Codable, Sendable, CaseIterable {
 public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
     public var host: String
     public var port: Int
-    /// Every connection relayed to this host, not just the ones still listed.
+    /// Connections observed for the current reason. For a client TLS failure this
+    /// equals `clientTLS.failureCount`; successes are counted separately.
     public var connections: Int
     public var firstSeen: Date
     public var lastSeen: Date
@@ -147,14 +145,17 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
     /// What Loom saw, when the reason alone doesn't say enough to act on — the
     /// handshake error for `.clientHandshakeFailed`, nil for every other reason.
     ///
-    /// It is a field rather than a log line because both readers need it: the
-    /// human to know *which* client refused the certificate, and the agent to tell
-    /// "this host is pinned" from "your CA isn't installed" without a second call.
+    /// It is a field rather than a log line because both readers need the underlying
+    /// evidence without scraping Console output.
     public var detail: String?
+    /// Client-facing handshake evidence. Present only after Loom attempted TLS
+    /// interception and the client failed at least once.
+    public var clientTLS: ClientTLS?
 
     public init(
         host: String, port: Int, connections: Int = 1,
-        firstSeen: Date, lastSeen: Date, reason: TunnelReason, detail: String? = nil
+        firstSeen: Date, lastSeen: Date, reason: TunnelReason, detail: String? = nil,
+        clientTLS: ClientTLS? = nil
     ) {
         self.host = host
         self.port = port
@@ -163,6 +164,7 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
         self.lastSeen = lastSeen
         self.reason = reason
         self.detail = detail
+        self.clientTLS = clientTLS
     }
 
     public var id: String { "\(host):\(port)" }
@@ -185,7 +187,9 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
     /// the request never happened, so a surface that treats "unread" as benign has
     /// to tell this one apart.
     public var brokeTheClient: Bool {
-        reason == .clientHandshakeFailed || reason == .protocolError
+        if reason == .protocolError { return true }
+        guard reason == .clientHandshakeFailed else { return false }
+        return true
     }
 }
 
@@ -198,10 +202,18 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
 public struct TunneledHostReport: Equatable, Codable, Sendable {
     public var hosts: [TunneledHost]
     public var evicted: Int
+    /// Successful handshakes discarded from the hidden pre-failure cache.
+    /// Non-nil means a later host-level mixed verdict may be an under-count.
+    public var clientSuccessesEvicted: Int?
 
-    public init(hosts: [TunneledHost] = [], evicted: Int = 0) {
+    public init(
+        hosts: [TunneledHost] = [],
+        evicted: Int = 0,
+        clientSuccessesEvicted: Int? = nil
+    ) {
         self.hosts = hosts
         self.evicted = evicted
+        self.clientSuccessesEvicted = clientSuccessesEvicted
     }
 }
 

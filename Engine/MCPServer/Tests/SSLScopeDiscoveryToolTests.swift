@@ -41,7 +41,8 @@ struct SSLScopeDiscoveryToolTests {
                     lastSeen: Date(timeIntervalSince1970: 200), reason: .notTLSOrHTTP
                 ),
             ],
-            evicted: 3
+            evicted: 3,
+            clientSuccessesEvicted: 4
         )
 
         let payload = try decode(try await makeExecutor(engine).call(name: "get_ssl_scope", arguments: [:]))
@@ -58,6 +59,7 @@ struct SSLScopeDiscoveryToolTests {
         #expect(hosts[1]["interceptable"] as? Bool == false)
         // Truncation is never silent, here as everywhere else in Loom.
         #expect(payload["tunneledHostsEvicted"] as? Int == 3)
+        #expect(payload["clientTLSSuccessesEvicted"] as? Int == 4)
     }
 
     @Test func getSSLScope_omitsTheKeysEntirelyWhenNothingWasTunneled() async throws {
@@ -66,6 +68,41 @@ struct SSLScopeDiscoveryToolTests {
         #expect(payload["tunneledHosts"] == nil)
         #expect(payload["tunneledHostsEvicted"] == nil)
         #expect(payload["enabled"] != nil, "the scope itself is always reported")
+    }
+
+    @Test func mixedHandshakeOutcomesKeepBothCountsAndLatestResult() async throws {
+        let engine = StubEngine()
+        engine.tunneled = TunneledHostReport(hosts: [
+            TunneledHost(
+                host: "cdn.example.com",
+                port: 443,
+                connections: 76,
+                firstSeen: Date(timeIntervalSince1970: 100),
+                lastSeen: Date(timeIntervalSince1970: 200),
+                reason: .clientHandshakeFailed,
+                detail: "certificate_unknown",
+                clientTLS: TunneledHost.ClientTLS(
+                    failureCount: 76,
+                    successCount: 1,
+                    lastFailureAt: Date(timeIntervalSince1970: 190),
+                    lastSuccessAt: Date(timeIntervalSince1970: 200),
+                    lastFailureCode: .clientCertificateRejected
+                )
+            ),
+        ])
+
+        let payload = try decode(
+            try await makeExecutor(engine).call(name: "get_ssl_scope", arguments: [:])
+        )
+        let host = try #require(
+            (payload["tunneledHosts"] as? [[String: Any]])?.first
+        )
+        let clientTLS = try #require(host["clientTLS"] as? [String: Any])
+        #expect(clientTLS["status"] as? String == "mixed")
+        #expect(clientTLS["latestResult"] as? String == "succeeded")
+        #expect(clientTLS["failureCount"] as? Int == 76)
+        #expect(clientTLS["successCount"] as? Int == 1)
+        #expect(clientTLS["lastFailureCode"] as? String == "clientCertificateRejected")
     }
 
     // MARK: intercept_host

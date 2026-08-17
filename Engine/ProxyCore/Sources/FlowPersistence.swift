@@ -88,6 +88,7 @@ final class FlowPersistence: @unchecked Sendable {
         let deviceKey: String?
         let deviceJSON: Data?
         let isError: Bool
+        let recordKind: String
     }
 
     // SQLite wants to copy bound bytes, not borrow them.
@@ -124,7 +125,8 @@ final class FlowPersistence: @unchecked Sendable {
         CREATE TABLE IF NOT EXISTS flows (
             id TEXT PRIMARY KEY, startedAt REAL, host TEXT, method TEXT, status INTEGER,
             json BLOB, reqBody BLOB, respBody BLOB,
-            appKey TEXT, appJSON BLOB, deviceKey TEXT, deviceJSON BLOB, isError INTEGER
+            appKey TEXT, appJSON BLOB, deviceKey TEXT, deviceJSON BLOB, isError INTEGER,
+            recordKind TEXT
         );
         """)
         exec("CREATE INDEX IF NOT EXISTS flows_startedAt ON flows(startedAt);")
@@ -152,12 +154,15 @@ final class FlowPersistence: @unchecked Sendable {
     /// row. Below it, `appKey`/`deviceKey` being NULL is ambiguous — the row may
     /// predate the columns rather than have had no app — so `aggregate()` must not
     /// trust them. See `backfillAggregateColumns`.
-    static let aggregateSchemaVersion: Int32 = 2
+    static let aggregateSchemaVersion: Int32 = 3
 
     /// Add the four aggregate columns to a table that predates them, and mark a
     /// *fresh* table as already backfilled (there is nothing in it to backfill).
     private func migrateAddAggregateColumns() {
-        for column in ["appKey TEXT", "appJSON BLOB", "deviceKey TEXT", "deviceJSON BLOB", "isError INTEGER"]
+        for column in [
+            "appKey TEXT", "appJSON BLOB", "deviceKey TEXT", "deviceJSON BLOB",
+            "isError INTEGER", "recordKind TEXT",
+        ]
         where !hasColumn(String(column.prefix(while: { $0 != " " }))) {
             exec("ALTER TABLE flows ADD COLUMN \(column);")
         }
@@ -239,7 +244,8 @@ final class FlowPersistence: @unchecked Sendable {
             appJSON: flow.sourceApp.flatMap { try? encoder.encode($0) },
             deviceKey: flow.sourceDevice?.groupingKey,
             deviceJSON: flow.sourceDevice.flatMap { try? encoder.encode($0) },
-            isError: FlowAggregates.isError(flow)
+            isError: FlowAggregates.isError(flow),
+            recordKind: flow.recordKind.rawValue
         )
         // Strong capture on purpose: a save must not be dropped because the store
         // was released before the queue got to it. This means the last reference can
@@ -361,6 +367,13 @@ final class FlowPersistence: @unchecked Sendable {
             if let methods = query.methods, !methods.isEmpty {
                 let slots = Array(repeating: "?", count: methods.count).joined(separator: ", ")
                 conditions.append("UPPER(method) IN (\(slots))")
+            }
+            if let recordKind = query.recordKind {
+                conditions.append(
+                    recordKind == .tunnel
+                        ? "COALESCE(recordKind, CASE WHEN method = 'CONNECT' COLLATE NOCASE THEN 'tunnel' ELSE 'exchange' END) = 'tunnel'"
+                        : "COALESCE(recordKind, CASE WHEN method = 'CONNECT' COLLATE NOCASE THEN 'tunnel' ELSE 'exchange' END) = 'exchange'"
+                )
             }
             if query.statusMin != nil { conditions.append("status >= ?") }
             if query.statusMax != nil { conditions.append("status <= ?") }
@@ -563,6 +576,7 @@ final class FlowPersistence: @unchecked Sendable {
         if let deviceKey = row.deviceKey { sqlite3_bind_text(stmt, 11, deviceKey, -1, transient) } else { sqlite3_bind_null(stmt, 11) }
         bindBlob(stmt, 12, row.deviceJSON)
         sqlite3_bind_int(stmt, 13, row.isError ? 1 : 0)
+        sqlite3_bind_text(stmt, 14, row.recordKind, -1, transient)
         return sqlite3_step(stmt) == SQLITE_DONE
     }
 
@@ -572,8 +586,8 @@ final class FlowPersistence: @unchecked Sendable {
         if let insertStatement { return insertStatement }
         let sql = """
         INSERT OR REPLACE INTO flows (id, startedAt, host, method, status, json, reqBody, respBody,
-                                      appKey, appJSON, deviceKey, deviceJSON, isError)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      appKey, appJSON, deviceKey, deviceJSON, isError, recordKind)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -704,6 +718,23 @@ final class FlowPersistence: @unchecked Sendable {
         forEachRow("SELECT COUNT(*) FROM flows WHERE isError = 1;") { stmt in
             aggregates.addErrors(Int(sqlite3_column_int64(stmt, 0)))
         }
+        // New rows carry the explicit kind; released rows fall back to the CONNECT
+        // compatibility projection until the one-time backfill writes it.
+        forEachRow("""
+        SELECT COUNT(*),
+               SUM(CASE WHEN COALESCE(recordKind, CASE WHEN method = 'CONNECT' COLLATE NOCASE THEN 'tunnel' ELSE 'exchange' END) = 'tunnel' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN COALESCE(recordKind, CASE WHEN method = 'CONNECT' COLLATE NOCASE THEN 'tunnel' ELSE 'exchange' END) = 'tunnel' AND isError = 1 THEN 1 ELSE 0 END)
+        FROM flows;
+        """) { stmt in
+            let total = Int(sqlite3_column_int64(stmt, 0))
+            let connections = Int(sqlite3_column_int64(stmt, 1))
+            let failed = Int(sqlite3_column_int64(stmt, 2))
+            aggregates.addRecordCounts(
+                exchanges: total - connections,
+                connections: connections,
+                connectionFailures: failed
+            )
+        }
         return aggregates
     }
 
@@ -719,7 +750,11 @@ final class FlowPersistence: @unchecked Sendable {
         for flow in flows { aggregates.contribute(flow) }
 
         var stmt: OpaquePointer?
-        let sql = "UPDATE flows SET appKey = ?, appJSON = ?, deviceKey = ?, deviceJSON = ?, isError = ? WHERE id = ?;"
+        let sql = """
+        UPDATE flows
+        SET appKey = ?, appJSON = ?, deviceKey = ?, deviceJSON = ?, isError = ?, recordKind = ?
+        WHERE id = ?;
+        """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             // The counts above are still correct; only the fast path is unavailable, and
             // the next launch will try again (user_version stays put).
@@ -751,7 +786,8 @@ final class FlowPersistence: @unchecked Sendable {
                 sqlite3_bind_null(stmt, 4)
             }
             sqlite3_bind_int(stmt, 5, FlowAggregates.isError(flow) ? 1 : 0)
-            sqlite3_bind_text(stmt, 6, flow.id.uuidString, -1, transient)
+            sqlite3_bind_text(stmt, 6, flow.recordKind.rawValue, -1, transient)
+            sqlite3_bind_text(stmt, 7, flow.id.uuidString, -1, transient)
             if sqlite3_step(stmt) == SQLITE_DONE { written += 1 }
         }
         exec("COMMIT;")

@@ -56,6 +56,26 @@ import Testing
         #expect(comparison.response.status == .init(base: 200, compared: 500))
     }
 
+    @Test func exchangeAndTunnelAreDifferentRecords() {
+        let base = flow()
+        var tunnel = flow(
+            method: "CONNECT",
+            url: "https://api.example.com:443",
+            status: nil,
+            error: "Client rejected Loom's certificate"
+        )
+        tunnel.tunnelDiagnostic = Flow.TunnelDiagnostic(
+            host: "api.example.com",
+            port: 443,
+            reason: .clientHandshakeFailed
+        )
+
+        let comparison = FlowComparison.compare(base: base, compared: tunnel)
+        #expect(comparison.recordKind == .init(base: .exchange, compared: .tunnel))
+        #expect((comparison.tunnel?.compared ?? nil)?.reason == .clientHandshakeFailed)
+        #expect(!comparison.isIdentical)
+    }
+
     @Test func headers_addedRemovedChanged_caseInsensitiveByName() {
         let changes = FlowComparison.compareHeaders(
             [HeaderPair(name: "Authorization", value: "old"), HeaderPair(name: "X-Gone", value: "1")],
@@ -257,6 +277,38 @@ import Testing
         )
         #expect(comparison.error?.base == "connection refused")
         #expect(comparison.error?.compared == nil)
+    }
+
+    @Test func equalErrorTextWithDifferentEvidenceIsNotIdentical() {
+        var base = flow(status: nil)
+        var compared = flow(status: nil)
+        base.outcome = .failed(
+            FlowError(
+                "TLS failed",
+                code: .clientCertificateRejected,
+                detail: "certificate_unknown"
+            ),
+            at: Date(timeIntervalSince1970: 2),
+            partialResponse: nil
+        )
+        compared.outcome = .failed(
+            FlowError(
+                "TLS failed",
+                code: .clientHandshakeAborted,
+                detail: "closed"
+            ),
+            at: Date(timeIntervalSince1970: 2),
+            partialResponse: nil
+        )
+
+        let comparison = FlowComparison.compare(base: base, compared: compared)
+        #expect(comparison.error == nil)
+        #expect(comparison.errorCode?.base == .clientCertificateRejected)
+        #expect(comparison.errorCode?.compared == .clientHandshakeAborted)
+        #expect(comparison.errorDetail == .init(
+            base: "certificate_unknown", compared: "closed"
+        ))
+        #expect(!comparison.isIdentical)
     }
 
     @Test func lineDiff_keepsCommonSubsequence() {

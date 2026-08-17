@@ -102,11 +102,14 @@ extension ProxyEngine {
     }
 
     public func tunneledHosts() async -> TunneledHostReport {
-        let (hosts, evicted) = TunneledHostLog.shared.snapshot()
+        let snapshot = TunneledHostLog.shared.snapshot()
         // Filtered against the *current* scope, so a host someone just intercepted
         // stops being offered — see `TunneledHostLog.pending`.
         return TunneledHostReport(
-            hosts: TunneledHostLog.pending(hosts, under: config.snapshot()), evicted: evicted
+            hosts: TunneledHostLog.pending(snapshot.hosts, under: config.snapshot()),
+            evicted: snapshot.evicted,
+            clientSuccessesEvicted: snapshot.clientSuccessesEvicted > 0
+                ? snapshot.clientSuccessesEvicted : nil
         )
     }
 

@@ -101,6 +101,45 @@ public enum FlowGrouping: String, Sendable, CaseIterable {
 /// bytes are around (or, when the capture was truncated, from the recorded wire size),
 /// so each bucket reports `sizeUnknownFlows` rather than quietly under-counting.
 public struct FlowStats: Equatable, Sendable {
+    /// Connection-level records kept separate from HTTP exchange health.
+    public struct ConnectionDiagnostics: Equatable, Sendable {
+        public var connections: Int
+        public var failed: Int
+        public var relayed: Int
+        public var reasons: [String: Int]
+        public var firstSeen: Date?
+        public var lastSeen: Date?
+
+        public init(
+            connections: Int = 0,
+            failed: Int = 0,
+            relayed: Int = 0,
+            reasons: [String: Int] = [:],
+            firstSeen: Date? = nil,
+            lastSeen: Date? = nil
+        ) {
+            self.connections = connections
+            self.failed = failed
+            self.relayed = relayed
+            self.reasons = reasons
+            self.firstSeen = firstSeen
+            self.lastSeen = lastSeen
+        }
+
+        mutating func add(_ flow: Flow) {
+            connections += 1
+            if FlowAggregates.isError(flow) {
+                failed += 1
+            } else {
+                relayed += 1
+            }
+            let key = flow.effectiveTunnelDiagnostic?.reason?.rawValue ?? "legacyUnknown"
+            reasons[key, default: 0] += 1
+            if firstSeen == nil || flow.startedAt < firstSeen! { firstSeen = flow.startedAt }
+            if lastSeen == nil || flow.startedAt > lastSeen! { lastSeen = flow.startedAt }
+        }
+    }
+
     /// A latency distribution. Nil when no flow in the bucket recorded that phase
     /// (e.g. nothing completed yet).
     public struct Distribution: Equatable, Sendable {
@@ -170,6 +209,8 @@ public struct FlowStats: Equatable, Sendable {
 
     /// Every matching flow in one bucket.
     public var total: Bucket
+    /// Tunnel/handshake records from the same query, excluded from exchange rates.
+    public var connectionDiagnostics: ConnectionDiagnostics
     /// Buckets, biggest first, capped by the caller's limit.
     public var buckets: [Bucket]
     /// Buckets dropped by that cap — never silently omitted.
@@ -201,10 +242,17 @@ public struct FlowStats: Equatable, Sendable {
     ) -> FlowStats {
         var accumulators: [String: Accumulator] = [:]
         var totals = Accumulator()
+        var diagnostics = ConnectionDiagnostics()
+        var slowestCandidates: [Flow] = []
         var earliest: Date?
         var latest: Date?
 
         for flow in flows {
+            guard flow.recordKind == .exchange else {
+                diagnostics.add(flow)
+                continue
+            }
+            if flow.ttfbMS != nil { slowestCandidates.append(flow) }
             totals.add(flow)
             if grouping != .none {
                 accumulators[key(for: flow, grouping: grouping), default: Accumulator()].add(flow)
@@ -220,8 +268,7 @@ public struct FlowStats: Equatable, Sendable {
             .sorted { ($0.flows, $1.key) > ($1.flows, $0.key) }
         let kept = Array(ranked.prefix(max(0, limit)))
 
-        let slowest = flows
-            .filter { $0.ttfbMS != nil }
+        let slowest = slowestCandidates
             .sorted { ($0.ttfbMS ?? 0) > ($1.ttfbMS ?? 0) }
             .prefix(max(0, slowestCount))
             .map {
@@ -233,6 +280,7 @@ public struct FlowStats: Equatable, Sendable {
 
         return FlowStats(
             total: totals.bucket(key: "all"),
+            connectionDiagnostics: diagnostics,
             buckets: kept,
             bucketsOmitted: ranked.count - kept.count,
             slowest: Array(slowest),
@@ -261,6 +309,7 @@ public struct FlowStats: Equatable, Sendable {
 
     /// `2xx` … `5xx`, or `failed` for a transport error, or `pending` in flight.
     public static func statusClass(of flow: Flow) -> String {
+        if flow.recordKind == .tunnel { return "connectionDiagnostic" }
         if flow.error != nil { return "failed" }
         guard let status = flow.statusCode else { return "pending" }
         return "\(status / 100)xx"
