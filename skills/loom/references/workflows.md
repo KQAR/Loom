@@ -77,9 +77,12 @@ arguments; this file is about sequence and interpretation.
   `intercept_host` away; `notTLSOrHTTP` (SSH, SMTP, a server-first
   protocol), `noCertificateAuthority` and `leafMintFailed` are not. Two more mean
   the request never happened at all — the client is broken with Loom in the path,
-  not merely unread: `clientHandshakeFailed` (read `clientTLS.lastFailureCode` —
-  only `clientCertificateRejected` proves a certificate alert; an abort does not
-  prove pinning — then either pass the host through or fix trust in that client) and
+  not merely unread: `clientHandshakeFailed` (read `clientTLS.lastFailureCode` /
+  `lastFailureAlert` — `clientCertificateUnknown` is an inconclusive
+  `certificate_unknown` alert, not proof the leaf is invalid;
+  `clientCertificateRejected` is `unknown_ca` or `bad_certificate`; an abort does
+  not prove pinning — then either pass the host through or fix trust in that
+  specific client) and
   `protocolError` (Loom's HTTP/2 codec could not read the connection and closed
   it — `detail` carries the codec's own error, and it is worth filing). Say which
   it is rather than adding globs and hoping.

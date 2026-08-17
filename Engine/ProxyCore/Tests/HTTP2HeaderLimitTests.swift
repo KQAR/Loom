@@ -205,6 +205,12 @@ struct ClientVerdictRecoveryTests {
     @Test func certificateAlertsAreSeparatedFromInconclusiveHandshakeFailures() {
         #expect(ClientTLSFailureReporter.failureCode(
             forDetail: "SSLV3_ALERT_CERTIFICATE_UNKNOWN"
+        ) == .clientCertificateUnknown)
+        #expect(ClientTLSFailureReporter.failureCode(
+            forDetail: "SSLV3_ALERT_UNKNOWN_CA"
+        ) == .clientCertificateRejected)
+        #expect(ClientTLSFailureReporter.failureCode(
+            forDetail: "SSLV3_ALERT_BAD_CERTIFICATE"
         ) == .clientCertificateRejected)
         #expect(ClientTLSFailureReporter.failureCode(
             forDetail: "eofDuringHandshake"

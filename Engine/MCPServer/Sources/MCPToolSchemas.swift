@@ -328,8 +328,13 @@ extension MCPToolExecutor {
             List captured records, newest first, with `recordType` (`exchange` or `tunnel`), \
             method, url, status, timing and startedAt. A tunnel record is **not an exchange**: \
             it is one HTTPS connection Loom did not decrypt. Its typed `tunnel.reason` says why; \
-            `errorCode` distinguishes a conclusive certificate rejection from an inconclusive \
-            handshake abort. It has no headers or body by construction — the row *is* the record. \
+            `errorCode` names the TLS outcome: `clientCertificateUnknown` is an \
+            inconclusive `certificate_unknown` alert (not proof the leaf is invalid — apps \
+            that ignore user CAs and pinned clients send the same alert); \
+            `clientCertificateRejected` is `unknown_ca` or `bad_certificate`; \
+            `clientHandshakeAborted` is a close without an alert. \
+            `errorTlsAlert` is the parsed alert when one was named. \
+            It has no headers or body by construction — the row *is* the record. \
             Legacy CONNECT rows may have no reason because older captures never persisted it. \
             `intercept_host` the host and have the client run again to get real exchanges, or \
             pass `record_type: "exchange"` when you only want HTTP content. \
@@ -721,8 +726,11 @@ extension MCPToolExecutor {
             SMTP, a server-first protocol), `noCertificateAuthority` and `leafMintFailed` mean no \
             scope change will. Two reasons mean the traffic did not merely go unread — the \
             request never happened: `clientHandshakeFailed` and `protocolError`. For a client \
-            handshake, `clientTLS.lastFailureCode` distinguishes an explicit certificate rejection \
-            from an inconclusive abort; neither proves pinning. `clientTLS` retains failure/success \
+            handshake, `clientTLS.lastFailureCode` / `lastFailureAlert` name what the \
+            client sent: `clientCertificateUnknown` / `certificateUnknown` is inconclusive \
+            (not proof the leaf is invalid); `clientCertificateRejected` is `unknown_ca` or \
+            `bad_certificate`; an abort is a close without an alert. None of these prove \
+            pinning. `clientTLS` retains failure/success \
             counts and timestamps. `status` is `stillFailing` when only failures were seen and \
             `mixed` once both outcomes exist; `latestResult` separately says which happened last. \
             A success never erases failures or claims every client recovered. `protocolError` means Loom's \
