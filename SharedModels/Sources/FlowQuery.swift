@@ -43,12 +43,14 @@ public struct FlowQuery: Equatable, Sendable {
     public var host: String?
     /// HTTP methods to include, compared case-insensitively.
     public var methods: [String]?
+    /// Restrict to HTTP exchanges or connection-level tunnel diagnostics.
+    public var recordKind: Flow.RecordKind?
     /// Case-insensitive substring of the absolute URL.
     public var urlContains: String?
     /// Inclusive status-code bounds. An exact status sets both.
     public var statusMin: Int?
     public var statusMax: Int?
-    /// Only exchanges that failed: a transport error, or status ≥ 400.
+    /// Only records that failed: a transport/TLS error, or HTTP status ≥ 400.
     public var onlyErrors: Bool
     /// Only flows started at or after this instant.
     public var since: Date?
@@ -89,6 +91,7 @@ public struct FlowQuery: Equatable, Sendable {
     public init(
         host: String? = nil,
         methods: [String]? = nil,
+        recordKind: Flow.RecordKind? = nil,
         urlContains: String? = nil,
         statusMin: Int? = nil,
         statusMax: Int? = nil,
@@ -103,6 +106,7 @@ public struct FlowQuery: Equatable, Sendable {
     ) {
         self.host = host
         self.methods = methods
+        self.recordKind = recordKind
         self.urlContains = urlContains
         self.statusMin = statusMin
         self.statusMax = statusMax
@@ -185,6 +189,7 @@ public struct FlowQuery: Equatable, Sendable {
     public struct MetadataPredicate: Sendable {
         private let since: Date?
         private let methods: [String]?
+        private let recordKind: Flow.RecordKind?
         /// Nil when unfiltered. A literal pattern (no `*`) is compared against the URL's
         /// authority in place — `URLHost.hostMatches` never materializes the host.
         private let host: Glob.Pattern?
@@ -199,6 +204,7 @@ public struct FlowQuery: Equatable, Sendable {
         init(_ query: FlowQuery) {
             since = query.since
             methods = (query.methods?.isEmpty ?? true) ? nil : query.methods
+            recordKind = query.recordKind
             host = query.host.map(Glob.Pattern.init)
             url = (query.urlContains?.isEmpty ?? true) ? nil : query.urlContains.map(NeedleMatcher.init)
             onlyErrors = query.onlyErrors
@@ -217,6 +223,7 @@ public struct FlowQuery: Equatable, Sendable {
                 let method = flow.request.method
                 guard methods.contains(where: { $0.caseInsensitiveCompare(method) == .orderedSame }) else { return false }
             }
+            if let recordKind, flow.recordKind != recordKind { return false }
             if let host, !host.matchesHost(ofURL: flow.request.url) { return false }
             if let url, !url.contains(flow.request.url) { return false }
             if onlyErrors {

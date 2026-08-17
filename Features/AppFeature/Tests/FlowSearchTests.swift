@@ -130,6 +130,12 @@ import Testing
         search.scope = .headers
         #expect(search.engineQuery(selection: [.errors])?.headerContains == "order-42")
         #expect(search.engineQuery(selection: [.errors])?.onlyErrors == true)
+        #expect(search.engineQuery(selection: [.connections])?.recordKind == .tunnel)
+        #expect(search.engineQuery(selection: [.requests])?.recordKind == .exchange)
+        #expect(
+            search.engineQuery(selection: [.requests, .connections])?.recordKind == nil,
+            "both kinds are a union, so neither may be pushed alone"
+        )
     }
 
     /// A multi-selection within one dimension cannot be pushed into `FlowQuery`,

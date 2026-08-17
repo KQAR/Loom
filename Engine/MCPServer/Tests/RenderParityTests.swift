@@ -121,8 +121,43 @@ import Testing
                 "webSocketMessages": "folded into `webSocket` — a bare `true` + `wsMessageCount` in the summary, the frame log in the detail",
                 "webSocketDroppedMessages": "folded into `captureTruncated` (summary) and `webSocket.framesNotRecorded` (detail)",
                 "webSocketCaptureError": "folded into `captureTruncated` (summary) and `webSocket.captureStopped` (detail)",
+                "tunnelDiagnostic": "rendered as `tunnel`; `recordType` also exposes the exchange/tunnel distinction",
                 "transport": "get_flow_detail renders it as `transport` (FlowDetailRender); kept off the summary, which is a list read that no connection fact helps you filter",
             ]
+        ))
+    }
+
+    @Test func flowError_carriesEveryModelField() {
+        let error = FlowError(
+            "Client rejected Loom's certificate",
+            code: .clientCertificateRejected,
+            detail: "certificate_unknown"
+        )
+        var failed = flow
+        failed.outcome = .failed(error, at: Date(), partialResponse: nil)
+        check(Census(
+            "FlowError → get_recent_flows / get_flow_detail",
+            model: error,
+            render: FlowSummaryRender(failed),
+            accountedFor: [
+                "message": "renamed to `error`",
+                "code": "renamed to `errorCode`",
+                "detail": "renamed to `errorDetail`",
+            ]
+        ))
+    }
+
+    @Test func tunnelDiagnostic_carriesEveryModelField() {
+        let diagnostic = Flow.TunnelDiagnostic(
+            host: "api.example.test",
+            port: 443,
+            reason: .clientHandshakeFailed,
+            detail: "certificate_unknown"
+        )
+        check(Census(
+            "Flow.TunnelDiagnostic → flow.tunnel",
+            model: diagnostic,
+            render: TunnelDiagnosticRender(diagnostic)
         ))
     }
 
@@ -278,6 +313,7 @@ import Testing
             accountedFor: [
                 "baseID": "renamed to `baseId`, matching every other id key an agent reads",
                 "comparedID": "renamed to `comparedId`",
+                "recordKind": "renamed to `recordType`, matching flow summary/detail",
             ]
         ))
     }
@@ -359,6 +395,22 @@ import Testing
                 "receive": "renamed to `receiveMS`",
                 "duration": "renamed to `durationMS`",
             ]
+        ))
+    }
+
+    @Test func connectionDiagnostics_carryEveryModelField() {
+        let diagnostics = FlowStats.ConnectionDiagnostics(
+            connections: 2,
+            failed: 1,
+            relayed: 1,
+            reasons: ["clientHandshakeFailed": 1, "notInScope": 1],
+            firstSeen: Date(timeIntervalSince1970: 1),
+            lastSeen: Date(timeIntervalSince1970: 2)
+        )
+        check(Census(
+            "FlowStats.ConnectionDiagnostics → get_stats.connectionDiagnostics",
+            model: diagnostics,
+            render: ConnectionDiagnosticsRender(diagnostics)
         ))
     }
 
@@ -519,12 +571,45 @@ import Testing
         check(Census("SSLScope → get_ssl_scope", model: scope, render: SSLScopeRender(scope)))
     }
 
+    @Test func tunneledHostReport_carriesEveryModelField() {
+        let report = TunneledHostReport(
+            hosts: [],
+            evicted: 2,
+            clientSuccessesEvicted: 3
+        )
+        check(Census(
+            "TunneledHostReport → get_ssl_scope",
+            model: report,
+            render: SSLScopeRender(.disabled, tunneled: report),
+            accountedFor: [
+                "hosts": "renamed to `tunneledHosts`",
+                "evicted": "renamed to `tunneledHostsEvicted`",
+                "clientSuccessesEvicted": "renamed to `clientTLSSuccessesEvicted`",
+            ]
+        ))
+    }
+
     @Test func tunneledHost_carriesEveryModelField() {
-        let entry = TunneledHost(host: "gradle.example.test", port: 443, firstSeen: Date(timeIntervalSince1970: 0), lastSeen: Date(timeIntervalSince1970: 1), reason: .excluded)
+        let clientTLS = TunneledHost.ClientTLS(
+            lastFailureAt: Date(timeIntervalSince1970: 1),
+            lastFailureCode: .clientCertificateRejected
+        )
+        let entry = TunneledHost(
+            host: "gradle.example.test", port: 443,
+            firstSeen: Date(timeIntervalSince1970: 0),
+            lastSeen: Date(timeIntervalSince1970: 1),
+            reason: .clientHandshakeFailed,
+            clientTLS: clientTLS
+        )
         check(Census(
             "TunneledHost → get_ssl_scope.tunneledHosts[]",
             model: entry,
             render: TunneledHostRender(entry)
+        ))
+        check(Census(
+            "TunneledHost.ClientTLS → get_ssl_scope.tunneledHosts[].clientTLS",
+            model: clientTLS,
+            render: ClientTLSObservationRender(clientTLS)
         ))
     }
 

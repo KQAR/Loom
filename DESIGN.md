@@ -144,13 +144,14 @@ components:
     toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + the LISTENER's host:port (verbatim, no digit grouping) — the LAN IP while the proxy is bound to 0.0.0.0, 127.0.0.1 while it is not, never 'whatever address this machine happens to have'; naming an interface the listener is not on is worse than naming a narrow one, because it sends someone to debug their client rather than the LAN switch that caused it — + three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') tinted secondary off / {colors.accent} on — the SAME three values the console's switch-tiles use, because this window and that panel are two renderings of one state. They used to be green, which both contradicted the tile spec and spent the 2xx hue on something that is not a status; SSL keeps one extra value, {colors.status-waiting} for on-but-CA-not-trusted, which is 'waiting on you', not broken. Left (.navigation): a hand-rolled 'sidebar.left' toggle — AppKit's .toggleSidebar item sends toggleSidebar(_:) down the responder chain and only NSSplitViewController answers it, which is the container this window deliberately doesn't use. NOTHING is .primaryAction: Record ('record.circle'/'stop.fill' + label) sits at the RIGHT END OF THE CHIP behind a divider, because it is the same capture state the dot already reports and splitting them across the band made two places to look; Clear is the flow list's own floating {components.clear-fab}, not a toolbar button, because a destructive control belongs against the thing it destroys. No search field HERE and no title — filtering is the find bar above the table (see main-window § Find bar); `.searchable` would put a stretchy field into this band, whose macOS 26 glass capsule grows with its .principal item. All icons 16pt with ≥26pt tap targets."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
-    anatomy: "All Flows · Errors · Rules · Audit · Breakpoints (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): the pill is for attention, and these are bucket sizes on every row at once) · Sections 'Devices' / 'Hosts', one Label per entry with the same trailing count. Selection scopes the table."
+    anatomy: "All Flows · Requests · Connections · Errors · Rules · Audit · Breakpoints (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): these are bucket sizes, not alerts) · Sections 'Devices' / 'Hosts'. All Flows stays the unfiltered Charles-style sequence; Requests and Connections are one OR dimension and compose with Errors/host/device."
     devices-are-a-tree: "a device row, and INDENTED UNDER IT the apps seen on that device. There is no separate 'Apps' section: a flat one listed Mac apps only (a LAN device has no local pid, so nothing was attributed — see AGENTS.md § SourceApp) and put the same flow in two unrelated buckets with no way to ask 'this app, ON this device'. The fold control is a CHEVRON IN THE DEVICE ROW, not the row's own tap and not a DisclosureGroup: a DisclosureGroup's label is not a selectable List row, which would cost the device row its click — and selecting a whole device is the more common of the two things this tree is for. A device with no attributed apps has no chevron. New devices arrive EXPANDED (the persisted set is the COLLAPSED one), because the surface someone opens to watch a phone they just connected must not hide what it is doing."
     empty-selection: "a selection that admits nothing gets its OWN empty state — 'No requests in this selection', naming the picked rows and offering Show All Flows — never 'Waiting for traffic'. Multi-select makes an empty intersection routine rather than rare (two rows from different groups miss each other easily), and telling someone to send requests through the proxy while 273 flows sit behind their filter sends them to debug the wrong thing. Same rule the find bar's 'No matching requests' already follows."
     multi-select: "the selection is a SET (⌘-click, ⇧-click), meaning OR within a dimension and AND across: two hosts = either host, a host + a device = that host's traffic from that device, Errors + anything = that thing's failures. Devices and apps are ONE dimension, so a device plus one of its own apps is a union and the device wins — AND-ing them would answer with the app alone, the smaller of the two rows the human clicked. All Flows and the three panels are EXCLUSIVE: a panel replaces the table rather than filtering it, so it cannot compose, and whichever side was newly clicked wins. Deselecting everything is All Flows, never an empty table."
     disclosure-chevron: "ONE chevron for the section headers and the device rows — `chevron.right`, .caption2 semibold, .tertiary, rotated 90° when open, sitting BESIDE THE LABEL with one {spacing.xs} gap rather than out at the trailing edge (out there it becomes a column of its own and reads as a per-row control, like the counts it would sit above; against the label it reads as part of the label, which is what it is). They were written twice and drew differently (a heavier .secondary down-chevron over a lighter .tertiary right-chevron), which read as two kinds of control rather than one control at two levels of a tree. One glyph rotated, never two swapped."
     device-glyph: "by platform — 'iphone' / 'ipad' / 'desktopcomputer' for this Mac, and Loom's own {components.android-glyph} for Android, drawn to 1.2x the cap height so it matches Apple's device glyphs, which overshoot the capline themselves. Drawing every non-Apple device as 'iphone' is the kind of small lie that makes a sidebar harder to scan, not easier."
   request-table:   # top of the split — a multi-column NSTableView this app owns (see main-window.structure)
+    connection-summary: "When Connections participates in the sidebar selection, a slim .bar strip above the table states capture-wide `N connections · F failed · R relayed`. It says `Capture totals` because host/device selections may narrow the rows while these engine-owned counts cover all retained traffic. Raw CONNECT rows remain in the same table; the strip summarizes, never replaces them."
     columns: "status-dot (28, centered) · # capture-order ({typography.numeric} .tertiary, min 30 / ideal 38 / max 56 — sized for FIVE digits: the window caps at {FlowLimits.windowRows} = 20 000 rows and every extra point comes off Path, which is never wide enough) · App (icon — the `.app` bundle when local; `questionmark.app.dashed` for a User-Agent attribution and when unknown; `terminal` for a local CLI/daemon) · SSL (36, same as App, headed 'SSL', because four states of one symbol are not guessable from the symbol: `lock.open.fill` {colors.status-success} = Loom read this exchange · `lock.trianglebadge.exclamationmark` {colors.status-waiting} = Loom tried and the connection FAILED, so the request never reached the origin · `lock.fill` .secondary = a relayed CONNECT, encrypted past Loom by decision, no body on the row but the request worked · `lock.slash` .quaternary = plain HTTP, nothing to decrypt. The lock is the TRAFFIC's state, not Loom's — reading it the other way round puts the reassuring glyph on the row whose contents are missing. Failed and not-attempted are drawn APART, which the first version did not: a deliberate pass-through is the configuration working and a refused handshake is a broken request, and the open lock is {colors.status-success} while the failure is {colors.status-waiting}; a pass-through stays ink — tinting that too, as an earlier version did, spends the colour on the state that needs it least) · Protocol (URL scheme — HTTP/HTTPS/WS/WSS — mono, secondary; the scheme, NOT the response's httpVersion, which describes Loom's own HTTP/1.1 upstream hop and would misreport an h2 client) · Method (mono, one hue per verb, CONNECT stays ink — see `method-column`) · Host (favicon + mono, secondary) · Path (mono, middle-truncated, + ↻ if replayed, min 120 — the floor came down from 160 when Decrypted was added: every column costs ~17.5pt of .inset padding and intercell spacing BEYOND its width, and Path is the slack sink so it is back above 300 the moment the window has room) · Time (numeric)"
     column-widths: "the columns ALWAYS fill the viewport — the rightmost one sits on the trailing edge at every window width, and spare width goes to HOST and PATH in the ratio of their ideal widths (220:320), Host stopping at its cap because a host name has a length and a path does not. NOT AppKit's default (.lastColumnOnlyAutoresizingStyle): that hands every extra point to the RIGHTMOST column, which is Time, capped at 100 — so widening the window grew Time to its cap and then left a dead strip, while Path, the one column never wide enough, never moved. Path is the SINK (Host when Path is hidden, and as the sink it ignores its own cap — a cap on the sink IS the dead strip). Narrowing reverses it: Path down to its minimum first, then Host down to its minimum, then the table scrolls horizontally — a window too narrow for its columns is not a reason to crush the column whose content is unbounded. A width the operator DRAGGED is theirs and the spare space goes around it (not persisted: an invisible column is unexplainable after a relaunch, a width is self-evident). The gap is MEASURED off rect(ofColumn:), never summed and never read from table.frame.width — a scroll view stretches its document view to the viewport, so the frame reports the width the table was given and a check written against it reads zero while the strip is still on screen."
     order: "chronological — oldest at top, newest at the bottom (log/terminal style)"
@@ -528,15 +529,9 @@ connection refused, and Loom cannot undo that from here.
 is one: there is nothing to toggle — the tile above already carries on/off — and what
 this row holds is two lists. The scope is a **whitelist** — nothing is decrypted until a
 host is named — so the trailing detail leads with what *is* being read (`3 hosts`, or
-`all hosts` when someone has set a wildcard), then `· N refused` for origins whose
-clients rejected Loom's certificate, then `· N unread` for origins going unread that
-nobody asked for. Those trailing numbers are the load-bearing ones — the only hint on a
-collapsed console that a capture is thinner than it looks — and each excludes the state
-that is simply the configuration working: a deliberate pass-through is not "unread", and
-neither is a host nobody has named yet. Only an unexpected state takes the icon orange;
-a row that flagged the configuration working would train the reader to ignore it.
-`refused` is worded apart from `unread` because it is a different event: an unread
-origin's request still reached it, a refused one's never left the client.
+`all hosts` when someone has set a wildcard), then `· N unread` only for unexpected scope
+state. Failed handshakes are traffic evidence, not configuration: they stay in the main
+window's Connections filter and never tint or add a count to this console row.
 
 Its card holds the **whitelist and one control that adds to it**, and nothing else —
 the seen-not-decrypted list it used to lead with is gone, because the request table now
@@ -547,9 +542,7 @@ someone opened the card to edit. The add control is a trailing-edge **glyph-only
 (`{components.button-glyph}` — the same affordance and the same reasoning as Reverse
 Proxies: the card's whole content is one list, so the button on it can't be adding
 anything else) that reveals a Decrypt/Pass-through picker, a field and Cancel/Add.
-What that costs, stated rather than discovered: a refused origin is no longer one click
-from a pass-through here — the row still counts it as `N refused`, and the repair is on
-its row in the window.
+The repair for a failed handshake is on its raw CONNECT row in the main window.
 
 **Both lists are open**, in the order the scope reads them — `Decrypting` decides what
 Loom decrypts, `Passed through` is the hole punched in it — with the add control under
@@ -614,6 +607,8 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 ┌───────────────┬─────────────────────────────────────────────┐
 │ Sidebar       │    ● 10.0.11.196:9090 🌐 🛡 🪄 │ ▶ Record    │  toolbar (chip centred)
 │ All Flows  6  ├─────────────────────────────────────────────┤
+│ Requests   4  │  Capture totals · 2 connections · 1 failed  │  conditional summary
+│ Connections 2├─────────────────────────────────────────────┤
 │ Errors     2  │  [in URL ▾] find…              12 + 40 older │  find bar (⌘F only)
 │ Rules      3  ├─────────────────────────────────────────────┤
 │ Audit     12  │  ●  Method  Host        Path         Time    │  request-table
@@ -626,12 +621,12 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 ```
 
 - **Console** is vibrant material, fixed width, non-scrolling (config is short). No traffic.
-- **Sidebar** (`.listStyle(.sidebar)`): `All Flows` / `Errors` / `Rules` / `Audit` / `Breakpoints`, then
+- **Sidebar** (`.listStyle(.sidebar)`): `All Flows` / `Requests` / `Connections` / `Errors` / `Rules` / `Audit` / `Breakpoints`, then
   `Devices` / `Hosts` sections — each row a `Label` with a **plain trailing count, never `.badge()`**
   (`{components.sidebar-counts}`). Devices is a **tree**: apps are indented under the device they ran on
   (`{components.sidebar}.devices-are-a-tree`). Selection is a **set** — ⌘-click composes filters, OR within a
   dimension and AND across (`{components.sidebar}.multi-select`) — and scopes the table, or replaces it with a
-  `{components.sidebar-panel}`.
+  `{components.sidebar-panel}`. All Flows remains unfiltered; Requests / Connections are the record-kind dimension.
 - **Content**: with no selection, the request table fills the whole pane. Selecting a row slides the tabbed
   `inspector-panel` up below it over a **hand-rolled draggable divider** (not a `VSplitView` — see
   `{components.main-window}.structure`); the inspector's ✕ closes it by deselecting.
@@ -835,7 +830,7 @@ rejecting what failed:
   `{components.main-window}.toolbar` — a leading sidebar toggle and one centered chip carrying Record; nothing
   right-aligned, no search field (the find bar sits above the table, hidden until ⌘F) and no Clear button (it is
   the `{components.clear-fab}` over the list).
-- **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Errors` / `Rules` / `Audit` / `Breakpoints` as
+- **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Requests` / `Connections` / `Errors` / `Rules` / `Audit` / `Breakpoints` as
   `Label`s with a trailing count, then `Devices` / `Apps` / `Hosts` sections. The count is **plain tertiary
   monospaced digits, never `.badge()`**: AppKit's pill is right for "N things demanding attention" and wrong
   for a bucket size on every row at once, where a column of pills reads as a column of alerts. Monospaced so

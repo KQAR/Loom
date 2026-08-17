@@ -186,6 +186,7 @@ import Testing
                 of: FlowQuery(
                     host: "api.example.test",
                     methods: ["GET"],
+                    recordKind: .exchange,
                     urlContains: "orders",
                     statusMin: 400,
                     statusMax: 599,
@@ -203,6 +204,7 @@ import Testing
                 // Singular on the wire: the argument takes a string *or* an array,
                 // and `method: "GET"` is what an agent writes far more often.
                 "methods": "method",
+                "recordKind": "record_type",
                 // `…_in` rather than `…_side`: it reads as a place in the exchange,
                 // which is the question ("was this header in the request?").
                 "headerSide": "header_in",

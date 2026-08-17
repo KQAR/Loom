@@ -70,9 +70,9 @@ console, because the request table answers the same question one `CONNECT` row a
 the action attached*, and keeping both made this a second aggregated rendering of the same
 origins — a 256-host log showing 6 at a time, in a 300pt panel, above the two lines someone
 opened the card to edit. One surface per question: the table lists origins, the card holds the
-configuration. The cost is stated rather than discovered — a **refused** origin is no longer
-one click from a pass-through here; the row still counts it as `N refused` and the repair is on
-its row in the window. Deleted with it: `tunneledHostsByUrgency`/`urgencyRank`, which existed
+configuration. A **refused** origin is diagnosed and repaired on its request-table row (or by
+the agent), not repeated in the console summary. Deleted with it:
+`tunneledHostsByUrgency`/`urgencyRank`, which existed
 only to order that list. The disclosure `Passed through` used to sit behind was one line naming
 a count of a list nobody could see, on a card whose whole job is to show the two lists.
 
@@ -88,6 +88,22 @@ the orange tint fired** (the row read "all hosts" while one host had refused 736
 and `SSLScopeCard` sorted `!interceptable` last, so the row lost the card's 6 visible slots to
 a 256-host log. `SSLScopeCard.offersExclude` was offered only for `interceptable` rows, i.e.
 never where it fixes something, leaving a warning with no action beside it.
+
+## Later correction: one success is recovery, not erasure
+
+An OPPO WebView produced 76 certificate-rejected CONNECTs and then completed TLS to the same
+origin after its recoverable SSL-error path ran. Loom stored every failed row but deleted the
+host aggregate on the first successful handshake, so `get_ssl_scope` denied evidence the flow
+store still held. The replacement keeps failure/success counts and timestamps: failures only
+are `stillFailing`, both outcomes are `mixed`, and `latestResult` says which happened last
+without claiming every client recovered. It also separates connection diagnostics from HTTP
+exchange statistics — one successful h2 connection can carry dozens of requests, so mixing
+those grains cannot produce either a request failure rate or a connection failure rate.
+
+Charles keeps CONNECT in its Sequence View and adds Structure/filtering; Proxyman likewise
+surfaces handshake failures in traffic rather than hiding them in a log. Loom follows that
+evidence rule: `All Flows` remains the raw sequence, while Requests / Connections are explicit,
+composable filters with retained-history counts and the same underlying rows.
 
 ## The four surfaces that were rejected
 

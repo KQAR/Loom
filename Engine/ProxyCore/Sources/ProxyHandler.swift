@@ -352,7 +352,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
         // un-decrypted origin leaves, and a connect that then fails is still HTTPS
         // activity the operator asked about.
         TunneledHostLog.shared.record(host: host, port: port, reason: reason)
-        openTunnel(context: context, host: host, port: port)
+        openTunnel(context: context, host: host, port: port, reason: reason)
     }
 
     /// Why this connection won't be decrypted — `nil` when it will.
@@ -430,7 +430,9 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
 
     // MARK: - CONNECT (blind HTTPS pass-through)
 
-    private func openTunnel(context: ChannelHandlerContext, host: String, port: Int) {
+    private func openTunnel(
+        context: ChannelHandlerContext, host: String, port: Int, reason: TunnelReason
+    ) {
         let clientChannel = context.channel
         let startedAt = Date()
 
@@ -444,7 +446,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 case let .success(upstream):
                     if self.observeTunnels {
                         TunnelFlow.record(
-                            host: host, port: port, startedAt: startedAt,
+                            host: host, port: port, reason: reason, startedAt: startedAt,
                             client: clientChannel, store: self.store
                         )
                     }

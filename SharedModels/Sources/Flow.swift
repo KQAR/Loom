@@ -244,14 +244,6 @@ public struct SourceApp: Equatable, Codable, Sendable, Hashable {
     public var groupingKey: String { bundleID ?? name }
 }
 
-/// Why a flow failed. A distinct type (not a bare `String`) so failure is
-/// modeled explicitly and can grow structured fields later without churning
-/// every call site.
-public struct FlowError: Equatable, Codable, Sendable {
-    public var message: String
-    public init(_ message: String) { self.message = message }
-}
-
 /// One traffic rule that acted on a flow — the audit trail for "what did the
 /// rules do to my traffic". Carries the rule's `id` (so the UI/MCP can link back
 /// to the live rule) alongside the display `name`.
@@ -343,6 +335,11 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
     /// reached the network (a mocked or blocked response, a request still pending
     /// its head) and for flows captured before this was recorded.
     public var transport: FlowTransport?
+    /// Connection-level evidence when no HTTP exchange existed.
+    ///
+    /// New tunnel rows set this explicitly. Legacy CONNECT rows leave it nil and
+    /// are projected conservatively by `effectiveTunnelDiagnostic`.
+    public var tunnelDiagnostic: TunnelDiagnostic?
 
     public init(
         id: UUID = UUID(),
@@ -359,7 +356,8 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         webSocketCaptureError: String? = nil,
         importedFrom: String? = nil,
         bodiesEvicted: Bool? = nil,
-        transport: FlowTransport? = nil
+        transport: FlowTransport? = nil,
+        tunnelDiagnostic: TunnelDiagnostic? = nil
     ) {
         self.id = id
         self.request = request
@@ -376,6 +374,7 @@ public struct Flow: Identifiable, Equatable, Codable, Sendable {
         self.importedFrom = importedFrom
         self.bodiesEvicted = bodiesEvicted
         self.transport = transport
+        self.tunnelDiagnostic = tunnelDiagnostic
     }
 
     // MARK: Read accessors derived from `outcome` (keep call sites terse)

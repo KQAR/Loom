@@ -29,6 +29,24 @@ import Testing
         )
     }
 
+    private func connection(host: String = "a.test", failed: Bool = false) -> Flow {
+        let started = Date(timeIntervalSince1970: 0)
+        return Flow(
+            request: CapturedRequest(
+                method: "CONNECT", url: "https://\(host):443", headers: []
+            ),
+            startedAt: started,
+            outcome: failed
+                ? .failed(FlowError("TLS failed"), at: started, partialResponse: nil)
+                : .completed(CapturedResponse(statusCode: 200, headers: []), at: started),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: host,
+                port: 443,
+                reason: failed ? .clientHandshakeFailed : .notInScope
+            )
+        )
+    }
+
     private func state(_ flows: [Flow], _ selection: Set<FlowCategory>) -> CaptureFeature.State {
         var state = CaptureFeature.State(flows: flows)
         state.selection = selection
@@ -82,6 +100,29 @@ import Testing
         let flows = [flow(host: "a.test"), flow(host: "b.test"), flow(host: "c.test")]
         let state = state(flows, [.host("a.test"), .host("b.test")])
         #expect(Set(state.displayFlows.compactMap(\.host)) == ["a.test", "b.test"])
+    }
+
+    @Test func requestsAndConnectionsAreOneComposableDimension() {
+        let request = flow()
+        let connection = connection()
+        #expect(state([request, connection], [.requests]).displayFlows.map(\.id) == [request.id])
+        #expect(state([request, connection], [.connections]).displayFlows.map(\.id) == [connection.id])
+        #expect(
+            Set(state([request, connection], [.requests, .connections]).displayFlows.map(\.id))
+                == Set([request.id, connection.id])
+        )
+    }
+
+    @Test func failedConnectionsCanComposeWithErrorsAndHost() {
+        let wanted = connection(host: "a.test", failed: true)
+        let flows = [
+            wanted,
+            connection(host: "a.test"),
+            connection(host: "b.test", failed: true),
+            flow(host: "a.test", status: 500),
+        ]
+        let selected = state(flows, [.connections, .errors, .host("a.test")])
+        #expect(selected.displayFlows.map(\.id) == [wanted.id])
     }
 
     @Test func aHostAndADeviceMeanBoth() {
@@ -147,5 +188,20 @@ import Testing
         rebuilt.refreshVisibleFlows()
         #expect(state.displayFlows.map(\.id) == rebuilt.displayFlows.map(\.id))
         #expect(state.displayFlows.count == 4, "c.test is in neither selected host")
+    }
+
+    @Test func connectionIncrementalFoldAgreesWithARebuild() {
+        var state = state([flow(), connection(host: "a.test")], [.connections])
+        state.recordFlows([
+            flow(host: "b.test"),
+            connection(host: "b.test"),
+            connection(host: "c.test", failed: true),
+        ])
+
+        var rebuilt = state
+        rebuilt.refreshVisibleFlows()
+        #expect(state.displayFlows.map(\.id) == rebuilt.displayFlows.map(\.id))
+        #expect(state.displayFlows.allSatisfy { $0.recordKind == .tunnel })
+        #expect(state.displayFlows.count == 3)
     }
 }

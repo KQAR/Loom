@@ -49,6 +49,19 @@ import LoomSharedModels
         #expect(!FlowQuery(methods: ["POST"]).matches(flow(method: "GET")))
     }
 
+    @Test func recordKindSeparatesRequestsFromConnectionDiagnostics() {
+        let request = flow()
+        var connection = flow(method: "CONNECT", url: "https://api.example.com:443")
+        connection.tunnelDiagnostic = Flow.TunnelDiagnostic(
+            host: "api.example.com", port: 443, reason: .notInScope
+        )
+
+        #expect(FlowQuery(recordKind: .exchange).matches(request))
+        #expect(!FlowQuery(recordKind: .exchange).matches(connection))
+        #expect(FlowQuery(recordKind: .tunnel).matches(connection))
+        #expect(!FlowQuery(recordKind: .tunnel).matches(request))
+    }
+
     @Test func urlContains_isCaseInsensitiveSubstring() {
         #expect(FlowQuery(urlContains: "/v1/ORDERS").matches(flow()))
         #expect(FlowQuery(urlContains: "orders").matches(flow()))

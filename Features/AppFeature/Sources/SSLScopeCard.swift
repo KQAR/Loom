@@ -23,10 +23,8 @@ import SwiftUI
 /// card to edit. One surface per question — the table lists origins, this card holds
 /// the configuration.
 ///
-/// What that costs, stated rather than discovered: a **refused** origin is no longer
-/// one click from a Pass Through here. The row's `N refused` still counts it, and the
-/// repair is on its row in the window, where the failure is also visible as an
-/// exchange that broke.
+/// A refused origin is diagnosed and repaired from its request-table row (or MCP),
+/// not duplicated on this configuration-only card or its collapsed summary.
 struct SSLScopeCard: View {
     let store: StoreOf<SetupFeature>
 

@@ -40,6 +40,115 @@ struct TunneledHostLogTests {
         // the actionable one, and it flips `interceptable` to false.
         #expect(log.snapshot().hosts.first?.reason == .notTLSOrHTTP)
         #expect(log.snapshot().hosts.first?.interceptable == false)
+        #expect(log.snapshot().hosts.first?.connections == 1)
+        #expect(log.snapshot().hosts.first?.clientTLS == nil)
+    }
+
+    @Test func newerReasonKeepsTLSEvidenceAndOlderReasonCannotOverwriteIt() throws {
+        let log = TunneledHostLog()
+        let base = Date(timeIntervalSince1970: 1_000)
+        log.recordClientFailure(
+            host: "h.test",
+            port: 443,
+            code: .clientCertificateRejected,
+            at: base
+        )
+        log.record(
+            host: "h.test",
+            port: 443,
+            reason: .protocolError,
+            at: base.addingTimeInterval(2)
+        )
+        log.record(
+            host: "h.test",
+            port: 443,
+            reason: .notTLSOrHTTP,
+            at: base.addingTimeInterval(1)
+        )
+
+        let entry = try #require(log.snapshot().hosts.first)
+        #expect(entry.reason == .protocolError)
+        #expect(entry.clientTLS?.failureCount == 1)
+        #expect(entry.clientTLS?.lastFailureCode == .clientCertificateRejected)
+    }
+
+    @Test func clientSuccessKeepsMixedEvidenceAndLatestResult() throws {
+        let log = TunneledHostLog()
+        let failedAt = Date(timeIntervalSince1970: 1_000)
+        let recoveredAt = failedAt.addingTimeInterval(1)
+
+        log.recordClientFailure(
+            host: "api.example.test", port: 443,
+            code: .clientCertificateRejected,
+            detail: "certificate_unknown",
+            at: failedAt
+        )
+        log.recordClientSuccess(
+            host: "api.example.test", port: 443,
+            at: recoveredAt
+        )
+
+        let entry = try #require(log.snapshot().hosts.first)
+        #expect(entry.clientTLS?.status == .mixed)
+        #expect(entry.clientTLS?.latestResult == .succeeded)
+        #expect(entry.clientTLS?.failureCount == 1)
+        #expect(entry.clientTLS?.successCount == 1)
+        #expect(entry.clientTLS?.lastFailureAt == failedAt)
+        #expect(entry.clientTLS?.lastSuccessAt == recoveredAt)
+        #expect(entry.clientTLS?.lastFailureCode == .clientCertificateRejected)
+        #expect(entry.detail == "certificate_unknown")
+    }
+
+    @Test func aHealthyHandshakeDoesNotCreateAHostEntry() {
+        let log = TunneledHostLog()
+        log.recordClientSuccess(host: "healthy.example.test", port: 443)
+        #expect(log.snapshot().hosts.isEmpty)
+    }
+
+    @Test func successBeforeFirstFailureIsMergedWithoutListingAHealthyHost() throws {
+        let log = TunneledHostLog()
+        let base = Date(timeIntervalSince1970: 1_000)
+        log.recordClientSuccess(host: "api.example.test", port: 443, at: base)
+        #expect(log.snapshot().hosts.isEmpty)
+
+        log.recordClientFailure(
+            host: "api.example.test",
+            port: 443,
+            code: .clientCertificateRejected,
+            at: base.addingTimeInterval(1)
+        )
+        let observation = try #require(log.snapshot().hosts.first?.clientTLS)
+        #expect(observation.failureCount == 1)
+        #expect(observation.successCount == 1)
+        #expect(observation.status == .mixed)
+        #expect(observation.latestResult == .failed)
+    }
+
+    @Test func eventArrivalOrderDoesNotOverrideChronologicalStatus() throws {
+        let log = TunneledHostLog()
+        let base = Date(timeIntervalSince1970: 1_000)
+        log.recordClientFailure(
+            host: "api.example.test", port: 443,
+            code: .clientHandshakeFailed, at: base
+        )
+        log.recordClientSuccess(
+            host: "api.example.test", port: 443,
+            at: base.addingTimeInterval(30)
+        )
+        // Arrives later on another event loop, but happened before the success.
+        log.recordClientFailure(
+            host: "api.example.test", port: 443,
+            code: .clientHandshakeAborted,
+            at: base.addingTimeInterval(20)
+        )
+
+        let observation = try #require(log.snapshot().hosts.first?.clientTLS)
+        #expect(observation.status == .mixed)
+        #expect(observation.latestResult == .succeeded)
+        #expect(observation.failureCount == 2)
+        #expect(observation.successCount == 1)
+        #expect(observation.lastFailureAt == base.addingTimeInterval(20))
+        #expect(observation.lastSuccessAt == base.addingTimeInterval(30))
     }
 
     @Test func newestActivityFirst() {
@@ -65,6 +174,21 @@ struct TunneledHostLogTests {
         #expect(snapshot.evicted == 1, "a truncated list must never read as a complete one")
         #expect(!snapshot.hosts.contains { $0.host == "host0.test" }, "least recently active goes first")
         #expect(snapshot.hosts.contains { $0.host == "host\(TunneledHostLog.capacity).test" })
+    }
+
+    @Test func hiddenSuccessEvidenceIsBoundedAndItsLossIsCounted() {
+        let log = TunneledHostLog()
+        let base = Date(timeIntervalSince1970: 4_000)
+        for index in 0 ... TunneledHostLog.capacity {
+            log.recordClientSuccess(
+                host: "host\(index).test",
+                port: 443,
+                at: base.addingTimeInterval(Double(index))
+            )
+        }
+        let snapshot = log.snapshot()
+        #expect(snapshot.hosts.isEmpty)
+        #expect(snapshot.clientSuccessesEvicted == 1)
     }
 
     // MARK: pending(_:under:)

@@ -149,6 +149,71 @@ import LoomSharedModels
         #expect(flow.id != original.id, "a fresh id — the file's ids may collide with the store's")
     }
 
+    @Test func tunnelDiagnosticAndFailureCodeSurviveLoomHAR() throws {
+        let original = Flow(
+            request: CapturedRequest(
+                method: "CONNECT", url: "https://api.example.com:443", headers: []
+            ),
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            outcome: .failed(
+                FlowError(
+                    "Client rejected Loom's certificate",
+                    code: .clientCertificateRejected,
+                    detail: "certificate_unknown"
+                ),
+                at: Date(timeIntervalSince1970: 1_700_000_000.02),
+                partialResponse: nil
+            ),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: "api.example.com",
+                port: 443,
+                reason: .clientHandshakeFailed,
+                detail: "certificate_unknown"
+            )
+        )
+
+        let exported = HARExport.encode([original], appVersion: "9.9")
+        let imported = try #require(
+            try HARImport.decode(exported, label: "loom.har").flows.first
+        )
+        #expect(imported.recordKind == .tunnel)
+        #expect(imported.tunnelDiagnostic == original.tunnelDiagnostic)
+        #expect(imported.flowError?.code == .clientCertificateRejected)
+        #expect(imported.flowError?.detail == "certificate_unknown")
+    }
+
+    @Test func failedFlowKeepsItsPartialResponseAndStructuredError() throws {
+        let original = Flow(
+            request: CapturedRequest(
+                method: "GET", url: "https://api.example.com/v1", headers: []
+            ),
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            outcome: .failed(
+                FlowError(
+                    "stream ended",
+                    code: .clientHandshakeFailed,
+                    detail: "underlying detail"
+                ),
+                at: Date(timeIntervalSince1970: 1_700_000_001),
+                partialResponse: CapturedResponse(
+                    statusCode: 502,
+                    headers: [HeaderPair(name: "X-Partial", value: "yes")],
+                    body: Data("partial".utf8)
+                )
+            )
+        )
+
+        let imported = try #require(try HARImport.decode(
+            HARExport.encode([original], appVersion: "9.9"),
+            label: "loom.har"
+        ).flows.first)
+        #expect(imported.error == "stream ended")
+        #expect(imported.flowError?.code == .clientHandshakeFailed)
+        #expect(imported.flowError?.detail == "underlying detail")
+        #expect(imported.response?.statusCode == 502)
+        #expect(imported.response?.body == Data("partial".utf8))
+    }
+
     // MARK: - A capped body must not come back looking whole
 
     /// `HARExport` writes the wire size and marks a capped body with

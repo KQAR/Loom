@@ -52,6 +52,10 @@ public enum HARExport {
         let sourceApp: String?
         let appliedRules: [String]?
         let error: String?
+        let errorCode: String?
+        let errorDetail: String?
+        let recordType: String
+        let tunnel: Flow.TunnelDiagnostic?
         let serverIPAddress: String?
         /// How the exchange travelled. `FlowTransport` is `Encodable` with exactly
         /// the shape wanted here, so it ships whole rather than being flattened
@@ -66,6 +70,10 @@ public enum HARExport {
             case sourceApp = "_sourceApp"
             case appliedRules = "_appliedRules"
             case error = "_error"
+            case errorCode = "_errorCode"
+            case errorDetail = "_errorDetail"
+            case recordType = "_recordType"
+            case tunnel = "_tunnel"
             case transport = "_transport"
         }
 
@@ -81,6 +89,10 @@ public enum HARExport {
             let rules = flow.appliedRules?.map(\.name)
             appliedRules = (rules?.isEmpty ?? true) ? nil : rules
             error = flow.error
+            errorCode = flow.flowError?.code?.rawValue
+            errorDetail = flow.flowError?.detail
+            recordType = flow.recordKind.rawValue
+            tunnel = flow.effectiveTunnelDiagnostic
             // HAR 1.2 has a standard slot for the origin's address and none for
             // anything else here, so the address goes in it — stripped of the port,
             // which the field is defined as not carrying — and the rest travels as

@@ -61,11 +61,7 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if case TLSUserEvent.handshakeCompleted = event {
             attempt.handshakeCompleted = true
-            // Recovery is symmetric with failure: the same host that was recorded
-            // as refusing Loom stops being listed the moment a client completes a
-            // handshake — the operator who just installed the CA sees the entry
-            // (and the orange icon it feeds) go, not haunt until relaunch.
-            log.clearClientVerdicts(host: host, port: port)
+            log.recordClientSuccess(host: host, port: port)
         }
         context.fireUserInboundEventTriggered(event)
     }
@@ -79,24 +75,22 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
         guard !attempt.handshakeCompleted, !attempt.reported else { return }
         guard Self.isHandshakeFailure(error) else { return }
         let detail = Self.describe(error)
+        let code = Self.failureCode(forDetail: detail)
+        let summary = code == .clientCertificateRejected
+            ? "Client rejected Loom's certificate"
+            : "Client TLS handshake failed before an HTTP request was sent"
         // Recorded in both places — the console's aggregate and a row in the request
         // table. Without the row a refused handshake is a client-side certificate
         // error against a capture holding nothing for that host at all, which is what
         // "Loom lost it" and "the app never asked" look like alike.
         attempt.report(
-            host: host, port: port, detail: detail,
-            summary: "Client refused Loom's certificate — \(detail)",
+            host: host, port: port, code: code, detail: detail,
+            summary: "\(summary) — \(detail)",
             client: client, startedAt: startedAt, log: log, store: store
         )
-        // NIOSSL maps an EOF *during* the handshake to `handshakeFailed` too
-        // (a pre-connected tunnel abandoned before its ClientHello finishes looks
-        // like this), so the log names the likely causes rather than asserting one
-        // — the alert in `detail` is what actually separates them.
         Log.tls.error("""
         Client TLS handshake failed for \(self.host, privacy: .public):\(self.port, privacy: .public) \
-        — \(detail, privacy: .public). A refused certificate means the host is pinned or Loom's CA \
-        is not in that client's trust store (exclude it from the SSL scope to let it through unread); \
-        eofDuringHandshake means the client hung up mid-handshake.
+        — \(detail, privacy: .public). Classification: \(code.rawValue, privacy: .public).
         """)
     }
 
@@ -114,10 +108,23 @@ final class ClientTLSFailureReporter: ChannelInboundHandler, RemovableChannelHan
 
     /// The alert as BoringSSL named it, which is what separates "this host is
     /// pinned" from "your CA is not installed in this client".
-    private static func describe(_ error: Error) -> String {
+    static func describe(_ error: Error) -> String {
         guard case let .handshakeFailed(underlying)? = error as? NIOSSLError else {
             return String(describing: error)
         }
         return String(describing: underlying)
+    }
+
+    /// Classify only alerts that explicitly reject the certificate. Every other
+    /// handshake error stays generic; an EOF or protocol mismatch is not pinning.
+    static func failureCode(forDetail detail: String) -> FlowError.Code {
+        let lowered = detail.lowercased()
+        let certificateAlerts = [
+            "alert_certificate_unknown", "alert_unknown_ca", "alert_bad_certificate",
+            "certificate_unknown", "unknown_ca", "bad_certificate",
+        ]
+        return certificateAlerts.contains(where: lowered.contains)
+            ? .clientCertificateRejected
+            : .clientHandshakeFailed
     }
 }

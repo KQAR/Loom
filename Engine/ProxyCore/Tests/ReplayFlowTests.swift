@@ -61,6 +61,23 @@ import LoomSharedModels
 
         await engine.stopForTest()
     }
+
+    @Test func connectionDiagnosticCannotBeReplayedAsAnHTTPRequest() async throws {
+        let (engine, upstream) = makeEngine()
+        var diagnostic = sourceFlow(url: "https://api.example.test:443")
+        diagnostic.request = CapturedRequest(
+            method: "CONNECT", url: "https://api.example.test:443", headers: []
+        )
+        diagnostic.tunnelDiagnostic = Flow.TunnelDiagnostic(
+            host: "api.example.test", port: 443, reason: .clientHandshakeFailed
+        )
+
+        await #expect(throws: ProxyControlError.self) {
+            _ = try await engine.replay(flow: diagnostic, overrides: .none)
+        }
+        #expect(await upstream.callCount == 0)
+        await engine.stopForTest()
+    }
 }
 
 private actor ReplayStubUpstream: UpstreamForwarding {

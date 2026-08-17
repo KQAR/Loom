@@ -24,6 +24,8 @@ import Foundation
 public struct FlowComparison: Equatable, Sendable {
     public var baseID: UUID
     public var comparedID: UUID
+    public var recordKind: ValueChange<Flow.RecordKind>? = nil
+    public var tunnel: ValueChange<Flow.TunnelDiagnostic?>? = nil
     public var request: MessageComparison
     public var response: ResponseComparison
     /// Frame-log differences, for a comparison where either side is a WebSocket.
@@ -31,6 +33,8 @@ public struct FlowComparison: Equatable, Sendable {
     /// Transport-level error text, when one side failed and the other didn't (or
     /// they failed differently).
     public var error: ValueChange<String>?
+    public var errorCode: ValueChange<FlowError.Code>?
+    public var errorDetail: ValueChange<String>?
 
     /// Nothing differs anywhere.
     ///
@@ -38,7 +42,9 @@ public struct FlowComparison: Equatable, Sendable {
     /// captured, and a capped body means the bytes past the cap were never
     /// compared at all.
     public var isIdentical: Bool {
-        request.isEmpty && response.isEmpty && webSocket.isEmpty && error == nil
+        recordKind == nil && tunnel == nil
+            && request.isEmpty && response.isEmpty && webSocket.isEmpty
+            && error == nil && errorCode == nil && errorDetail == nil
     }
 
     /// At least one body compared here is a capture-capped prefix, so this
@@ -51,17 +57,25 @@ public struct FlowComparison: Equatable, Sendable {
     public init(
         baseID: UUID,
         comparedID: UUID,
+        recordKind: ValueChange<Flow.RecordKind>? = nil,
+        tunnel: ValueChange<Flow.TunnelDiagnostic?>? = nil,
         request: MessageComparison,
         response: ResponseComparison,
         webSocket: WebSocketComparison = WebSocketComparison(),
-        error: ValueChange<String>? = nil
+        error: ValueChange<String>? = nil,
+        errorCode: ValueChange<FlowError.Code>? = nil,
+        errorDetail: ValueChange<String>? = nil
     ) {
         self.baseID = baseID
         self.comparedID = comparedID
+        self.recordKind = recordKind
+        self.tunnel = tunnel
         self.request = request
         self.response = response
         self.webSocket = webSocket
         self.error = error
+        self.errorCode = errorCode
+        self.errorDetail = errorDetail
     }
 
     // MARK: - Pieces
@@ -303,10 +317,17 @@ public extension FlowComparison {
         FlowComparison(
             baseID: base.id,
             comparedID: compared.id,
+            recordKind: change(base.recordKind, compared.recordKind),
+            tunnel: change(
+                base.effectiveTunnelDiagnostic,
+                compared.effectiveTunnelDiagnostic
+            ),
             request: compareRequests(base.request, compared.request),
             response: compareResponses(base.response, compared.response),
             webSocket: compareWebSockets(base, compared),
-            error: change(base.error, compared.error)
+            error: change(base.error, compared.error),
+            errorCode: change(base.flowError?.code, compared.flowError?.code),
+            errorDetail: change(base.flowError?.detail, compared.flowError?.detail)
         )
     }
 

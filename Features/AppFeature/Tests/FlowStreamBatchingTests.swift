@@ -114,7 +114,7 @@ import Testing
         #expect(store.state.flows == oneAtATime.flows)
         // The window's own size, not `status.capturedCount`: that field is the engine's
         // ring count again (see `engineStatusRefreshed`), and this test is about the fold.
-        #expect(store.state.allCount == oneAtATime.allCount)
+        #expect(store.state.windowCount == oneAtATime.windowCount)
     }
 
     /// A batch containing the open selection still refreshes the inspector's

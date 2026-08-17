@@ -30,6 +30,27 @@ import LoomSharedModels
         )
     }
 
+    private func failedTunnel() -> Flow {
+        let startedAt = Date(timeIntervalSince1970: 1_001)
+        return Flow(
+            request: CapturedRequest(
+                method: "CONNECT", url: "https://api.example.com:443", headers: []
+            ),
+            startedAt: startedAt,
+            outcome: .failed(
+                FlowError(
+                    "Client rejected Loom's certificate",
+                    code: .clientCertificateRejected
+                ),
+                at: startedAt,
+                partialResponse: nil
+            ),
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: "api.example.com", port: 443, reason: .clientHandshakeFailed
+            )
+        )
+    }
+
     @Test func groupsByHostByDefault_withCountsAndErrorRate() async throws {
         let engine = StubEngine()
         engine.flows = [
@@ -64,6 +85,44 @@ import LoomSharedModels
         #expect(out["flowsConsidered"] as? Int == 1, "the filters select what gets aggregated")
         let buckets = try #require(out["buckets"] as? [[String: Any]])
         #expect(buckets.map { $0["key"] as? String } == ["api.example.com"])
+    }
+
+    @Test func connectionDiagnosticsAreSeparateFromExchangeHealth() async throws {
+        let engine = StubEngine()
+        engine.flows = [flow("https://api.example.com/a"), failedTunnel()]
+
+        let out = try await json(makeExecutor(engine).call(name: "get_stats", arguments: [:]))
+        #expect(out["flowsConsidered"] as? Int == 1)
+        #expect(out["recordsConsidered"] as? Int == 2)
+        #expect((out["total"] as? [String: Any])?["errorRate"] as? Double == 0)
+
+        let diagnostics = try #require(out["connectionDiagnostics"] as? [String: Any])
+        #expect(diagnostics["connections"] as? Int == 1)
+        #expect(diagnostics["failed"] as? Int == 1)
+        #expect(diagnostics["relayed"] as? Int == 0)
+        #expect((diagnostics["reasons"] as? [String: Int])?["clientHandshakeFailed"] == 1)
+    }
+
+    @Test func recordTypeFilterSelectsOneRecordGrain() async throws {
+        let engine = StubEngine()
+        engine.flows = [flow("https://api.example.com/a"), failedTunnel()]
+        let executor = makeExecutor(engine)
+
+        let requests = try await json(executor.call(
+            name: "get_stats", arguments: ["record_type": "exchange"]
+        ))
+        #expect(requests["flowsConsidered"] as? Int == 1)
+        #expect(requests["connectionDiagnostics"] == nil)
+
+        let connections = try await json(executor.call(
+            name: "get_stats", arguments: ["record_type": "tunnel"]
+        ))
+        #expect(connections["flowsConsidered"] as? Int == 0)
+        #expect((connections["connectionDiagnostics"] as? [String: Any])?["connections"] as? Int == 1)
+
+        await #expect(throws: MCPError.self) {
+            try await executor.call(name: "get_stats", arguments: ["record_type": "socket"])
+        }
     }
 
     @Test func namesTheSlowestExchangesWithTheirIDs() async throws {

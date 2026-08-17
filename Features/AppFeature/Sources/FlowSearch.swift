@@ -165,6 +165,14 @@ public struct FlowSearch: Equatable, Sendable {
         }
         let filters = selection.filter(\.isFilter)
         if filters.contains(.errors) { query.onlyErrors = true }
+        let recordKinds = filters.compactMap { category -> Flow.RecordKind? in
+            switch category {
+            case .requests: .exchange
+            case .connections: .tunnel
+            default: nil
+            }
+        }
+        if recordKinds.count == 1 { query.recordKind = recordKinds[0] }
         let hosts = filters.compactMap { category -> String? in
             if case let .host(host) = category { return host }
             return nil

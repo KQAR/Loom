@@ -47,6 +47,27 @@ import LoomSharedModels
         )
     }
 
+    private func tunnel(
+        reason: TunnelReason,
+        error: FlowError? = nil,
+        at seconds: TimeInterval = 1_000
+    ) -> Flow {
+        let startedAt = Date(timeIntervalSince1970: seconds)
+        let outcome: FlowOutcome = error.map {
+            .failed($0, at: startedAt.addingTimeInterval(0.02), partialResponse: nil)
+        } ?? .completed(CapturedResponse(statusCode: 200, headers: []), at: startedAt)
+        return Flow(
+            request: CapturedRequest(
+                method: "CONNECT", url: "https://api.example.com:443", headers: []
+            ),
+            startedAt: startedAt,
+            outcome: outcome,
+            tunnelDiagnostic: Flow.TunnelDiagnostic(
+                host: "api.example.com", port: 443, reason: reason, detail: error?.detail
+            )
+        )
+    }
+
     // MARK: - Bucketing
 
     @Test func groupsByHost_biggestFirst_andCapsWithAnOmittedCount() {
@@ -93,6 +114,40 @@ import LoomSharedModels
 
         let byApp = FlowStats.compute(flows: [flow(app: app), flow()], grouping: .app)
         #expect(Set(byApp.buckets.map(\.key)) == ["com.apple.Safari", "(unknown app)"])
+    }
+
+    @Test func connectionDiagnosticsNeverPolluteExchangeRatesOrAppBuckets() {
+        let app = SourceApp(name: "YqdMabilis", attribution: .userAgent)
+        var rejectedConnect = tunnel(reason: .notInScope)
+        rejectedConnect.outcome = .completed(
+            CapturedResponse(statusCode: 407, headers: []),
+            at: Date(timeIntervalSince1970: 1_000)
+        )
+        let stats = FlowStats.compute(
+            flows: [
+                flow(app: app),
+                tunnel(reason: .notInScope),
+                rejectedConnect,
+                tunnel(
+                    reason: .clientHandshakeFailed,
+                    error: FlowError(
+                        "Client rejected Loom's certificate",
+                        code: .clientCertificateRejected
+                    )
+                ),
+            ],
+            grouping: .app
+        )
+
+        #expect(stats.total.flows == 1)
+        #expect(stats.total.errors == 0)
+        #expect(stats.total.errorRate == 0)
+        #expect(stats.buckets.map(\.key) == ["YqdMabilis"])
+        #expect(stats.connectionDiagnostics.connections == 3)
+        #expect(stats.connectionDiagnostics.failed == 2)
+        #expect(stats.connectionDiagnostics.relayed == 1)
+        #expect(stats.connectionDiagnostics.reasons["notInScope"] == 2)
+        #expect(stats.connectionDiagnostics.reasons["clientHandshakeFailed"] == 1)
     }
 
     @Test func noneGrouping_reportsTotalsWithNoBuckets() {

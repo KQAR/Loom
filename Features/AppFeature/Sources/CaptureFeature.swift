@@ -479,6 +479,8 @@ public struct CaptureFeature: Sendable {
             switch category {
             case .all: true
             case .rules, .audit, .breakpoints: false // the panel replaces the table
+            case .requests: flow.recordKind == .exchange
+            case .connections: flow.recordKind == .tunnel
             case .errors: Self.isError(flow)
             // A dictionary lookup, not a parse: the host was computed once when the flow
             // was recorded, and it is the value the sidebar's categories are keyed by.
@@ -627,7 +629,12 @@ public struct CaptureFeature: Sendable {
                 }
         }
 
-        public var allCount: Int { flows.count }
+        public var allCount: Int { aggregates.exchangeCount + aggregates.connectionCount }
+        public var windowCount: Int { flows.count }
+        public var requestCount: Int { aggregates.exchangeCount }
+        public var connectionCount: Int { aggregates.connectionCount }
+        public var connectionFailureCount: Int { aggregates.connectionFailureCount }
+        public var relayedConnectionCount: Int { aggregates.relayedConnectionCount }
 
         /// Metadata-only selected flow (from the body-free list). The inspector
         /// reads `selectedFlowDetail` for the full payload.

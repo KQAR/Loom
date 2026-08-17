@@ -23,6 +23,7 @@ import LoomSharedModels
 /// which merges its own richer keys over this (see `MCPToolExecutor.flowDetail`).
 struct FlowSummaryRender: Encodable {
     var id: String
+    var recordType: String
     var method: String
     var url: String
     /// When it happened — without this an agent can't tell a flow from three hours
@@ -35,6 +36,9 @@ struct FlowSummaryRender: Encodable {
     var ttfbMS: Int?
     var receiveMS: Int?
     var error: String?
+    var errorCode: String?
+    var errorDetail: String?
+    var tunnel: TunnelDiagnosticRender?
     var replayedFrom: String?
     /// Loaded from a file, not observed here — the one thing that must never be
     /// implicit about an imported flow.
@@ -58,6 +62,7 @@ struct FlowSummaryRender: Encodable {
 
     init(_ flow: Flow) {
         id = flow.id.uuidString
+        recordType = flow.recordKind.rawValue
         method = flow.request.method
         url = flow.request.url
         startedAt = flow.startedAt
@@ -66,6 +71,9 @@ struct FlowSummaryRender: Encodable {
         ttfbMS = flow.ttfbMS
         receiveMS = flow.receiveMS
         error = flow.error
+        errorCode = flow.flowError?.code?.rawValue
+        errorDetail = flow.flowError?.detail
+        tunnel = flow.effectiveTunnelDiagnostic.map(TunnelDiagnosticRender.init)
         replayedFrom = flow.replayedFrom?.uuidString
         importedFrom = flow.importedFrom
         appliedRules = flow.appliedRules?.map(\.name)
@@ -80,6 +88,20 @@ struct FlowSummaryRender: Encodable {
         bodiesEvicted = flow.bodiesEvicted
         sourceApp = flow.sourceApp.map(SourceAppRender.init)
         sourceDevice = flow.sourceDevice.map(SourceDeviceRender.init)
+    }
+}
+
+struct TunnelDiagnosticRender: Encodable {
+    var host: String
+    var port: Int
+    var reason: String?
+    var detail: String?
+
+    init(_ diagnostic: Flow.TunnelDiagnostic) {
+        host = diagnostic.host
+        port = diagnostic.port
+        reason = diagnostic.reason?.rawValue
+        detail = diagnostic.detail
     }
 }
 
@@ -355,6 +377,24 @@ struct StatsBucketRender: Encodable {
         receiveMS = bucket.receive.map(DistributionRender.init)
         durationMS = bucket.duration.map(DistributionRender.init)
         sizeUnknownFlows = bucket.sizeUnknownFlows > 0 ? bucket.sizeUnknownFlows : nil
+    }
+}
+
+struct ConnectionDiagnosticsRender: Encodable {
+    var connections: Int
+    var failed: Int
+    var relayed: Int
+    var reasons: [String: Int]
+    var firstSeen: Date?
+    var lastSeen: Date?
+
+    init(_ diagnostics: FlowStats.ConnectionDiagnostics) {
+        connections = diagnostics.connections
+        failed = diagnostics.failed
+        relayed = diagnostics.relayed
+        reasons = diagnostics.reasons
+        firstSeen = diagnostics.firstSeen
+        lastSeen = diagnostics.lastSeen
     }
 }
 
@@ -642,6 +682,7 @@ struct SSLScopeRender: Encodable {
     /// never ran" before it gets to the second ask.
     var tunneledHosts: [TunneledHostRender]?
     var tunneledHostsEvicted: Int?
+    var clientTLSSuccessesEvicted: Int?
 
     init(_ scope: SSLScope, tunneled: TunneledHostReport? = nil) {
         enabled = scope.enabled
@@ -651,6 +692,7 @@ struct SSLScopeRender: Encodable {
             tunneledHosts = tunneled.hosts.map(TunneledHostRender.init)
         }
         if let tunneled, tunneled.evicted > 0 { tunneledHostsEvicted = tunneled.evicted }
+        clientTLSSuccessesEvicted = tunneled?.clientSuccessesEvicted
     }
 }
 
@@ -669,6 +711,7 @@ struct TunneledHostRender: Encodable {
     /// is pinned" from "your CA is not installed here") and `protocolError` (the
     /// codec's own words separate "your client sent too much" from "Loom broke").
     var detail: String?
+    var clientTLS: ClientTLSObservationRender?
 
     init(_ entry: TunneledHost) {
         host = entry.host
@@ -679,6 +722,27 @@ struct TunneledHostRender: Encodable {
         reason = entry.reason.rawValue
         interceptable = entry.interceptable
         detail = entry.detail
+        clientTLS = entry.clientTLS.map(ClientTLSObservationRender.init)
+    }
+}
+
+struct ClientTLSObservationRender: Encodable {
+    var status: String
+    var latestResult: String
+    var failureCount: Int
+    var successCount: Int
+    var lastFailureAt: Date
+    var lastSuccessAt: Date?
+    var lastFailureCode: String
+
+    init(_ observation: TunneledHost.ClientTLS) {
+        status = observation.status.rawValue
+        latestResult = observation.latestResult.rawValue
+        failureCount = observation.failureCount
+        successCount = observation.successCount
+        lastFailureAt = observation.lastFailureAt
+        lastSuccessAt = observation.lastSuccessAt
+        lastFailureCode = observation.lastFailureCode.rawValue
     }
 }
 
@@ -1274,10 +1338,14 @@ struct WebSocketDiffRender: Encodable {
 struct FlowDiffRender: Encodable {
     var baseId: String
     var comparedId: String
+    var recordType: ValueChangeRender<Flow.RecordKind>?
+    var tunnel: ValueChangeRender<Flow.TunnelDiagnostic?>?
     var request: MessageDiffRender?
     var response: ResponseDiffRender?
     var webSocket: WebSocketDiffRender?
     var error: ValueChangeRender<String>?
+    var errorCode: ValueChangeRender<FlowError.Code>?
+    var errorDetail: ValueChangeRender<String>?
     var identical: Bool
     /// Present (and only ever `true`) when a body compared here was a capped
     /// prefix. `identical: true` alongside it means "identical as far as Loom
@@ -1287,6 +1355,8 @@ struct FlowDiffRender: Encodable {
     init(_ comparison: FlowComparison) {
         baseId = comparison.baseID.uuidString
         comparedId = comparison.comparedID.uuidString
+        recordType = comparison.recordKind.map(ValueChangeRender.init)
+        tunnel = comparison.tunnel.map(ValueChangeRender.init)
         let request = MessageDiffRender(comparison.request)
         self.request = request.isEmpty ? nil : request
         let response = ResponseDiffRender(comparison.response)
@@ -1294,6 +1364,8 @@ struct FlowDiffRender: Encodable {
         let webSocket = WebSocketDiffRender(comparison.webSocket)
         self.webSocket = webSocket.isEmpty ? nil : webSocket
         error = comparison.error.map(ValueChangeRender.init)
+        errorCode = comparison.errorCode.map(ValueChangeRender.init)
+        errorDetail = comparison.errorDetail.map(ValueChangeRender.init)
         identical = comparison.isIdentical
         captureTruncated = comparison.isPartial ? true : nil
     }

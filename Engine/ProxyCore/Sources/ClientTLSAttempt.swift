@@ -34,16 +34,18 @@ final class ClientTLSAttempt {
     /// origins are unread" for the console and an agent, and neither is what the
     /// operator is looking at when a request produced nothing.
     func report(
-        host: String, port: Int, detail: String, summary: String,
+        host: String, port: Int, code: FlowError.Code, detail: String, summary: String,
         client: Channel?, startedAt: Date, log: TunneledHostLog, store: FlowStore?
     ) {
         guard !reported else { return }
         reported = true
-        log.record(host: host, port: port, reason: .clientHandshakeFailed, detail: detail)
+        log.recordClientFailure(host: host, port: port, code: code, detail: detail)
         guard let store else { return }
         TunnelFlow.recordFailure(
             host: host, port: port, startedAt: startedAt, client: client,
-            error: summary, store: store
+            reason: .clientHandshakeFailed,
+            error: FlowError(summary, code: code, detail: detail),
+            store: store
         )
     }
 }
@@ -108,19 +110,13 @@ final class ClientTLSAbortReporter: ChannelInboundHandler, RemovableChannelHandl
         guard attempt.clientSpoke, !attempt.handshakeCompleted, !attempt.reported else { return }
         let detail = "the client closed the connection during the TLS handshake, without sending an alert"
         attempt.report(
-            host: host, port: port, detail: detail,
-            // Says what Loom did and what to do about it, because the alternative
-            // reading — "the network dropped" — sends the operator to the wrong
-            // place. A client that hangs up after reading the certificate and
-            // before finishing the handshake has made a judgement about it.
-            summary: "Client closed the connection while Loom's certificate was being offered — "
-                + "it pins this host, or Loom's CA is not in its trust store",
+            host: host, port: port, code: .clientHandshakeAborted, detail: detail,
+            summary: "Client closed during the TLS handshake before sending an HTTP request",
             client: client, startedAt: startedAt, log: log, store: store
         )
         Log.tls.error("""
         Client abandoned the TLS handshake for \(self.host, privacy: .public):\(self.port, privacy: .public) \
-        without an alert. It read Loom's certificate and closed: the host is pinned, or Loom's CA is not \
-        trusted by that client. Pass the host through to let it work unread.
+        without an alert. The cause is unknown; Loom cannot infer pinning from a socket close.
         """)
     }
 }

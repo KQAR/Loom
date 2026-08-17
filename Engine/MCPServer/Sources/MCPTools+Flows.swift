@@ -50,6 +50,13 @@ extension MCPToolExecutor {
             "bucketsOmitted": stats.bucketsOmitted,
             "slowest": MCPRender.array(stats.slowest.map(SlowestFlowRender.init)),
         ]
+        if stats.connectionDiagnostics.connections > 0 {
+            payload["recordsConsidered"] =
+                stats.total.flows + stats.connectionDiagnostics.connections
+            payload["connectionDiagnostics"] = MCPRender.dict(
+                ConnectionDiagnosticsRender(stats.connectionDiagnostics)
+            )
+        }
         // What the sample is drawn from, so `flowsConsidered` can be read against a
         // denominator rather than guessed at. Percentiles over a fraction of the
         // matching traffic are still percentiles of *something*, which is exactly how
@@ -80,6 +87,7 @@ extension MCPToolExecutor {
     static func flowQuery(from arguments: MCPArguments) throws -> FlowQuery {
         var query = FlowQuery()
         query.host = try arguments.string("host")
+        query.recordKind = try arguments.option("record_type", Flow.RecordKind.self)
         query.urlContains = try arguments.string("url_contains")
         query.deviceIP = try arguments.string("device_ip")
         query.sourceApp = try arguments.string("source_app")

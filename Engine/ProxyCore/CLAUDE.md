@@ -293,14 +293,11 @@ same treatment.
   Anything unrecognised **fails closed into the fatal tier** — a wrongly-closed
   connection is retried by the client, a wrongly-kept one hangs forever.
 
-Both reporters take a `TunneledHostLog` in their initialiser (defaulting to
-`.shared`) so tests assert against their own instance instead of resetting the
-process-wide one out from under a parallel suite. And the verdicts they record are
-**recoverable**: a completed client handshake on the same host:port clears
-`clientHandshakeFailed`/`protocolError` (`TunneledHostLog.clearClientVerdicts`) —
-the operator who just installed the CA sees the entry and the orange icon go,
-instead of haunting until relaunch; a still-broken codec re-records itself on the
-next failure, one connection later.
+Both reporters take an injected `TunneledHostLog` for parallel tests. Client TLS
+verdicts retain failure/success counts and timestamps: failures only are
+`stillFailing`, observing both is `mixed`, and `latestResult` reports order without
+claiming every client recovered. TLS success cannot clear
+`protocolError` — only a decoded HTTP/2 stream proves the codec recovered.
 
 ## A proxy must not be stricter than the origin
 
@@ -559,7 +556,7 @@ follows is what the engine must keep true.
 
 - **`dropFromCapture`'s five rules, and the reasoning for each — the rule-versus-`Route` choice, the group check that was spelled three times, and why dropping beats filtering on read — is in [`docs/decisions/rules-drop-stage.md`](../../docs/decisions/rules-drop-stage.md).** It is **not a `Route` case beside `.block`** and lives in the editor's **Advanced** section. It **obeys the master switch and group switches**, deliberately: "rules off" means Loom does nothing special, capture included, and a disabled group's capture rule must not drop either. **Which rules are live is `RulesState.applies`, and no matcher may spell that predicate itself** — master switch, group, per-rule flag and expiry are one function, asserted from the engine's side as well as the model's. **Dropping rather than filtering on read** is what makes the window and an agent's reads agree by construction. It affects **arrival of new ids only**: an in-flight exchange whose id is already in the store still completes (a drop rule added mid-request must not freeze a pending row), and `force` (replay, HAR import) records even when a rule would drop live traffic. `clearFlows` zeros the counters, because they are a session fact like `TunneledHostLog`. And it is **counted per rule** (`RulesState.droppedCounts`, `get_proxy_status.droppedByRules`, a strip under the request table), because a dropped exchange has no flow and therefore no `appliedRules` — that counter is the only place such a rule can be seen to have done anything, and an absence the operator caused is still an absence.
 
-- **A refused handshake reaches three surfaces, and none of them is optional**: the console as `N refused`, an agent as `get_ssl_scope.tunneledHosts`, the request table as a `CONNECT` row carrying the error (`TunnelFlow.recordFailure`, called from `ClientTLSFailureReporter` and `HTTP2ConnectionErrorReporter`). It is **not gated on `observeTunnels`** — that flag is a volume decision about traffic that worked, and a request that never happened because Loom was in the path is something an embedder needs too. It is **one row per refused connection** (the per-host aggregate is `TunneledHostLog`; a row silently standing for 736 refusals is the worse of the two lies). And **transport teardown records nothing** — the h2 reporter's three tiers still decide — because a phone dropping an idle connection with RST is not a failed interception.
+- **A failed handshake reaches two diagnostic surfaces**: `get_ssl_scope.tunneledHosts` keeps the aggregate and the request table keeps one typed tunnel row per connection. It is not gated on `observeTunnels`, which controls successful relay volume. Explicit certificate alerts, inconclusive aborts and codec errors carry different machine-readable codes; transport teardown records nothing. The console deliberately stays configuration-only.
 
 - **Nothing is pre-excluded and nothing is auto-excluded.** A guessed list is both incomplete (a corporate mirror is not on it) and quietly wrong (it hides traffic someone is looking for); auto-excluding a repeatedly-failing host would make this default silent again, for the reason in the record. The three writers of `exclude` are the card's picker, the row menu and `set_ssl_scope`.
 

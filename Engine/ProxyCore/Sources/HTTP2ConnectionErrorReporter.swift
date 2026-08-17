@@ -81,6 +81,9 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
     /// WINDOW_UPDATE — are housekeeping and say nothing about whether a request
     /// survived.
     private var deliveredAStreamFrame = false
+    /// A decoded HEADERS block, unlike an arbitrary stream frame, proves a prior
+    /// protocol verdict recovered.
+    private var clearedPriorProtocolError = false
     /// Where a downgrade decision is recorded, and the CA whose cached context has to
     /// be dropped for it to take effect on the next connection.
     private let downgrades: HTTP2DowngradeRegistry
@@ -118,7 +121,14 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        if Self.unwrapInboundIn(data).streamID != .rootStream { deliveredAStreamFrame = true }
+        let frame = Self.unwrapInboundIn(data)
+        if frame.streamID != .rootStream {
+            if case .headers = frame.payload, !clearedPriorProtocolError {
+                clearedPriorProtocolError = true
+                log.clearProtocolErrorAfterDecodedStream(host: host, port: port)
+            }
+            deliveredAStreamFrame = true
+        }
         context.fireChannelRead(data)
     }
 
@@ -149,7 +159,13 @@ final class HTTP2ConnectionErrorReporter: ChannelInboundHandler, @unchecked Send
                 if let store {
                     TunnelFlow.recordFailure(
                         host: host, port: port, startedAt: startedAt, client: context.channel,
-                        error: "Loom could not read the HTTP/2 connection — \(detail)", store: store
+                        reason: .protocolError,
+                        error: FlowError(
+                            "Loom could not read the HTTP/2 connection — \(detail)",
+                            code: .interceptedProtocolError,
+                            detail: detail
+                        ),
+                        store: store
                     )
                 }
                 Log.proxy.error("""
