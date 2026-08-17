@@ -43,12 +43,13 @@ final class H2UpstreamTests {
     /// The forwarder has to trust the throwaway CA, which it does through the same
     /// seam the mutual-TLS tests use — and which now also decides whether `h2` is
     /// offered, so this exercises the production ALPN path rather than a parallel one.
-    private func forwarder() -> NIOStreamingForwarder {
+    private func forwarder(pool: UpstreamConnectionPool = UpstreamConnectionPool()) -> NIOStreamingForwarder {
         NIOStreamingForwarder(
             group: group,
             clientIdentities: ClientCertificateConfig(
                 certificates: [], fileURL: nil, baseConfiguration: material.clientConfiguration
-            )
+            ),
+            pool: pool
         )
     }
 
@@ -206,6 +207,64 @@ final class H2UpstreamTests {
 
         #expect(origin.connectionCount == 1,
                 "six exchanges over one h2 connection; more than one means the sharing broke")
+    }
+
+    // MARK: - Idle expiry and liveness (0.0.28)
+
+    /// A shared h2 connection is expired once it goes quiet for `idleTimeout`, exactly
+    /// like a parked h1 one. Before this, an h2 connection sat in the pool with no
+    /// expiry at all — the 37-minute-idle socket that cost five requests 33–51 s each.
+    @Test func anIdleH2ConnectionIsExpiredAndTheNextRequestReconnects() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2"], group: group)
+        defer { origin.stop() }
+        let pool = UpstreamConnectionPool(limits: .init(idleTimeout: .milliseconds(200)))
+        let forwarder = self.forwarder(pool: pool)
+        let url = URL(string: "https://127.0.0.1:\(origin.port)/rpc")!
+
+        let first = try await forwarder.forwardStream(
+            method: "GET", url: url, headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+        #expect(first.statusCode == 200)
+        #expect(origin.connectionCount == 1)
+
+        // Sit past the idle window with no traffic, so the re-arming watch expires it.
+        try await Task.sleep(for: .milliseconds(700))
+        #expect(pool.statistics.idleExpiries >= 1, "the idle h2 connection must be reaped, not kept forever")
+
+        let second = try await forwarder.forwardStream(
+            method: "GET", url: url, headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+        #expect(second.statusCode == 200)
+        #expect(origin.connectionCount == 2, "the expired connection is gone, so the next request opens a fresh one")
+    }
+
+    /// A connection idle past `livenessProbeAfterIdle` is PINGed before it is handed
+    /// out. Against a live origin the ACK comes back, so the connection is reused —
+    /// the probe adds a round trip, not a reconnect, on the healthy path.
+    @Test func aStillLiveIdleH2ConnectionPassesItsPreUseProbeAndIsReused() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2"], group: group)
+        defer { origin.stop() }
+        let pool = UpstreamConnectionPool(limits: .init(
+            idleTimeout: .seconds(45), livenessProbeAfterIdle: .milliseconds(1)
+        ))
+        let forwarder = self.forwarder(pool: pool)
+        let url = URL(string: "https://127.0.0.1:\(origin.port)/rpc")!
+
+        _ = try await forwarder.forwardStream(
+            method: "GET", url: url, headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+        #expect(origin.connectionCount == 1)
+
+        // Long enough to cross the probe threshold, nowhere near the idle timeout.
+        try await Task.sleep(for: .milliseconds(50))
+
+        let second = try await forwarder.forwardStream(
+            method: "GET", url: url, headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+        #expect(second.statusCode == 200)
+        #expect(origin.connectionCount == 1, "a probe that ACKs reuses the socket; it does not reconnect")
+        #expect(pool.statistics.livenessProbeFailures == 0, "a live origin answers its PING")
+        #expect(pool.statistics.deadReuseDetected == 0)
     }
 }
 

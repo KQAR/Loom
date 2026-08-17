@@ -117,6 +117,32 @@ final class UpstreamExchangeSlot: Sendable {
     /// connection that is somehow still busy.
     var isBusy: Bool { armed.withLock { $0 != nil } }
 
+    /// Whether this exchange has produced anything yet — a head or a body chunk.
+    /// A disarmed slot reads `true`: it has already completed, so the first-byte
+    /// watch that reads this has nothing left to worry about. Read by the first-byte
+    /// probe to tell "the origin is merely slow" from "nothing is coming".
+    var hasYielded: Bool { armed.withLock { $0?.didYield ?? true } }
+
+    /// Fail this exchange only if it has produced nothing yet.
+    ///
+    /// The first-byte watch and a late head race: the watch must not error an
+    /// exchange that already yielded, and the two reads (`hasYielded` then `fail`)
+    /// cannot be separate or a head lands between them. One lock, one decision.
+    /// - Returns: `true` when the failure was applied.
+    @discardableResult
+    func failIfSilent(_ error: Error) -> Bool {
+        let current: Armed? = armed.withLock { armed in
+            guard let current = armed, !current.didYield else { return nil }
+            armed = nil
+            return current
+        }
+        guard let current else { return false }
+        current.completion(.failure(UpstreamAttemptFailure(
+            underlying: error, didYield: false, requestWritten: true
+        )))
+        return true
+    }
+
     func arm(
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         methodIsHead: Bool,
@@ -334,12 +360,27 @@ final class UpstreamConnection: @unchecked Sendable {
     /// reuse can be told it paid none of it — which is why the exchange, not this
     /// type, decides whether to report it.
     let setup: ConnectionSetup
+    /// Connection-level liveness, h2 only. A shared connection is handed out without
+    /// being taken, so "is it still there" cannot be answered by taking it — see
+    /// `UpstreamHealthProbe` for why a PING and not a timer.
+    let probe: UpstreamHealthProbe?
 
     private struct State {
         var closed = false
         /// Bumped on every lease and release, so a previously scheduled idle
         /// expiry can tell it is stale without anything having to cancel it.
         var idleGeneration = 0
+        /// When this connection last carried anything. Monotonic — a wall clock can
+        /// step backwards and make an idle connection look freshly used.
+        var lastUsedAt: NIODeadline = .now()
+        /// How long it had been idle when it was last handed out. Read by the
+        /// exchange to decide whether the connection is worth probing first; kept
+        /// here because `lease` is the act that destroys the answer.
+        var idleBeforeLease: TimeAmount = .zero
+        /// Exchanges running on it right now. h2 only, where many share one socket:
+        /// an idle expiry must not close a connection carrying a long-lived stream
+        /// (an SSE response can go minutes without a new lease).
+        var activeExchanges = 0
     }
 
     private let state = Mutex(State())
@@ -351,7 +392,8 @@ final class UpstreamConnection: @unchecked Sendable {
         negotiated: UpstreamWireProtocol = .http1,
         multiplexer: HTTP2StreamMultiplexer? = nil,
         tlsInfo: UpstreamTLSInfoBox = UpstreamTLSInfoBox(),
-        setup: ConnectionSetup = ConnectionSetup()
+        setup: ConnectionSetup = ConnectionSetup(),
+        probe: UpstreamHealthProbe? = nil
     ) {
         self.key = key
         self.channel = channel
@@ -360,6 +402,7 @@ final class UpstreamConnection: @unchecked Sendable {
         self.multiplexer = multiplexer
         self.tlsInfo = tlsInfo
         self.setup = setup
+        self.probe = probe
         remoteAddress = channel.remoteAddress.map(Self.describe)
     }
 
@@ -397,6 +440,94 @@ final class UpstreamConnection: @unchecked Sendable {
     func isIdleGenerationCurrent(_ generation: Int) -> Bool {
         state.withLock { $0.idleGeneration == generation && !$0.closed }
     }
+
+    /// True when nothing has run on this connection for `timeout` and nothing is
+    /// running on it now. Both halves are needed: a stream can outlive many leases.
+    func isIdle(longerThan timeout: TimeAmount) -> Bool {
+        state.withLock { state in
+            guard state.activeExchanges == 0 else { return false }
+            return NIODeadline.now() - state.lastUsedAt >= timeout
+        }
+    }
+
+    /// Record a hand-out and return how long the connection had been sitting unused.
+    ///
+    /// The two are one operation on purpose: the lease is what makes the idle
+    /// duration unknowable a moment later, so anything that wants to reason about
+    /// staleness has to be told at the same instant.
+    @discardableResult
+    func markLeased() -> TimeAmount {
+        state.withLock { state in
+            let idle = NIODeadline.now() - state.lastUsedAt
+            state.idleBeforeLease = idle
+            state.lastUsedAt = .now()
+            return idle
+        }
+    }
+
+    /// How long it had been idle when it was last leased.
+    ///
+    /// A later `markLeased` overwrites this. Callers that decide whether to probe
+    /// must use the value `markLeased` (or `UpstreamConnectionPool.lease`) returned,
+    /// not re-read this.
+    var idleBeforeLease: TimeAmount { state.withLock { $0.idleBeforeLease } }
+
+    /// How long until this connection has been quiet for `timeout`.
+    ///
+    /// Nil when something is running now — the watch should wait a full window
+    /// rather than try to expire under a live stream. Zero when already past due.
+    func remainingIdle(of timeout: TimeAmount) -> TimeAmount? {
+        state.withLock { state in
+            guard state.activeExchanges == 0 else { return nil }
+            let leftover = timeout.nanoseconds - (NIODeadline.now() - state.lastUsedAt).nanoseconds
+            return leftover <= 0 ? .nanoseconds(0) : .nanoseconds(leftover)
+        }
+    }
+
+    /// Mark this connection expired if it is still idle. Sets `closed` so a
+    /// concurrent `lease` sees `isUsable == false`. Does not close the channel —
+    /// the caller does that after forgetting us from the pool.
+    func claimIdleExpiry(after timeout: TimeAmount) -> Bool {
+        state.withLock { state in
+            guard !state.closed else { return false }
+            guard state.activeExchanges == 0 else { return false }
+            guard NIODeadline.now() - state.lastUsedAt >= timeout else { return false }
+            state.closed = true
+            state.idleGeneration += 1
+            return true
+        }
+    }
+
+    /// An exchange is starting on this connection. Counted rather than flagged
+    /// because h2 runs several at once, and refreshing the clock here is what stops
+    /// an idle timer from firing under a request that has only just gone out.
+    func beginExchange() {
+        state.withLock { state in
+            state.activeExchanges += 1
+            state.lastUsedAt = .now()
+        }
+    }
+
+    /// One exchange finished. Refreshes the idle clock, because a response arriving
+    /// *is* the connection being alive — the last thing a stale-detection timer
+    /// should ignore.
+    func endExchange() {
+        state.withLock { state in
+            state.lastUsedAt = .now()
+            if state.activeExchanges > 0 { state.activeExchanges -= 1 }
+        }
+    }
+
+    /// Ask the origin whether this connection is still there (h2 only), failing with
+    /// `error` when the ACK does not arrive inside `timeout`.
+    ///
+    /// Nil when there is nothing to ask with — an h1 connection, or an h2 one whose
+    /// probe never went into the pipeline. A nil answer means "no evidence either
+    /// way", which callers must not read as healthy *or* dead.
+    func probeLiveness(timeout: TimeAmount, failing error: @autoclosure @escaping @Sendable () -> Error) -> EventLoopFuture<Void>? {
+        guard let probe else { return nil }
+        return probe.ping(on: channel.eventLoop, timeout: timeout, failure: error())
+    }
 }
 
 /// Keeps upstream connections alive between requests, keyed by origin.
@@ -421,7 +552,50 @@ final class UpstreamConnectionPool: Sendable {
         /// How long an idle connection is kept. Comfortably under the 60–75 s most
         /// servers use, because the side that closes first decides whether the next
         /// lease races a FIN.
+        ///
+        /// **It applies to h2 as well as h1**, and did not until 0.0.28. An h2
+        /// connection is shared rather than parked, so `release` re-registered it and
+        /// there was nothing to expire it — one sat in the pool for 37 minutes, was
+        /// leased, and cost five requests 33–51 s each while TCP retransmitted into a
+        /// socket whose peer was long gone. Sharing changes who may use a connection,
+        /// not how long it is worth keeping.
         var idleTimeout: TimeAmount = .seconds(45)
+        /// Idle time past which a shared h2 connection is PINGed before it is used.
+        ///
+        /// Well under any NAT or origin reaper, because this is the cheap half of the
+        /// fix: one round trip on a connection nobody has touched for a while, against
+        /// tens of seconds of TCP retransmission if it turns out to be dead. It buys
+        /// nothing for a connection that dies *between* the probe and the write, which
+        /// is what `firstByteProbeAfter` is for.
+        var livenessProbeAfterIdle: TimeAmount = .seconds(5)
+        /// How long a liveness PING may take before the connection is called gone.
+        /// Generous for a LAN or a nearby origin, and it is only ever paid on a
+        /// connection that was already idle.
+        var livenessProbeTimeout: TimeAmount = .seconds(2)
+        /// How long an exchange on a *reused* connection waits for its first response
+        /// byte before Loom stops assuming the origin is merely slow and PINGs.
+        ///
+        /// Deliberately not a failure deadline: a slow endpoint is ordinary, and
+        /// failing one would trade a real answer for a fast wrong one. The probe is
+        /// what turns the wait into evidence — ACK means keep waiting, silence means
+        /// the connection is gone and the request can be retried.
+        var firstByteProbeAfter: TimeAmount = .seconds(5)
+    }
+
+    /// What the pool has had to do about connections that went away, counted for the
+    /// log rather than for a tool: an operator reading a 30-second exchange needs to
+    /// know whether the pool caught a dead socket, and none of this is a fact about
+    /// any one flow. `log stream --predicate 'subsystem == "com.loom"'`, category
+    /// `forward`.
+    struct Stats: Sendable, Equatable {
+        /// Connections closed by the idle timer, h1 and h2 together.
+        var idleExpiries = 0
+        /// Pre-use PINGs that went unanswered — a connection that would otherwise
+        /// have been handed a request.
+        var livenessProbeFailures = 0
+        /// Exchanges whose first-byte wait expired *and* whose PING then failed, i.e.
+        /// a connection that died with a request already on it.
+        var deadReuseDetected = 0
     }
 
     /// A pool that never keeps anything — the behaviour Loom had before pooling
@@ -442,20 +616,51 @@ final class UpstreamConnectionPool: Sendable {
         var multiplexed: [UpstreamPoolKey: UpstreamConnection] = [:]
     }
 
-    private let limits: Limits
+    /// Read by the forwarder, which owns the two deadlines that need a channel to
+    /// act on (the pre-use probe and the first-byte probe) while the policy behind
+    /// them belongs here, with the rest of the reuse rules.
+    let limits: Limits
     private let state = Mutex(State())
+    private let stats = Mutex(Stats())
 
     init(limits: Limits = Limits()) {
         self.limits = limits
     }
 
+    var statistics: Stats { stats.withLock { $0 } }
+
+    /// Counted here so every site that discovers a dead connection lands in one
+    /// place; the log line is the caller's, because only it knows the origin.
+    func recordLivenessProbeFailure() { stats.withLock { $0.livenessProbeFailures += 1 } }
+    func recordDeadReuse() { stats.withLock { $0.deadReuseDetected += 1 } }
+
+    /// A hand-out from the pool, carrying the idle duration captured at the same
+    /// instant. A shared h2 connection can be leased twice; the second `markLeased`
+    /// overwrites the stored snapshot, so anything that decides whether to probe
+    /// has to be told now.
+    struct Lease: Sendable {
+        let connection: UpstreamConnection
+        let idle: TimeAmount
+    }
+
+    /// Drop a connection the first-byte watch proved dead. Must run before the
+    /// retry's `registerMultiplexed`, or that call returns this same socket and
+    /// the fresh connect is discarded.
+    func evictDeadReuse(_ connection: UpstreamConnection) {
+        recordDeadReuse()
+        forget(connection)
+        connection.close()
+    }
+
     /// Take an idle connection for `key`, or nil if there is none worth taking.
+    /// The returned `Lease.idle` is the duration at this instant — do not re-read
+    /// `idleBeforeLease` later, a concurrent h2 hand-out overwrites it.
     ///
     /// Connections that died while parked are dropped here rather than handed out:
     /// the relay's `channelInactive` normally evicts them, but a FIN that lands
     /// between the eviction and this call is exactly the race a liveness check
     /// costs nothing to lose.
-    func lease(_ key: UpstreamPoolKey) -> UpstreamConnection? {
+    func lease(_ key: UpstreamPoolKey) -> Lease? {
         // A multiplexed connection is handed out *without being removed*: the next
         // caller wants the same one, concurrently. A dead one is dropped here for
         // the same reason the h1 path checks liveness — the notifier's eviction and
@@ -472,7 +677,9 @@ final class UpstreamConnectionPool: Sendable {
             // Only ever an h2 connection: one that offered `h2` and was answered
             // `http/1.1` is parked in `idle` like any other h1 socket, because that
             // is what it is. So a miss here falls through to the ordinary path.
-            if let shared { return shared }
+            if let shared {
+                return Lease(connection: shared, idle: shared.markLeased())
+            }
         }
         let (leased, dead) = state.withLock { state -> (UpstreamConnection?, [UpstreamConnection]) in
             guard var bucket = state.idle[key] else { return (nil, []) }
@@ -491,16 +698,17 @@ final class UpstreamConnectionPool: Sendable {
         // Closing runs outside the lock: `Channel.close` hops to an event loop, and
         // nothing here should hold a lock across that.
         for connection in dead { connection.close() }
-        if let leased { _ = leased.nextIdleGeneration() }
-        return leased
+        guard let leased else { return nil }
+        _ = leased.nextIdleGeneration()
+        return Lease(connection: leased, idle: leased.markLeased())
     }
 
     /// Park a connection whose exchange finished cleanly. Over a cap, or on a pool
     /// that has been drained, it is closed instead — a caller never has to ask.
     func release(_ connection: UpstreamConnection) {
-        // An h2 connection is not released, because it was never taken: it is
-        // registered on first use and stays until it dies or is drained. Closing it
-        // here would kill the streams other exchanges are still running on it.
+        // An h2 connection is not *taken*, so it is not given back either: it stays
+        // registered until it dies, idles out or is drained. Closing it here would
+        // kill the streams other exchanges are still running on it.
         if connection.negotiated == .http2 {
             guard connection.isUsable else {
                 forget(connection)
@@ -527,11 +735,75 @@ final class UpstreamConnectionPool: Sendable {
             connection.close()
             return
         }
+        scheduleIdleExpiry(connection, generation: generation)
+    }
+
+    /// Close a **parked h1** connection that has gone `idleTimeout` without being
+    /// leased again.
+    ///
+    /// The generation check is what makes this cancellation-free: every lease and
+    /// release bumps it, so a timer scheduled for an earlier idle period recognises
+    /// itself as stale and a re-parked connection carries a fresh one.
+    private func scheduleIdleExpiry(_ connection: UpstreamConnection, generation: Int) {
         connection.channel.eventLoop.scheduleTask(in: limits.idleTimeout) { [weak self] in
             guard let self, connection.isIdleGenerationCurrent(generation) else { return }
-            self.forget(connection)
-            connection.close()
+            expire(connection)
         }
+    }
+
+    /// Watch a **shared h2** connection for going quiet, re-arming until it does.
+    ///
+    /// It cannot use the h1 shape, and that difference is the whole bug this closes.
+    /// A shared connection is never released back, so there is no moment at which to
+    /// schedule "expire unless leased again" — and a generation check would either
+    /// fire under live traffic or, once bumped, drop the watch forever. So the watch
+    /// re-arms and asks the connection itself: idle means nothing has *started or
+    /// finished* on it for the timeout **and** nothing is running now, which is what
+    /// keeps a long-lived stream (SSE, a slow download) from being cut mid-response
+    /// while nobody opens new streams.
+    private func watchHTTP2Idle(_ connection: UpstreamConnection) {
+        // Remaining time, not another full window: a re-arm that always waits
+        // `idleTimeout` again lets a connection sit quiet for almost 2× the
+        // timeout, past the 60–75 s origin reapers this limit is meant to beat.
+        let delay = connection.remainingIdle(of: limits.idleTimeout) ?? limits.idleTimeout
+        connection.channel.eventLoop.scheduleTask(in: delay) { [weak self] in
+            guard let self else { return }
+            guard connection.isUsable else {
+                forget(connection)
+                return
+            }
+            guard connection.isIdle(longerThan: limits.idleTimeout) else {
+                watchHTTP2Idle(connection)
+                return
+            }
+            expire(connection)
+        }
+    }
+
+    /// Drop and close a connection the idle timer caught, counting it. An idle expiry
+    /// is a **normal** outcome, not a failure: it is the pool declining to be the
+    /// side that finds out a socket died.
+    private func expire(_ connection: UpstreamConnection) {
+        // Re-check under the connection lock: `beginExchange` / `markLeased` can
+        // land between `isIdle` and here, and h2 has no generation to cancel the
+        // watch. Winning the claim marks us closed so a concurrent lease misses.
+        guard connection.claimIdleExpiry(after: limits.idleTimeout) else {
+            if connection.negotiated == .http2, connection.isUsable {
+                watchHTTP2Idle(connection)
+            }
+            return
+        }
+        stats.withLock { $0.idleExpiries += 1 }
+        Log.forward.debug(
+            """
+            Closing the idle upstream connection to \(connection.key.host, privacy: .public):\
+            \(connection.key.port, privacy: .public) \
+            (\(connection.negotiated == .http2 ? "h2" : "h1", privacy: .public), \
+            idle over \(self.limits.idleTimeout.nanoseconds / 1_000_000, privacy: .public) ms)
+            """
+        )
+        forget(connection)
+        connection.channel.close(promise: nil)
     }
 
     /// Register a freshly-connected h2 connection, and say which one to actually
@@ -551,7 +823,14 @@ final class UpstreamConnectionPool: Sendable {
             state.multiplexed[connection.key] = connection
             return connection
         }
-        if winner !== connection { connection.close() }
+        if winner !== connection {
+            connection.close()
+            return winner
+        }
+        // The idle watch starts here rather than at release, because a shared
+        // connection is never released: registration is the only moment it is
+        // certain to pass through exactly once.
+        watchHTTP2Idle(connection)
         return winner
     }
 

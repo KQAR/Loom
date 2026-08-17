@@ -3,6 +3,7 @@ import Synchronization
 import NIOCore
 import NIOEmbedded
 import NIOHTTP1
+import NIOHTTP2
 import NIOPosix
 import Testing
 @testable import LoomProxyCore
@@ -312,6 +313,15 @@ final class UpstreamConnectionPoolTests {
             underlying: ForwarderError.connectionClosed, didYield: false, requestWritten: true
         )
         #expect(NIOStreamingForwarder.mayRetry(method: "POST", after: closed))
+
+        let liveness = UpstreamAttemptFailure(
+            underlying: UpstreamLivenessError.connectionUnresponsive(
+                host: "origin.test", port: 443, idleMS: 9000, waitedMS: 2000
+            ),
+            didYield: false, requestWritten: true
+        )
+        #expect(NIOStreamingForwarder.mayRetry(method: "POST", after: liveness),
+                "an unanswered PING is the same claim an RST makes")
     }
 
     /// The half that must not move. A failure that is *not* the transport going
@@ -396,6 +406,39 @@ final class UpstreamConnectionPoolTests {
         #expect(!failure.didYield)
     }
 
+    @Test func failIfSilent_failsAStillSilentExchange() {
+        let slot = UpstreamExchangeSlot()
+        let outcome = Mutex<Result<UpstreamAttemptEnd, UpstreamAttemptFailure>?>(nil)
+        let (_, continuation) = AsyncThrowingStream<UpstreamResponseEvent, Error>.makeStream()
+        slot.arm(continuation: continuation, methodIsHead: false) { result in
+            outcome.withLock { $0 = result }
+        }
+        struct Gone: Error {}
+        #expect(slot.failIfSilent(Gone()))
+        guard case let .failure(failure)? = outcome.withLock({ $0 }) else {
+            Issue.record("a silent slot must take the failure")
+            return
+        }
+        #expect(failure.underlying is Gone)
+        #expect(!failure.didYield)
+    }
+
+    @Test func failIfSilent_losesToAHeadThatAlreadyYielded() {
+        let slot = UpstreamExchangeSlot()
+        let outcome = Mutex<Result<UpstreamAttemptEnd, UpstreamAttemptFailure>?>(nil)
+        let (_, continuation) = AsyncThrowingStream<UpstreamResponseEvent, Error>.makeStream()
+        slot.arm(continuation: continuation, methodIsHead: false) { result in
+            outcome.withLock { $0 = result }
+        }
+        slot.receivedHead(
+            HTTPResponseHead(version: .http1_1, status: .ok),
+            headers: [], httpVersion: "HTTP/1.1"
+        )
+        struct Gone: Error {}
+        #expect(!slot.failIfSilent(Gone()), "a yielded exchange must not be failed")
+        #expect(outcome.withLock { $0 } == nil, "the head owns the slot; completion stays unset")
+    }
+
     // MARK: - Identity-scoped drain
 
     @Test func drainByIdentity_closesOnlyThatIdentitysParkedConnections() throws {
@@ -447,6 +490,241 @@ final class UpstreamConnectionPoolTests {
         #expect(!reusable(head(.ok, []), false), "close-delimited: the body ends when the socket does")
         #expect(!reusable(head(.switchingProtocols, []), false),
                 "after 101 the wire is no longer HTTP/1.1 messages; there is nothing to pool")
+    }
+
+    // MARK: - Liveness probe, in isolation
+
+    /// A PING whose ACK comes back resolves the probe — the healthy-idle case the
+    /// pre-use gate reads before handing a connection out.
+    @Test func livenessProbe_resolvesOnPingAck() throws {
+        let channel = EmbeddedChannel()
+        let probe = UpstreamHealthProbe()
+        try channel.pipeline.syncOperations.addHandler(probe)
+        let loop = channel.embeddedEventLoop
+
+        struct NeverFires: Error {}
+        let future = probe.ping(on: loop, timeout: .seconds(30), failure: NeverFires())
+        loop.run() // drain the `execute` hop that writes the PING
+
+        let sent = try #require(try channel.readOutbound(as: HTTP2Frame.self))
+        guard case let .ping(data, ack) = sent.payload else {
+            Issue.record("first frame out must be a PING; got \(sent.payload)")
+            return
+        }
+        #expect(!ack, "an outbound PING is a question, not an answer")
+        let token = data.integer
+
+        let resolved = Mutex(false)
+        future.whenSuccess { resolved.withLock { $0 = true } }
+        // The ACK the origin would send: same token, ack flag set.
+        try channel.writeInbound(HTTP2Frame(
+            streamID: .rootStream, payload: .ping(HTTP2PingData(withInteger: token), ack: true)
+        ))
+        loop.run()
+        #expect(resolved.withLock { $0 }, "a matching ACK must resolve the probe")
+
+        // And the ACK is still forwarded — the probe observes, it does not consume.
+        let forwarded = try channel.readInbound(as: HTTP2Frame.self)
+        #expect(forwarded != nil, "a PING ACK passes through to the rest of the pipeline")
+        _ = try? channel.finish()
+    }
+
+    /// The whole point of the probe: silence past the deadline fails with the
+    /// caller's own error, which is what `isTransportTeardown` reads to allow a retry.
+    @Test func livenessProbe_failsWithItsOwnErrorAtTimeout() throws {
+        let channel = EmbeddedChannel()
+        let probe = UpstreamHealthProbe()
+        try channel.pipeline.syncOperations.addHandler(probe)
+        let loop = channel.embeddedEventLoop
+
+        let expected = UpstreamLivenessError.connectionUnresponsive(
+            host: "origin.test", port: 443, idleMS: 9000, waitedMS: 2000
+        )
+        let future = probe.ping(on: loop, timeout: .seconds(2), failure: expected)
+        loop.run()
+        _ = try channel.readOutbound(as: HTTP2Frame.self)
+
+        let failure = Mutex<Error?>(nil)
+        future.whenFailure { error in failure.withLock { if $0 == nil { $0 = error } } }
+        #expect(failure.withLock { $0 } == nil, "not failed before the deadline")
+
+        loop.advanceTime(by: .seconds(2))
+        guard case .connectionUnresponsive? = failure.withLock({ $0 }) as? UpstreamLivenessError else {
+            Issue.record("the deadline must fail with the caller's error; got \(String(describing: failure.withLock { $0 }))")
+            return
+        }
+        _ = try? channel.finish()
+    }
+
+    /// A socket that dies with a probe in flight fails it rather than hanging —
+    /// `channelInactive`/`handlerRemoved` drain every pending token.
+    @Test func livenessProbe_failsPendingWhenTheChannelGoesInactive() throws {
+        let channel = EmbeddedChannel()
+        let probe = UpstreamHealthProbe()
+        try channel.pipeline.syncOperations.addHandler(probe)
+        let loop = channel.embeddedEventLoop
+
+        struct NeverFires: Error {}
+        let future = probe.ping(on: loop, timeout: .seconds(30), failure: NeverFires())
+        loop.run()
+        _ = try channel.readOutbound(as: HTTP2Frame.self)
+
+        let failure = Mutex<Error?>(nil)
+        future.whenFailure { error in failure.withLock { if $0 == nil { $0 = error } } }
+        _ = try channel.finish() // fires channelInactive → failAll(connectionClosed)
+
+        guard case ForwarderError.connectionClosed? = failure.withLock({ $0 }) as? ForwarderError else {
+            Issue.record("a dead channel must fail pending probes with connectionClosed")
+            return
+        }
+    }
+
+    // MARK: - The connection's idle bookkeeping
+
+    /// `isIdle` gates on *nothing running now* as well as elapsed time — an h2
+    /// connection carrying a long-lived stream must never read idle, or the watch
+    /// would cut a response mid-flight.
+    @Test func anActiveExchangeKeepsAConnectionFromReadingIdle() throws {
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let connection = UpstreamConnection(
+            key: UpstreamPoolKey(host: "h2.example.test", port: 443, isTLS: true, identity: nil, preferHTTP2: true),
+            channel: channel, slot: UpstreamExchangeSlot(), negotiated: .http2
+        )
+        // A zero timeout means "idle iff nothing is running", stripping the clock out
+        // of the assertion so it stays deterministic.
+        #expect(connection.isIdle(longerThan: .zero), "fresh, nothing running")
+
+        connection.beginExchange()
+        #expect(!connection.isIdle(longerThan: .zero), "a running exchange is never idle")
+        connection.beginExchange()
+        connection.endExchange()
+        #expect(!connection.isIdle(longerThan: .zero), "still one exchange left")
+        connection.endExchange()
+        #expect(connection.isIdle(longerThan: .zero), "quiet again once the last one ends")
+
+        connection.close()
+    }
+
+    /// `markLeased` reports how long the connection sat unused and resets the clock —
+    /// the number the pre-use gate compares against `livenessProbeAfterIdle`.
+    @Test func markLeased_reportsIdleDurationAndIsReadableAfter() throws {
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let connection = UpstreamConnection(
+            key: UpstreamPoolKey(host: "h2.example.test", port: 443, isTLS: true, identity: nil, preferHTTP2: true),
+            channel: channel, slot: UpstreamExchangeSlot(), negotiated: .http2
+        )
+        let idle = connection.markLeased()
+        #expect(idle >= .zero)
+        #expect(connection.idleBeforeLease == idle, "the leased-idle duration stays readable for the gate")
+        connection.close()
+    }
+
+    /// Two hand-outs of a shared h2 connection each get their own idle snapshot.
+    /// Re-reading `idleBeforeLease` after the second lease is what let both skip
+    /// the pre-use PING.
+    @Test func lease_returnsTheIdleSnapshotNotALaterReread() throws {
+        let pool = UpstreamConnectionPool()
+        let key = UpstreamPoolKey(
+            host: "h2.example.test", port: 443, isTLS: true, identity: nil, preferHTTP2: true
+        )
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let connection = UpstreamConnection(
+            key: key, channel: channel, slot: UpstreamExchangeSlot(), negotiated: .http2
+        )
+        #expect(pool.registerMultiplexed(connection) === connection)
+
+        let first = try #require(pool.lease(key))
+        let firstIdle = first.idle
+        #expect(first.connection === connection)
+        let second = try #require(pool.lease(key))
+        #expect(second.idle < .milliseconds(50), "a second hand-out is immediate")
+        #expect(first.idle == firstIdle, "the first snapshot is not overwritten by the second lease")
+        connection.close()
+    }
+
+    /// The first-byte path's contract with `registerMultiplexed`: evict before the
+    /// retry connects, or the dead incumbent wins and the fresh socket is discarded.
+    @Test func evictDeadReuse_letsTheNextRegisterWin() throws {
+        let pool = UpstreamConnectionPool()
+        let key = UpstreamPoolKey(
+            host: "h2.example.test", port: 443, isTLS: true, identity: nil, preferHTTP2: true
+        )
+        func make() throws -> UpstreamConnection {
+            let channel = EmbeddedChannel()
+            try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+            return UpstreamConnection(
+                key: key, channel: channel, slot: UpstreamExchangeSlot(), negotiated: .http2
+            )
+        }
+        let dead = try make()
+        #expect(pool.registerMultiplexed(dead) === dead)
+        pool.evictDeadReuse(dead)
+        #expect(!dead.isUsable)
+        #expect(pool.statistics.deadReuseDetected == 1)
+
+        let fresh = try make()
+        #expect(pool.registerMultiplexed(fresh) === fresh,
+                "after eviction the next connect is kept, not discarded for the dead incumbent")
+        fresh.close()
+    }
+
+    /// `claimIdleExpiry` is the lock `expire` uses so a `beginExchange` that lands
+    /// after `isIdle` still keeps the socket.
+    @Test func claimIdleExpiry_losesToARunningExchange() throws {
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let connection = UpstreamConnection(
+            key: UpstreamPoolKey(
+                host: "h2.example.test", port: 443, isTLS: true, identity: nil, preferHTTP2: true
+            ),
+            channel: channel, slot: UpstreamExchangeSlot(), negotiated: .http2
+        )
+        connection.beginExchange()
+        #expect(!connection.claimIdleExpiry(after: .zero), "a live stream is never expired")
+        #expect(connection.isUsable)
+        connection.endExchange()
+        #expect(connection.claimIdleExpiry(after: .zero))
+        #expect(!connection.isUsable)
+        channel.close(promise: nil)
+    }
+
+    /// Re-arming with a leftover, not another full window — otherwise a quiet
+    /// connection can sit for almost 2× `idleTimeout` and lose the race with the
+    /// origin's own reaper.
+    @Test func remainingIdle_isTheLeftoverNotAnotherFullWindow() async throws {
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1)).wait()
+        let connection = UpstreamConnection(
+            key: UpstreamPoolKey(
+                host: "h2.example.test", port: 443, isTLS: true, identity: nil, preferHTTP2: true
+            ),
+            channel: channel, slot: UpstreamExchangeSlot(), negotiated: .http2
+        )
+        connection.markLeased()
+        try await Task.sleep(for: .milliseconds(40))
+        let remaining = try #require(connection.remainingIdle(of: .milliseconds(200)))
+        #expect(remaining < .milliseconds(200), "re-arming must not wait a full window again")
+        #expect(remaining > .nanoseconds(0))
+        connection.beginExchange()
+        #expect(connection.remainingIdle(of: .milliseconds(200)) == nil,
+                "a running exchange has no remaining idle")
+        connection.close()
+    }
+
+    // MARK: - Stats
+
+    @Test func stats_countDeadReuseAndProbeFailuresApart() {
+        let pool = UpstreamConnectionPool()
+        #expect(pool.statistics == UpstreamConnectionPool.Stats())
+        pool.recordLivenessProbeFailure()
+        pool.recordLivenessProbeFailure()
+        pool.recordDeadReuse()
+        #expect(pool.statistics.livenessProbeFailures == 2)
+        #expect(pool.statistics.deadReuseDetected == 1)
+        #expect(pool.statistics.idleExpiries == 0, "an expiry is a different event and not conflated")
     }
 }
 

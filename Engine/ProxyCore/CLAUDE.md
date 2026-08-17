@@ -45,12 +45,13 @@ to `NIOStreamingForwarder`, which speaks h2 upstream when the client did. Six ru
   (identity, ALPN). Offering `h2` from a context whose caller then cannot speak h2 is
   the one outcome that hangs an exchange, so the answer travels back *with* the
   context instead of being re-derived from the request.
-- **An h2 connection is shared, not leased.** `UpstreamConnectionPool` keeps them in
-  their own map: `lease` hands one out without removing it, `release` re-registers
-  rather than parking, and the h1 bookkeeping (take-on-lease, idle timer, "is the
-  slot busy") is wrong for a connection that is never idle between two requests
-  because it is carrying both. `registerMultiplexed` runs **before the first stream
-  is opened**, which is the only moment a duplicate can still be closed harmlessly.
+- **An h2 connection is shared, not leased.** `lease` hands one out without
+  removing it; `release` re-registers rather than parking. The idle watch still
+  applies — sharing is not immortality — and a long-lived stream keeps the socket
+  because idle means nothing running *and* nothing started or finished for the
+  timeout. A first-byte PING fail must evict before `registerMultiplexed`, or the
+  retry is handed the same dead incumbent. Registration runs **before the first
+  stream is opened**, the only moment a duplicate can still be closed harmlessly.
 - **Concurrent first requests share one connect.** `pendingHTTP2Connects` joins an
   attempt already under way, on a `Task.detached` so the connect does not inherit the
   cancellation of whichever exchange happened to start it. Measured without it: six
