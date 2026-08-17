@@ -199,10 +199,12 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let replayable: Bool
         if case .bytes = body.source { replayable = true } else { replayable = false }
 
-        if replayable, let pooled = pool.lease(key) {
+        if replayable, let leased = pool.lease(key),
+           await livenessConfirmed(leased.connection, idle: leased.idle, key: key) {
             do {
                 return try await attempt(
-                    on: pooled, reused: true, method: method, url: url, headers: headers, body: body,
+                    on: leased.connection, reused: true, idle: leased.idle,
+                    method: method, url: url, headers: headers, body: body,
                     continuation: continuation, active: active
                 )
             } catch let failure as UpstreamAttemptFailure {
@@ -228,11 +230,51 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             : try await connect(key: key, clientTLS: clientTLS)
         do {
             return try await attempt(
-                on: fresh, reused: false, method: method, url: url, headers: headers, body: body,
+                on: fresh, reused: false, idle: .zero,
+                method: method, url: url, headers: headers, body: body,
                 continuation: continuation, active: active
             )
         } catch let failure as UpstreamAttemptFailure {
             throw failure.underlying
+        }
+    }
+
+    /// Whether a just-leased connection is worth committing a request to.
+    ///
+    /// Only ever answers **no** on positive evidence — an h2 PING that went
+    /// unanswered inside its deadline — and only bothers to ask when the connection
+    /// sat idle past `livenessProbeAfterIdle`. A connection with no probe (h1), or one
+    /// leased while still warm, is assumed live: the write-then-retry path catches
+    /// those, and a PING on every lease would tax the common case for the rare one.
+    ///
+    /// On a failed probe the dead connection is dropped and closed here, so the
+    /// caller's fall-through to a fresh connect does not race the same socket again.
+    private func livenessConfirmed(
+        _ connection: UpstreamConnection, idle: TimeAmount, key: UpstreamPoolKey
+    ) async -> Bool {
+        guard idle >= pool.limits.livenessProbeAfterIdle else { return true }
+        let idleMS = Int(idle.nanoseconds / 1_000_000)
+        let timeoutMS = Int(pool.limits.livenessProbeTimeout.nanoseconds / 1_000_000)
+        guard let ping = connection.probeLiveness(
+            timeout: pool.limits.livenessProbeTimeout,
+            failing: UpstreamLivenessError.connectionUnresponsive(
+                host: key.host, port: key.port, idleMS: idleMS, waitedMS: timeoutMS
+            )
+        ) else { return true }
+        do {
+            try await ping.get()
+            return true
+        } catch {
+            pool.recordLivenessProbeFailure()
+            pool.forget(connection)
+            connection.close()
+            Log.forward.debug(
+                """
+                Pooled h2 connection to \(key.host, privacy: .public):\(key.port, privacy: .public) \
+                failed a liveness PING after \(idleMS, privacy: .public) ms idle; opening a fresh one
+                """
+            )
+            return false
         }
     }
 
@@ -241,13 +283,14 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     private func attempt(
         on connection: UpstreamConnection,
         reused: Bool,
+        idle: TimeAmount,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox
     ) async throws -> [HeaderPair]? {
         if connection.negotiated == .http2 {
             return try await attemptHTTP2(
-                on: connection, reused: reused, method: method, url: url, headers: headers,
+                on: connection, reused: reused, idle: idle, method: method, url: url, headers: headers,
                 body: body, continuation: continuation, active: active
             )
         }
@@ -256,6 +299,12 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             connection.close()
             throw CancellationError()
         }
+        // Count this exchange against the connection for the whole of its run, so an
+        // idle watch cannot expire a socket a request is live on. h1 pools by parking
+        // and never reads `activeExchanges`, but keeping the clock fresh here is free
+        // and matches the h2 path.
+        connection.beginExchange()
+        defer { connection.endExchange() }
 
         let promise = connection.channel.eventLoop.makePromise(of: UpstreamAttemptEnd.self)
         // Evaluated by the slot when the head arrives, not now: on a fresh
@@ -391,6 +440,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     private func attemptHTTP2(
         on connection: UpstreamConnection,
         reused: Bool,
+        idle: TimeAmount,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox
@@ -429,6 +479,10 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             stream.close(promise: nil)
             throw CancellationError()
         }
+        // This stream counts against the connection until it ends, so the idle watch
+        // (`watchHTTP2Idle`) never cuts a socket a long-lived stream is running on.
+        connection.beginExchange()
+        defer { connection.endExchange() }
 
         let promise = stream.eventLoop.makePromise(of: UpstreamAttemptEnd.self)
         let remoteAddress = connection.remoteAddress
@@ -465,6 +519,13 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             slot.fail(error)
         }
 
+        // First-byte watch, reused h2 only: a connection that died with our request
+        // already on it produces neither a response nor a write error — it just goes
+        // quiet, and without this the exchange waits out TCP's 30-plus-second
+        // retransmit. Cancelled the moment the exchange leaves this scope.
+        let firstByteProbe = reused ? scheduleFirstByteProbe(on: connection, slot: slot, idle: idle) : nil
+        defer { firstByteProbe?.cancel() }
+
         let end: UpstreamAttemptEnd
         do {
             end = try await promise.futureResult.get()
@@ -484,6 +545,50 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // The stream is finished; the connection carries on serving everyone else.
         stream.close(promise: nil)
         return end.trailers
+    }
+
+    /// Schedule the first-byte liveness watch for a reused h2 stream.
+    ///
+    /// Fires once at `firstByteProbeAfter`. If the slot has produced nothing by then,
+    /// it PINGs the connection; a PING that fails while the slot is *still* silent
+    /// fails the slot with a transport-teardown error, which the retry path re-runs
+    /// on a fresh connection. Any response arriving first disarms the slot, making
+    /// both the fire and the PING result a no-op — and the timer is cancelled on the
+    /// exchange's exit regardless.
+    ///
+    /// Nil when there is no probe to ask with (the caller only asks on a reused h2
+    /// connection, but a defensive nil keeps the caller from having to know that).
+    private func scheduleFirstByteProbe(
+        on connection: UpstreamConnection, slot: UpstreamExchangeSlot, idle: TimeAmount
+    ) -> Scheduled<Void>? {
+        guard let probe = connection.probe else { return nil }
+        let key = connection.key
+        let eventLoop = connection.channel.eventLoop
+        let timeout = pool.limits.livenessProbeTimeout
+        let timeoutMS = Int(timeout.nanoseconds / 1_000_000)
+        let idleMS = Int(idle.nanoseconds / 1_000_000)
+        let waitedMS = Int(pool.limits.firstByteProbeAfter.nanoseconds / 1_000_000)
+        let error = UpstreamLivenessError.connectionUnresponsive(
+            host: key.host, port: key.port, idleMS: idleMS, waitedMS: timeoutMS
+        )
+        return eventLoop.scheduleTask(in: pool.limits.firstByteProbeAfter) { [pool, connection] in
+            guard !slot.hasYielded else { return }
+            probe.ping(on: eventLoop, timeout: timeout, failure: error).whenComplete { result in
+                // Only a *failed* PING is a verdict, and only while the response has
+                // still not started — `failIfSilent` is the lock that makes that
+                // one decision. Evict only after winning it: a head that beat the
+                // ACK must keep this socket (other streams may still be on it).
+                guard case .failure = result, slot.failIfSilent(error) else { return }
+                pool.evictDeadReuse(connection)
+                Log.forward.debug(
+                    """
+                    Reused h2 connection to \(key.host, privacy: .public):\(key.port, privacy: .public) \
+                    produced no first byte in \(waitedMS, privacy: .public) ms and failed a PING; \
+                    treating it as gone
+                    """
+                )
+            }
+        }
     }
 
     /// Connect for an h2 origin, joining an attempt already under way rather than
@@ -539,6 +644,12 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let bootstrap = ClientBootstrap(group: group)
             .connectTimeout(connectTimeout)
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            // TCP keepalive so a peer that vanishes without a FIN is eventually
+            // reaped by the kernel even on a connection nothing is probing. It is a
+            // coarse backstop measured in minutes, not a substitute for the h2 PING
+            // — the probe is what catches a dead connection *before* a request is
+            // committed to it; this only stops a truly forgotten socket lingering.
+            .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture { () -> EventLoopFuture<Void> in
                     let sync = channel.pipeline.syncOperations
@@ -620,19 +731,22 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // fails resolves this as a failure through the channel's own close.
         let negotiated: UpstreamWireProtocol
         let multiplexer: HTTP2StreamMultiplexer?
+        let probe: UpstreamHealthProbe?
         if key.preferHTTP2 {
             channel.closeFuture.whenComplete { _ in negotiation.failIfUnsettled(ForwarderError.connectionClosed) }
             let settled = try await negotiation.awaitSettled(on: channel.eventLoop)
             negotiated = settled.wire
             multiplexer = settled.multiplexer
+            probe = settled.probe
         } else {
             negotiated = .http1
             multiplexer = nil
+            probe = nil
         }
         let connection = UpstreamConnection(
             key: key, channel: channel, slot: slot,
             negotiated: negotiated, multiplexer: multiplexer,
-            tlsInfo: tlsInfo, setup: setup
+            tlsInfo: tlsInfo, setup: setup, probe: probe
         )
         // Weak: while the connection is parked the pool holds it, and once it is
         // neither parked nor in flight there is nothing left to evict.
@@ -703,9 +817,22 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             // flow-control window open for the life of the connection — so it is
             // refused explicitly rather than left to accumulate.
             inboundStreamInitializer: { stream in stream.close() }
-        ).map { multiplexer in
-            negotiation.settle(.http2, multiplexer: multiplexer)
+        )
+        // `assumeIsolated` because the probe is a non-`Sendable` handler being built
+        // and installed in the callback: every caller of this function is already on
+        // the channel's loop (a `channelInitializer` body or the ALPN callback), and
+        // `configureHTTP2Pipeline` completes there too, so the isolation this asserts
+        // is checked at the call rather than assumed in a comment.
+        .assumeIsolated()
+        .flatMapThrowing { multiplexer in
+            // At the pipeline **tail**, after the multiplexer: that is where
+            // root-stream frames (PING among them) are forwarded to. See
+            // `UpstreamHealthProbe`.
+            let probe = UpstreamHealthProbe()
+            try channel.pipeline.syncOperations.addHandler(probe)
+            negotiation.settle(.http2, multiplexer: multiplexer, probe: probe)
         }
+        .nonisolated()
     }
 
     /// Time one name resolution, off the event loop.
@@ -919,6 +1046,11 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// answers to it in one module is how they come to disagree.
     static func isTransportTeardown(_ error: Error) -> Bool {
         if case ForwarderError.connectionClosed = error { return true }
+        // A liveness PING that went unanswered is positive evidence the transport is
+        // gone — the same claim an RST makes, and the whole reason the probe exists
+        // (see `UpstreamHealthProbe`). It is raised only on a connection that yielded
+        // nothing, so a retry re-sends a request the origin provably never answered.
+        if error is UpstreamLivenessError { return true }
         return error is IOError || error is ChannelError || error is NIOSSLError
     }
 
@@ -1007,6 +1139,11 @@ final class UpstreamNegotiationBox: @unchecked Sendable {
     struct Settled: @unchecked Sendable {
         let wire: UpstreamWireProtocol
         let multiplexer: HTTP2StreamMultiplexer?
+        /// The connection-level liveness handler, h2 only. It travels with the
+        /// negotiation for the same reason the multiplexer does: both are made by the
+        /// pipeline installer, and both are facts about a connection that does not
+        /// exist yet when the initializer runs.
+        var probe: UpstreamHealthProbe?
     }
 
     private struct State {
@@ -1017,10 +1154,13 @@ final class UpstreamNegotiationBox: @unchecked Sendable {
 
     private let state = Mutex(State())
 
-    func settle(_ wire: UpstreamWireProtocol, multiplexer: HTTP2StreamMultiplexer?) {
+    func settle(
+        _ wire: UpstreamWireProtocol, multiplexer: HTTP2StreamMultiplexer?,
+        probe: UpstreamHealthProbe? = nil
+    ) {
         let waiters = state.withLock { state -> [EventLoopPromise<Void>] in
             guard state.settled == nil, state.failure == nil else { return [] }
-            state.settled = Settled(wire: wire, multiplexer: multiplexer)
+            state.settled = Settled(wire: wire, multiplexer: multiplexer, probe: probe)
             let waiting = state.waiters
             state.waiters = []
             return waiting
