@@ -1,4 +1,3 @@
-import AppKit
 import LoomSharedModels
 import SwiftUI
 
@@ -69,9 +68,6 @@ struct RequestPane: View {
             }
             .padding(.horizontal, LoomTheme.Space.md)
             .frame(height: 34)
-            Divider()
-
-            CopyableURLBar(url: flow.request.url)
             Divider()
 
             content(derived)

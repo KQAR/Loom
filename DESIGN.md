@@ -186,11 +186,11 @@ components:
   inspector-panel: # bottom of the split — Request | Response, referenced from Proxyman
     backgroundColor: "{colors.window-canvas}"
     visibility: "shown ONLY when a flow is selected; otherwise the table fills the whole pane"
-    structure: "HSplitView — left Request pane, right Response pane, each with its own tab strip"
-    requestPane: "tab strip [Summary · Query(n, only if any) · GraphQL(only if any) · Raw · Headers(n) · Cookies(n, only if any) · Body · Diff(replays only)], counts drawn per {components.inspector-panel}.tab-counts + method badge + Replay button; a copyable URL bar below the tabs. Raw = request line + headers + body with a line-number gutter."
-    summary-tab: "FLOW-scoped, not request-scoped, and it lives in the left pane anyway. Grouped key/value rows — status/method/code/host/protocol, then Timing, Size, Connection, Origin, and a Capture group that appears only when something is missing ({components.sidebar}-adjacent rule: absent means unmeasured, never 'none'). Most of it is the response's or the connection's, so the type is named `FlowSummary` rather than after the pane: a summary is a fact about the exchange, and the alternatives are worse — a third pane costs width two dozen rows do not justify, and splitting it would put the status code, the timing and the connection on the right while the URL and the method stay on the left, which is a summary of nothing."
+    structure: "copyable URL header spanning both panes (scheme/host/path/query syntax-tinted; ✕ close trailing) over an HSplitView — left Request, right Response, each with its own tab strip"
+    requestPane: "tab strip [Summary · Query(n, only if any) · GraphQL(only if any) · Raw · Headers(n) · Cookies(n, only if any) · Body · Diff(replays only)], counts drawn per {components.inspector-panel}.tab-counts + method badge + Replay button. Raw = request line + headers + body with a line-number gutter."
+    summary-tab: "FLOW-scoped, not request-scoped, and it lives in the left pane anyway. Grouped key/value rows — status/method/code/host/protocol, then Timing, Size, Connection, Origin, and a Capture group that appears only when something is missing ({components.sidebar}-adjacent rule: absent means unmeasured, never 'none'). Most of it is the response's or the connection's, so the type is named `FlowSummary` rather than after the pane: a summary is a fact about the exchange, and the alternatives are worse — a third pane costs width two dozen rows do not justify, and splitting it would put the status code, the timing and the connection on the right while the method stays on the left, which is a summary of nothing."
     query-tab: "the URL's parameters as the SAME two-column {components.inspector-panel}.cookies-tab grid (titles Name/Value). Order and repeats preserved — `?id=1&id=2` is how half the web spells an array, and folding it would hide the thing the tab is opened to check. Percent-decoded; `+` deliberately NOT turned into a space (that is a form-urlencoded server-side reading, not a property of the URL, and query strings routinely carry base64 where every + is literal). A flag with no `=` at all shows an em dash rather than a blank cell, because `?debug` and `?debug=` are different requests."
-    responsePane: "tab strip [Raw(default) · Headers(n) · Cookies(n, only if any) · Body] (or [Messages(n) · Headers(n)] for a WebSocket) + status badge + ✕ close (deselects). Raw = status line + headers + body with a line-number gutter."
+    responsePane: "tab strip [Raw(default) · Headers(n) · Cookies(n, only if any) · Body] (or [Messages(n) · Headers(n)] for a WebSocket) + status badge. Raw = status line + headers + body with a line-number gutter."
     cookies-tab: "shown only when present — request from the `Cookie` header (name=value pairs), response from `Set-Cookie` headers (name/value + attributes). Rendered as the SAME aligned two-column table as Headers (one shared `KeyValueGrid`; titles Name/Value), so values line up in a column and can be read down. `Set-Cookie` attributes (Path/HttpOnly/SameSite/…) sit inside the value cell as a .tertiary caption line, not a third column: only responses have them, so a column would be dead space on every request pane. Names, values and attributes all selectable."
     body-copy: "Body panes (request + response) show a floating copy button pinned top-right that copies the whole body; flips to a checkmark briefly."
     raw-highlight: "the Raw panes tint the message HEAD and nothing else — the request line's method tinted by {components.method-column}'s rule, a response's status code in its status hue, header names in {colors.syntax-name}. Same functions the table's Method column, the status dot and the badges use, per {components.inspector-parity}: a Raw pane inventing its own red is the parity bug that rule exists to prevent. Everything past the first blank line is the BODY and stays plain — it has its own highlighting when it is JSON, tinting arbitrary payload text would be inventing meaning, and head-only is what keeps the cost a few hundred bytes of a payload that may be megabytes. A line that is neither a start line nor a `name: value` is left alone rather than guessed at."
@@ -615,7 +615,7 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 │ ▸ Hosts       │  ●  GET     127.0.0.1   /api/users   12ms    │  (columns)
 │   127…     3  │  ●  GET     127.0.0.1   /api/missing  9ms  ⬤ │  ← clear-fab floats
 │   local…   3  ├───────────────── drag ──────────────────────┤
-│               │  GET /api/users            [Replay]          │  inspector-panel
+│               │  https://127.0.0.1/api/users              ✕  │  inspector header
 │               │  [Summary][Raw][Headers][Body] │ [Raw][…]    │  (Request | Response)
 └───────────────┴─────────────────────────────────────────────┘
 ```
@@ -629,7 +629,7 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
   `{components.sidebar-panel}`. All Flows remains unfiltered; Requests / Connections are the record-kind dimension.
 - **Content**: with no selection, the request table fills the whole pane. Selecting a row slides the tabbed
   `inspector-panel` up below it over a **hand-rolled draggable divider** (not a `VSplitView` — see
-  `{components.main-window}.structure`); the inspector's ✕ closes it by deselecting.
+  `{components.main-window}.structure`); the header's ✕ closes it by deselecting.
 - **Toolbar band is frosted** (`{components.main-window}.titlebar`): the request table extends under it and
   blurs beneath it — no hairline, no border, no shadow. Everything below the band stays opaque.
 - **Toolbar**: a sidebar toggle at the leading edge, and one centred chip — status dot + the listener's
@@ -844,11 +844,12 @@ rejecting what failed:
   itself is a tooltip and the inspector's Summary row, and a whole *failed* row is washed instead
   (`{components.row-fill}`). An in-flight exchange shows a small `ProgressView` in the dot's place, so "still
   running" reads at a glance.
-- **`inspector-panel`** — the bottom pane, opaque, shown only when a flow is selected. An `HSplitView` split into
-  **Request** (left) and **Response** (right), each with its own text tab strip (selected tab = semibold + 2pt
-  accent underline). Tab sets, badges and per-pane chrome per `{components.inspector-panel}.requestPane` /
-  `.responsePane` — the YAML is the authority; don't restate the tab lists in prose. **Replay lives here** (the
-  Request pane's Replay button, same write path as the agent). Layout referenced from Proxyman, not copied.
+- **`inspector-panel`** — the bottom pane, opaque, shown only when a flow is selected. A syntax-tinted copyable
+  URL header over an `HSplitView` into **Request** (left) and **Response** (right), each with its own text tab strip
+  (selected tab = semibold + 2pt accent underline). Tab sets, badges and per-pane chrome per
+  `{components.inspector-panel}` — the YAML is the authority; don't restate the tab lists in prose. **Replay
+  lives here** (the Request pane's Replay button, same write path as the agent). Layout referenced from
+  Proxyman, not copied.
 - **`sidebar-panel`** — Rules / Audit / Breakpoints replace the table with a full-pane list: a summary phrase
   left, one `{components.glyph-button}` right, per `{components.sidebar-panel}`. These are supervision views of
   what the agent wrote over MCP, never a second authoring path.

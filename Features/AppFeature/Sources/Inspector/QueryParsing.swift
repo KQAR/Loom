@@ -54,21 +54,9 @@ enum QueryParsing {
             }
     }
 
-    /// Percent-decoding only, and **`+` is left alone**.
-    ///
-    /// Turning `+` into a space is the `application/x-www-form-urlencoded`
-    /// convention, and it is a *server-side reading* of the bytes rather than a
-    /// property of the URL (RFC 3986 lists `+` as an ordinary sub-delimiter). A
-    /// query string routinely carries base64 — a token, a signature, an encoded
-    /// cursor — where every `+` is literal, and rewriting those to spaces would
-    /// show something that was never sent, in the one tool whose job is to say
-    /// what was.
-    ///
-    /// A component that will not decode is shown verbatim: malformed input is the
-    /// normal case here, and dropping it would hide the parameter someone is
-    /// looking at precisely because it looks wrong.
+    /// Percent-decoding only, and **`+` is left alone**. See `PercentDecoding`.
     private static func decode(_ component: some StringProtocol) -> String {
         let raw = String(component)
-        return raw.removingPercentEncoding ?? raw
+        return PercentDecoding.decoded(raw) ?? raw
     }
 }
