@@ -157,6 +157,19 @@ struct RequestTable: NSViewRepresentable {
             }
         }
 
+        /// Horizontal inset of the SwiftUI body inside `HostingCell`, each side.
+        ///
+        /// Shared 4pt everywhere except `#`: five caption digits measure 32pt and
+        /// the column's ideal width is 38, so 4pt a side clips the cap. The other
+        /// columns are wide enough that the inset keeps a glyph off the divider;
+        /// this one spends those points on the digits.
+        var cellInset: CGFloat {
+            switch self {
+            case .ordinal: 1
+            default: 4
+            }
+        }
+
         var minWidth: CGFloat {
             switch self {
             case .status: 28
@@ -267,7 +280,7 @@ struct RequestTable: NSViewRepresentable {
         // the ones the operator is looking at.
         for flow in rows.suffix(sizeToFitRowBudget) {
             let text = switch column {
-            case .ordinal: String((capture.index(id: flow.id) ?? 0) + 1)
+            case .ordinal: ordinalLabel((capture.index(id: flow.id) ?? 0) + 1)
             case .proto: MainView.protocolLabel(flow)
             case .method: flow.request.method
             case .host: MainView.hostReading(flow.request.url).label
@@ -281,11 +294,21 @@ struct RequestTable: NSViewRepresentable {
         // make it narrower than the word naming it.
         let header = (column.title as NSString)
             .size(withAttributes: [.font: NSFont.preferredFont(forTextStyle: .caption1)]).width
-        // Cell inset (4pt a side, per `HostingCell`) plus the favicon and its gap for the
+        // Cell inset (per `Column.cellInset`) plus the favicon and its gap for the
         // one column that draws one, plus a point of slack so the last glyph never sits on
         // the boundary.
         let decoration: CGFloat = column == .host ? 16 + 6 : 0
-        return max(widest, header) + decoration + 9
+        return max(widest, header) + decoration + column.cellInset * 2 + 1
+    }
+
+    /// Digits for the `#` column, with no locale grouping separator.
+    ///
+    /// `Text("\(n)")` interpolates through `LocalizedStringKey`, which inserts
+    /// commas (or the locale's equivalent) past 999. The column is sized for five
+    /// raw digits — `FlowLimits.windowRows` is 20 000 — so a separator would clip
+    /// the cap, and a sequence number is not a quantity.
+    static func ordinalLabel(_ ordinal: Int) -> String {
+        String(ordinal)
     }
 
     /// How many of the newest rows a fit-to-content measurement reads.
@@ -1539,7 +1562,7 @@ private struct CellContent: View, Equatable {
             StatusDot(flow: flow).frame(maxWidth: .infinity, alignment: .center)
 
         case .ordinal:
-            Text("\(ordinal)")
+            Text(verbatim: RequestTable.ordinalLabel(ordinal))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.tertiary)
                 .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1665,9 +1688,10 @@ private final class HostingCell: NSTableCellView {
         // sample of the tail-follow.
         hosting.safeAreaRegions = []
         addSubview(hosting)
+        let inset = RequestTable.Column(rawValue: identifier.rawValue)?.cellInset ?? 4
         NSLayoutConstraint.activate([
-            hosting.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            hosting.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            hosting.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+            hosting.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
             hosting.topAnchor.constraint(equalTo: topAnchor),
             hosting.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
