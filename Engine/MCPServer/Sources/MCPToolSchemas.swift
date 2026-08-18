@@ -210,7 +210,15 @@ extension MCPToolExecutor {
             the SOCKS port, an unsupported command) looks exactly like a client that never ran, \
             and this is the difference. `reverseProxies`: the local stand-in ports and whether \
             each is listening — one that is not carries `error`, and a client pointed at it gets \
-            connection refused, which reads like Loom is down.
+            connection refused, which reads like Loom is down. `droppedByRules`: a \
+            `drop_from_capture` rule forwarded the request and never stored it, so every read \
+            agrees the client made none — that count is the only trace; `list_rules` names \
+            which rule (`droppedFlows`).
+
+            `privilegedHelper` / `systemProxyChangePrompts` say whether `set_system_proxy` will \
+            stop and wait for a human (an admin password, or Login Items approval). Read them \
+            before that write: a call blocked on a modal only someone at the machine can dismiss \
+            looks like a hang. `privilegedHelperDetail` names the state when it is not enabled.
             """,
             inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetProxyStatus(args) }
@@ -226,7 +234,10 @@ extension MCPToolExecutor {
             Machine-wide and visible to the human: it edits the active network service's proxy \
             settings, may ask for an admin password, and installs a pf rule blocking QUIC (UDP \
             443) so browsers fall back to TCP where a proxy can see them (they default to HTTP/3, \
-            which no TCP proxy can intercept). Turn it off when done; Loom also does so on quit. \
+            which no TCP proxy can intercept). Read `get_proxy_status.privilegedHelper` and \
+            `systemProxyChangePrompts` first — when the helper is missing or unapproved this \
+            call blocks on a modal only a human can dismiss, which looks like a hang from here. \
+            Turn it off when done; Loom also does so on quit. \
             Disabling never hands the setting back to whoever held it before — if \
             `get_proxy_status` reported `"other"`, say so and let the human re-enable that app.
 
@@ -923,7 +934,13 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "list_rules",
-            description: "List traffic rules and the master rules switch. Without arguments, returns all rules with mock/rewrite bodies truncated. Pass `id` to return that single rule with full (untruncated) bodies.",
+            description: """
+            List traffic rules and the master rules switch. Without arguments, returns all rules \
+            with mock/rewrite bodies truncated. Pass `id` to return that single rule with full \
+            (untruncated) bodies. A `drop_from_capture` rule reports `droppedFlows` — matching \
+            exchanges never enter the store, so that count is the only evidence the rule did \
+            anything.
+            """,
             inputSchema: .object(
                 ["id": .string("Optional rule UUID — return just this rule, with full bodies.")]
             ),
@@ -935,7 +952,9 @@ extension MCPToolExecutor {
             Create or update a traffic rule (upsert): omit `id` to create, pass `id` to update. A \
             rule matches requests by URL pattern (+ optional methods, query, origin) and acts on \
             them — mock the response, map to another origin or a local file, rewrite \
-            request/response headers or bodies, block, or delay. A host glob belongs in \
+            request/response headers or bodies, block, delay, or drop matching exchanges \
+            from the capture (`drop_from_capture`: the request still happens; it is just \
+            never recorded). A host glob belongs in \
             `url_pattern` (`https://*.example.com*`); `host_pattern` is no longer a field, and a \
             stored rule that still carries one is expired and does not apply. Rules apply to live \
             traffic and replays, in list order.

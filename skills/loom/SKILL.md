@@ -85,7 +85,7 @@ each one is *for*.
 | Tool | For |
 | --- | --- |
 | `get_version` | app + protocol version — cheap readiness ping |
-| `get_proxy_status` | running state, ports, routing (`systemProxy`), refused connections — **first call when a capture is empty** |
+| `get_proxy_status` | running state, ports, routing (`systemProxy`), refusals, `droppedByRules`, whether `set_system_proxy` will prompt (`privilegedHelper`) — **first call when a capture is empty** |
 | `list_devices` | who sent traffic (this Mac + LAN devices), with counts |
 | `get_recent_flows` | newest-first summaries; filter server-side (host, method, url/header/body contains, status, since, app, device) |
 | `wait_for_flow` | block until a matching flow lands — the "trigger, then look" tool |
@@ -95,7 +95,7 @@ each one is *for*.
 | `get_audit_log` | write actions taken through Loom, yours or a prior session's |
 | `get_certificate_status` | root-CA state: generated, trusted, fingerprint, expiry, path |
 | `get_ssl_scope` | HTTPS interception on/off, host globs, **and the hosts Loom saw but did not decrypt** |
-| `list_rules` | master switch + rules (pass `id` for full bodies) |
+| `list_rules` | master switch + rules (pass `id` for full bodies); `droppedFlows` on a `drop_from_capture` rule |
 | `list_client_certificates` | mutual-TLS identities Loom presents; never the key or passphrase |
 | `list_reverse_proxies` | local stand-in ports, their `localURL`, and whether each is listening |
 | `list_pending` | armed breakpoints + exchanges held right now |
@@ -109,7 +109,7 @@ will affect before doing it. Every call is recorded in the audit trail.
 
 | Tool | For |
 | --- | --- |
-| `set_system_proxy` | route this Mac through Loom, or turn the system proxy off (machine-wide, may prompt for admin, also blocks QUIC) |
+| `set_system_proxy` | route this Mac through Loom, or turn it off (machine-wide, blocks QUIC). Read `privilegedHelper` first — a human-only prompt looks like a hang |
 | `set_recording` | pause/resume storing flows — keeps background noise out of a capture |
 | `clear_flows` | discard the whole capture, memory and disk. Not undoable, and it empties the human's window too |
 | `replay_flow` | re-send with overrides; `count`/`concurrency` for "is it intermittent?" |
@@ -149,6 +149,8 @@ carries one is expired and does not apply. Then one action:
   *every* header's value).
 - **block** — fail the request.
 - **delay** — add latency.
+- **drop from capture** — `drop_from_capture`: forward and answer as usual, never
+  record. The window and every read agree; `droppedByRules` is the only trace.
 - optional `group` label for batch enable/disable (scenario switching).
 
 ## Going further

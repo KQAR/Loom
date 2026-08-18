@@ -11,7 +11,7 @@ These are known and documented; refiling them is noise:
 | HTTPS captured but bodies empty | CA not trusted on the client, or host out of SSL scope — check `get_certificate_status` / `get_ssl_scope` |
 | `get_version` reports a version you just replaced | The app was rebuilt but not relaunched |
 | Nothing captured at all | Nothing is routed through the proxy — check `get_proxy_status.systemProxy` (`other` = another proxy app owns the setting) |
-| A flow's `request.httpVersion` is `HTTP/2` and `response.httpVersion` is `HTTP/1.1` | Two different facts: the client's leg and Loom's own hop to the origin, which is always HTTP/1.1 |
+| A flow's `request.httpVersion` is `HTTP/2` and `response.httpVersion` is `HTTP/1.1` | Two different facts: the client's leg and Loom's upstream hop. They usually match; h2 in / h1 out is still normal (origin declined `h2`, client cert, `mapRemote`) — not a fault |
 | `transport.setup` / `upstreamTLS` / `connectionReused` missing on a flow | Unmeasured, not zero — a reused connection paid no setup, a mocked or blocked exchange never reached a socket |
 
 ## Then scrub

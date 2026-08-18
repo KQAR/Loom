@@ -154,6 +154,10 @@ arguments; this file is about sequence and interpretation.
   - `isRecording: false` → the proxy is still forwarding and decrypting, it is just
     not *storing*. Nothing will appear until `set_recording(true)`, and a prior
     session (yours or a human's) may have paused it;
+  - `droppedByRules` present → a `drop_from_capture` rule forwarded the request
+    and never stored it, so every read agrees the client made none. `list_rules`
+    names which (`droppedFlows`). Disabling it affects the next request, never
+    the last one;
   - otherwise nothing has been routed through the proxy yet — the client is not
     pointed at it. Say so.
 - Only a `CONNECT` entry for a host, or no flow at all → it was not decrypted
