@@ -4,7 +4,6 @@ import SwiftUI
 
 struct ResponsePane: View {
     let flow: Flow
-    let onClose: () -> Void
 
     enum Tab: Hashable { case messages, raw, headers, cookies, body }
     @State private var tab: Tab = .raw
@@ -55,13 +54,6 @@ struct ResponsePane: View {
                 } else if flow.error != nil {
                     StatusBadge(code: nil)
                 }
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .accessibilityLabel("Close detail")
-                .help("Close detail")
             }
             .padding(.horizontal, LoomTheme.Space.md)
             .frame(height: 34)

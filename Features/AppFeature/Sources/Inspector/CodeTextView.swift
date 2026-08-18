@@ -14,8 +14,27 @@ struct CodeTextView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
+    @MainActor
     final class Coordinator {
         var applied: AnyHashable?
+        let host = WireTextHost()
+
+        func bind(_ textView: NSTextView, original: String) {
+            WireTextSystemMenu.install()
+            host.displayed = textView.string
+            host.hasOverride = textView.string != original
+            host.onDecode = { [weak textView] decoded in
+                guard let textView else { return }
+                textView.string = decoded
+                WireTextSystemMenu.selectAll(textView)
+            }
+            host.onShowOriginal = { [weak textView] in
+                guard let textView else { return }
+                textView.string = original
+                WireTextSystemMenu.selectAll(textView)
+            }
+            textView.wireHost = host
+        }
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -39,14 +58,19 @@ struct CodeTextView: NSViewRepresentable {
         textView.textColor = .textColor
 
         apply(text, to: textView)
+        context.coordinator.bind(textView, original: text)
         context.coordinator.applied = identity
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
-        guard context.coordinator.applied != identity else { return }
+        guard context.coordinator.applied != identity else {
+            context.coordinator.bind(textView, original: text)
+            return
+        }
         apply(text, to: textView)
+        context.coordinator.bind(textView, original: text)
         context.coordinator.applied = identity
     }
 

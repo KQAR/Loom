@@ -9,18 +9,30 @@ import SwiftUI
 /// pane is for.
 struct SmallRawText: View {
     let text: String
+    @State private var override: String?
+
+    private var displayed: String { override ?? text }
 
     var body: some View {
-        let lines = text.isEmpty ? [""] : text.components(separatedBy: "\n")
+        let lines = displayed.isEmpty ? [""] : displayed.components(separatedBy: "\n")
         HStack(alignment: .top, spacing: LoomTheme.Space.sm) {
             Text((1 ... lines.count).map(String.init).joined(separator: "\n"))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.trailing)
-            Text(Self.highlighted(text))
+            Text(Self.highlighted(displayed))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay {
+                    WireTextHostOverlay(
+                        displayed: displayed,
+                        hasOverride: override != nil,
+                        onDecode: { override = $0 },
+                        onShowOriginal: { override = nil }
+                    )
+                }
         }
         .font(.callout.monospaced())
+        .onChange(of: text) { override = nil }
     }
 
     /// The raw text with the head's spans tinted. Only the head is touched, so

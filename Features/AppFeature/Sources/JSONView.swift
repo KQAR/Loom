@@ -234,6 +234,7 @@ private struct JSONNode: View {
     let value: JSONValue
     let depth: Int
     @State private var expanded: Bool
+    @State private var textOverride: String?
 
     /// A dedicated left gutter that holds every disclosure chevron in one column
     /// at the far left, and per-level indentation applied only to the content —
@@ -334,9 +335,35 @@ private struct JSONNode: View {
         HStack(alignment: .top, spacing: 0) {
             gutterChevron(nil)
             indent(depth)
-            (keyPrefix + valueText)
-                .textSelection(.enabled)
+            Group {
+                if let textOverride {
+                    Text(textOverride)
+                } else {
+                    keyPrefix + valueText
+                }
+            }
+            .textSelection(.enabled)
+            .overlay {
+                WireTextHostOverlay(
+                    displayed: textOverride ?? leafSource,
+                    hasOverride: textOverride != nil,
+                    onDecode: { textOverride = $0 },
+                    onShowOriginal: { textOverride = nil }
+                )
+            }
             Spacer(minLength: 0)
+        }
+        .onChange(of: leafSource) { textOverride = nil }
+    }
+
+    private var leafSource: String {
+        let prefix = key.map { "\"\($0)\": " } ?? ""
+        switch value {
+        case let .string(s): return prefix + "\"\(s)\""
+        case let .number(n): return prefix + n
+        case let .bool(b): return prefix + (b ? "true" : "false")
+        case .null: return prefix + "null"
+        default: return prefix
         }
     }
 
