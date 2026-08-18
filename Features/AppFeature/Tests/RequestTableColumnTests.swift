@@ -43,6 +43,30 @@ import Testing
         #expect(RequestTable.Column.hiddenColumns(store) == [.host])
     }
 
+    /// Five caption digits are 32pt; the shared 4pt `HostingCell` inset would leave
+    /// 30pt inside the 38pt ideal width and clip the cap. Only this column tightens.
+    @Test func ordinalColumnKeepsATighterCellInsetSoFiveDigitsFit() {
+        #expect(RequestTable.Column.ordinal.cellInset == 1)
+        #expect(RequestTable.Column.host.cellInset == 4)
+        let font = NSFont.monospacedDigitSystemFont(
+            ofSize: NSFont.preferredFont(forTextStyle: .caption1).pointSize, weight: .regular
+        )
+        let digits = (RequestTable.ordinalLabel(20_000) as NSString)
+            .size(withAttributes: [.font: font]).width
+        let content = RequestTable.Column.ordinal.idealWidth
+            - RequestTable.Column.ordinal.cellInset * 2
+        #expect(content + 0.5 >= digits)
+    }
+
+    /// `Text("\(n)")` would insert a locale grouping separator (`1,234` / `1.234`).
+    /// The column is sized for five raw digits and a sequence number is not a quantity.
+    @Test func ordinalLabelHasNoGroupingSeparator() {
+        #expect(RequestTable.ordinalLabel(1) == "1")
+        #expect(RequestTable.ordinalLabel(999) == "999")
+        #expect(RequestTable.ordinalLabel(1_000) == "1000")
+        #expect(RequestTable.ordinalLabel(20_000) == "20000")
+    }
+
     /// Every column has to be nameable in the chooser, including the two whose header is
     /// a glyph with no title — an unnamed menu item is an empty row nobody can act on.
     @Test func everyColumnHasAMenuTitle() {
