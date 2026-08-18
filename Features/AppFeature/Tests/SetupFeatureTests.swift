@@ -379,23 +379,31 @@ import Testing
     /// would be a standing entry that silently beats a later re-add.
     @Test func test_excludeHostTapped_dropsTheIncludeEntry() async {
         let expected = SSLScope(enabled: true, include: [], exclude: [])
+        let outcome: StopInterceptOutcome = {
+            var o = StopInterceptOutcome()
+            o.removedIncludes = ["dl.google.com"]
+            return o
+        }()
         var state = SetupFeature.State()
         state.sslScope = SSLScope(enabled: true, include: ["dl.google.com"])
         state.sslEnabled = true
         let store = TestStore(initialState: state) {
             SetupFeature()
         } withDependencies: {
-            $0.proxyClient.setSSLScope = { _ in }
+            // The write is now an atomic engine call, not a full-scope replace, so
+            // the console can't clobber a concurrent agent edit. State updates on the
+            // re-read, not optimistically.
+            $0.proxyClient.stopInterceptingHost = { _ in outcome }
             $0.proxyClient.sslScope = { expected }
             $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
-        var outcome = StopInterceptOutcome()
-        outcome.removedIncludes = ["dl.google.com"]
-        await store.send(.excludeHostTapped("dl.google.com")) {
-            $0.sslScope = expected
+        await store.send(.excludeHostTapped("dl.google.com"))
+        await store.receive(\.stopInterceptFinished) {
             $0.sslScopeMessage = SetupFeature.excludeMessage(host: "dl.google.com", outcome: outcome)
         }
-        await store.receive(\.sslScopeLoaded)
+        await store.receive(\.sslScopeLoaded) {
+            $0.sslScope = expected
+        }
         await store.receive(\.tunneledHostsLoaded)
     }
 

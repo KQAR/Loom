@@ -420,4 +420,10 @@ public protocol TLSInterceptControlling: Sendable {
     /// host — and report what it took. Atomic in the engine, because the read /
     /// modify / write a caller would otherwise do can lose a concurrent edit.
     func interceptHost(_ host: String) async -> InterceptOutcome
+    /// Stop decrypting one host — the inverse of `interceptHost`, behind a "Pass
+    /// Through" action — and report what it took. Atomic for the same reason: the
+    /// console used to read the whole scope, edit it and write it back, so a
+    /// concurrent agent `interceptHost` landing in that window was silently
+    /// clobbered. `SSLScope.stopIntercepting` has the whitelist semantics.
+    func stopInterceptingHost(_ host: String) async -> StopInterceptOutcome
 }

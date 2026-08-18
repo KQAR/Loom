@@ -563,6 +563,7 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     case setSSLScope
     case tunneledHosts
     case interceptHost
+    case stopInterceptingHost
     // CaptureControlling
     case importFlows
     case setRecording

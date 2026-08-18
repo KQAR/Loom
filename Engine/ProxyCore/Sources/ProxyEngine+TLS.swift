@@ -131,6 +131,20 @@ extension ProxyEngine {
         return outcome
     }
 
+    public func stopInterceptingHost(_ host: String) async -> StopInterceptOutcome {
+        // Atomic read-modify-write, mirroring `interceptHost`. The console used to do
+        // this as a whole-scope replace built from its own stale copy, which a
+        // concurrent agent `interceptHost` could clobber.
+        //
+        // Deliberately closes no tunnels. `interceptHost` closes the *relayed*
+        // tunnels it just made interceptable; the inverse would be closing live
+        // *decrypted* connections so a client reconnects into a relay — but
+        // `RelayedTunnelRegistry` tracks only relayed tunnels (a decrypted one is
+        // already being read, so closing it costs a reconnect and buys nothing), and
+        // the host relays on its next connection regardless.
+        config.mutate { $0.stopIntercepting(host: host) }
+    }
+
     // MARK: - Mutual TLS (client certificates)
 
     public func clientCertificates() async -> [ClientCertificateSummary] {
