@@ -49,13 +49,38 @@ struct HeadersList: View {
                         // different kind of thing from the values beside it.
                         .foregroundStyle(LoomTheme.Palette.Syntax.name)
                         .textSelection(.enabled)
-                    Text(pairs[i].value)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HeaderValueText(value: pairs[i].value)
                 }
                 .font(.callout.monospaced())
             }
         }
+    }
+}
+
+/// A header value that can be percent-decoded in place from the context menu.
+///
+/// The capture is not mutated: decode is a reading of the displayed string, and
+/// Show Original restores the bytes that arrived. Applying decode to *what is
+/// showing* (not always the raw capture) is what lets `%2520` be decoded twice.
+private struct HeaderValueText: View {
+    let value: String
+    @State private var override: String?
+
+    private var displayed: String { override ?? value }
+
+    var body: some View {
+        Text(displayed)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .overlay {
+                WireTextHostOverlay(
+                    displayed: displayed,
+                    hasOverride: override != nil,
+                    onDecode: { override = $0 },
+                    onShowOriginal: { override = nil }
+                )
+            }
+            .onChange(of: value) { override = nil }
     }
 }
