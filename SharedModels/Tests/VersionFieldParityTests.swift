@@ -80,4 +80,18 @@ import Testing
     @Test func theClaudeMarketplaceManifestHasNoVersionOfItsOwn() throws {
         #expect(!(try read(".claude-plugin/marketplace.json")).contains("\"version\""))
     }
+
+    /// The skill's rule-shape list is what an agent reads first. Omitting
+    /// `drop_from_capture` there is how "the client made no requests" gets reported
+    /// while a noise-filter rule is eating every match.
+    @Test func theSkillNamesTheCaptureDropAction() throws {
+        #expect((try read("skills/loom/SKILL.md")).contains("drop_from_capture"))
+    }
+
+    /// The upstream leg matches the client's protocol; claiming it is always
+    /// HTTP/1.1 makes a normal h2/h2 pair look like a bug, or a real fault look
+    /// like a known non-bug.
+    @Test func filingABugDoesNotClaimTheUpstreamLegIsAlwaysHTTP11() throws {
+        #expect(!(try read("skills/loom/references/filing-a-bug.md")).contains("always HTTP/1.1"))
+    }
 }
