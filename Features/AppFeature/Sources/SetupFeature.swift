@@ -194,6 +194,7 @@ public struct SetupFeature: Sendable {
         /// — and the console is where the resulting carve-out is read back. They must
         /// not be able to disagree about what "pass this through" does.
         case excludeHostTapped(String)
+        case stopInterceptFinished(host: String, outcome: StopInterceptOutcome)
         case sslScopeDraftChanged(String)
         /// Add a typed glob to `exclude`. The card's one text field feeds this rather
         /// than `include`, because with the default scope covering everything, adding
@@ -474,20 +475,32 @@ public struct SetupFeature: Sendable {
                 }
 
             case let .excludeHostTapped(host):
-                var next = state.sslScope
-                // **Removing the include entry, not adding an exclude** — see
-                // `SSLScope.stopIntercepting`. Under a whitelist an un-named host is
-                // already relayed, so the exclude is redundant *and* harmful: it is a
-                // standing carve-out that would silently beat a later re-add. It goes
-                // in only when a glob someone else wrote still covers the host, which
-                // removal cannot answer.
-                let outcome = next.stopIntercepting(host: host)
-                guard outcome.removedIncludes.isEmpty == false || outcome.addedExclude else {
+                // **Atomic in the engine, not a local edit + full-scope write.** The
+                // old path read `state.sslScope`, called `stopIntercepting` on the
+                // copy and wrote the whole scope back through `setSSLScope`; a
+                // concurrent agent `intercept_host` (itself atomic via `mutate`)
+                // landing between the read and the write was silently clobbered. The
+                // whitelist semantics — remove the include entry, add an exclude only
+                // when a glob still shadows it — live in `SSLScope.stopIntercepting`,
+                // which the engine now runs under the config lock.
+                return .run { send in
+                    await send(.stopInterceptFinished(host: host, outcome: proxyClient.stopInterceptingHost(host)))
+                }
+
+            case let .stopInterceptFinished(host, outcome):
+                // The write landed in the engine; re-read rather than predicting the
+                // resulting scope, because an agent may have edited it in between —
+                // the same shape as `interceptFinished`.
+                if outcome.removedIncludes.isEmpty, !outcome.addedExclude {
                     // Neither list changed: the scope already relayed this host.
                     state.sslScopeMessage = "\(host) is already passed through."
-                    return .none
+                } else {
+                    state.sslScopeMessage = Self.excludeMessage(host: host, outcome: outcome)
                 }
-                return persist(next, into: &state, message: Self.excludeMessage(host: host, outcome: outcome))
+                return .run { send in
+                    await send(.sslScopeLoaded(proxyClient.sslScope()))
+                    await send(.tunneledHostsLoaded(proxyClient.tunneledHosts()))
+                }
 
             case let .sslScopeDraftChanged(text):
                 state.sslScopeDraft = text

@@ -161,6 +161,15 @@ final class StubEngine: ProxyControlling {
         lastSSLScope = next
         return outcome
     }
+    private(set) var stoppedHosts: [String] = []
+    func stopInterceptingHost(_ host: String) async -> StopInterceptOutcome {
+        stoppedHosts.append(host)
+        var next = scope
+        let outcome = next.stopIntercepting(host: host)
+        scope = next
+        lastSSLScope = next
+        return outcome
+    }
 
     // CaptureControlling
     func setRecording(_ recording: Bool) async { self.recording = recording }

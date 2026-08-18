@@ -77,6 +77,7 @@ import Testing
         case .setSSLScope: return .wired(client.setSSLScope)
         case .tunneledHosts: return .wired(client.tunneledHosts)
         case .interceptHost: return .wired(client.interceptHost)
+        case .stopInterceptingHost: return .wired(client.stopInterceptingHost)
 
         // MARK: CaptureControlling
         case .importFlows:

@@ -78,7 +78,9 @@ import Testing
 
     @Test func excludeHostDelegate_reachesTheScopeWrite() async {
         let store = TestStore(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
-            $0.proxyClient.setSSLScope = { _ in }
+            $0.proxyClient.stopInterceptingHost = { _ in StopInterceptOutcome() }
+            $0.proxyClient.sslScope = { .disabled }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
         store.exhaustivity = .off
 
@@ -528,13 +530,22 @@ import Testing
     /// entry for the same host is dropped in the same write, or the two lists would
     /// disagree about it.
     @Test func aRowPassingAHostThrough_writesAnExclude() async {
-        let written = LockIsolated<SSLScope?>(nil)
+        let asked = LockIsolated<String?>(nil)
         let expected = SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"])
         var state = AppFeature.State()
         state.setup.sslEnabled = true
         state.setup.sslScope = SSLScope(enabled: true, include: ["*"])
         let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
-            $0.proxyClient.setSSLScope = { written.setValue($0) }
+            // Atomic engine write, not a full-scope replace — same reason the decrypt
+            // direction goes through the engine. The engine returns the outcome; the
+            // console re-reads the resulting scope.
+            $0.proxyClient.stopInterceptingHost = { host in
+                asked.setValue(host)
+                var outcome = StopInterceptOutcome()
+                outcome.shadowedByInclude = "*"
+                outcome.addedExclude = true
+                return outcome
+            }
             $0.proxyClient.sslScope = { expected }
             $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
@@ -543,9 +554,10 @@ import Testing
         await store.send(.capture(.excludeHostTapped("pinned.example.com")))
         await store.receive(\.capture.delegate.excludeHost)
         await store.receive(\.setup.excludeHostTapped)
+        await store.receive(\.setup.stopInterceptFinished)
         await store.receive(\.setup.sslScopeLoaded)
-        #expect(written.value?.exclude == ["pinned.example.com"])
-        #expect(written.value?.include == ["*"], "the wildcard is untouched — one host is carved out of it")
+        #expect(asked.value == "pinned.example.com")
+        #expect(store.state.setup.sslScope == expected, "the wildcard is untouched — one host is carved out of it")
     }
 
     /// **Decrypting a host must not empty the request table.** The rows already in the
@@ -610,16 +622,24 @@ import Testing
     /// than repeating the success sentence: the window's row menu can reach a host the
     /// console excluded minutes ago.
     @Test func aRowPassingAnAlreadyExcludedHostThrough_saysSo() async {
+        let alreadyExcluded = SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"])
         var state = AppFeature.State()
         state.setup.sslEnabled = true
-        state.setup.sslScope = SSLScope(enabled: true, include: ["*"], exclude: ["pinned.example.com"])
+        state.setup.sslScope = alreadyExcluded
         let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
             $0.proxyClient.setSSLScope = { _ in Issue.record("nothing to write") }
+            // The engine changed nothing — the host was already passed through — so it
+            // reports an empty outcome, and the finished handler says so rather than
+            // repeating a success line.
+            $0.proxyClient.stopInterceptingHost = { _ in StopInterceptOutcome() }
+            $0.proxyClient.sslScope = { alreadyExcluded }
+            $0.proxyClient.tunneledHosts = { TunneledHostReport() }
         }
         store.exhaustivity = .off
 
         await store.send(.capture(.excludeHostTapped("pinned.example.com")))
         await store.receive(\.setup.excludeHostTapped)
+        await store.receive(\.setup.stopInterceptFinished)
         #expect(store.state.setup.sslScopeMessage == "pinned.example.com is already passed through.")
     }
 }
