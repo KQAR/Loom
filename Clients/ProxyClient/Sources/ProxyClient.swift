@@ -51,6 +51,9 @@ public struct ProxyClient: Sendable {
     /// Hosts seen but not decrypted — what the console offers to intercept.
     public var tunneledHosts: @Sendable () async -> TunneledHostReport = { TunneledHostReport() }
     public var interceptHost: @Sendable (_ host: String) async -> InterceptOutcome = { _ in InterceptOutcome() }
+    /// Stop decrypting one host — atomic inverse of `interceptHost`, so a console
+    /// "Pass Through" can't clobber a concurrent agent edit of the scope.
+    public var stopInterceptingHost: @Sendable (_ host: String) async -> StopInterceptOutcome = { _ in StopInterceptOutcome() }
     /// Pause/resume capture; forwarding is unaffected.
     public var setRecording: @Sendable (_ recording: Bool) async -> Void
     public var rulesState: @Sendable () async -> RulesState = { RulesState() }
@@ -161,6 +164,7 @@ extension ProxyClient: DependencyKey {
             setSSLScope: { await engine.setSSLScope($0) },
             tunneledHosts: { await engine.tunneledHosts() },
             interceptHost: { await engine.interceptHost($0) },
+            stopInterceptingHost: { await engine.stopInterceptingHost($0) },
             setRecording: { await engine.setRecording($0) },
             rulesState: { await engine.rulesState() },
             setRulesEnabled: { await engine.setRulesEnabled($0) },
