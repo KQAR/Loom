@@ -1697,6 +1697,48 @@ private final class HostingCell: NSTableCellView {
 final class RequestScrollView: NSScrollView {
     var onLayout: (() -> Void)?
 
+    /// The axis a scroll gesture committed to on its first frame, held for the gesture.
+    ///
+    /// A trackpad reports diagonal deltas, so without this the clip view moves x and y at
+    /// once and the list drifts sideways while someone is scrolling down. The lock is taken
+    /// at `.began` and reused for the rest of that gesture including its momentum frames
+    /// (which carry a `momentumPhase`, not another `.began`); the next `.began` overwrites
+    /// it, so it is never explicitly cleared. A legacy notched wheel sends no phase at all,
+    /// so it is locked per event instead — each notch is its own decision.
+    private enum ScrollAxis { case vertical, horizontal }
+    private var lockedAxis: ScrollAxis?
+
+    override func scrollWheel(with event: NSEvent) {
+        if event.phase.contains(.began) {
+            lockedAxis = axis(of: event)
+        } else if event.phase.isEmpty && event.momentumPhase.isEmpty {
+            // Legacy wheel / no-phase device: decide this event on its own.
+            lockedAxis = axis(of: event)
+        }
+
+        guard let lockedAxis, let cg = event.cgEvent?.copy(),
+              let clamped = NSEvent(cgEvent: zeroingOffAxis(lockedAxis, of: cg)) else {
+            super.scrollWheel(with: event)
+            return
+        }
+        super.scrollWheel(with: clamped)
+    }
+
+    private func axis(of event: NSEvent) -> ScrollAxis {
+        abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) ? .horizontal : .vertical
+    }
+
+    /// Zeros the CGEvent's delta fields on the axis that isn't locked. Axis1 is vertical,
+    /// Axis2 horizontal; all three delta representations must be cleared or AppKit reads the
+    /// one that survived.
+    private func zeroingOffAxis(_ axis: ScrollAxis, of cg: CGEvent) -> CGEvent {
+        let offAxisFields: [CGEventField] = axis == .vertical
+            ? [.scrollWheelEventDeltaAxis2, .scrollWheelEventPointDeltaAxis2, .scrollWheelEventFixedPtDeltaAxis2]
+            : [.scrollWheelEventDeltaAxis1, .scrollWheelEventPointDeltaAxis1, .scrollWheelEventFixedPtDeltaAxis1]
+        for field in offAxisFields { cg.setDoubleValueField(field, value: 0) }
+        return cg
+    }
+
     override func layout() {
         super.layout()
         onLayout?()
