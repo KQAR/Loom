@@ -87,15 +87,15 @@ import Testing
     @Test func selectionFollowsItsFlowAcrossAHeadTrimAndAppend() {
         let harness = Harness()
         var rows = (0 ..< 50).map { flow($0) }
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: nil)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: nil)
 
         let selected = rows[20]
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: selected.id)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: selected.id)
         #expect(harness.table.selectedRow == 20)
 
         // The shape a capped window produces every batch: trim the head, append the tail.
         rows = Array(rows.dropFirst(5)) + (50 ..< 60).map { flow($0) }
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: selected.id)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: selected.id)
         #expect(
             harness.table.selectedRow == 15,
             "the selected row must still hold the selected flow after a 5-row head trim"
@@ -107,20 +107,20 @@ import Testing
     @Test func aSelectionTheStoreMovedIsHonoured() {
         let harness = Harness()
         let rows = (0 ..< 50).map { flow($0) }
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: rows[10].id)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: rows[10].id)
         #expect(harness.table.selectedRow == 10)
 
         // Not adjacent, and no data change — only the scan can answer this one.
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: rows[40].id)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: rows[40].id)
         #expect(harness.table.selectedRow == 40)
     }
 
     @Test func clearingTheSelectionDeselects() {
         let harness = Harness()
         let rows = (0 ..< 20).map { flow($0) }
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: rows[3].id)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: rows[3].id)
         #expect(harness.table.selectedRow == 3)
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: nil)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: nil)
         #expect(harness.table.selectedRow == -1)
     }
 
@@ -128,11 +128,11 @@ import Testing
     @Test func aSelectionTrimmedOutOfTheWindowDeselects() {
         let harness = Harness()
         let rows = (0 ..< 20).map { flow($0) }
-        harness.coordinator.update(rows: rows, capture: capture(rows), selection: rows[1].id)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: rows[1].id)
         #expect(harness.table.selectedRow == 1)
 
         let trimmed = Array(rows.dropFirst(5))
-        harness.coordinator.update(rows: trimmed, capture: capture(trimmed), selection: rows[1].id)
+        harness.coordinator.update(rows: Versioned(trimmed), capture: Versioned(capture(trimmed)), selection: rows[1].id)
         #expect(harness.table.selectedRow == -1, "a selection no longer in the list selects nothing")
     }
 
@@ -189,9 +189,9 @@ import Testing
             )
         }
         func captured(_ rows: [Flow]) -> IdentifiedArrayOf<Flow> { IdentifiedArrayOf(uniqueElements: rows) }
-        harness.coordinator.update(rows: rows, capture: captured(rows), selection: nil)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(captured(rows)), selection: nil)
         let selection = selected ? rows[rowCount / 2].id : nil
-        harness.coordinator.update(rows: rows, capture: captured(rows), selection: selection)
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(captured(rows)), selection: selection)
 
         var samples: [Double] = []
         var next = rowCount
@@ -211,7 +211,7 @@ import Testing
             rows = Array(rows.dropFirst(20)) + batch
             let capture = captured(rows)
             let started = DispatchTime.now().uptimeNanoseconds
-            harness.coordinator.update(rows: rows, capture: capture, selection: selection)
+            harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture), selection: selection)
             samples.append(Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
         }
         return samples.sorted()[samples.count / 2]

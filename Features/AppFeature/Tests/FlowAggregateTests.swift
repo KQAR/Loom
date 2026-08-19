@@ -373,7 +373,7 @@ import Testing
         for flow in flows { incremental.recordFlow(flow) }
         let seeded = CaptureFeature.State(flows: flows)
 
-        #expect(seeded.flows == incremental.flows)
+        #expect(seeded.flows.value == incremental.flows.value)
         #expect(seeded.hostByRow == incremental.hostByRow)
         #expect(seeded.displayFlows.map(\.id) == incremental.displayFlows.map(\.id),
                 "including the cached projection, which a stale cache would fail")
