@@ -7,6 +7,10 @@ struct ResponsePane: View {
 
     enum Tab: Hashable { case messages, raw, headers, cookies, body }
     @State private var tab: Tab = .raw
+    @State private var bodyFind = InspectorFind()
+    @State private var headersFind = InspectorFind()
+    @State private var cookiesFind = InspectorFind()
+    @State private var findReport = InspectorFindReport.empty
 
     /// Same reason as `RequestPane.Derived`: `tabs` needs the cookies (to decide
     /// whether the tab exists) and `content` needs them (to render it), so as a
@@ -80,14 +84,16 @@ struct ResponsePane: View {
             }
 
             content(derived)
+                .onPreferenceChange(InspectorFindReportKey.self) { findReport = $0 }
                 .overlay(alignment: .topTrailing) {
-                    if tab == .body, let text = RequestPane.bodyText(flow.response?.body) {
-                        FloatingCopyButton(text: text)
-                    }
+                    paneActions(derived)
                 }
         }
         .onAppear { if flow.isWebSocket { tab = .messages } }
         .onChange(of: flow.id) {
+            bodyFind = InspectorFind()
+            headersFind = InspectorFind()
+            cookiesFind = InspectorFind()
             if flow.isWebSocket { tab = .messages }
             else if tab == .messages { tab = .raw }
             else if tab == .cookies, derived.cookies.isEmpty { tab = .raw }
@@ -107,14 +113,52 @@ struct ResponsePane: View {
             switch tab {
             case .messages: EmptyView()
             case .raw: RawTab(flow: flow, pane: "resp", makeText: Self.rawText)
-            case .headers: Scrolled { HeadersList(headers: response.headers, trailers: response.trailers) }
-            case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
-            case .body: BodyView(data: response.body, identity: "resp-body:\(flow.id)", fullBodyBytes: response.fullBodyBytes)
+            case .headers: Scrolled {
+                HeadersList(headers: response.headers, trailers: response.trailers, find: headersFind)
+            }
+            case .cookies: Scrolled { CookiesView(cookies: derived.cookies, find: cookiesFind) }
+            case .body: BodyView(
+                data: response.body,
+                identity: "resp-body:\(flow.id)",
+                fullBodyBytes: response.fullBodyBytes,
+                find: bodyFind
+            )
             }
         } else if let error = flow.error {
             Scrolled { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(LoomTheme.Palette.error) }
         } else {
             Scrolled { Text("Waiting for response…").foregroundStyle(.secondary) }
+        }
+    }
+
+    @ViewBuilder private func paneActions(_ derived: Derived) -> some View {
+        switch tab {
+        case .body:
+            if let text = RequestPane.bodyText(flow.response?.body) {
+                FloatingPaneActions(copyText: text, copyHelp: "Copy body", find: $bodyFind, report: findReport)
+            }
+        case .headers:
+            if let response = flow.response,
+               RequestPane.hasPairs(headers: response.headers, trailers: response.trailers)
+            {
+                FloatingPaneActions(
+                    copyText: HeadersList.copyText(headers: response.headers, trailers: response.trailers),
+                    copyHelp: "Copy headers",
+                    find: $headersFind,
+                    report: findReport
+                )
+            }
+        case .cookies:
+            if !derived.cookies.isEmpty {
+                FloatingPaneActions(
+                    copyText: CookiesView.copyText(derived.cookies),
+                    copyHelp: "Copy cookies",
+                    find: $cookiesFind,
+                    report: findReport
+                )
+            }
+        default:
+            EmptyView()
         }
     }
 

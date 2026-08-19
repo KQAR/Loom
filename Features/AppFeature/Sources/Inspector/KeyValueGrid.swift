@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The inspector's aligned two-column table: a titled Key/Value header, a rule, then
-/// the caller's rows.
+/// The inspector's aligned two-column table: a titled Key/Value header, then the
+/// caller's rows. No rule under the titles — the gap the rule used to occupy
+/// stays (`padding` below the captions), the line does not.
 ///
 /// A `Grid` rather than a `Table` because it lives inside the inspector's
 /// `ScrollView` and each pane shows a small, bounded per-flow set — the key column
@@ -26,11 +27,23 @@ struct KeyValueGrid<Rows: View>: View {
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
-
-            Divider().gridCellColumns(2)
+            // Same extra gap the removed Divider row used to insert
+            // (grid `xs` above + below it). The line is gone; the space is not.
+            .padding(.bottom, LoomTheme.Space.xs)
 
             rows()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Find wash behind a matching Key/Value row. Current hit is the darker yellow.
+enum KeyValueFindWash {
+    @ViewBuilder
+    static func fill(isMatch: Bool, isCurrent: Bool) -> some View {
+        if isMatch {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(isCurrent ? InspectorText.FindWash.current : InspectorText.FindWash.other)
+        }
     }
 }

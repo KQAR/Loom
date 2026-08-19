@@ -4,19 +4,23 @@ import SwiftUI
 /// Read-only monospaced text viewer backed by `NSTextView`. Unlike SwiftUI
 /// `Text` (which lays its entire string out synchronously), TextKit lays out
 /// only the visible viewport, so multi-megabyte bodies scroll smoothly while
-/// keeping native selection, Find (⌘F) and copy. Owns its own `NSScrollView` —
-/// do not nest it inside a SwiftUI `ScrollView`.
+/// keeping native selection and copy. In-pane find is the search button beside
+/// Copy, not ⌘F (that is the window's "Find in Requests"). Owns its own
+/// `NSScrollView` — do not nest it inside a SwiftUI `ScrollView`.
 struct CodeTextView: NSViewRepresentable {
     let text: String
     /// Changes iff `text` changes; lets `updateNSView` skip re-pushing the
     /// (potentially huge) string on unrelated re-renders.
     let identity: AnyHashable
+    var findNeedle: String = ""
+    var findIndex: Int = 0
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     @MainActor
     final class Coordinator {
         var applied: AnyHashable?
+        var appliedFind: (needle: String, index: Int)?
         let host = WireTextHost()
 
         func bind(_ textView: NSTextView, original: String) {
@@ -48,8 +52,10 @@ struct CodeTextView: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = false
         textView.drawsBackground = false
-        textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        // Native Find is the window's "Find in Requests" (⌘F). In-pane find is
+        // the search button next to Copy; it highlights via `applyFind`.
+        textView.usesFindBar = false
+        textView.isIncrementalSearchingEnabled = false
         textView.textContainerInset = NSSize(width: LoomTheme.Space.md, height: LoomTheme.Space.sm)
         // Wrap long lines to the pane width (minified JSON can be one huge line).
         textView.isHorizontallyResizable = false
@@ -65,13 +71,15 @@ struct CodeTextView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
-        guard context.coordinator.applied != identity else {
+        if context.coordinator.applied != identity {
+            apply(text, to: textView)
             context.coordinator.bind(textView, original: text)
-            return
+            context.coordinator.applied = identity
+            context.coordinator.appliedFind = nil
+        } else {
+            context.coordinator.bind(textView, original: text)
         }
-        apply(text, to: textView)
-        context.coordinator.bind(textView, original: text)
-        context.coordinator.applied = identity
+        applyFind(to: textView, coordinator: context.coordinator)
     }
 
     /// Set the whole string in one shot with the fixed monospaced attributes, then
@@ -87,6 +95,36 @@ struct CodeTextView: NSViewRepresentable {
         textView.textColor = .textColor
         highlightHead(of: text, in: textView)
         textView.scroll(.zero)
+    }
+
+    /// Background-highlight find ranges without touching the head's foreground
+    /// tints. Other hits and the current one share the find yellow; the current
+    /// hit is the same hue at a higher opacity.
+    private func applyFind(to textView: NSTextView, coordinator: Coordinator) {
+        let needle = findNeedle
+        let index = findIndex
+        if coordinator.appliedFind?.needle == needle, coordinator.appliedFind?.index == index {
+            return
+        }
+        coordinator.appliedFind = (needle, index)
+        guard let storage = textView.textStorage else { return }
+        let whole = NSRange(location: 0, length: storage.length)
+        storage.removeAttribute(.backgroundColor, range: whole)
+        guard !needle.isEmpty else { return }
+        let matches = InspectorFindMatch.ranges(of: needle, in: text)
+        let other = InspectorText.FindWash.otherNS
+        let current = InspectorText.FindWash.currentNS
+        for (i, range) in matches.enumerated() {
+            let nsRange = NSRange(range, in: text)
+            guard nsRange.location != NSNotFound, NSMaxRange(nsRange) <= storage.length else { continue }
+            storage.addAttribute(.backgroundColor, value: i == index ? current : other, range: nsRange)
+        }
+        if matches.indices.contains(index) {
+            let nsRange = NSRange(matches[index], in: text)
+            guard nsRange.location != NSNotFound else { return }
+            textView.scrollRangeToVisible(nsRange)
+            textView.showFindIndicator(for: nsRange)
+        }
     }
 
     private func highlightHead(of text: String, in textView: NSTextView) {

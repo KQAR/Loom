@@ -10,12 +10,16 @@ import SwiftUI
 struct RawView: View {
     let text: String
     let identity: AnyHashable
+    var findNeedle: String = ""
+    var findIndex: Int = 0
 
     var body: some View {
-        if text.utf8.count > InspectorText.plainTextThreshold {
-            CodeTextView(text: text, identity: identity)
+        // Find needs `scrollRangeToVisible`; the small SwiftUI `Text` cannot
+        // scroll to a substring, so an active needle uses the text view too.
+        if text.utf8.count > InspectorText.plainTextThreshold || !findNeedle.isEmpty {
+            CodeTextView(text: text, identity: identity, findNeedle: findNeedle, findIndex: findIndex)
         } else {
-            Scrolled { SmallRawText(text: text) }
+            Scrolled { SmallRawText(text: text, findNeedle: findNeedle, findIndex: findIndex) }
         }
     }
 }

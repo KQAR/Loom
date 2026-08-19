@@ -33,4 +33,18 @@ enum InspectorText {
     @MainActor static func byteCount(_ bytes: Int) -> String {
         byteFormatter.string(fromByteCount: Int64(bytes))
     }
+
+    /// In-pane find wash. The system find yellow at full strength buries the
+    /// ink; these keep the hue and drop the opacity so a hit is a mark, not a
+    /// highlighter stroke.
+    enum FindWash {
+        static let otherOpacity: CGFloat = 0.15
+        static let currentOpacity: CGFloat = 0.25
+
+        static var other: Color { Color(nsColor: .findHighlightColor).opacity(otherOpacity) }
+        static var current: Color { Color(nsColor: .findHighlightColor).opacity(currentOpacity) }
+
+        static var otherNS: NSColor { NSColor.findHighlightColor.withAlphaComponent(otherOpacity) }
+        static var currentNS: NSColor { NSColor.findHighlightColor.withAlphaComponent(currentOpacity) }
+    }
 }
