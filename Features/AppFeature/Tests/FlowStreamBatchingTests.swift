@@ -111,7 +111,7 @@ import Testing
         await store.send(.flowsReceived(flows)) { state in
             for flow in flows { state.recordFlow(flow) }
         }
-        #expect(store.state.flows == oneAtATime.flows)
+        #expect(store.state.flows.value == oneAtATime.flows.value)
         // The window's own size, not `status.capturedCount`: that field is the engine's
         // ring count again (see `engineStatusRefreshed`), and this test is about the fold.
         #expect(store.state.windowCount == oneAtATime.windowCount)
