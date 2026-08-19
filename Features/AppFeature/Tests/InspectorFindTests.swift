@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import Testing
 @testable import AppFeature
 
@@ -57,6 +58,17 @@ import Testing
         #expect(!InspectorFindMatch.fieldsMatch(["sid", "abc", ""], needle: "httponly"))
     }
 
+    @Test func theMatchedSetIsTheSameLinesAsTheOrderedPaths() throws {
+        // The tree asks `matched` per node instead of re-matching itself, so a
+        // node's wash and the pane's `1/N` are two readings of one walk. They
+        // drift the moment these two disagree.
+        let json = try #require(JSONValue.parse(Data(#"{"a":"x","b":{"c":"x","d":"y"}}"#.utf8)))
+        let index = InspectorFindMatch.jsonIndex(json, needle: "x")
+        #expect(index.matched == Set(index.paths))
+        #expect(index.matched.count == index.count)
+        #expect(!index.matched.contains([1, 1]))
+    }
+
     @Test func steppingWraps() {
         var find = InspectorFind()
         find.step(by: 1, matchCount: 3)
@@ -65,5 +77,27 @@ import Testing
         #expect(find.currentIndex == 0)
         find.step(by: -1, matchCount: 3)
         #expect(find.currentIndex == 2)
+    }
+}
+
+/// The raw pane paints the ranges it is handed and does not go looking for
+/// more. Scanning inside the renderer is what made one keystroke cost two full
+/// passes over a body that can be 5 MB — once for the `1/N`, once to draw it.
+@Suite @MainActor struct InspectorFindHighlightTests {
+    @Test func theWashCoversExactlyTheRangesGiven() {
+        let text = "foo bar foo"
+        let ranges = InspectorFindMatch.ranges(of: "foo", in: text)
+        let washed = SmallRawText.highlighted(text, ranges: ranges, current: 1)
+        let painted = washed.runs.compactMap { run in
+            run.backgroundColor.map { (String(washed[run.range].characters), $0) }
+        }
+        #expect(painted.map(\.0) == ["foo", "foo"])
+        #expect(painted.first?.1 == InspectorText.FindWash.other)
+        #expect(painted.last?.1 == InspectorText.FindWash.current)
+    }
+
+    @Test func noRangesMeansNoWashEvenWhenTheTextWouldMatch() {
+        let washed = SmallRawText.highlighted("foo bar foo")
+        #expect(washed.runs.allSatisfy { $0.backgroundColor == nil })
     }
 }

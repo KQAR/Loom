@@ -12,7 +12,10 @@ struct CodeTextView: NSViewRepresentable {
     /// Changes iff `text` changes; lets `updateNSView` skip re-pushing the
     /// (potentially huge) string on unrelated re-renders.
     let identity: AnyHashable
-    var findNeedle: String = ""
+    /// Hits measured against `text` by whoever owns the body. Scanning here as
+    /// well is what made a keystroke cost a second full pass over a body that
+    /// can be 5 MB.
+    var findRanges: [Range<String.Index>] = []
     var findIndex: Int = 0
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -20,28 +23,53 @@ struct CodeTextView: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         var applied: AnyHashable?
-        var appliedFind: (needle: String, index: Int)?
+        var appliedFind: Highlight?
+        /// The decoded string currently shown, nil = showing the capture.
+        ///
+        /// Held here rather than re-derived by comparing `textView.string` with
+        /// the capture: `bind` runs on **every** update, that read is an
+        /// `NSString` bridge and the comparison walks the whole document — up
+        /// to 5 MB, ~10×/s while a body streams, whether or not find is open.
+        var overridden: String?
+        private var original = ""
+        private var wired = false
         let host = WireTextHost()
 
+        struct Highlight: Equatable {
+            var ranges: [Range<String.Index>] = []
+            var index = 0
+        }
+
         func bind(_ textView: NSTextView, original: String) {
-            WireTextSystemMenu.install()
-            host.displayed = textView.string
-            host.hasOverride = textView.string != original
-            host.onDecode = { [weak textView] decoded in
-                guard let textView else { return }
+            self.original = original
+            host.displayed = overridden ?? original
+            host.hasOverride = overridden != nil
+            textView.wireHost = host
+            guard !wired else { return }
+            wired = true
+            // Read `self.original` at call time rather than capturing it, so a
+            // streaming body that grows does not need the closures rebuilt.
+            host.onDecode = { [weak self, weak textView] decoded in
+                guard let self, let textView else { return }
+                overridden = decoded
+                host.displayed = decoded
+                host.hasOverride = true
                 textView.string = decoded
                 WireTextSystemMenu.selectAll(textView)
             }
-            host.onShowOriginal = { [weak textView] in
-                guard let textView else { return }
-                textView.string = original
+            host.onShowOriginal = { [weak self, weak textView] in
+                guard let self, let textView else { return }
+                overridden = nil
+                host.displayed = self.original
+                host.hasOverride = false
+                textView.string = self.original
                 WireTextSystemMenu.selectAll(textView)
             }
-            textView.wireHost = host
         }
     }
 
     func makeNSView(context: Context) -> NSScrollView {
+        WireTextSystemMenu.install()
         let scroll = NSTextView.scrollableTextView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -71,15 +99,15 @@ struct CodeTextView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
-        if context.coordinator.applied != identity {
+        let coordinator = context.coordinator
+        if coordinator.applied != identity {
+            coordinator.overridden = nil
+            coordinator.appliedFind = nil
             apply(text, to: textView)
-            context.coordinator.bind(textView, original: text)
-            context.coordinator.applied = identity
-            context.coordinator.appliedFind = nil
-        } else {
-            context.coordinator.bind(textView, original: text)
+            coordinator.applied = identity
         }
-        applyFind(to: textView, coordinator: context.coordinator)
+        coordinator.bind(textView, original: text)
+        applyFind(to: textView, coordinator: coordinator)
     }
 
     /// Set the whole string in one shot with the fixed monospaced attributes, then
@@ -97,31 +125,32 @@ struct CodeTextView: NSViewRepresentable {
         textView.scroll(.zero)
     }
 
-    /// Background-highlight find ranges without touching the head's foreground
-    /// tints. Other hits and the current one share the find yellow; the current
-    /// hit is the same hue at a higher opacity.
+    /// Background-highlight the supplied find ranges without touching the head's
+    /// foreground tints. Other hits and the current one share the find yellow;
+    /// the current hit is the same hue at a higher opacity.
     private func applyFind(to textView: NSTextView, coordinator: Coordinator) {
-        let needle = findNeedle
-        let index = findIndex
-        if coordinator.appliedFind?.needle == needle, coordinator.appliedFind?.index == index {
-            return
-        }
-        coordinator.appliedFind = (needle, index)
+        // A decoded view is a different string from the one the ranges were
+        // measured on, so it gets no wash rather than a wash on the wrong
+        // characters.
+        let wanted = coordinator.overridden == nil
+            ? Coordinator.Highlight(ranges: findRanges, index: findIndex)
+            : Coordinator.Highlight()
+        guard coordinator.appliedFind != wanted else { return }
+        coordinator.appliedFind = wanted
         guard let storage = textView.textStorage else { return }
         let whole = NSRange(location: 0, length: storage.length)
         storage.removeAttribute(.backgroundColor, range: whole)
-        guard !needle.isEmpty else { return }
-        let matches = InspectorFindMatch.ranges(of: needle, in: text)
+        guard !wanted.ranges.isEmpty else { return }
         let other = InspectorText.FindWash.otherNS
         let current = InspectorText.FindWash.currentNS
-        for (i, range) in matches.enumerated() {
+        for (i, range) in wanted.ranges.enumerated() {
             let nsRange = NSRange(range, in: text)
             guard nsRange.location != NSNotFound, NSMaxRange(nsRange) <= storage.length else { continue }
-            storage.addAttribute(.backgroundColor, value: i == index ? current : other, range: nsRange)
+            storage.addAttribute(.backgroundColor, value: i == wanted.index ? current : other, range: nsRange)
         }
-        if matches.indices.contains(index) {
-            let nsRange = NSRange(matches[index], in: text)
-            guard nsRange.location != NSNotFound else { return }
+        if wanted.ranges.indices.contains(wanted.index) {
+            let nsRange = NSRange(wanted.ranges[wanted.index], in: text)
+            guard nsRange.location != NSNotFound, NSMaxRange(nsRange) <= storage.length else { return }
             textView.scrollRangeToVisible(nsRange)
             textView.showFindIndicator(for: nsRange)
         }

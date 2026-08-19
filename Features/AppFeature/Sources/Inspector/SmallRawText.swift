@@ -9,7 +9,10 @@ import SwiftUI
 /// pane is for.
 struct SmallRawText: View {
     let text: String
-    var findNeedle: String = ""
+    /// Hits measured against `text` by whoever owns the body — this view does
+    /// not scan, so the pane and its `1/N` cannot disagree and a keystroke
+    /// costs one pass rather than one per view that draws it.
+    var findRanges: [Range<String.Index>] = []
     var findIndex: Int = 0
     @State private var override: String?
 
@@ -21,7 +24,9 @@ struct SmallRawText: View {
             Text((1 ... lines.count).map(String.init).joined(separator: "\n"))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.trailing)
-            Text(Self.highlighted(displayed, needle: findNeedle, current: findIndex))
+            // Ranges were measured on `text`; a decoded view is a different
+            // string, so it gets no wash rather than a wash on the wrong bytes.
+            Text(Self.highlighted(displayed, ranges: override == nil ? findRanges : [], current: findIndex))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .overlay {
@@ -37,11 +42,13 @@ struct SmallRawText: View {
         .onChange(of: text) { override = nil }
     }
 
-    /// The raw text with the head's spans tinted, then in-pane find ranges
+    /// The raw text with the head's spans tinted, then the given find ranges
     /// washed. Only the head is foreground-tinted, so the cost is a few hundred
-    /// bytes however large the body is; find backgrounds are a second pass over
-    /// the matches, not the whole string.
-    static func highlighted(_ text: String, needle: String = "", current: Int = 0) -> AttributedString {
+    /// bytes however large the body is; the find backgrounds are a pass over
+    /// the supplied matches, not a scan of the whole string.
+    static func highlighted(
+        _ text: String, ranges: [Range<String.Index>] = [], current: Int = 0
+    ) -> AttributedString {
         var attributed = AttributedString(text)
         for span in HTTPHeadHighlight.spans(in: text) {
             guard let lower = AttributedString.Index(span.range.lowerBound, within: attributed),
@@ -49,8 +56,7 @@ struct SmallRawText: View {
             else { continue }
             attributed[lower ..< upper].foregroundColor = color(for: span.role)
         }
-        guard !needle.isEmpty else { return attributed }
-        for (i, range) in InspectorFindMatch.ranges(of: needle, in: text).enumerated() {
+        for (i, range) in ranges.enumerated() {
             guard let lower = AttributedString.Index(range.lowerBound, within: attributed),
                   let upper = AttributedString.Index(range.upperBound, within: attributed)
             else { continue }
