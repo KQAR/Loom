@@ -11,6 +11,10 @@ struct RequestPane: View {
     /// given a pane of its own — a UI decision, recorded in DESIGN.md.
     enum Tab: Hashable { case flowSummary, query, graphQL, raw, headers, cookies, body, diff }
     @State private var tab: Tab = .flowSummary
+    @State private var bodyFind = InspectorFind()
+    @State private var headersFind = InspectorFind()
+    @State private var cookiesFind = InspectorFind()
+    @State private var findReport = InspectorFindReport.empty
 
     /// What the pane derives from the request body/headers, parsed **once** per
     /// render. `tabs` needs it (to decide which tabs exist) and `content` needs it
@@ -71,13 +75,15 @@ struct RequestPane: View {
             Divider()
 
             content(derived)
+                .onPreferenceChange(InspectorFindReportKey.self) { findReport = $0 }
                 .overlay(alignment: .topTrailing) {
-                    if tab == .body, let text = Self.bodyText(flow.request.body) {
-                        FloatingCopyButton(text: text)
-                    }
+                    paneActions(derived)
                 }
         }
         .onChange(of: flow.id) {
+            bodyFind = InspectorFind()
+            headersFind = InspectorFind()
+            cookiesFind = InspectorFind()
             // Reset if the selected tab no longer applies to the new flow.
             if tab == .diff, original == nil { tab = .flowSummary }
             if tab == .cookies, derived.cookies.isEmpty { tab = .flowSummary }
@@ -96,14 +102,54 @@ struct RequestPane: View {
         case .query: Scrolled { QueryView(items: derived.query) }
         case .graphQL: Scrolled { GraphQLView(operation: derived.graphQL) }
         case .raw: RawTab(flow: flow, pane: "req", makeText: Self.rawText)
-        case .headers: Scrolled { HeadersList(headers: flow.request.headers, trailers: flow.request.trailers) }
-        case .cookies: Scrolled { CookiesView(cookies: derived.cookies) }
-        case .body: BodyView(data: flow.request.body, identity: "req-body:\(flow.id)", fullBodyBytes: flow.request.fullBodyBytes)
+        case .headers: Scrolled {
+            HeadersList(headers: flow.request.headers, trailers: flow.request.trailers, find: headersFind)
+        }
+        case .cookies: Scrolled { CookiesView(cookies: derived.cookies, find: cookiesFind) }
+        case .body: BodyView(
+            data: flow.request.body,
+            identity: "req-body:\(flow.id)",
+            fullBodyBytes: flow.request.fullBodyBytes,
+            find: bodyFind
+        )
         case .diff: Scrolled { DiffView(original: original, replayed: flow) }
         }
     }
 
-    /// Body as a UTF-8 string, or nil when empty/non-text (no copy button then).
+    @ViewBuilder private func paneActions(_ derived: Derived) -> some View {
+        switch tab {
+        case .body:
+            if let text = Self.bodyText(flow.request.body) {
+                FloatingPaneActions(copyText: text, copyHelp: "Copy body", find: $bodyFind, report: findReport)
+            }
+        case .headers:
+            if Self.hasPairs(headers: flow.request.headers, trailers: flow.request.trailers) {
+                FloatingPaneActions(
+                    copyText: HeadersList.copyText(headers: flow.request.headers, trailers: flow.request.trailers),
+                    copyHelp: "Copy headers",
+                    find: $headersFind,
+                    report: findReport
+                )
+            }
+        case .cookies:
+            if !derived.cookies.isEmpty {
+                FloatingPaneActions(
+                    copyText: CookiesView.copyText(derived.cookies),
+                    copyHelp: "Copy cookies",
+                    find: $cookiesFind,
+                    report: findReport
+                )
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    static func hasPairs(headers: [HeaderPair], trailers: [HeaderPair]?) -> Bool {
+        !headers.isEmpty || !(trailers?.isEmpty ?? true)
+    }
+
+    /// Body as a UTF-8 string, or nil when empty/non-text (no copy/find then).
     static func bodyText(_ data: Data?) -> String? {
         guard let data, !data.isEmpty, let text = String(data: data, encoding: .utf8), !text.isEmpty
         else { return nil }

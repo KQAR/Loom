@@ -7,6 +7,9 @@ struct BodyView: View {
     /// Total bytes that crossed the wire when `data` is only the captured prefix
     /// (nil = complete). Drives the "this is partial" strip.
     var fullBodyBytes: Int?
+    /// In-pane find. JSON and raw both highlight hits, step with Enter /
+    /// chevrons (`1/N`), and scroll the current hit into view.
+    var find: InspectorFind = InspectorFind()
     /// Above this size the collapsible JSON tree gets janky; show raw text
     /// instead (which itself hands large bodies to the lazy `NSTextView`).
     private let jsonRenderLimit = 200_000
@@ -24,6 +27,7 @@ struct BodyView: View {
             if let fullBodyBytes { truncationStrip(captured: data?.count ?? 0, wire: fullBodyBytes) }
             content
         }
+        .preference(key: InspectorFindReportKey.self, value: findReport)
         // Keyed on the body bytes, not `identity`: the identity is deliberately
         // stable across hydration (the body lands later under the same flow id),
         // so keying on it would leave the tree stuck on the pre-hydration body.
@@ -51,11 +55,22 @@ struct BodyView: View {
     @ViewBuilder private var content: some View {
         if let data, !data.isEmpty {
             if let json = parsed.flatMap({ $0 }) {
-                Scrolled { JSONView(value: json) }
+                Scrolled {
+                    JSONView(
+                        value: json,
+                        findNeedle: find.isActive ? find.trimmed : "",
+                        findIndex: find.currentIndex
+                    )
+                }
             } else {
                 // Also what shows for the frame or two while the one-shot parse is
                 // in flight: immediate and honest, then swaps to the tree.
-                RawView(text: String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>", identity: identity)
+                RawView(
+                    text: String(data: data, encoding: .utf8) ?? "<\(data.count) bytes>",
+                    identity: identity,
+                    findNeedle: find.isActive ? find.trimmed : "",
+                    findIndex: find.currentIndex
+                )
             }
         } else {
             Scrolled { Text("No body").foregroundStyle(.secondary) }
@@ -80,5 +95,18 @@ struct BodyView: View {
 
     private static func byteCount(_ bytes: Int) -> String {
         InspectorText.byteCount(bytes)
+    }
+
+    private var findReport: InspectorFindReport {
+        guard find.isActive else { return .empty }
+        if let json = parsed.flatMap({ $0 }) {
+            return InspectorFindReport(
+                matchCount: InspectorFindMatch.jsonMatchCount(json, needle: find.trimmed)
+            )
+        }
+        guard let data, let text = String(data: data, encoding: .utf8) else { return .empty }
+        return InspectorFindReport(
+            matchCount: InspectorFindMatch.ranges(of: find.trimmed, in: text).count
+        )
     }
 }
