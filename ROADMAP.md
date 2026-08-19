@@ -871,6 +871,21 @@ connections separately, and the console stays configuration-only. `All Flows` re
 Charles-style sequence; Requests / Connections filters and exact retained counts prevent CONNECT
 bursts from making the evidence unusable.
 
+### The list had stopped following, and two systems stop diffing the window (done, 0.0.29)
+
+Scroll jank in the request list, profiled rather than guessed — and it was never the list: the
+table's own diff, cell reuse and glide were 2 % of the main thread throughout. Two change-detection
+systems were walking the 20 000-row window elementwise, TCA's `@ObservableState` on every assignment
+and AttributeGraph on every view output, five times per capture batch; `Versioned` boxes the window
+so neither can. Underneath that, the list had **silently stopped following the tail** — 86 rows
+behind the newest row and the gap growing, while the follow control still read as on — because
+geometry-only follow had no way back once a display-cap trim put it out of tolerance.
+
+The round's other output is a methodology rule, learned three times: **profile Release.** The AppKit
+tracking-area storm that looked like the next bottleneck is 0.1 % of the main thread in a Release
+build, with no frame missed at 120 Hz, and the headline number of the first perf PR had to be
+retracted for the same reason. Debug shows the *shape*; it does not give a magnitude worth acting on.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
