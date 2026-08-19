@@ -137,7 +137,12 @@ public struct CaptureFeature: Sendable {
         /// it is the one projection that scales with the number of *flows* rather than
         /// the number of distinct hosts, and a per-row map belongs to whoever holds the
         /// rows. The engine holds every retained flow; this window holds what it draws.
-        var hostByRow: [Flow.ID: String] = [:]
+        /// `@ObservationStateIgnored` because **nothing draws it**: this is a reducer-owned
+        /// cache, read by `categoryMatches` and by tests, and by no view. Observed, it
+        /// cost a deep comparison of 20 000 dictionary entries on every capture batch
+        /// (measured 0.8 % of the main thread) to notify observers that do not exist.
+        /// It stays in `State.==`, so equality still means equal contents.
+        @ObservationStateIgnored var hostByRow: [Flow.ID: String] = [:]
         /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge. A
         /// passthrough so the badge and the tests keep reading one name; everything
         /// that *writes* it goes through `FlowAggregates`.
@@ -400,7 +405,12 @@ public struct CaptureFeature: Sendable {
         /// *is* the capture (`flows.elements`, a COW reference), so a second 20 000-entry
         /// map would be a megabyte and a hash per flow to accelerate work that costs
         /// nothing.
-        private var visiblePositions: [Flow.ID: Int] = [:]
+        /// Ignored for the same reason as `hostByRow`, and it is the worse of the two
+        /// when it is populated: it is empty in the unfiltered case (see
+        /// `projectionIsCheapToRebuild`) and a 20 000-entry map the moment a category or
+        /// a needle is selected — which is exactly when the incremental fold is
+        /// assigning it on every batch.
+        @ObservationStateIgnored private var visiblePositions: [Flow.ID: Int] = [:]
 
         /// Whether recomputing the whole projection is free.
         ///

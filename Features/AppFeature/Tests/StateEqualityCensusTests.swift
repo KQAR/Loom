@@ -37,13 +37,15 @@ import Testing
     ]
 
     @Test func stateEqualityComparesEveryStoredProperty() {
-        // The `@ObservableState` macro backs each stored property with `_name` and adds
-        // its own `_$observationRegistrar`, which is not state.
+        // The `@ObservableState` macro backs each *observed* stored property with
+        // `_name` and adds its own `_$observationRegistrar`, which is not state. An
+        // `@ObservationStateIgnored` property keeps its own name, so the underscore is
+        // stripped only when it is there.
         let stored = Set(
             Mirror(reflecting: CaptureFeature.State()).children
                 .compactMap(\.label)
                 .filter { !$0.hasPrefix("_$") }
-                .map { String($0.dropFirst()) }
+                .map { $0.hasPrefix("_") ? String($0.dropFirst()) : $0 }
         )
         #expect(
             stored == compared,
