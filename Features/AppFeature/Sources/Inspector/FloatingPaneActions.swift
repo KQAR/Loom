@@ -18,7 +18,8 @@ struct InspectorFindReportKey: PreferenceKey {
 }
 
 /// Floating search + copy cluster pinned to the top-right of a Body, Headers
-/// or Cookies pane. Search reveals an in-pane find field; copy takes the
+/// or Cookies pane. Search reveals an in-pane find field (slides out of the
+/// trailing cluster, same ease-out as the table's find bar); copy takes the
 /// pane's text and briefly flips to a checkmark.
 struct FloatingPaneActions: View {
     let copyText: String
@@ -26,6 +27,7 @@ struct FloatingPaneActions: View {
     @Binding var find: InspectorFind
     var report: InspectorFindReport = .empty
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var copied = false
     @FocusState private var fieldFocused: Bool
 
@@ -33,7 +35,10 @@ struct FloatingPaneActions: View {
 
     var body: some View {
         HStack(spacing: LoomTheme.Space.xs) {
-            if find.isPresented { findField }
+            if find.isPresented {
+                findField
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
             paneButton(
                 systemImage: "magnifyingglass",
                 active: find.isPresented,
@@ -57,6 +62,9 @@ struct FloatingPaneActions: View {
                 .stroke(.quaternary, lineWidth: 1)
         }
         .padding(LoomTheme.Space.sm)
+        // Scoped to the field's presence — a blanket animation would also
+        // interpolate the hit count as the reader types.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: find.isPresented)
         .task(id: copied) {
             guard copied else { return }
             try? await Task.sleep(for: .seconds(1.2))
