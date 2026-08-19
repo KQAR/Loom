@@ -1,3 +1,4 @@
+import LoomSharedModels
 import SwiftUI
 
 /// An order-preserving JSON value. `Foundation`'s JSONSerialization loses object
@@ -219,13 +220,75 @@ private struct JSONParser {
 /// status" — this is a code viewer.
 struct JSONView: View {
     let value: JSONValue
+    /// In-pane find needle. Empty keeps the default expansion (depth < 2);
+    /// a value highlights matching lines and *opens* their ancestors — it
+    /// never collapses a node that was already open.
+    var findNeedle: String = ""
+    /// 0-based current hit among matching lines. The current line uses the
+    /// darker wash; `ScrollViewReader` scrolls it into the pane's viewport.
+    var findIndex: Int = 0
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            JSONNode(key: nil, value: value, depth: 0)
+        let index = findNeedle.isEmpty
+            ? JSONFindIndex()
+            : InspectorFindMatch.jsonIndex(value, needle: findNeedle)
+        ScrollViewReader { proxy in
+            VStack(alignment: .leading, spacing: 1) {
+                JSONNode(key: nil, value: value, depth: 0, path: [])
+                    .id(JSONFindLineID(path: []))
+            }
+            .font(.callout.monospaced())
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .environment(\.jsonFindNeedle, findNeedle)
+            .environment(\.jsonFindExpand, index.expand)
+            .environment(\.jsonFindCurrent, index.path(at: findIndex))
+            .task(id: FindScrollToken(needle: findNeedle, index: findIndex)) {
+                guard let path = index.path(at: findIndex) else { return }
+                await Task.yield()
+                proxy.scrollTo(JSONFindLineID(path: path), anchor: .center)
+            }
         }
-        .font(.callout.monospaced())
-        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Identity for one JSON tree line, so `ScrollViewProxy.scrollTo` can bring
+/// the current find hit into the enclosing `Scrolled` viewport.
+private struct JSONFindLineID: Hashable {
+    let path: [Int]
+}
+
+/// Re-runs the scroll task when the needle or the current hit changes.
+private struct FindScrollToken: Hashable {
+    var needle: String
+    var index: Int
+}
+
+private enum JSONFindNeedleKey: EnvironmentKey {
+    static let defaultValue = ""
+}
+
+private enum JSONFindExpandKey: EnvironmentKey {
+    static let defaultValue: Set<[Int]> = []
+}
+
+private enum JSONFindCurrentKey: EnvironmentKey {
+    static let defaultValue: [Int]? = nil
+}
+
+extension EnvironmentValues {
+    fileprivate var jsonFindNeedle: String {
+        get { self[JSONFindNeedleKey.self] }
+        set { self[JSONFindNeedleKey.self] = newValue }
+    }
+
+    fileprivate var jsonFindExpand: Set<[Int]> {
+        get { self[JSONFindExpandKey.self] }
+        set { self[JSONFindExpandKey.self] = newValue }
+    }
+
+    fileprivate var jsonFindCurrent: [Int]? {
+        get { self[JSONFindCurrentKey.self] }
+        set { self[JSONFindCurrentKey.self] = newValue }
     }
 }
 
@@ -233,8 +296,12 @@ private struct JSONNode: View {
     let key: String?
     let value: JSONValue
     let depth: Int
-    @State private var expanded: Bool
+    let path: [Int]
+    @State private var userExpanded: Bool?
     @State private var textOverride: String?
+    @Environment(\.jsonFindNeedle) private var findNeedle
+    @Environment(\.jsonFindExpand) private var findExpand
+    @Environment(\.jsonFindCurrent) private var findCurrent
 
     /// A dedicated left gutter that holds every disclosure chevron in one column
     /// at the far left, and per-level indentation applied only to the content —
@@ -243,11 +310,18 @@ private struct JSONNode: View {
     private static let indentUnit: CGFloat = 14
     private static let contentGap: CGFloat = 4
 
-    init(key: String?, value: JSONValue, depth: Int) {
-        self.key = key
-        self.value = value
-        self.depth = depth
-        _expanded = State(initialValue: depth < 2) // deep nodes start collapsed
+    /// Search may open a collapsed ancestor so the hit is visible. It must
+    /// not close anything the reader already had open — `findExpand` is OR,
+    /// never a replacement for the default / user expansion.
+    private var isExpanded: Bool {
+        (userExpanded ?? (depth < 2)) || findExpand.contains(path)
+    }
+
+    private var lineMatches: Bool {
+        guard !findNeedle.isEmpty else { return false }
+        return InspectorFindMatch.lineMatches(
+            value, key: key, matcher: NeedleMatcher(findNeedle)
+        )
     }
 
     var body: some View {
@@ -256,14 +330,16 @@ private struct JSONNode: View {
             container(count: pairs.count, open: "{", close: "}") {
                 // `Array(...)` is required, not a leftover: EnumeratedSequence only
                 // conforms to RandomAccessCollection on macOS 26+, and this ships to 14.
-                ForEach(Array(pairs.enumerated()), id: \.offset) { _, pair in
-                    JSONNode(key: pair.0, value: pair.1, depth: depth + 1)
+                ForEach(Array(pairs.enumerated()), id: \.offset) { i, pair in
+                    JSONNode(key: pair.0, value: pair.1, depth: depth + 1, path: path + [i])
+                        .id(JSONFindLineID(path: path + [i]))
                 }
             }
         case let .array(items):
             container(count: items.count, open: "[", close: "]") {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    JSONNode(key: nil, value: item, depth: depth + 1)
+                ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+                    JSONNode(key: nil, value: item, depth: depth + 1, path: path + [i])
+                        .id(JSONFindLineID(path: path + [i]))
                 }
             }
         default:
@@ -298,12 +374,12 @@ private struct JSONNode: View {
         // `Scrolled`'s ScrollView provides the viewport.
         LazyVStack(alignment: .leading, spacing: 1) {
             Button {
-                expanded.toggle()
+                userExpanded = !isExpanded
             } label: {
                 HStack(spacing: 0) {
-                    gutterChevron(expanded)
+                    gutterChevron(isExpanded)
                     indent(depth)
-                    if expanded {
+                    if isExpanded {
                         keyPrefix + Text(open).foregroundStyle(.secondary)
                     } else {
                         keyPrefix
@@ -316,10 +392,11 @@ private struct JSONNode: View {
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
+                .background { findWash }
             }
             .buttonStyle(.plain)
 
-            if expanded {
+            if isExpanded {
                 children()
                 HStack(spacing: 0) {
                     gutterChevron(nil)
@@ -353,7 +430,19 @@ private struct JSONNode: View {
             }
             Spacer(minLength: 0)
         }
+        .background { findWash }
         .onChange(of: leafSource) { textOverride = nil }
+    }
+
+    @ViewBuilder private var findWash: some View {
+        if lineMatches {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(
+                    findCurrent == path
+                        ? InspectorText.FindWash.current
+                        : InspectorText.FindWash.other
+                )
+        }
     }
 
     private var leafSource: String {
