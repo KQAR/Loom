@@ -1,4 +1,3 @@
-import LoomSharedModels
 import SwiftUI
 
 /// An order-preserving JSON value. `Foundation`'s JSONSerialization loses object
@@ -220,18 +219,19 @@ private struct JSONParser {
 /// status" — this is a code viewer.
 struct JSONView: View {
     let value: JSONValue
-    /// In-pane find needle. Empty keeps the default expansion (depth < 2);
-    /// a value highlights matching lines and *opens* their ancestors — it
-    /// never collapses a node that was already open.
-    var findNeedle: String = ""
+    /// In-pane find hits, walked **once** by whoever owns the body (`BodyView`)
+    /// and handed down. Empty keeps the default expansion (depth < 2); a
+    /// populated index highlights matching lines and *opens* their ancestors —
+    /// it never collapses a node that was already open.
+    ///
+    /// Computed here it was walked twice per render — once for the tree, once
+    /// again for the `1/N` the action cluster shows — on every keystroke.
+    var index = JSONFindIndex()
     /// 0-based current hit among matching lines. The current line uses the
     /// darker wash; `ScrollViewReader` scrolls it into the pane's viewport.
     var findIndex: Int = 0
 
     var body: some View {
-        let index = findNeedle.isEmpty
-            ? JSONFindIndex()
-            : InspectorFindMatch.jsonIndex(value, needle: findNeedle)
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: 1) {
                 JSONNode(key: nil, value: value, depth: 0, path: [])
@@ -239,10 +239,10 @@ struct JSONView: View {
             }
             .font(.callout.monospaced())
             .frame(maxWidth: .infinity, alignment: .leading)
-            .environment(\.jsonFindNeedle, findNeedle)
+            .environment(\.jsonFindMatched, index.matched)
             .environment(\.jsonFindExpand, index.expand)
             .environment(\.jsonFindCurrent, index.path(at: findIndex))
-            .task(id: FindScrollToken(needle: findNeedle, index: findIndex)) {
+            .task(id: index.path(at: findIndex)) {
                 guard let path = index.path(at: findIndex) else { return }
                 await Task.yield()
                 proxy.scrollTo(JSONFindLineID(path: path), anchor: .center)
@@ -257,14 +257,8 @@ private struct JSONFindLineID: Hashable {
     let path: [Int]
 }
 
-/// Re-runs the scroll task when the needle or the current hit changes.
-private struct FindScrollToken: Hashable {
-    var needle: String
-    var index: Int
-}
-
-private enum JSONFindNeedleKey: EnvironmentKey {
-    static let defaultValue = ""
+private enum JSONFindMatchedKey: EnvironmentKey {
+    static let defaultValue: Set<[Int]> = []
 }
 
 private enum JSONFindExpandKey: EnvironmentKey {
@@ -276,9 +270,9 @@ private enum JSONFindCurrentKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
-    fileprivate var jsonFindNeedle: String {
-        get { self[JSONFindNeedleKey.self] }
-        set { self[JSONFindNeedleKey.self] = newValue }
+    fileprivate var jsonFindMatched: Set<[Int]> {
+        get { self[JSONFindMatchedKey.self] }
+        set { self[JSONFindMatchedKey.self] = newValue }
     }
 
     fileprivate var jsonFindExpand: Set<[Int]> {
@@ -299,7 +293,7 @@ private struct JSONNode: View {
     let path: [Int]
     @State private var userExpanded: Bool?
     @State private var textOverride: String?
-    @Environment(\.jsonFindNeedle) private var findNeedle
+    @Environment(\.jsonFindMatched) private var findMatched
     @Environment(\.jsonFindExpand) private var findExpand
     @Environment(\.jsonFindCurrent) private var findCurrent
 
@@ -317,12 +311,12 @@ private struct JSONNode: View {
         (userExpanded ?? (depth < 2)) || findExpand.contains(path)
     }
 
-    private var lineMatches: Bool {
-        guard !findNeedle.isEmpty else { return false }
-        return InspectorFindMatch.lineMatches(
-            value, key: key, matcher: NeedleMatcher(findNeedle)
-        )
-    }
+    /// Whether *this* line is a hit — a set lookup, not a re-match. The node
+    /// used to build a `NeedleMatcher` from the needle and run
+    /// `InspectorFindMatch.lineMatches` itself, i.e. one allocation and one
+    /// scan per visible node per render, which is the "prepare a filter once,
+    /// not per row" rule inverted.
+    private var lineMatches: Bool { findMatched.contains(path) }
 
     var body: some View {
         switch value {

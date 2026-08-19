@@ -21,13 +21,19 @@ struct HeadersList: View {
     var find: InspectorFind = InspectorFind()
 
     var body: some View {
-        let current = currentID
+        // One scan per render, shared by the wash, the `1/N` and the scroll
+        // target. It used to be three: `currentID` walked the pairs, the count
+        // walked them again, and every row built its own `NeedleMatcher` — the
+        // "prepare a filter once, not per row" rule read backwards.
+        let matches = matchIDs
+        let matched = Set(matches)
+        let current = matches.indices.contains(find.currentIndex) ? matches[find.currentIndex] : nil
         ScrollViewReader { proxy in
             VStack(alignment: .leading, spacing: LoomTheme.Space.md) {
                 if headers.isEmpty {
                     Text("No headers").foregroundStyle(.secondary)
                 } else {
-                    grid(headers, section: .headers, current: current)
+                    grid(headers, section: .headers, matched: matched, current: current)
                 }
                 if let trailers {
                     Text("Trailers")
@@ -36,11 +42,14 @@ struct HeadersList: View {
                     if trailers.isEmpty {
                         Text("Empty trailer section").foregroundStyle(.secondary)
                     } else {
-                        grid(trailers, section: .trailers, current: current)
+                        grid(trailers, section: .trailers, matched: matched, current: current)
                     }
                 }
             }
-            .preference(key: InspectorFindReportKey.self, value: findReport)
+            .preference(
+                key: InspectorFindReportKey.self,
+                value: find.isActive ? InspectorFindReport(matchCount: matches.count) : .empty
+            )
             .task(id: current) {
                 guard let current else { return }
                 await Task.yield()
@@ -60,12 +69,13 @@ struct HeadersList: View {
     }
 
     private func grid(
-        _ pairs: [HeaderPair], section: HeaderRowID.Section, current: HeaderRowID?
+        _ pairs: [HeaderPair], section: HeaderRowID.Section,
+        matched: Set<HeaderRowID>, current: HeaderRowID?
     ) -> some View {
         KeyValueGrid {
             ForEach(pairs.indices, id: \.self) { i in
                 let id = HeaderRowID(section: section, index: i)
-                let isMatch = rowMatches(pairs[i])
+                let isMatch = matched.contains(id)
                 GridRow(alignment: .firstTextBaseline) {
                     Text(pairs[i].name)
                         // The same violet the Raw pane tints a header name
@@ -98,21 +108,6 @@ struct HeadersList: View {
             }
         }
         return ids
-    }
-
-    private var currentID: HeaderRowID? {
-        let ids = matchIDs
-        return ids.indices.contains(find.currentIndex) ? ids[find.currentIndex] : nil
-    }
-
-    private var findReport: InspectorFindReport {
-        guard find.isActive else { return .empty }
-        return InspectorFindReport(matchCount: matchIDs.count)
-    }
-
-    private func rowMatches(_ pair: HeaderPair) -> Bool {
-        guard find.isActive else { return false }
-        return InspectorFindMatch.fieldsMatch([pair.name, pair.value], needle: find.trimmed)
     }
 
     private static func matches(_ pair: HeaderPair, matcher: NeedleMatcher) -> Bool {

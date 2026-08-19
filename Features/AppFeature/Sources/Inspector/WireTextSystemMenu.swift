@@ -7,6 +7,16 @@ import SwiftUI
 /// SwiftUI recreates its `NSTextView` when the string changes (decode), so the
 /// new view is untagged. Hosts are looked up by geometry from the overlay that
 /// still holds `hasOverride`, then the new view is re-tagged.
+///
+/// **Two guards decide what this may touch, and both were missing.** The hook is
+/// a process-wide `NSMenu.didBeginTracking` observer, so it sees *every* menu in
+/// the app; its only test used to be "does this menu have a Copy item", which the
+/// standard Edit menu does. Opening Edit with an inspector text view as first
+/// responder therefore inserted **URL Decode into the app's main menu** — and, if
+/// that view was showing a decode, silently selected its whole body on the way.
+/// `shouldAugment` is the whole answer: never a menu under the main menu, and
+/// never a text view Loom did not tag (the find field's editor is an `NSTextView`
+/// too, and so is every other one in the window).
 @MainActor
 enum WireTextSystemMenu {
     private static var installed = false
@@ -23,7 +33,46 @@ enum WireTextSystemMenu {
         )
     }
 
+    /// Whether Loom's items belong in this menu at all. Two conditions, and
+    /// deliberately no third — everything else about when the item appears is
+    /// left exactly as it was.
+    ///
+    /// - a menu reachable from `mainMenu` is the app's own menu bar, never a
+    ///   wire-text context menu. The Edit menu carries `copy:` too, which is
+    ///   the whole reason the old "does this menu have a Copy item" test let
+    ///   **URL Decode** into the main menu — and, when the responder was showing
+    ///   a decode, selected its whole body on the way there;
+    /// - the view must be read-only. Every captured string Loom renders is
+    ///   (`CodeTextView` sets `isEditable = false`; a SwiftUI `Text` is not
+    ///   editable at all), and no field Loom lets anyone type into is — which
+    ///   is what keeps the pane's own find field from being offered a decode.
+    ///
+    /// **What is deliberately not a condition: whether a host is attached.**
+    /// The menu's view comes from a hit test and SwiftUI rebuilds its
+    /// `NSTextView` whenever the string changes, so the view under the cursor
+    /// is routinely a fresh, untagged instance; `resolveHost` re-finds it by
+    /// geometry *inside* `insert`, and `WireTextMenuAction.decode` works from
+    /// the text storage when even that comes up empty. Gating on a tag in front
+    /// of all of it turned the menu item off everywhere.
+    static func shouldAugment(menu: NSMenu, textView: NSTextView, mainMenu: NSMenu?) -> Bool {
+        guard !isDescendant(menu, of: mainMenu) else { return false }
+        guard !textView.isEditable else { return false }
+        return menu.items.contains { $0.action == #selector(NSText.copy(_:)) }
+    }
+
+    static func isDescendant(_ menu: NSMenu, of root: NSMenu?) -> Bool {
+        guard let root else { return false }
+        var node: NSMenu? = menu
+        while let current = node {
+            if current === root { return true }
+            node = current.supermenu
+        }
+        return false
+    }
+
     static func insert(into menu: NSMenu, textView: NSTextView) {
+        guard shouldAugment(menu: menu, textView: textView, mainMenu: NSApplication.shared.mainMenu)
+        else { return }
         guard let copyIndex = menu.items.firstIndex(where: { $0.action == #selector(NSText.copy(_:)) })
         else { return }
         menu.items
@@ -101,8 +150,11 @@ enum WireTextSystemMenu {
 private final class MenuObserver: NSObject {
     @objc func menuDidBeginTracking(_ note: Notification) {
         guard let menu = note.object as? NSMenu else { return }
+        // Cheapest first, so pulling down a main-menu title costs one identity
+        // walk rather than a hit test of the window under the cursor.
+        guard !WireTextSystemMenu.isDescendant(menu, of: NSApplication.shared.mainMenu) else { return }
         guard menu.items.contains(where: { $0.action == #selector(NSText.copy(_:)) }) else { return }
-        guard let textView = Self.textView() else { return }
+        guard let textView = Self.textView(), !textView.isEditable else { return }
         if WireTextSystemMenu.isShowingOverride(textView) {
             WireTextSystemMenu.selectAll(textView)
         }
