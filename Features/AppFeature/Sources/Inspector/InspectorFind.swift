@@ -98,7 +98,7 @@ enum InspectorFindMatch {
             return any
         }
         _ = walk(value, key: nil, path: [])
-        return JSONFindIndex(paths: paths, expand: expand)
+        return JSONFindIndex(paths: paths, matched: Set(paths), expand: expand)
     }
 
     /// Count of matching JSON lines — the `N` in the pane's `1/N`.
@@ -141,8 +141,13 @@ enum InspectorFindMatch {
 
 /// Matching JSON lines in document order, and the containers that must open
 /// to reach them. Search ORs `expand` with whatever was already open.
-struct JSONFindIndex: Equatable {
+struct JSONFindIndex: Equatable, Sendable {
     var paths: [[Int]] = []
+    /// The same lines as `paths`, as a set, for the per-node "is this line a
+    /// hit" test. A node answering that by building a `NeedleMatcher` and
+    /// re-matching itself cost one matcher allocation per visible node per
+    /// render; a set membership is one hash of a short `[Int]`.
+    var matched: Set<[Int]> = []
     var expand: Set<[Int]> = []
     var count: Int { paths.count }
 

@@ -23,12 +23,15 @@ struct CookiesView: View {
         if cookies.isEmpty {
             Text("No cookies").foregroundStyle(.secondary)
         } else {
-            let current = currentIndex
+            // One scan per render — see the same note in `HeadersList`.
+            let matches = matchIndices
+            let matched = Set(matches)
+            let current = matches.indices.contains(find.currentIndex) ? matches[find.currentIndex] : nil
             ScrollViewReader { proxy in
                 KeyValueGrid(keyTitle: "Name", valueTitle: "Value") {
                     ForEach(cookies.indices, id: \.self) { i in
                         let cookie = cookies[i]
-                        let isMatch = rowMatches(cookie)
+                        let isMatch = matched.contains(i)
                         GridRow(alignment: .firstTextBaseline) {
                             Text(cookie.name)
                                 // Same token as a header name and a query parameter's:
@@ -56,7 +59,10 @@ struct CookiesView: View {
                         .id(i)
                     }
                 }
-                .preference(key: InspectorFindReportKey.self, value: findReport)
+                .preference(
+                    key: InspectorFindReportKey.self,
+                    value: find.isActive ? InspectorFindReport(matchCount: matches.count) : .empty
+                )
                 .task(id: current) {
                     guard let current else { return }
                     await Task.yield()
@@ -81,21 +87,6 @@ struct CookiesView: View {
         return cookies.indices.filter {
             InspectorFindMatch.rowMatches(Self.fields(cookies[$0]), matcher: matcher)
         }
-    }
-
-    private var currentIndex: Int? {
-        let ids = matchIndices
-        return ids.indices.contains(find.currentIndex) ? ids[find.currentIndex] : nil
-    }
-
-    private var findReport: InspectorFindReport {
-        guard find.isActive else { return .empty }
-        return InspectorFindReport(matchCount: matchIndices.count)
-    }
-
-    private func rowMatches(_ cookie: CookieItem) -> Bool {
-        guard find.isActive else { return false }
-        return InspectorFindMatch.fieldsMatch(Self.fields(cookie), needle: find.trimmed)
     }
 
     private static func fields(_ cookie: CookieItem) -> [String] {

@@ -31,6 +31,22 @@ struct WireTextHostOverlay: NSViewRepresentable {
 
     final class Sentinel: NSView {
         let host = WireTextHost()
+        /// The text view this overlay last resolved to. `apply` runs on every
+        /// SwiftUI update and `layout` on every pass, and the search below
+        /// walks ancestors' whole subtrees — so a Headers pane with N rows was
+        /// paying N subtree walks per layout to re-derive answers it already had.
+        private weak var resolved: NSTextView?
+
+        /// How far up to look before giving up. The covering text view is the
+        /// sibling the overlay was attached to, one or two containers up; the
+        /// unbounded climb this replaces turned a *miss* into an enumeration of
+        /// every view in the window, once per sentinel, per layout.
+        ///
+        /// A miss is not fatal, which is what makes bounding it safe: this only
+        /// *pre*-tags, and the context menu resolves its host from the sentinel
+        /// registry by probe (`WireTextSentinels.covering`), which has no depth
+        /// to bound. Losing the pre-tag costs one geometric lookup on right-click.
+        private static let maxAncestorHops = 4
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -60,19 +76,31 @@ struct WireTextHostOverlay: NSViewRepresentable {
         func coveringTextView() -> NSTextView? {
             let cover = convert(bounds, to: nil)
             guard cover.width > 1, cover.height > 1 else { return nil }
+            // Re-validate the cached answer rather than re-deriving it: one
+            // rect conversion and one score, against a walk of several subtrees.
+            if let resolved, resolved.window === window,
+               Self.overlapScore(cover: cover, frame: resolved.convert(resolved.bounds, to: nil)) > 0.5 {
+                return resolved
+            }
             var best: (CGFloat, NSTextView)?
             var node: NSView? = superview
-            while let current = node {
+            var hops = 0
+            while let current = node, hops < Self.maxAncestorHops {
                 for textView in textViews(in: current) {
                     let score = Self.overlapScore(cover: cover, frame: textView.convert(textView.bounds, to: nil))
                     if score > (best?.0 ?? 0) {
                         best = (score, textView)
                     }
                 }
-                if let best, best.0 > 0.5 { return best.1 }
+                if let best, best.0 > 0.5 {
+                    resolved = best.1
+                    return best.1
+                }
                 node = current.superview
+                hops += 1
             }
-            return (best?.0 ?? 0) > 0.5 ? best?.1 : nil
+            resolved = nil
+            return nil
         }
 
         /// Both the overlay and the text view must mostly cover each other —
