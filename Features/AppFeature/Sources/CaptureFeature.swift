@@ -28,7 +28,10 @@ public struct CaptureFeature: Sendable {
     @ObservableState
     public struct State: Equatable {
         /// Stored oldest-first (insertion order); lists display newest-first.
-        public var flows: IdentifiedArrayOf<Flow> = []
+        /// Version-stamped (`Versioned`) rather than a bare `IdentifiedArray`: this is
+        /// assigned once per capture batch, and both TCA's observation and SwiftUI's
+        /// AttributeGraph compared it **elementwise** to decide whether to notify.
+        public var flows: Versioned<IdentifiedArrayOf<Flow>> = .init()
         /// Rows the window addresses; older ones are dropped oldest-first.
         ///
         /// The stale half of this comment is worth naming, because it is what the move
@@ -149,6 +152,43 @@ public struct CaptureFeature: Sendable {
         }
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
 
+        /// Written by hand rather than synthesized, because `flows` and `visibleFlows`
+        /// are `Versioned` — deliberately not `Equatable`, so neither TCA's observation
+        /// nor SwiftUI's AttributeGraph diffs 20 000 `Flow`s to learn what the
+        /// assignment already told them. See `Versioned` for the measurement.
+        ///
+        /// Equality here still means **equal contents**, which is what `TestStore` and
+        /// the projection tests assert. The alternative — a version stamp inside the
+        /// synthesized `==` — makes two states with identical contents compare unequal
+        /// when one was assigned a different *number of times*, and that broke four
+        /// `TestStore` assertions the moment it existed.
+        ///
+        /// Cheap fields first: the two windows are the expensive comparisons and go
+        /// last, so an inequality anywhere else short-circuits before reaching them.
+        /// `stateEqualityComparesEveryStoredProperty` fails when a property is added
+        /// and not listed here — a forgotten field is an assertion that passes while
+        /// the two states differ.
+        public static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.droppedFlowCount == rhs.droppedFlowCount
+                && lhs.aggregatesCoverHistory == rhs.aggregatesCoverHistory
+                && lhs.selectedFlowID == rhs.selectedFlowID
+                && lhs.selection == rhs.selection
+                && lhs.pinnedHosts == rhs.pinnedHosts
+                && lhs.pinnedApps == rhs.pinnedApps
+                && lhs.deviceAliases == rhs.deviceAliases
+                && lhs.search == rhs.search
+                && lhs.aggregates == rhs.aggregates
+                && lhs.selectedFlowDetail == rhs.selectedFlowDetail
+                && lhs.selectedOriginalDetail == rhs.selectedOriginalDetail
+                && lhs.sidebarHosts == rhs.sidebarHosts
+                && lhs.sidebarDevices == rhs.sidebarDevices
+                && lhs.selectionByDimension == rhs.selectionByDimension
+                && lhs.hostByRow == rhs.hostByRow
+                && lhs.visiblePositions == rhs.visiblePositions
+                && lhs.visibleFlows.value == rhs.visibleFlows.value
+                && lhs.flows.value == rhs.flows.value
+        }
+
         public init() {}
 
         /// State already holding `flows`, with the sidebar aggregates in sync.
@@ -192,7 +232,7 @@ public struct CaptureFeature: Sendable {
         /// only the size made it show.
         mutating func recordFlows(_ batch: [Flow]) {
             guard !batch.isEmpty else { return }
-            var working = flows
+            var working = flows.value
             var hosts = hostByRow
             // Ids this batch inserted, in insertion order — i.e. exactly the tail
             // `flows` grew by. The incremental projection below needs the order, not
@@ -211,7 +251,7 @@ public struct CaptureFeature: Sendable {
                 hosts[flow.id] = stripped.host
             }
             let trimmed = enforceDisplayCap(&working, hosts: &hosts)
-            flows = working
+            flows.replace(with: working)
             hostByRow = hosts
             // A trim rewrites the head of the list, so there is nothing incremental left
             // to do; every other batch touches only what it carried.
@@ -309,7 +349,7 @@ public struct CaptureFeature: Sendable {
         /// the engine's "cleared" signal (an agent's `clear_flows`), so both paths
         /// leave exactly the same state.
         mutating func forgetCapturedFlows() {
-            flows.removeAll()
+            flows.replace(with: [])
             hostByRow.removeAll()
             // Cleared locally as well as re-read: the engine's own counts go to zero in
             // the same operation, and waiting for the round trip would leave a sidebar
@@ -345,12 +385,12 @@ public struct CaptureFeature: Sendable {
         /// category or a needle is involved. The inputs change on a schedule the reducer
         /// controls — a flow batch, a category tap, a keystroke — so it is recomputed
         /// there instead, through the one funnel below.
-        public var displayFlows: [Flow] { visibleFlows }
+        public var displayFlows: Versioned<[Flow]> { visibleFlows }
 
         /// Backing store for `displayFlows`. Private so the funnel is the only writer:
         /// a second place that assigns it is a stale list nobody notices, because a
         /// stale list still renders.
-        private var visibleFlows: [Flow] = []
+        private var visibleFlows: Versioned<[Flow]> = .init()
 
         /// `flow id → index into visibleFlows`, so a batch can update the rows it
         /// carried instead of rebuilding the list.
@@ -382,7 +422,7 @@ public struct CaptureFeature: Sendable {
                 grouping: selection.compactMap { category in category.dimension.map { ($0, category) } },
                 by: \.0
             ).mapValues { $0.map(\.1) }
-            visibleFlows = computeVisibleFlows()
+            visibleFlows.replace(with: computeVisibleFlows())
             visiblePositions = projectionIsCheapToRebuild
                 ? [:]
                 : Dictionary(
@@ -430,7 +470,7 @@ public struct CaptureFeature: Sendable {
             guard !projectionIsCheapToRebuild else { return false }
             let matches = search.predicate()
             let inserted = Set(insertedIDs)
-            var working = visibleFlows
+            var working = visibleFlows.value
             var positions = visiblePositions
 
             // Rows the capture already held: update in place, or decline.
@@ -454,7 +494,7 @@ public struct CaptureFeature: Sendable {
                 positions[id] = working.count
                 working.append(flow)
             }
-            visibleFlows = working
+            visibleFlows.replace(with: working)
             visiblePositions = positions
             return true
         }

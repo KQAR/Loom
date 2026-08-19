@@ -35,7 +35,12 @@ import SwiftUI
 /// through a recursive view-tree search for two jobs SwiftUI could not do (tail-follow
 /// and a row-sized fill). Both are native here.
 struct RequestTable: NSViewRepresentable {
-    let rows: [Flow]
+    /// Version-stamped (`Versioned`): AttributeGraph compares a representable's
+    /// stored properties to decide whether the view changed, and comparing 20 000
+    /// `Flow`s elementwise to learn what the stamp says in O(1) was a measured
+    /// quarter of the main thread. Unwrapped into the coordinator below, which is
+    /// past the comparison and works in plain values.
+    let rows: Versioned<[Flow]>
     /// The whole capture, for the `#` column's 1-based position.
     ///
     /// The array itself rather than a precomputed `id → ordinal` dictionary: that
@@ -44,7 +49,7 @@ struct RequestTable: NSViewRepresentable {
     /// share of the whole update. `IdentifiedArray.index(id:)` is O(1), so looking it up
     /// per *visible* cell costs the viewport instead of the capture. Passing the array
     /// is free (COW), and it is a value here, so no cell observes the store.
-    let capture: IdentifiedArrayOf<Flow>
+    let capture: Versioned<IdentifiedArrayOf<Flow>>
     @Binding var selection: Flow.ID?
     @Binding var followTail: Bool
     /// Row actions, as closures rather than a store reference: this view is about
@@ -358,6 +363,10 @@ struct RequestTable: NSViewRepresentable {
         private weak var scrollView: NSScrollView?
         private var rows: [Flow] = []
         private var capture: IdentifiedArrayOf<Flow> = []
+        /// The boxes the two above were unwrapped from, so an update that changed
+        /// nothing can be recognised in two pointer compares — see `update`.
+        private var rowsSource = Versioned<[Flow]>()
+        private var captureSource = Versioned<IdentifiedArrayOf<Flow>>()
         /// Guards the selection write-back: `selectRowIndexes` fires the delegate, and
         /// echoing that back into the binding turns a programmatic sync into a user
         /// selection.
@@ -416,10 +425,26 @@ struct RequestTable: NSViewRepresentable {
 
         // MARK: Data
 
-        func update(rows newRows: [Flow], capture newCapture: IdentifiedArrayOf<Flow>, selection newSelection: Flow.ID?) {
+        func update(
+            rows newRows: Versioned<[Flow]>,
+            capture newCapture: Versioned<IdentifiedArrayOf<Flow>>,
+            selection newSelection: Flow.ID?
+        ) {
+            // AttributeGraph used to answer "did anything move" before calling this, by
+            // comparing 20 000 `Flow`s elementwise. It no longer can (that is the point
+            // of `Versioned`), so the question is asked here instead and costs two
+            // pointer compares: the contents object is replaced only when the reducer
+            // assigned a new window.
+            if rowsSource.isIdentical(to: newRows),
+               captureSource.isIdentical(to: newCapture),
+               newSelection == selection {
+                return
+            }
+            rowsSource = newRows
+            captureSource = newCapture
             let previous = rows
-            rows = newRows
-            capture = newCapture
+            rows = newRows.value
+            capture = newCapture.value
             guard let table else { return }
             // Measured here, before the table is touched: whether to follow is a question
             // about *where the operator is standing right now*, and the only honest answer
@@ -443,7 +468,7 @@ struct RequestTable: NSViewRepresentable {
             )
             isApplyingUpdate = true
             defer { isApplyingUpdate = false }
-            let diff = RowDiff(from: previous, to: newRows)
+            let diff = RowDiff(from: previous, to: rows)
             // The structural edit is applied whether or not anyone can see it: the table's
             // own row count has to keep matching `rows`, or the next insert is computed
             // against a count that moved. What is skipped while occluded is everything
