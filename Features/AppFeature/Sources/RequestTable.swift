@@ -403,12 +403,12 @@ struct RequestTable: NSViewRepresentable {
             nc.addObserver(self, selector: #selector(userDidEndScroll),
                            name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
             // Every viewport move, whoever caused it — a gesture, its momentum, a scroller
-            // drag, a keyboard scroll. These only keep `followTail` reporting the truth to
-            // the rest of the window; the decision to follow is not taken from them (see
-            // `update`), because a bounds change cannot say who moved the viewport.
+            // drag, a keyboard scroll, **and this table's own edits**. It keeps `followTail`
+            // reporting the truth to the rest of the window and decides nothing, which is
+            // what `viewportDidMove` is separate from `userScrolling` for.
             let clipView = scrollView.contentView
             clipView.postsBoundsChangedNotifications = true
-            nc.addObserver(self, selector: #selector(userScrolling),
+            nc.addObserver(self, selector: #selector(viewportDidMove),
                            name: NSView.boundsDidChangeNotification, object: clipView)
             // Object is nil rather than the window: this view has no window yet at attach
             // time, and it can move between windows afterwards. The handler filters.
@@ -487,7 +487,10 @@ struct RequestTable: NSViewRepresentable {
             // while the list keeps moving — and a count gate silently stops following at
             // the one point where there is the most to follow.
             if wasAtBottom, diff != .none { scrollToBottom() }
-            if followTail != wasAtBottom { followTail = wasAtBottom }
+            // `followTail` is deliberately **not** written here. It is the operator's
+            // answer, re-derived in `viewportDidMove` when they move the viewport;
+            // writing it from our own edit is exactly how the follow used to turn itself
+            // off after a display-cap trim.
         }
 
         /// Whether the list should be following the tail after an edit.
@@ -498,6 +501,22 @@ struct RequestTable: NSViewRepresentable {
         /// viewport falls behind the growing document and `isAtBottom()` would answer
         /// "no" — flipping the follow off for a reader who never scrolled anywhere, and
         /// leaving the list stuck mid-capture when the window came back.
+        /// Whether to keep the list at the tail for this edit.
+        ///
+        /// **`current` is an input again, and that is a reversal — see the entry in
+        /// `Features/AppFeature/CLAUDE.md`.** Geometry alone had no way back: once the
+        /// viewport was more than `isAtBottom`'s half-row tolerance behind, every later
+        /// edit read "the operator scrolled away" and nothing ever re-armed the follow.
+        /// Measured, the list sat **~2 000 pt — 86 rows — behind the newest row and the
+        /// gap kept growing**, while the follow control still read as on. The list
+        /// silently stopping is worse than the failure the geometry-only rule was
+        /// introduced to fix (yanking down while someone reads), because nobody can see
+        /// it happen.
+        ///
+        /// What makes `current` safe this time is *where it comes from*: `viewportDidMove`
+        /// re-derives it from geometry every time the viewport actually moves, and
+        /// deliberately not when our own edit moved it. The old flag was wrong because
+        /// nothing cleared it; this one is cleared by every scroll there is.
         static func shouldFollowTail(
             windowVisible: Bool, atBottom: Bool, gliding: Bool, current: Bool
         ) -> Bool {
@@ -505,7 +524,23 @@ struct RequestTable: NSViewRepresentable {
             // A glide in flight counts as being at the bottom, and has to: it is *behind*
             // the bottom by construction, so measuring geometry alone would read the
             // list's own catch-up as the operator having scrolled away.
-            return atBottom || gliding
+            return current || atBottom || gliding
+        }
+
+        /// Whether a viewport move is the operator's, and so worth re-deriving the follow
+        /// from.
+        ///
+        /// **A scroll never changes the document's height; our own edits always do.** A
+        /// trim shifts the clip view down by the removed height and an append grows the
+        /// document under a stationary viewport — both arrive as a bounds change with no
+        /// operator involved, and sampling them is what made the follow answer "they
+        /// scrolled away" to its own work. No synchronous flag can catch them: the move
+        /// lands in the display cycle, long after `update` returned (measured: 549 of 551
+        /// of these arrived with `isApplyingUpdate` already false).
+        ///
+        /// A glide is ours too, and it is behind the bottom by construction.
+        static func shouldSampleFollow(documentHeightChanged: Bool, gliding: Bool) -> Bool {
+            !documentHeightChanged && !gliding
         }
 
         /// Whether this table is on a window someone can currently see.
@@ -834,15 +869,50 @@ struct RequestTable: NSViewRepresentable {
             userScrolling()
         }
 
-        /// Keeps `followTail` reporting where the viewport actually is. It is a readout,
-        /// not a latch: nothing decides anything from it here (`update` measures for
-        /// itself), so there is no state to get stuck armed.
+        /// A **live scroll** — the operator's own gesture. Arms the quiet window that
+        /// keeps the glide out of their way, and refreshes the readout.
         @objc private func userScrolling() {
-            guard !isApplyingUpdate, !isGliding else { return }
             lastLiveScrollAt = Date()
+            // Unconditional: this notification *means* the operator, so it re-derives
+            // even if a batch changed the document's height during the gesture.
+            lastSampledDocumentHeight = documentHeight
             let atBottom = isAtBottom()
             if followTail != atBottom { followTail = atBottom }
         }
+
+        /// The viewport moved, by whatever cause. Keeps `followTail` reporting where it
+        /// actually is, and **decides nothing** — which is the fix, not a nicety.
+        ///
+        /// This used to be `userScrolling`, so every bounds change armed
+        /// `lastLiveScrollAt` and put the follow into its quiet window. The guard meant
+        /// to exclude the table's own edits (`!isApplyingUpdate, !isGliding`) cannot:
+        /// an edit moves the clip view during the *display cycle*, long after `update`
+        /// returned and the flag was cleared. Measured under 10 req/s, 549 of 551 of
+        /// these arrived with both flags already false and armed the window, so
+        /// `mayScrollProgrammatically` was never true again while traffic flowed —
+        /// `scrollToBottom` was reached **once**, and blocked. Tail-follow was dead: the
+        /// list sat ~1 900 pt (80 rows) behind the newest row and the gap kept growing,
+        /// while the follow control still read as on.
+        ///
+        /// No flag can cover it, because the move is not synchronous with the edit. The
+        /// answer is that only the notifications that *mean* "the operator is scrolling"
+        /// (`willStartLiveScroll` / `didLiveScroll` / `didEndLiveScroll`) arm anything.
+        @objc private func viewportDidMove() {
+            let height = documentHeight
+            defer { lastSampledDocumentHeight = height }
+            guard Self.shouldSampleFollow(
+                documentHeightChanged: height != lastSampledDocumentHeight,
+                gliding: displayLink != nil
+            ) else { return }
+            let atBottom = isAtBottom()
+            if followTail != atBottom { followTail = atBottom }
+        }
+
+        private var documentHeight: CGFloat { scrollView?.documentView?.frame.height ?? 0 }
+
+        /// The document height at the last sample, so a move can be attributed. See
+        /// `shouldSampleFollow`.
+        private var lastSampledDocumentHeight: CGFloat = 0
 
         /// Whether a scroll gesture is in progress, and when the viewport last moved for a
         /// reason that was not this table's own doing.
@@ -1044,14 +1114,36 @@ struct RequestTable: NSViewRepresentable {
             guard mayScrollProgrammatically else { stopGliding(); return }
             let clipView = scrollView.contentView
             let remaining = maximumOffsetY - clipView.bounds.origin.y
-            guard remaining > 0 else { return }
-            guard remaining <= Self.maximumGlideDistance * clipView.bounds.height else {
+            switch Self.tailCatchUp(remaining: remaining, viewportHeight: clipView.bounds.height) {
+            case .snap:
                 setOffsetY(maximumOffsetY)
                 stopGliding()
-                return
+            case .glide:
+                startGliding()
             }
-            startGliding()
         }
+
+        /// How to close the distance to the bottom after an edit.
+        ///
+        /// `remaining <= 0` snaps rather than returning. The display cap trims
+        /// `CaptureFeature.State.trimSlack` (500) rows at once, so a batch can make the
+        /// document 12 000 pt shorter and AppKit shifts the clip view's origin down by
+        /// the removed height instead of clamping it to the new bottom — the offset ends
+        /// up *past* the end. Doing nothing there left the viewport short of the bottom.
+        ///
+        /// This is not what latched the follow off (that is `viewportDidMove`), but the
+        /// two entry points disagreed: `glide` has always handled the same case ("anything
+        /// negative means the content shrank under the glide"), and this one did not.
+                static func tailCatchUp(remaining: CGFloat, viewportHeight: CGFloat) -> TailCatchUp {
+            // Past the end (a trim) or too far to be worth animating: go there directly.
+            guard remaining > 0, remaining <= maximumGlideDistance * viewportHeight else {
+                return .snap
+            }
+            return .glide
+        }
+
+        /// Snap straight to the bottom, or animate the remaining distance.
+        enum TailCatchUp: Equatable { case snap, glide }
 
         /// The largest vertical offset the clip view can hold — recomputed every frame
         /// rather than captured when the glide starts, because the content is still

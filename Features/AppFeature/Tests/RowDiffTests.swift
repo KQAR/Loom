@@ -180,9 +180,32 @@ import Testing
 @Suite @MainActor struct TailFollowDecisionTests {
     private typealias Decide = RequestTable.Coordinator
 
-    @Test func onScreen_theGeometryDecides() {
+    @Test func atTheBottomFollows_whateverTheLastAnswerWas() {
         #expect(Decide.shouldFollowTail(windowVisible: true, atBottom: true, gliding: false, current: false))
-        #expect(!Decide.shouldFollowTail(windowVisible: true, atBottom: false, gliding: false, current: true))
+    }
+
+    /// **The reversal.** Geometry alone had no way back: once the viewport was more than
+    /// `isAtBottom`'s half-row tolerance behind — which a display-cap trim puts it, in one
+    /// batch — every later edit read "the operator scrolled away" and nothing re-armed the
+    /// follow. Measured: the list sat 86 rows behind the newest row, gap still growing,
+    /// with the follow control reading as on.
+    ///
+    /// `current` is safe as an input because of *where it comes from*: `viewportDidMove`
+    /// re-derives it from geometry on every viewport move that is not our own.
+    @Test func behindTheBottomKeepsFollowing_untilTheOperatorMovesTheViewport() {
+        #expect(Decide.shouldFollowTail(windowVisible: true, atBottom: false, gliding: false, current: true))
+        #expect(!Decide.shouldFollowTail(windowVisible: true, atBottom: false, gliding: false, current: false))
+    }
+
+    /// Which is only sound because every way the operator can move the viewport clears
+    /// it, and none of ours does.
+    @Test func onlyTheOperatorsMovesResampleTheFollow() {
+        #expect(Decide.shouldSampleFollow(documentHeightChanged: false, gliding: false),
+                "a scroll never changes the document's height")
+        #expect(!Decide.shouldSampleFollow(documentHeightChanged: true, gliding: false),
+                "a trim or an append is ours, and moves the viewport without an operator")
+        #expect(!Decide.shouldSampleFollow(documentHeightChanged: false, gliding: true),
+                "a glide is ours, and is behind the bottom by construction")
     }
 
     /// A glide is behind the bottom by construction, so it counts as being there.
