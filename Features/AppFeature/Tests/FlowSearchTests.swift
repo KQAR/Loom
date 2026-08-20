@@ -286,8 +286,9 @@ import Testing
     /// `trimmingCharacters` allocation each) and matched with
     /// `range(of:options:.caseInsensitive)`: 84 ms over a full window, more than once
     /// per keystroke, which is what made the find bar stutter while it had focus. The
-    /// bound is loose on purpose — this fails on a return to the per-row shape, not on
-    /// a slow machine.
+    /// bound is loose on purpose and scales with the cap (`WindowPerf`) — this fails on
+    /// a return to the per-row shape, not on a slow machine and not on a bigger
+    /// window.
     @Test func filteringAFullWindowIsCheapPerKeystroke() {
         let flows = (0 ..< CaptureFeature.State.displayCap).map {
             Fixtures.flow(url: "https://api.example.com/v1/resource/\($0)/items?page=\($0 % 13)")
@@ -298,7 +299,8 @@ import Testing
         for needle in ["it", "ite", "item", "items", "items?"] { state.search.text = needle }
         let elapsed = Date().timeIntervalSince(start)
         #expect(state.displayFlows.count == CaptureFeature.State.displayCap)
-        #expect(elapsed < 1.0, "5 keystrokes over a full window took \(elapsed)s — per-row needle work is back")
+        #expect(elapsed < WindowPerf.fullWindowBudget,
+                "5 keystrokes over a full window took \(elapsed)s — per-row needle work is back")
     }
 
     /// A field no row is filtered by must not trigger a rescan. One keystroke writes
