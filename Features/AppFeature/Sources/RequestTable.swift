@@ -310,7 +310,7 @@ struct RequestTable: NSViewRepresentable {
     ///
     /// `Text("\(n)")` interpolates through `LocalizedStringKey`, which inserts
     /// commas (or the locale's equivalent) past 999. The column is sized for five
-    /// raw digits — `FlowLimits.windowRows` is 20 000 — so a separator would clip
+    /// raw digits — `FlowLimits.windowRows` is 99 999 — so a separator would clip
     /// the cap, and a sequence number is not a quantity.
     static func ordinalLabel(_ ordinal: Int) -> String {
         String(ordinal)
@@ -815,7 +815,7 @@ struct RequestTable: NSViewRepresentable {
         /// The early return is the whole point, and it has to be reachable **without
         /// searching `rows`**. This runs on every capture batch — ten times a second —
         /// and the search it guards is a linear walk of the window, which at
-        /// `FlowLimits.windowRows` is 20 000 id comparisons to conclude, almost always,
+        /// `FlowLimits.windowRows` is ~100 000 id comparisons to conclude, almost always,
         /// that nothing moved. That is precisely the shape this file refuses everywhere
         /// else: `ordinal(of:)` takes an O(1) `index(id:)` rather than scan the capture,
         /// and `RowDiff` gives up its alignment search after a bounded window so it can

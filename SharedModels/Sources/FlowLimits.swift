@@ -16,14 +16,19 @@ public enum FlowLimits {
     /// the store.
     public static let memoryRing = 2_000
 
-    /// Rows kept in `flows.sqlite`. An order of magnitude past the ring — this is what
-    /// "retained" means to a search, and what `get_stats.flowsRetained` counts.
-    public static let persistedRows = 20_000
+    /// Rows kept in `flows.sqlite`. Fifty times the ring — this is what "retained"
+    /// means to a search, and what `get_stats.flowsRetained` counts. It rises with
+    /// `windowRows` and never below it (`isOrdered`), so the disk cost is the one that
+    /// pays for a bigger list: measured at ~33 KB of file per flow with 32 KB bodies,
+    /// the plateau is ~3.2 GB at this cap against 659 MB at the old 20 000.
+    public static let persistedRows = 99_999
 
     /// Rows the main window's list holds. Sits at the store's cap rather than the
     /// ring's: history is read up into the window after launch, and a window smaller
-    /// than the store is a table that disagrees with its own search results.
-    public static let windowRows = 20_000
+    /// than the store is a table that disagrees with its own search results. Five
+    /// digits is also the `#` column's width (`DESIGN.md`), which is why the cap stops
+    /// one short of 100 000 rather than at a round number.
+    public static let windowRows = 99_999
 
     /// `memoryRing ≤ windowRows ≤ persistedRows`.
     ///
