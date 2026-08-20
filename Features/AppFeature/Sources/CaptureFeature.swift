@@ -39,18 +39,20 @@ public struct CaptureFeature: Sendable {
         /// that stopped being true the moment this number was raised and the ring's was
         /// not.
         ///
-        /// Raised from 2 000 to match what the store actually retains: the durable store
-        /// keeps 20 000 exchanges and every one of them is searchable, diffable and
-        /// replayable, so a list that stopped at a tenth of them was the surface
-        /// disagreeing with the engine again — a host's traffic could be found by the
-        /// find bar and counted in the sidebar while having no row.
+        /// Raised from 2 000 to match what the store actually retains: every exchange
+        /// the durable store keeps is searchable, diffable and replayable, so a list
+        /// that stopped at a tenth of them was the surface disagreeing with the engine
+        /// again — a host's traffic could be found by the find bar and counted in the
+        /// sidebar while having no row. `FlowLimits.windowRows` is that number, and it
+        /// moves with the store's rather than being chosen here.
         ///
         /// What made this affordable is measured, not assumed. The table draws only the
         /// rows in the viewport and applies a batch by diffing rather than reloading, so
         /// an update costs ~46 ms at 20 000 rows against ~42 ms at 2 000 — flat in the
-        /// row count (`RequestTable`). The rows themselves are body-free metadata,
-        /// measured at ~1.3 KB each: ~26 MB at this cap, against the 61 MB the engine's
-        /// body budget already allows itself.
+        /// row count (`RequestTable`). What is *not* flat is the resident cost of the
+        /// rows themselves: body-free metadata measured at ~1.3 KB each, so ~26 MB at
+        /// the old 20 000 and ~130 MB at 99 999 — twice the 61 MB the engine's body
+        /// budget allows itself, and the price of a list that reaches the whole store.
         ///
         /// The **engine's** ring is deliberately not raised with it. Restoring 20 000
         /// rows into it costs 416 ms of decode on the path that binds the listener, for
@@ -835,7 +837,8 @@ public struct CaptureFeature: Sendable {
                         // opened on 200 rows with 20 000 exchanges on disk.
                         //
                         // Off the launch path deliberately: restoring the full window
-                        // decodes every row it takes (measured at 416 ms for 20 000), and
+                        // decodes every row it takes (measured at 416 ms for 20 000, so
+                        // ~2 s at the 99 999 cap — linear in the rows, not the bodies), and
                         // the proxy must be listening long before then — which is why the
                         // parent sends this action after its start attempt rather than
                         // alongside it.

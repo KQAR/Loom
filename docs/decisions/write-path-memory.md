@@ -54,7 +54,7 @@ retaining data.
 
 - **Not the WAL.** It stays between 0 and 8 MB across every burst; SQLite is
   checkpointing normally.
-- **Not unbounded disk.** The file plateaus at 659 MB, which is the 20 000-row cap
+- **Not unbounded disk.** The file plateaus at 659 MB, which is the then-20 000-row cap
   holding at 32 KB a row.
 - **Not the pending batch.** Peak 209 rows against a 256 cap.
 - **Not reclaimable by asking.** `malloc_zone_pressure_relief` moves none of it, which

@@ -11,7 +11,7 @@ import Testing
 ///
 /// `Coordinator.update` runs on every capture batch — ten times a second — and the
 /// selection sync inside it used to open with `rows.firstIndex { $0.id == id }`: a
-/// linear walk of the window, which at `FlowLimits.windowRows` is 20 000 id comparisons
+/// linear walk of the window, which at `FlowLimits.windowRows` is ~100 000 id comparisons
 /// to conclude, almost always, that nothing moved. Every other lookup in `RequestTable`
 /// already refuses that shape (`ordinal(of:)` takes an O(1) `index(id:)`; `RowDiff`
 /// bounds its alignment search) — this one was the exception, and it was on the hot path.

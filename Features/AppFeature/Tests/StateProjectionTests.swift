@@ -118,9 +118,10 @@ import Testing
     /// it costs work proportional to what it holds — measured at this cap, 690 µs per
     /// insert against 2.6 µs into a plain container. Mutating it once per flow made
     /// filling the window quadratic: 14 s, where building on a local copy and assigning
-    /// once is 90 ms. The bound here is deliberately loose (a second, against a
-    /// measured 0.09) — this is a guard against the shape coming back, not a benchmark,
-    /// and it must not fail because CI is busy.
+    /// once is 90 ms. The bound is deliberately loose and stated **per row**
+    /// (`WindowPerf`) — this is a guard against the shape coming back, not a benchmark,
+    /// it must not fail because CI is busy, and a flat second was a fact about the old
+    /// cap rather than about this code.
     @Test func fillingTheWindowIsLinear() {
         let flows = (0 ..< CaptureFeature.State.displayCap).map { _ in Fixtures.flow() }
         var state = CaptureFeature.State()
@@ -128,7 +129,8 @@ import Testing
         state.recordFlows(flows)
         let elapsed = Date().timeIntervalSince(start)
         #expect(state.flows.count == CaptureFeature.State.displayCap)
-        #expect(elapsed < 1.0, "filling the window took \(elapsed)s — the per-flow write through observed state is back")
+        #expect(elapsed < WindowPerf.fullWindowBudget,
+                "filling the window took \(elapsed)s — the per-flow write through observed state is back")
     }
 
     @Test func recordFlow_overCap_dropsOldestAndCounts() {
