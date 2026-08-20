@@ -57,11 +57,34 @@ public struct MainView: View {
     /// Live height while a drag is in flight; `inspectorHeight` is the resting value.
     @State private var dragHeight: CGFloat?
 
-    /// DESIGN.md: sidebar-width 300, fixed. One constant because two consumers have to
-    /// agree on it — the sidebar's own frame and the toolbar chip's centring offset (see
-    /// `toolbarContent`). Drift between them shows as a chip off-centre by half the
-    /// disagreement.
-    private static let sidebarWidth: CGFloat = 300
+    /// Sidebar width, set by dragging its trailing edge. Persisted for the same reason
+    /// the inspector's height is: view-local chrome nothing else reads, and re-dragging it
+    /// on every launch is the annoyance. DESIGN.md's sidebar-width 300 is the *default*,
+    /// not a fixed value — a host list is as wide as the hostnames in it, which nothing at
+    /// design time knows.
+    @AppStorage("com.loom.sidebar.width") private var sidebarWidth = 300.0
+    /// Width at the start of a divider drag — nil when no drag is in flight.
+    @State private var dragStartWidth: CGFloat?
+    /// Live width while a drag is in flight; `sidebarWidth` is the resting value.
+    @State private var dragWidth: CGFloat?
+
+    /// Bounds on the drag. The floor keeps a row's glyph + title + count legible rather
+    /// than letting the pane become a second collapse gesture (⌃⌘S is the collapse); the
+    /// ceiling stops a drag from squeezing the request table below its own `minWidth`
+    /// on a narrow window — the content pane asks for 480, so anything past this is the
+    /// window resisting the drag instead of the sidebar following it.
+    private static let minSidebarWidth: CGFloat = 180
+    private static let maxSidebarWidth: CGFloat = 520
+
+    /// The width to draw at: the live drag value while one is in flight, the resting
+    /// value otherwise, clamped either way so a stale persisted value out of range
+    /// (an older build's, or a hand-edited default) can't strand the pane.
+    private var currentSidebarWidth: CGFloat {
+        min(
+            max(dragWidth ?? CGFloat(sidebarWidth), Self.minSidebarWidth),
+            Self.maxSidebarWidth
+        )
+    }
 
     /// Floor for either pane of the table/inspector split.
     private static let minPaneHeight: CGFloat = 160
@@ -79,7 +102,9 @@ public struct MainView: View {
     ///   8.7 s vs 143 ms, measured (CLAUDE.md § Known Issues).
     /// - `HSplitView` is a bare `NSSplitView`: no collapse semantics, so there is no
     ///   `isCollapsed` to animate and the sidebar could only be inserted and removed, which
-    ///   pops. Its divider was already fixed and undraggable here, so it was buying nothing.
+    ///   pops. Its draggable divider is the one thing it did buy, and `sidebarDivider`
+    ///   is that, hand-rolled — the same trade the table/inspector split already makes
+    ///   with `inspectorDivider`.
     /// - An `NSSplitViewController` bridge is the only way to get AppKit's own sidebar — its
     ///   drawer animation and the system `.toggleSidebar` toolbar item — but on macOS 26 a
     ///   `.sidebar` split item is a floating glass card: measured
@@ -97,10 +122,13 @@ public struct MainView: View {
                 // The inner frame pins the content at full width; the outer one animates.
                 // Trailing alignment is what makes it a push: at width 0 the content sits
                 // entirely off the leading edge and slides in as the box grows, instead of
-                // squashing from 300pt to nothing.
-                .frame(width: Self.sidebarWidth)
-                .overlay(alignment: .trailing) { Divider() }
-                .frame(width: sidebarVisible ? Self.sidebarWidth : 0, alignment: .trailing)
+                // squashing from its full width to nothing.
+                .frame(width: currentSidebarWidth)
+                .overlay(alignment: .trailing) { sidebarDivider }
+                .frame(
+                    width: sidebarVisible ? currentSidebarWidth : 0,
+                    alignment: .trailing
+                )
                 .clipped()
             content
                 .toolbar { toolbarContent }
@@ -133,6 +161,47 @@ public struct MainView: View {
     }
 
     // MARK: Sidebar — categories
+
+    /// The sidebar's trailing edge, doubling as its resize handle — the one thing
+    /// `HSplitView` would have given for free, hand-rolled for the same reason its
+    /// collapse is (see `body`).
+    ///
+    /// Same two rules as `inspectorDivider`, and for the same reason: the handle sits
+    /// *inside* the pane it resizes, so a `.local` translation would be re-based every
+    /// time the divider moves under the cursor (the panel fighting the drag), and
+    /// `@AppStorage` written per frame round-trips every width through `UserDefaults`
+    /// with its change notification a frame late. Hence `.global` plus `dragWidth`.
+    ///
+    /// Only live while the sidebar is showing: at width 0 the handle would sit on the
+    /// window's leading edge, offering to resize a pane that isn't there.
+    private var sidebarDivider: some View {
+        Divider()
+            // Widens the hit target without moving the hairline.
+            .padding(.horizontal, 2)
+            .contentShape(.rect)
+            .onHover { inside in
+                guard sidebarVisible else { return }
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { drag in
+                        guard sidebarVisible else { return }
+                        let start = dragStartWidth ?? CGFloat(sidebarWidth)
+                        dragStartWidth = start
+                        dragWidth = min(
+                            max(start + drag.translation.width, Self.minSidebarWidth),
+                            Self.maxSidebarWidth
+                        )
+                    }
+                    .onEnded { _ in
+                        if let settled = dragWidth { sidebarWidth = Double(settled) }
+                        dragWidth = nil
+                        dragStartWidth = nil
+                    }
+            )
+    }
+
 
     /// A sidebar row's trailing count, drawn directly rather than through
     /// `.badge()`.
