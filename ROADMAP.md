@@ -886,6 +886,24 @@ tracking-area storm that looked like the next bottleneck is 0.1 % of the main th
 build, with no frame missed at 120 Hz, and the headline number of the first perf PR had to be
 retracted for the same reason. Debug shows the *shape*; it does not give a magnitude worth acting on.
 
+### The list gets a third way to be narrowed, and a deep body opens in one click (done, 0.0.30)
+
+Two surfaces that could hold everything the store retains but could only be *read* at one scale.
+The request list reaches 99 999 rows and the sidebar's width came off a design-time guess onto the
+host names it actually holds — and then the narrowing caught up with the size: the find bar answers
+*which exchange* and the sidebar answers *whose traffic*, so **what shape** (protocol, HTTP version,
+content type, status class) was a URL fragment typed as a stand-in. A docked chip strip along the
+window's bottom edge answers it directly, ANDing with both, and filtering **this window only** —
+every fact a chip reads is already on the body-free row, so a `FlowQuery` pushdown would save no
+hydration and add a way for two answers to disagree.
+
+The same round in the inspector: a four-level JSON body took a click per branch to read and the same
+clicks to put back. One expand / collapse-all button, with two rules the naive version gets wrong —
+collapse folds **to the top level**, never to a single `{…}` line that is a hidden body rather than a
+collapsed one, and a whole-tree command is a **generation stamp** rather than a state, because the
+tree is lazy and a `Bool` can neither reach the nodes below the fold nor survive "expand everything,
+then close this branch".
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
