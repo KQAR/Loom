@@ -179,6 +179,18 @@ public struct AppFeature: Sendable {
         /// Whether LAN device connection runs (proxy on `0.0.0.0` + provisioning
         /// server). Persisted, default on; drives the phone icon's highlight.
         public var lanEnabled = true
+        /// The port the proxy is *configured* to listen on, which is not the same
+        /// fact as `status.port` — that one is what the engine actually bound, and
+        /// the two disagree for exactly as long as a rebind is in flight or has
+        /// failed. Persisted (`ProxyPortStore`), so the choice survives relaunch.
+        public var configuredPort = ProxyPortStore.defaultPort
+        /// Why the last port change was refused or failed, shown in the address
+        /// popover. Cleared when a rebind succeeds.
+        public var portError: String?
+        /// True while a rebind is in flight — the listener is down for the length of
+        /// it, so the popover says so rather than looking idle.
+        public var portRebinding = false
+
         /// The LAN address the phone-onboarding material was last published for.
         ///
         /// The QR *encodes* an address (`http://lanHost:provisioningPort/`) and the
@@ -243,22 +255,26 @@ public struct AppFeature: Sendable {
         var reverseProxyState = ReverseProxyFeature.State()
         var didBoot = false                      // guards the one-shot boot effect
 
-        /// The address to *tell someone to point a client at* — which is a question
-        /// about the listener, not about this machine's addresses. It used to be
-        /// `localIP ?? "127.0.0.1"`, i.e. the LAN IP whenever one could be resolved,
-        /// regardless of where the proxy was actually bound. Turning LAN device
-        /// connection off rebinds the listener to loopback
-        /// (`ProxyEngine.stopPhoneOnboarding`) and left the header, the toolbar chip
-        /// and the empty state's `curl -x` hint all advertising `192.168.x.x:9090` —
-        /// an address that refuses the connection. A wrong address is worse than a
-        /// narrow one: it sends someone debugging their client rather than the switch.
+        /// The interface the listener is bound to — **the engine's own answer**
+        /// (`status.listenHost`), not a claim assembled here.
         ///
-        /// So the listener decides. Bound to `0.0.0.0` with no LAN IPv4 resolved
-        /// (Wi-Fi down, or the resolve hasn't landed yet), the honest answer is
-        /// `0.0.0.0` — it is reachable on every interface, we just can't name one.
-        public var displayHost: String {
-            status.isLANReachable ? (localIP ?? "0.0.0.0") : "127.0.0.1"
-        }
+        /// It went through both wrong versions on the way. `localIP ?? "127.0.0.1"`
+        /// advertised the LAN IP whenever one could be resolved, so turning LAN
+        /// device connection off (which rebinds to loopback) left every surface
+        /// naming an address that refuses the connection. Deciding on
+        /// `isLANReachable` fixed *that* and kept the second half of the mistake:
+        /// with the listener on `0.0.0.0` it printed `10.0.11.196`, which is one
+        /// interface of the several it is answering on — a narrower claim than the
+        /// truth, and a different fact from the one this line is for.
+        ///
+        /// Those are two questions. **Where is the listener bound** is what a chip
+        /// beside the capture dot answers, and `0.0.0.0` is the honest answer to it.
+        /// **What does a phone type in** is the other one, and it belongs to the
+        /// material the phone popover publishes (`PhoneOnboardingInfo.lanHost`),
+        /// which is resolved by the engine at publish time and carried in the QR —
+        /// so answering it here would be a second, independently-derived copy of an
+        /// address the two could disagree about.
+        public var displayHost: String { status.listenHost }
 
         public init() {}
 
@@ -312,6 +328,14 @@ public struct AppFeature: Sendable {
         /// locally (see the merge in the reducer).
         case engineStatusRefreshed(ProxyStatus)
         case proxyStartFailed(String)
+        /// The address popover's Apply. Persists the choice and rebinds the
+        /// listeners; the system proxy follows if it was pointing at Loom.
+        case portSubmitted(Int)
+        /// Loaded at boot, because the store is side-effecting.
+        case configuredPortLoaded(Int)
+        /// The requested port could not be bound. Carries what to fall back to, so
+        /// the reducer never has to remember what it replaced.
+        case portRebindFailed(requested: Int, fallback: Int, message: String)
         /// A LAN device connected to (or was first seen by) the proxy.
         case connectedDeviceCountChanged(Int)
         case toggleRecordingTapped
@@ -506,24 +530,27 @@ public struct AppFeature: Sendable {
                 state.didBoot = true
                 return .merge(
                     .run { send in
+                        // Read before the start, not after: this *is* the port the
+                        // listeners come up on, and sending it as a separate action
+                        // would race the bind.
+                        // Both reads land **before** the start: the port is what the
+                        // listeners come up on, and `lanEnabled` is what `proxyStarted`
+                        // consults to decide whether to re-open the listener to the LAN
+                        // — reading it afterwards would have that decision made against
+                        // the default rather than the stored choice.
+                        //
+                        // LAN device connection is allowed by default, so a phone can
+                        // connect without anyone opening the popover first.
+                        let configured = ProxyPortStore.load()
+                        await send(.configuredPortLoaded(configured))
+                        await send(.lanEnabledLoaded(LANCaptureStore.load()))
                         do {
-                            let port = try await proxyClient.start(9090)
+                            let port = try await proxyClient.start(configured)
                             await send(.proxyStarted(port: port))
                         } catch {
                             // A bind failure (port in use) must not abort the whole
                             // effect — still load config + subscribe so the UI is live.
                             await send(.proxyStartFailed(error.localizedDescription))
-                        }
-                        // LAN device connection is allowed by default: make the proxy
-                        // LAN-reachable at boot so phones can connect without opening
-                        // the popover first. The switch in the popover flips this.
-                        let lan = LANCaptureStore.load()
-                        await send(.lanEnabledLoaded(lan))
-                        // The result is reported now (it used to be discarded): the
-                        // address it published for is what the republish watch below
-                        // compares against, and boot is where the first one is set.
-                        if lan, let info = try? await proxyClient.startPhoneOnboarding() {
-                            await send(.phoneOnboardingPublished(info))
                         }
                         await send(.viewAppeared)
                         // The capture surface subscribes itself from here rather than at
@@ -619,8 +646,9 @@ public struct AppFeature: Sendable {
                     state.status.isRunning = false
                     return .run { _ in await proxyClient.stop() }
                 }
+                let configured = state.configuredPort
                 return .run { send in
-                    let port = try await proxyClient.start(9090)
+                    let port = try await proxyClient.start(configured)
                     await send(.proxyStarted(port: port))
                 }
 
@@ -660,12 +688,98 @@ public struct AppFeature: Sendable {
                 state.phone?.isLoading = false
                 return .none
 
+            case let .configuredPortLoaded(port):
+                state.configuredPort = port
+                return .none
+
+            case let .portSubmitted(port):
+                // Validated here as well as in the card: the card owns the message
+                // shown while typing, this owns what may reach the engine, and a
+                // reducer that trusts its view is one refactor away from binding
+                // whatever was in the field.
+                let reserved = Set(state.status.reverseProxies.compactMap(\.boundPort))
+                if let refusal = ProxyPortStore.validate(port, reservedPorts: reserved) {
+                    state.portError = refusal
+                    return .none
+                }
+                guard port != state.status.port || !state.status.isRunning else {
+                    state.portError = nil
+                    return .none
+                }
+                let previous = state.configuredPort
+                state.configuredPort = port
+                state.portError = nil
+                state.portRebinding = true
+                // Persisted before the bind is attempted, and rolled back by
+                // `portRebindFailed` — a relaunch must not come up on a port the
+                // operator asked for and never got.
+                return .run { send in
+                    ProxyPortStore.save(port)
+                    await proxyClient.stop()
+                    do {
+                        let bound = try await proxyClient.start(port)
+                        await send(.proxyStarted(port: bound))
+                    } catch {
+                        await send(.portRebindFailed(
+                            requested: port, fallback: previous, message: error.localizedDescription
+                        ))
+                    }
+                }
+
+            case let .portRebindFailed(requested, fallback, message):
+                state.portRebinding = false
+                state.configuredPort = fallback
+                state.status.isRunning = false
+                state.portError = "Port \(requested) is unavailable — \(message)"
+                // The listener is *down* at this point: the stop already happened.
+                // Coming back up on the port that was working is the difference
+                // between a refused change and a proxy the operator has to notice is
+                // gone and restart by hand.
+                return .run { send in
+                    ProxyPortStore.save(fallback)
+                    guard let bound = try? await proxyClient.start(fallback) else {
+                        await send(.proxyStartFailed("could not rebind \(fallback)"))
+                        return
+                    }
+                    await send(.proxyStarted(port: bound))
+                }
+
             case let .proxyStarted(port):
                 state.status.isRunning = true
+                state.portRebinding = false
+                state.portError = nil
+                state.configuredPort = port
                 state.status.port = port
                 // The other listeners bind inside `start()`, so their ports only
                 // exist once it has returned.
-                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
+                //
+                // The system proxy is re-applied when it was pointing at Loom: it
+                // holds a *port*, so after a rebind it addresses a listener that is
+                // no longer there — every app on the machine loses the network with
+                // Loom's switch still reading "on". Not a no-op when the port didn't
+                // change, but a silent one (the same value written again), which is
+                // cheaper than a second way to be wrong about whether it did.
+                //
+                // **A start binds loopback.** `ProxyClient.start` passes no host, so
+                // the engine takes its `127.0.0.1` default — every path that brings
+                // the listener up (boot, the toggle, arming Record, a port change)
+                // therefore closes it to the LAN, and a phone that was capturing
+                // stops reaching it with nothing on any surface saying why. The port
+                // change is where this was found: 9099 applied, the window showed
+                // 9099, and the phone's requests went nowhere.
+                // `startPhoneOnboarding` is the rebind (0.0.0.0) *and* the republish
+                // of the material, which now carries the new port — it is idempotent,
+                // which is what lets one call cover all four paths.
+                let restoreLAN = state.lanEnabled
+                let followSystemProxy = state.setup.isSystemProxy
+                return .run { send in
+                    if restoreLAN, let info = try? await proxyClient.startPhoneOnboarding() {
+                        await send(.phoneOnboardingPublished(info))
+                    }
+                    // After the LAN rebind, so `listenHost` is the one now bound.
+                    await send(.engineStatusRefreshed(proxyClient.status()))
+                    if followSystemProxy { await send(.setup(.reapplySystemProxy)) }
+                }
 
             case let .engineStatusRefreshed(status):
                 // Merge, don't assign: `isRunning` is driven by the toggle here.
@@ -695,10 +809,11 @@ public struct AppFeature: Sendable {
                 // Turning recording on also brings the proxy up if it's stopped —
                 // there's nothing to capture while the proxy isn't listening.
                 let needStart = recording && !state.status.isRunning
+                let configured = state.configuredPort
                 return .run { send in
                     await proxyClient.setRecording(recording)
                     if needStart {
-                        let port = try await proxyClient.start(9090)
+                        let port = try await proxyClient.start(configured)
                         await send(.proxyStarted(port: port))
                     }
                 }

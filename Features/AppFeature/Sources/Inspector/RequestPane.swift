@@ -104,20 +104,21 @@ struct RequestPane: View {
         }
     }
 
-    /// Each tab owns its own scrolling: tabular/tree tabs go through `Scrolled`
+    /// Each tab owns its own scrolling: small block tabs go through `Scrolled`
     /// (a plain SwiftUI `ScrollView`), while Raw/Body hand large payloads to a
     /// viewport-lazy `NSTextView` (see `RawView`) so a big body never blocks the
-    /// main thread on open.
+    /// main thread on open. The key/value panes scroll themselves for the same
+    /// reason — they *are* an `NSTextView` now (see `KeyValueTextView`), so that
+    /// a drag can select a name and its value together.
     @ViewBuilder private func content(_ derived: Derived) -> some View {
         switch tab {
         case .flowSummary: Scrolled { FlowSummary(flow: flow) }
-        case .query: Scrolled { QueryView(items: derived.query) }
+        case .query: QueryView(items: derived.query)
         case .graphQL: Scrolled { GraphQLView(operation: derived.graphQL) }
         case .raw: RawTab(flow: flow, pane: "req", makeText: Self.rawText)
-        case .headers: Scrolled {
+        case .headers:
             HeadersList(headers: flow.request.headers, trailers: flow.request.trailers, find: headersFind)
-        }
-        case .cookies: Scrolled { CookiesView(cookies: derived.cookies, find: cookiesFind) }
+        case .cookies: CookiesView(cookies: derived.cookies, find: cookiesFind)
         case .body: BodyView(
             data: flow.request.body,
             identity: "req-body:\(flow.id)",
