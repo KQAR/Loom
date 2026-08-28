@@ -151,7 +151,6 @@ public enum LoomTheme {
         public static let toolbar = Font.system(size: 16, weight: .semibold) // toolbar status glyphs
         public static let card = Font.system(size: 13)                       // cert card / panel-row glyphs
         public static let badge = Font.system(size: 11, weight: .bold)       // count badge
-        public static let fab = Font.system(size: 15, weight: .semibold)     // floating action disc (clear capture)
         public static let tiny = Font.system(size: 9)                        // JSON depth guides
     }
 

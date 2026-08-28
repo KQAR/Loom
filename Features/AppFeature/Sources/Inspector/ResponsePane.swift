@@ -125,10 +125,9 @@ struct ResponsePane: View {
             switch tab {
             case .messages: EmptyView()
             case .raw: RawTab(flow: flow, pane: "resp", makeText: Self.rawText)
-            case .headers: Scrolled {
+            case .headers:
                 HeadersList(headers: response.headers, trailers: response.trailers, find: headersFind)
-            }
-            case .cookies: Scrolled { CookiesView(cookies: derived.cookies, find: cookiesFind) }
+            case .cookies: CookiesView(cookies: derived.cookies, find: cookiesFind)
             case .body: BodyView(
                 data: response.body,
                 identity: "resp-body:\(flow.id)",

@@ -224,11 +224,12 @@ import Testing
 
     // MARK: - displayHost
 
-    // The address every surface tells the human to point a client at (panel header,
-    // toolbar chip, the SOCKS tooltip, the empty state's `curl -x`). It is a fact
-    // about the *listener*, and reading it off `localIP` alone advertised a LAN
-    // address while the proxy was bound to loopback — an address that refuses the
-    // connection, which sends someone debugging their client instead of the switch.
+    // Where the listener is bound, which is the engine's own answer. Reading it off
+    // `localIP` advertised a LAN address while the proxy was on loopback — an
+    // address that refuses the connection. Deciding on `isLANReachable` fixed that
+    // and kept the other half: bound to every interface it printed one of them,
+    // which is narrower than the truth and a different fact from the one the chip
+    // beside the capture dot is for.
 
     @Test func displayHost_loopbackBinding_ignoresTheLANAddress() {
         var state = AppFeature.State()
@@ -237,16 +238,17 @@ import Testing
         #expect(state.displayHost == "127.0.0.1")
     }
 
-    @Test func displayHost_lanBinding_namesTheLANAddress() {
+    /// A resolved LAN address does not narrow the answer: the listener is answering
+    /// on every interface, and naming one of them is a claim the chip isn't making.
+    /// What a phone types in is the phone popover's material (`PhoneOnboardingInfo`),
+    /// resolved by the engine at publish time.
+    @Test func displayHost_lanBinding_saysWildcardEvenWithAnAddressResolved() {
         var state = AppFeature.State()
         state.localIP = "192.168.1.42"
         state.status.listenHost = "0.0.0.0"
-        #expect(state.displayHost == "192.168.1.42")
+        #expect(state.displayHost == "0.0.0.0")
     }
 
-    /// Bound to every interface but no IPv4 resolved (Wi-Fi down, or the first
-    /// resolve hasn't landed). `0.0.0.0` is reachable-but-unnamed; `127.0.0.1` would
-    /// be a lie in the other direction.
     @Test func displayHost_lanBindingWithNoResolvedAddress_saysWildcard() {
         var state = AppFeature.State()
         state.localIP = nil
