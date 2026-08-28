@@ -2,6 +2,7 @@ import AppKit
 import ComposableArchitecture
 import Foundation
 import LoomSharedModels
+import PrivilegedHelperClient
 import Testing
 
 @testable import AppFeature
@@ -214,7 +215,11 @@ import Testing
     /// the child reads a projection of them. Every path that moves `status` must
     /// therefore move the child's view with it, with nothing to remember.
     @Test func setupSeesTheProxyState_withoutAnyoneCopyingIt() async {
-        let store = TestStore(initialState: AppFeature.State()) {
+        var state = AppFeature.State()
+        // Loopback-only: a start re-opens the listener to the LAN when this is on,
+        // which is a different test (`rebinding_reopensTheListenerToTheLAN`).
+        state.lanEnabled = false
+        let store = TestStore(initialState: state) {
             AppFeature()
         } withDependencies: {
             $0.proxyClient.stop = {}
@@ -227,6 +232,9 @@ import Testing
         await store.send(.proxyStarted(port: 9191)) {
             $0.status.isRunning = true
             $0.status.port = 9191
+            // A bind that lands is also the answer to "what port is configured" —
+            // the two only differ while a rebind is in flight or has failed.
+            $0.configuredPort = 9191
         }
         await store.receive(\.engineStatusRefreshed) {
             $0.status.socksPort = 9192
@@ -641,5 +649,131 @@ import Testing
         await store.receive(\.setup.excludeHostTapped)
         await store.receive(\.setup.stopInterceptFinished)
         #expect(store.state.setup.sslScopeMessage == "pinned.example.com is already passed through.")
+    }
+
+    // MARK: Custom listen port
+
+    /// The card validates while typing, but the reducer is what decides what may
+    /// reach the engine — a refused port must not stop the listener on its way to
+    /// being rejected.
+    @Test func portSubmitted_refusesTheMCPPortWithoutTouchingTheListener() async {
+        var state = AppFeature.State()
+        state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+        state.lanEnabled = false
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.stop = { Issue.record("a refused port must not stop the proxy") }
+            $0.proxyClient.start = { _ in Issue.record("a refused port must not rebind"); return 0 }
+        }
+
+        // 9091 is refused because the SOCKS listener rides one port above it, which
+        // is the MCP endpoint an agent is connected to.
+        await store.send(.portSubmitted(ProxyPortStore.mcpPort - 1)) {
+            $0.portError = "9092 is the MCP endpoint an agent connects to — the SOCKS listener would take it."
+        }
+        #expect(store.state.configuredPort == ProxyPortStore.defaultPort)
+        #expect(store.state.status.port == 9090)
+    }
+
+    /// A bind that fails leaves the listener **down** — the stop has already
+    /// happened — so the reducer's job is not just to report it but to come back up
+    /// on the port that was working.
+    @Test func portSubmitted_fallsBackToTheWorkingPortWhenTheBindFails() async {
+        var state = AppFeature.State()
+        state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+        state.configuredPort = 9090
+        state.lanEnabled = false
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.stop = {}
+            $0.proxyClient.start = { port in
+                if port == 9090 { return 9090 }
+                throw StubError()
+            }
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.portSubmitted(9099)) {
+            $0.configuredPort = 9099
+            $0.portRebinding = true
+        }
+        await store.receive(\.portRebindFailed) {
+            $0.configuredPort = 9090
+            $0.status.isRunning = false
+            $0.portRebinding = false
+        }
+        #expect(store.state.portError?.contains("9099") == true)
+        // Back on the port that was working, rather than left stopped.
+        await store.receive(\.proxyStarted) {
+            $0.status.isRunning = true
+            $0.status.port = 9090
+            $0.portError = nil
+        }
+        await store.receive(\.engineStatusRefreshed)
+    }
+
+    /// The system proxy stores a *port*. After a rebind it addresses a listener that
+    /// is no longer there, so it is re-applied — otherwise every app on the machine
+    /// loses the network with Loom's switch still reading "on".
+    @Test func rebinding_reappliesTheSystemProxyItIsHolding() async {
+        var state = AppFeature.State()
+        state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+        state.setup.isSystemProxy = true
+        state.setup.proxyRunning = true
+        state.lanEnabled = false
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9099, capturedCount: 0) }
+            $0.privilegedHelperClient.setSystemProxy = { enabling, port in
+                #expect(enabling)
+                #expect(port == 9099, "the setting must follow the new listener")
+                return HelperOutcome(ok: true)
+            }
+            // `systemProxyResult` settles on what the system says once the write has
+            // landed, rather than believing the optimistic value.
+            $0.privilegedHelperClient.systemProxySnapshot = {
+                SystemProxySnapshot(
+                    httpEnabled: true, httpHost: "127.0.0.1", httpPort: 9099,
+                    httpsEnabled: true, httpsHost: "127.0.0.1", httpsPort: 9099
+                )
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.proxyStarted(port: 9099))
+        await store.receive(\.setup.reapplySystemProxy)
+        await store.receive(\.setup.systemProxyResult)
+    }
+
+    /// `ProxyClient.start` passes no host, so the engine binds its `127.0.0.1`
+    /// default — every path that brings the listener up closes it to the LAN. A
+    /// phone that was capturing then stops reaching it with nothing saying why, which
+    /// is what a port change surfaced: the window read 9099 and the phone's requests
+    /// went nowhere.
+    @Test func rebinding_reopensTheListenerToTheLAN() async {
+        var state = AppFeature.State()
+        state.lanEnabled = true
+        let published = PhoneOnboardingInfo(
+            lanHost: "192.168.1.20",
+            proxyPort: 9099,
+            provisioningPort: 8_765,
+            provisioningURL: URL(string: "http://192.168.1.20:8765/")!,
+            fingerprint: "AA:BB",
+            commonName: "Loom Root CA",
+            qrPNGData: Data()
+        )
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.startPhoneOnboarding = { published }
+            $0.proxyClient.status = {
+                ProxyStatus(isRunning: true, port: 9099, capturedCount: 0, listenHost: "0.0.0.0")
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.proxyStarted(port: 9099))
+        await store.receive(\.phoneOnboardingPublished) {
+            $0.publishedLANHost = "192.168.1.20"
+        }
+        await store.receive(\.engineStatusRefreshed) {
+            $0.status.listenHost = "0.0.0.0"
+        }
     }
 }

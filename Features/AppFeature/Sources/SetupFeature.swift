@@ -161,6 +161,10 @@ public struct SetupFeature: Sendable {
         /// and both of those already have live watchers of their own.
         case refreshAgentWritable
         case toggleSystemProxyTapped
+        /// Re-write the system proxy setting at the current port — sent by the parent
+        /// after a rebind, because the setting holds a port and would otherwise
+        /// address a listener that has moved.
+        case reapplySystemProxy
         case systemProxyResult(enabling: Bool, ok: Bool, message: String?)
         case systemProxyStateLoaded(Bool)
         /// macOS reported new proxy settings — either someone else changed them, or
@@ -293,6 +297,18 @@ public struct SetupFeature: Sendable {
                 state.systemProxyRouting = routing
                 state.isSystemProxy = routing == .loom
                 return .none
+
+            case .reapplySystemProxy:
+                // The proxy rebound on a new port. The system setting holds the old
+                // one, so it now points at nothing; writing it again is what keeps
+                // "system proxy: on" true rather than merely displayed.
+                guard state.isSystemProxy, state.proxyRunning else { return .none }
+                state.systemProxyBusy = true
+                let reapplyPort = state.port
+                return .run { send in
+                    let outcome = await privilegedHelperClient.setSystemProxy(true, reapplyPort)
+                    await send(.systemProxyResult(enabling: true, ok: outcome.ok, message: outcome.message))
+                }
 
             case .toggleSystemProxyTapped:
                 guard state.proxyRunning || !state.isSystemProxy else {

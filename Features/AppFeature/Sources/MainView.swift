@@ -22,6 +22,8 @@ public struct MainView: View {
     @State private var clearPulse = 0
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
+    /// Whether the address chip's port editor is open.
+    @State private var showingPortEditor = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
@@ -795,11 +797,7 @@ public struct MainView: View {
             Circle()
                 .fill(captureDotColor)
                 .frame(width: 7, height: 7)
-            Text(verbatim: store.status.isRunning
-                ? "\(store.displayHost):\(store.status.port)"
-                : "Proxy stopped")
-                .font(.callout.monospaced())
-                .foregroundStyle(.secondary)
+            addressButton
 
             // Shown even while the proxy is stopped — see `DeviceReadiness`. It
             // used to be hidden, which removed the control precisely when someone
@@ -833,6 +831,26 @@ public struct MainView: View {
             clearButton
         }
         .padding(.horizontal, LoomTheme.Space.sm)
+    }
+
+    /// The address, and the way in to changing it. It reads as text and behaves as a
+    /// button, because the address is the thing someone is looking at when 9090 turns
+    /// out to be taken — a Settings pane elsewhere would be a second place to look
+    /// for the fact already on screen. `ProxyPortCard` is the only editor.
+    private var addressButton: some View {
+        Button { showingPortEditor = true } label: {
+            Text(verbatim: store.status.isRunning
+                ? "\(store.displayHost):\(store.status.port)"
+                : "Proxy stopped")
+                .font(.callout.monospaced())
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Change the proxy port")
+        .popover(isPresented: $showingPortEditor, arrowEdge: .bottom) {
+            ProxyPortCard(store: store) { showingPortEditor = false }
+        }
     }
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
