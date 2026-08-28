@@ -17,6 +17,10 @@ struct CodeTextView: NSViewRepresentable {
     /// can be 5 MB.
     var findRanges: [Range<String.Index>] = []
     var findIndex: Int = 0
+    /// Text container inset. Defaults to the pane's own margins; a caller that has
+    /// already padded around this view passes `.zero`, so the text lines up with
+    /// whatever is above it instead of sitting a margin further in.
+    var textInset = NSSize(width: LoomTheme.Space.md, height: LoomTheme.Space.sm)
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -84,7 +88,7 @@ struct CodeTextView: NSViewRepresentable {
         // the search button next to Copy; it highlights via `applyFind`.
         textView.usesFindBar = false
         textView.isIncrementalSearchingEnabled = false
-        textView.textContainerInset = NSSize(width: LoomTheme.Space.md, height: LoomTheme.Space.sm)
+        textView.textContainerInset = textInset
         // Wrap long lines to the pane width (minified JSON can be one huge line).
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
@@ -99,6 +103,7 @@ struct CodeTextView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let textView = scroll.documentView as? NSTextView else { return }
+        textView.textContainerInset = textInset
         let coordinator = context.coordinator
         if coordinator.applied != identity {
             coordinator.overridden = nil
