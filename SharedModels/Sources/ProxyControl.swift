@@ -248,6 +248,12 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     case clientCertificateNotFound(UUID)
     case invalidReverseProxy(String)
     case reverseProxyNotFound(UUID)
+    /// A listener could not be opened, in the operator's words rather than NIO's.
+    /// `IOError` is not a `LocalizedError`, so Foundation renders it as
+    /// "The operation couldn't be completed. (NIOCore.IOError error 1.)" — which
+    /// names neither the port nor the reason, on the one failure (the port is
+    /// taken) that the operator can actually do something about.
+    case listenerUnavailable(String)
 
     /// Human-readable text for surfacing to the operator (UI or AI), instead of a
     /// `String(describing:)` enum dump.
@@ -260,6 +266,7 @@ public enum ProxyControlError: Error, Equatable, Sendable {
         case let .ruleNotFound(id): return "no rule with id \(id.uuidString)"
         case let .invalidRule(reason): return "invalid rule: \(reason)"
         case let .phoneOnboardingUnavailable(reason): return "phone onboarding unavailable: \(reason)"
+        case let .listenerUnavailable(reason): return reason
         case let .breakpointNotFound(id): return "no breakpoint with id \(id.uuidString)"
         case let .pendingBreakpointNotFound(id): return "no held (pending) breakpoint with id \(id.uuidString) — it may have already resumed or timed out"
         case let .invalidBreakpoint(reason): return "invalid breakpoint: \(reason)"

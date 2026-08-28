@@ -272,7 +272,10 @@ public actor ProxyEngine: ProxyControlling {
             return boundPort
         } catch {
             running = false
-            throw error
+            // Named rather than passed through: a port already held by another proxy
+            // is the common failure here, and NIO's own error says neither which
+            // port nor why (see `BindDiagnosis`).
+            throw BindDiagnosis.error(error, host: host, port: port)
         }
     }
 

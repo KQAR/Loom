@@ -72,9 +72,16 @@ struct WebSocketUpstreamTLSTests {
         """)
         try await client.writeAndFlush(buffer).get()
 
+        // Waits for the *settled* record, not the first one to appear. A request is
+        // recorded when its head is parsed and the failure lands afterwards, so
+        // matching on the URL alone can catch the pending version — which is a real
+        // intermediate state, not a defect, and made this test fail intermittently
+        // under Thread Sanitizer, where the two are further apart.
         let flow = try #require(
-            await awaitFlow(from: engine) { $0.request.url.contains("127.0.0.1:1/socket") },
-            "a WebSocket upgrade that never reached its origin must still be captured"
+            await awaitFlow(from: engine) {
+                $0.request.url.contains("127.0.0.1:1/socket") && $0.error != nil
+            },
+            "a WebSocket upgrade that never reached its origin must still be captured, carrying why"
         )
         #expect(flow.error != nil, "the flow must carry why the splice never started")
         await engine.stopForTest()
