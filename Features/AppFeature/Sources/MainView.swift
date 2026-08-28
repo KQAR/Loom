@@ -16,11 +16,10 @@ public struct MainView: View {
     }
     /// Tail-follow the newest row until the user scrolls away.
     @State private var followTail = true
-    /// Fill of the clear button's charging ring (0…1) while it's held.
-    @State private var clearProgress: CGFloat = 0
-    /// The clear control is a small dot at rest, expanding to the full button when
-    /// the cursor is over/near it.
-    @State private var clearHovering = false
+    /// Bumped when a clear actually fires, so the glyph bounces once. A counter rather
+    /// than a `Bool`: `symbolEffect(_:value:)` replays on any change, and two clears in
+    /// a row must both be felt.
+    @State private var clearPulse = 0
     /// Whether the SSL button's cert install-&-trust popover is open.
     @State private var showingCertTrust = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -504,15 +503,10 @@ public struct MainView: View {
                         store: captureStore, followTail: $followTail,
                         sslScope: store.setup.sslScope
                     )
-                        // The clear control floats over the table (bottom-right): a small red
-                        // dot at rest, expanding to the full hold-to-clear button on hover, so
-                        // it barely covers content until you reach for it. No reserved gap —
-                        // the table keeps full height and the row stripes fill it.
                         .safeAreaInset(edge: .bottom, spacing: 0) {
                             if store.capture.droppedFlowCount > 0 { capBanner }
                             if store.status.droppedByRules > 0 { droppedBanner }
                         }
-                        .overlay(alignment: .bottomTrailing) { clearFAB }
                 }
             }
         }
@@ -560,61 +554,32 @@ public struct MainView: View {
         .background(.bar)
     }
 
-    /// How long the clear button must be held to fire. The gesture and the ring
-    /// that charges around it read from the same constant: they are one signal —
-    /// the ring *is* the countdown — and if they drift the ring either fills
-    /// before the gesture fires or the press completes on a half-full ring.
-    private static let clearHoldDuration: TimeInterval = 0.7
-
-    /// Destructive "clear captured flows", floated bottom-right of the flow list.
-    /// At rest it's just a small red dot so it barely covers the table; hovering
-    /// (or reaching toward it) expands it to the full button. Held to fire — a red
-    /// ring charges around the trash glyph while held and springs back if released
-    /// early, so a stray click can't wipe the capture (no modal dialog).
-    private var clearFAB: some View {
-        ZStack {
-            if clearHovering {
-                ZStack {
-                    Circle()
-                        .fill(.regularMaterial)
-                        .overlay { Circle().strokeBorder(.quaternary, lineWidth: 1) }
-                    Circle()
-                        .trim(from: 0, to: clearProgress)
-                        .stroke(LoomTheme.Palette.error, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                        .rotationEffect(.degrees(-90)) // start the fill at 12 o'clock
-                        .padding(3)
-                    Image(systemName: "trash")
-                        .font(LoomTheme.Icon.fab)
-                        .foregroundStyle(LoomTheme.Palette.error)
-                }
-                // Grow out of the dot: scale up from the corner + fade in.
-                .transition(.scale(scale: 0.3, anchor: .bottomTrailing).combined(with: .opacity))
-            } else {
-                Circle()
-                    .fill(LoomTheme.Palette.error)
-                    .frame(width: 12, height: 12)
-                    .transition(.scale(scale: 0.5).combined(with: .opacity))
-            }
-        }
-        .frame(width: clearHovering ? 44 : 22, height: clearHovering ? 44 : 22)
-        .shadow(color: .black.opacity(0.25), radius: clearHovering ? 4 : 2, y: clearHovering ? 2 : 1)
-        .contentShape(Circle())
-        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: clearHovering)
-        .onHover { hovering in
-            clearHovering = hovering
-        }
-        .onLongPressGesture(minimumDuration: Self.clearHoldDuration, maximumDistance: 60) {
+    /// Destructive "clear captured flows", sitting right of the toolbar's Record/Stop
+    /// button. An `eraser` rather than a `trash` — fewer strokes at 16pt, and it says
+    /// clear-the-list rather than delete-a-thing. Glyph only, fires on a single click — clearing drops nothing the engine
+    /// still holds (it is the window's own list), so it is not gated. It floated over
+    /// the flow list's bottom-right corner before: a control rendered only over the
+    /// table is missing exactly when the table is (empty state, a panel selected), and
+    /// clearing is capture lifecycle — the same band as Record.
+    private var clearButton: some View {
+        Button {
             store.send(.capture(.clearTapped))
-            clearProgress = 0
-        } onPressingChanged: { pressing in
-            // Pressing implies the cursor is on it — keep it expanded while held.
-            if pressing { clearHovering = true }
-            withAnimation(pressing ? .linear(duration: Self.clearHoldDuration) : .easeOut(duration: 0.2)) {
-                clearProgress = pressing ? 1 : 0
-            }
+            clearPulse += 1
+        } label: {
+            Image(systemName: "eraser")
+                .font(LoomTheme.Icon.toolbar)
+                // The only confirmation a clear gets — there is no dialog, and an
+                // emptied table looks like an idle one. `.wiggle.left` over `.bounce`
+                // because it is the gesture the glyph depicts: an eraser sweeping, not
+                // a thing dropping. macOS 15 is the floor, which is what makes it
+                // available (SF Symbols 6).
+                .symbolEffect(.wiggle.left, value: reduceMotion ? 0 : clearPulse)
+                .foregroundStyle(LoomTheme.Palette.error)
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
         }
-        .help(clearHovering ? "Hold to clear captured flows" : "Clear captured flows")
-        .padding(LoomTheme.Space.md)
+        .buttonStyle(.borderless)
+        .help("Clear captured flows")
     }
 
     static func copy(_ text: String) {
@@ -860,11 +825,12 @@ public struct MainView: View {
                 store.send(.rules(.toggleRulesTapped))
             }
 
-            // Record lives at the right end of the ip toolbar, split from the
-            // status toggles by a divider. Clear is a floating button in the
-            // flow list (`clearFAB`), so the trailing toolbar group is gone.
+            // Record and Clear live at the right end of the ip toolbar, split from
+            // the status toggles by a divider: both are capture lifecycle, so they
+            // sit together rather than one of them floating over the flow list.
             Divider().frame(height: 14)
             recordButton
+            clearButton
         }
         .padding(.horizontal, LoomTheme.Space.sm)
     }
@@ -876,19 +842,18 @@ public struct MainView: View {
     }
 
     /// Start/stop capture. Idle shows a circular record symbol; recording shows a
-    /// stop glyph. Text label kept ("Record"/"Stop").
+    /// stop glyph. Glyph only — the two symbols and their tint say the state, and the
+    /// help text says the verb.
     private var recordButton: some View {
         Button { store.send(.toggleRecordingTapped) } label: {
-            HStack(spacing: 5) {
-                Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
-                    .font(LoomTheme.Icon.toolbar)
-                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
-                Text(store.isRecording ? "Stop" : "Record")
-                    .font(.callout)
-            }
-            .foregroundStyle(store.isRecording ? LoomTheme.Palette.warning : LoomTheme.Palette.error)
-            .frame(height: 26)
-            .contentShape(Rectangle())
+            Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
+                .font(LoomTheme.Icon.toolbar)
+                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .foregroundStyle(store.isRecording ? LoomTheme.Palette.warning : LoomTheme.Palette.error)
+                // Same box as `statusIcon`: every glyph in this strip is spaced by one
+                // measurement, including the gap to the divider on either side.
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .help(store.isRecording
