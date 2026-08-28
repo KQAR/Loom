@@ -11,6 +11,13 @@ struct ResponsePane: View {
     @State private var headersFind = InspectorFind()
     @State private var cookiesFind = InspectorFind()
     @State private var findReport = InspectorFindReport.empty
+    /// Whole-tree expand / collapse for the Body tab's JSON view. Owned here rather
+    /// than inside `BodyView` because the control that issues it lives in the pane's
+    /// floating action cluster, which is a sibling of the body, not a child of it.
+    @State private var bodyExpansion = JSONExpansionCommand()
+    /// Whether the body is currently a tree — reported up by `BodyView`, because only
+    /// it knows whether the parse succeeded and stayed under the render limit.
+    @State private var bodyIsOutline = false
 
     /// Same reason as `RequestPane.Derived`: `tabs` needs the cookies (to decide
     /// whether the tab exists) and `content` needs them (to render it), so as a
@@ -85,6 +92,7 @@ struct ResponsePane: View {
 
             content(derived)
                 .onPreferenceChange(InspectorFindReportKey.self) { findReport = $0 }
+                .onPreferenceChange(InspectorBodyOutlineKey.self) { bodyIsOutline = $0 }
                 .overlay(alignment: .topTrailing) {
                     paneActions(derived)
                 }
@@ -92,6 +100,10 @@ struct ResponsePane: View {
         .onAppear { if flow.isWebSocket { tab = .messages } }
         .onChange(of: flow.id) {
             bodyFind = InspectorFind()
+            // A new flow is a new body: carrying "expand all" across would open a
+            // tree the reader never asked to open, and carrying "collapse all" would
+            // hide the thing they just clicked a row to look at.
+            bodyExpansion = JSONExpansionCommand()
             headersFind = InspectorFind()
             cookiesFind = InspectorFind()
             if flow.isWebSocket { tab = .messages }
@@ -121,7 +133,8 @@ struct ResponsePane: View {
                 data: response.body,
                 identity: "resp-body:\(flow.id)",
                 fullBodyBytes: response.fullBodyBytes,
-                find: bodyFind
+                find: bodyFind,
+                expansion: bodyExpansion
             )
             }
         } else if let error = flow.error {
@@ -135,7 +148,15 @@ struct ResponsePane: View {
         switch tab {
         case .body:
             if let text = RequestPane.bodyText(flow.response?.body) {
-                FloatingPaneActions(copyText: text, copyHelp: "Copy body", find: $bodyFind, report: findReport)
+                FloatingPaneActions(
+                    copyText: text,
+                    copyHelp: "Copy body",
+                    find: $bodyFind,
+                    report: findReport,
+                    // Only when a tree is on screen: a raw or empty body has nothing
+                    // to fold, and the command would be a control that does nothing.
+                    expansion: bodyIsOutline ? $bodyExpansion : nil
+                )
             }
         case .headers:
             if let response = flow.response,

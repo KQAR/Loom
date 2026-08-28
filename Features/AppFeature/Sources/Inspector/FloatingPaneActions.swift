@@ -9,6 +9,19 @@ struct InspectorFindReport: Equatable {
     static let empty = InspectorFindReport()
 }
 
+/// Whether the pane's body is currently rendered as the collapsible JSON tree.
+///
+/// A preference rather than something each pane works out for itself: the answer
+/// depends on the one-shot parse and the tree's size limit, both of which are
+/// `BodyView`'s, and a pane that re-derived it would offer an expand control over a
+/// raw text pane whenever the two tests drifted.
+struct InspectorBodyOutlineKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
 struct InspectorFindReportKey: PreferenceKey {
     static let defaultValue = InspectorFindReport.empty
     static func reduce(value: inout InspectorFindReport, nextValue: () -> InspectorFindReport) {
@@ -26,6 +39,10 @@ struct FloatingPaneActions: View {
     var copyHelp: String
     @Binding var find: InspectorFind
     var report: InspectorFindReport = .empty
+    /// The pane's whole-tree expansion, when the pane has one to offer. Nil for the
+    /// Headers and Cookies clusters, and for a body that isn't a tree — a control
+    /// that is drawn but does nothing is worse than one that isn't there.
+    var expansion: Binding<JSONExpansionCommand>?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var copied = false
@@ -45,6 +62,26 @@ struct FloatingPaneActions: View {
                 help: "Find"
             ) {
                 find.toggle()
+            }
+            // Second, between Find and Copy: Find is the one control every pane has and
+            // the one the find field slides out of, so it stays at the head of the
+            // cluster; this is conditional (Body-with-a-tree only), and a conditional
+            // control in front of a permanent one moves the permanent one whenever it
+            // appears.
+            if let expansion {
+                paneButton(
+                    systemImage: expansion.wrappedValue.isExpandedAll
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right",
+                    active: expansion.wrappedValue.generation > 0,
+                    help: expansion.wrappedValue.isExpandedAll ? "Collapse all" : "Expand all"
+                ) {
+                    if expansion.wrappedValue.isExpandedAll {
+                        expansion.wrappedValue.collapseAll()
+                    } else {
+                        expansion.wrappedValue.expandAll()
+                    }
+                }
             }
             paneButton(
                 systemImage: copied ? "checkmark" : "doc.on.doc",
