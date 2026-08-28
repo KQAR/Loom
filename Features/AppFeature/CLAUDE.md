@@ -33,6 +33,27 @@ the engine's half is in
 
 - **The main window's answer is a row's context menu, not a surface of its own.** A CONNECT row holds `Copy Host` and exactly one scope item — no Replay and no rule, there being no exchange to stamp one from — and *which* item is the whole difference between the two kinds wearing the same lock: a *relayed* tunnel is a host nobody named, so Decrypt is the point of the row; a *failed* one is a host Loom is already trying to decrypt, so passing it through is the repair. Neither is read off the row: `RequestTable.Coordinator.scopeItems` asks the scope, and `offersDecrypt`/`offersExclude` split on the same `shouldIntercept`, so they are complementary by construction. Two gates, both bugs first: **the exchange must be TLS**, and **the scope decides the direction, never the scheme**. The wildcard widens by exactly one label (`parentWildcard`). Both directions travel up as `CaptureFeature.Delegate` cases to `SetupFeature` (`decryptHost` → `interceptHostTapped`, `excludeHost` → `excludeHostTapped`), so the table and the console card cannot drift on what either one means.
 
+## The request list's quick filters
+
+The floating chip bar beside the clear control (`QuickFilterBar` + `FlowQuickFilter`)
+narrows on four facets — scheme, the **client's** HTTP version, the response's
+`Content-Type` and the status class. Three rules a change must keep:
+
+- **They filter this window and nothing else.** Nothing is pushed into `FlowQuery`,
+  unlike `FlowSearch.engineQuery`: every fact a chip reads is already on the body-free
+  row, so a pushdown would buy no hydration and add a way for two answers to disagree.
+  A chip therefore never invalidates a standing search result.
+- **Absent is unmeasured, never "no".** A row with no response yet, no `Content-Type`
+  or no scheme matches *no* chip in that facet; `binary` means typed-and-none-of-the-above.
+  Folding the unknowns into it would make "show the binary payloads" return every
+  pending exchange.
+- **The bar is docked and outlives the empty state.** It is the last row of
+  `MainView.requestArea`'s stack, not an overlay on the table: a chip that narrows the
+  window to zero rows swaps the table out, and taking the only control that undoes it
+  off screen is the `isRecording` shape again. It is applied by both writers of the
+  cached projection (rebuild and incremental fold), which `QuickFilterTests` pins
+  against each other.
+
 ## Known issues (surfaces)
 
 - **`MainView` uses a plain `HStack` deliberately — never `NavigationSplitView`, and no longer `HSplitView`.** *(verified 0.0.24.)* `NavigationSplitView` pays a quadratic AppKit KVO teardown on a sidebar category switch with live traffic: measured **8.7–16 s of main thread vs 143–224 ms** (61×) on the same view. `HSplitView` went too — a bare `NSSplitView` has no collapse semantics, so the sidebar could only be inserted and removed, which pops. The collapse now animates the pane's **width** (300↔0, trailing-aligned + `.clipped()`); the toolbar `sidebar.left` button and ⌃⌘S share one animated action. Three measured dead ends are recorded so they aren't re-walked (the `NSSplitViewController` bridge, centring the status chip on the content pane, removing the macOS 26 scroll-edge band): [`docs/decisions/navigation-split-view.md`](../../docs/decisions/navigation-split-view.md); the full `NavigationSplitView` investigation is [`docs/decisions/navigation-split-view-kvo.md`](../../docs/decisions/navigation-split-view-kvo.md). [DESIGN.md § main-window](../../DESIGN.md#layout-main-window) records the container decision.

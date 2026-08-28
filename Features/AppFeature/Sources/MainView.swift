@@ -515,6 +515,11 @@ public struct MainView: View {
                         .overlay(alignment: .bottomTrailing) { clearFAB }
                 }
             }
+            // A row of the stack below the table, not an overlay on it: docked, it
+            // reserves its own height and never covers a row, and it stays put when
+            // the table is swapped for the empty state — which is exactly when a chip
+            // that narrowed the window to nothing has to remain undoable.
+            QuickFilterBar(store: captureStore)
         }
         // Scoped to the bar's presence: a blanket `.animation` here would also
         // animate the table's own updates, which arrive ten times a second under
@@ -976,6 +981,21 @@ public struct MainView: View {
             } actions: {
                 Button("Clear Filter") { store.send(.capture(.searchDismissed)) }
             }
+        } else if store.capture.quickFilter.isActive, store.capture.allCount > 0 {
+            // Same failure as the search branch above, from the third narrowing: with
+            // `.all` selected and chips up, the selection branch below would print
+            // "Nothing captured matches ." and offer a button that clears a selection
+            // which was never the cause. Named and undoable instead.
+            ContentUnavailableView {
+                Label("No \(selectedRecordNoun) match these filters", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                Text(
+                    "Nothing in this window matches \(quickFilterSummary). Chips in one group "
+                        + "widen the list; chips in different groups narrow it."
+                )
+            } actions: {
+                Button("Clear Filters") { store.send(.capture(.quickFilterCleared)) }
+            }
         } else if store.capture.allCount > 0 {
             // The capture is not empty — the *selection* admits none of it. Saying
             // "waiting for traffic" here is the same failure the search branch above
@@ -1006,6 +1026,15 @@ public struct MainView: View {
                 Text("Start the proxy from the menu-bar console.")
             }
         }
+    }
+
+    /// The chips that are on, in the bar's own order — so the empty state names the
+    /// same words the strip does rather than a set's arbitrary iteration order.
+    private var quickFilterSummary: String {
+        QuickFilterChip.all
+            .filter(store.capture.quickFilter.contains)
+            .map(\.label)
+            .joined(separator: " + ")
     }
 
     /// The selected filters, named the way the sidebar names them.

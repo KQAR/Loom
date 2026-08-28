@@ -21,6 +21,7 @@ import Testing
         "selection",
         "selectedFlowID",
         "search",
+        "quickFilter",
         "aggregates",
         "aggregatesCoverHistory",
         "hostByRow",
