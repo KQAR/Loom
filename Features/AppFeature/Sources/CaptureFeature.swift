@@ -108,6 +108,18 @@ public struct CaptureFeature: Sendable {
             didSet { if search.affectsProjection(comparedTo: oldValue) { refreshVisibleFlows() } }
         }
 
+        /// The floating quick-filter chips over the request table (protocol, client
+        /// HTTP version, response content kind, status class).
+        ///
+        /// A third narrowing alongside the sidebar and the needle, ANDed with both —
+        /// see `FlowQuickFilter` for why a set of chips means OR-within / AND-across
+        /// and why none of it is pushed into `FlowQuery`. Guarded like `search`
+        /// because the projection rebuild is a scan of the window and every field of
+        /// this one does affect it.
+        public var quickFilter = FlowQuickFilter() {
+            didSet { if quickFilter != oldValue { refreshVisibleFlows() } }
+        }
+
         /// Sidebar counters — **mirrored from the engine, not maintained here.**
         ///
         /// They used to be folded in as flows arrived in this window, which meant every
@@ -184,6 +196,7 @@ public struct CaptureFeature: Sendable {
                 && lhs.pinnedApps == rhs.pinnedApps
                 && lhs.deviceAliases == rhs.deviceAliases
                 && lhs.search == rhs.search
+                && lhs.quickFilter == rhs.quickFilter
                 && lhs.aggregates == rhs.aggregates
                 && lhs.selectedFlowDetail == rhs.selectedFlowDetail
                 && lhs.selectedOriginalDetail == rhs.selectedOriginalDetail
@@ -422,7 +435,7 @@ public struct CaptureFeature: Sendable {
         /// of the window — which is the case the incremental path exists for.
         private var projectionIsCheapToRebuild: Bool {
             if panelCategory != nil { return true }
-            if selection == [.all] { return !search.isActive }
+            if selection == [.all] { return !search.isActive && !quickFilter.isActive }
             return false
         }
 
@@ -481,6 +494,9 @@ public struct CaptureFeature: Sendable {
         private mutating func recordVisibleFlows(_ batch: [Flow], insertedIDs: [Flow.ID]) -> Bool {
             guard !projectionIsCheapToRebuild else { return false }
             let matches = search.predicate()
+            // Both predicates are built once for the batch, never per row — same rule,
+            // same reason as the full rebuild below.
+            let passesChips = quickFilter.predicate()
             let inserted = Set(insertedIDs)
             var working = visibleFlows.value
             var positions = visiblePositions
@@ -488,7 +504,7 @@ public struct CaptureFeature: Sendable {
             // Rows the capture already held: update in place, or decline.
             for flow in batch where !inserted.contains(flow.id) {
                 guard let updated = flows[id: flow.id] else { return false }
-                let shouldShow = categoryMatches(updated) && matches(updated)
+                let shouldShow = categoryMatches(updated) && matches(updated) && passesChips(updated)
                 if let index = positions[flow.id] {
                     guard shouldShow else { return false }
                     working[index] = updated
@@ -502,7 +518,7 @@ public struct CaptureFeature: Sendable {
             // appended once and carries its final state.
             for id in insertedIDs {
                 guard let flow = flows[id: id] else { continue }
-                guard categoryMatches(flow) && matches(flow) else { continue }
+                guard categoryMatches(flow) && matches(flow) && passesChips(flow) else { continue }
                 positions[id] = working.count
                 working.append(flow)
             }
@@ -557,6 +573,7 @@ public struct CaptureFeature: Sendable {
             // prepared here (`FlowSearch.predicate`), which is the difference between
             // 84 ms and 0.8 ms over a full window.
             let matches = search.predicate()
+            let passesChips = quickFilter.predicate()
             if panelCategory != nil {
                 return [] // the rules / audit / breakpoints panel replaces the table
             }
@@ -564,7 +581,8 @@ public struct CaptureFeature: Sendable {
                 // No filter at all: the whole list, handed over without copying
                 // (`elements` is the backing array) — this is the common case. A
                 // needle is the one thing that makes it cost a scan.
-                return search.isActive ? flows.elements.filter(matches) : flows.elements
+                if !search.isActive && !quickFilter.isActive { return flows.elements }
+                return flows.elements.filter { matches($0) && passesChips($0) }
             }
             // The needle applies *after* the category, which is also the order the
             // engine query is built in (`FlowSearch.engineQuery`) — so the two paths
@@ -572,7 +590,10 @@ public struct CaptureFeature: Sendable {
             // `categoryMatches` is the same predicate the incremental fold applies, so
             // the two writers of this list cannot disagree about membership.
             let filtering = search.isActive
-            return flows.elements.filter { categoryMatches($0) && (!filtering || matches($0)) }
+            let chipping = quickFilter.isActive
+            return flows.elements.filter {
+                categoryMatches($0) && (!filtering || matches($0)) && (!chipping || passesChips($0))
+            }
         }
 
         /// One sidebar grouping row. A named type rather than the tuple these used to
@@ -754,6 +775,17 @@ public struct CaptureFeature: Sendable {
         /// for: the reducer drops it when either has moved on, so a slow body scan
         /// can't overwrite the result of the query typed after it.
         case searchResultsLoaded(ids: Set<Flow.ID>, needle: String, scope: FlowSearchScope)
+
+        // MARK: Quick filters (the floating chip bar)
+
+        /// One chip tapped, in the floating bar or its picker. Toggles — the bar has
+        /// no separate "off" gesture, and a chip that only ever adds is a filter with
+        /// no way back except the clear-all.
+        case quickFilterToggled(QuickFilterChip)
+        /// The bar's ✕. Drops every chip in one gesture; the sidebar selection and the
+        /// needle are deliberately untouched, because they are different questions and
+        /// clearing them together is how a person loses the host they had picked.
+        case quickFilterCleared
         /// Hydrated bodies for a selection landed (self + optional replay original);
         /// carries the requested id so a stale load for a past selection is ignored.
         case selectedDetailLoaded(id: Flow.ID, flow: Flow?, original: Flow?)
@@ -931,6 +963,18 @@ public struct CaptureFeature: Sendable {
 
             case .searchRefreshRequested:
                 return runSearch(&state)
+
+            case let .quickFilterToggled(chip):
+                state.quickFilter.toggle(chip)
+                // No `runSearch`: a chip is never part of the engine query (see
+                // `FlowQuickFilter`), so the standing answer is still the answer to the
+                // question that was asked. Re-running it would hydrate bodies off disk
+                // to learn nothing.
+                return .none
+
+            case .quickFilterCleared:
+                state.quickFilter.clear()
+                return .none
 
             case let .searchResultsLoaded(ids, needle, scope):
                 // Drop an answer to a question no longer being asked: a body scan

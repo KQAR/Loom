@@ -671,6 +671,18 @@ public struct MainView: View {
                     }
                     .transition(.move(edge: .bottom))
                 }
+                // The window's bottom edge, below the inspector rather than inside the
+                // request area — three things follow from that and each was a reason:
+                //
+                // - It does not move. As the last row of `requestArea` it rode up with
+                //   the table whenever a row was selected, so the control that decides
+                //   which rows exist changed position every time someone looked at one.
+                // - It is drawn *after* the panel, so the inspector's slide passes
+                //   beneath it instead of over it.
+                // - It outlives the empty state, which the table's own overlays cannot:
+                //   a chip that narrows the window to nothing swaps the table out, and
+                //   that is exactly when the only control that undoes it must stay.
+                QuickFilterBar(store: captureStore)
             }
             // Bounds the slide: without it the panel is drawn outside the pane on its way
             // in and out instead of being revealed by the window's bottom edge.
@@ -976,6 +988,21 @@ public struct MainView: View {
             } actions: {
                 Button("Clear Filter") { store.send(.capture(.searchDismissed)) }
             }
+        } else if store.capture.quickFilter.isActive, store.capture.allCount > 0 {
+            // Same failure as the search branch above, from the third narrowing: with
+            // `.all` selected and chips up, the selection branch below would print
+            // "Nothing captured matches ." and offer a button that clears a selection
+            // which was never the cause. Named and undoable instead.
+            ContentUnavailableView {
+                Label("No \(selectedRecordNoun) match these filters", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                Text(
+                    "Nothing in this window matches \(quickFilterSummary). Chips in one group "
+                        + "widen the list; chips in different groups narrow it."
+                )
+            } actions: {
+                Button("Clear Filters") { store.send(.capture(.quickFilterCleared)) }
+            }
         } else if store.capture.allCount > 0 {
             // The capture is not empty — the *selection* admits none of it. Saying
             // "waiting for traffic" here is the same failure the search branch above
@@ -1006,6 +1033,15 @@ public struct MainView: View {
                 Text("Start the proxy from the menu-bar console.")
             }
         }
+    }
+
+    /// The chips that are on, in the bar's own order — so the empty state names the
+    /// same words the strip does rather than a set's arbitrary iteration order.
+    private var quickFilterSummary: String {
+        QuickFilterChip.all
+            .filter(store.capture.quickFilter.contains)
+            .map(\.label)
+            .joined(separator: " + ")
     }
 
     /// The selected filters, named the way the sidebar names them.
