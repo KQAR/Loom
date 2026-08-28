@@ -10,6 +10,11 @@ struct BodyView: View {
     /// In-pane find. JSON and raw both highlight hits, step with Enter /
     /// chevrons (`1/N`), and scroll the current hit into view.
     var find: InspectorFind = InspectorFind()
+    /// The pane's expand-all / collapse-all, when it has issued one. Only the JSON
+    /// tree can honour it; a raw body has nothing to fold, which is why the pane is
+    /// told whether a tree is on screen (`InspectorBodyOutlineKey`) rather than
+    /// offering a control that would do nothing.
+    var expansion = JSONExpansionCommand()
     /// Above this size the collapsible JSON tree gets janky; show raw text
     /// instead (which itself hands large bodies to the lazy `NSTextView`).
     private let jsonRenderLimit = 200_000
@@ -40,6 +45,11 @@ struct BodyView: View {
             content
         }
         .preference(key: InspectorFindReportKey.self, value: findReport)
+        // Reported up rather than re-derived by the pane: whether a body renders as a
+        // tree is the outcome of the one-shot parse *and* the render limit, both of
+        // which live here, and a second copy of that test in each pane is two answers
+        // that can disagree about what is on screen.
+        .preference(key: InspectorBodyOutlineKey.self, value: showsTree)
         // Keyed on the body bytes, not `identity`: the identity is deliberately
         // stable across hydration (the body lands later under the same flow id),
         // so keying on it would leave the tree stuck on the pre-hydration body.
@@ -72,7 +82,8 @@ struct BodyView: View {
                     JSONView(
                         value: json,
                         index: current?.json ?? JSONFindIndex(),
-                        findIndex: find.currentIndex
+                        findIndex: find.currentIndex,
+                        expansion: expansion
                     )
                 }
             } else {
@@ -83,6 +94,14 @@ struct BodyView: View {
         } else {
             Scrolled { Text("No body").foregroundStyle(.secondary) }
         }
+    }
+
+    /// Whether the collapsible tree is what the pane is showing — false for an empty
+    /// body, a body that isn't JSON, one over `jsonRenderLimit`, and for the frame or
+    /// two before the parse lands.
+    private var showsTree: Bool {
+        guard let data, !data.isEmpty else { return false }
+        return parsed.flatMap { $0 } != nil
     }
 
     /// The raw fallback. `text` is the cached decode whenever the scan for this

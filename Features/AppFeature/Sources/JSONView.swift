@@ -217,6 +217,66 @@ private struct JSONParser {
 /// nodes (chevron toggles, collapsed shows `{…} n`); leaves are colored by type.
 /// Editor-style syntax colors are a deliberate exception to "color only for
 /// status" — this is a code viewer.
+/// A whole-tree expand / collapse instruction, as a **stamp rather than a state**.
+///
+/// Every node keeps its own expansion (`JSONNode.userExpanded`), so a plain
+/// "expandAll: Bool" in the environment could not say what "expand everything, then
+/// let me close this one branch" means — the branch would reopen on the next render,
+/// or the command would have to reach into per-node state that does not exist until
+/// the node is instantiated (the tree is lazy: nodes below the fold have no state to
+/// write to yet).
+///
+/// The generation is what resolves it. A node's own choice wins only while it is *as
+/// new as* the last command; a newer command supersedes every stored choice at once,
+/// and a node created afterwards reads the same answer as one that was already on
+/// screen. Generation 0 means nothing has been commanded and the default (`depth < 2`)
+/// applies.
+struct JSONExpansionCommand: Equatable {
+    var generation = 0
+    /// What the last command asked for. Meaningless at generation 0.
+    var expanded = false
+
+    /// Whether the last command was an expand — what the pane's button reads to
+    /// decide which verb to offer next.
+    var isExpandedAll: Bool { generation > 0 && expanded }
+
+    mutating func expandAll() {
+        generation += 1
+        expanded = true
+    }
+
+    mutating func collapseAll() {
+        generation += 1
+        expanded = false
+    }
+
+    /// Whether a node is open, given everything that has an opinion about it.
+    ///
+    /// The precedence, most specific first, and each clause is a rule that was worth
+    /// stating on its own:
+    ///
+    /// 1. **A find hit's ancestor is always open.** Search must never hide the hit it
+    ///    just scrolled to, so neither a collapse-all nor a click can close it — the
+    ///    same OR the find expansion has always been.
+    /// 2. **This node's own click**, but only while it is as new as the last
+    ///    whole-tree command. That is what makes "expand all, then close this branch"
+    ///    hold, and what makes the *next* command supersede every stored choice at
+    ///    once without reaching into per-node state that may not exist yet.
+    /// 3. **The command**, once one has been issued — except that a collapse-all
+    ///    leaves the outermost container open. Closing depth 0 replaces the whole pane
+    ///    with a single `{…} 14` line, which is not a collapsed body so much as a
+    ///    hidden one: there is nothing left to read and nothing to aim at except the
+    ///    one chevron that undoes it. Collapsing *to the top level* is what the gesture
+    ///    is actually for — the keys stay, their contents fold away.
+    /// 4. **The default**: the top two levels.
+    func resolve(depth: Int, userExpanded: Bool?, userGeneration: Int, findExpanded: Bool) -> Bool {
+        if findExpanded { return true }
+        if let userExpanded, userGeneration == generation { return userExpanded }
+        if generation > 0 { return expanded || depth == 0 }
+        return depth < 2
+    }
+}
+
 struct JSONView: View {
     let value: JSONValue
     /// In-pane find hits, walked **once** by whoever owns the body (`BodyView`)
@@ -230,6 +290,8 @@ struct JSONView: View {
     /// 0-based current hit among matching lines. The current line uses the
     /// darker wash; `ScrollViewReader` scrolls it into the pane's viewport.
     var findIndex: Int = 0
+    /// The pane's last expand-all / collapse-all, if any.
+    var expansion = JSONExpansionCommand()
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -242,6 +304,7 @@ struct JSONView: View {
             .environment(\.jsonFindMatched, index.matched)
             .environment(\.jsonFindExpand, index.expand)
             .environment(\.jsonFindCurrent, index.path(at: findIndex))
+            .environment(\.jsonExpansion, expansion)
             .task(id: index.path(at: findIndex)) {
                 guard let path = index.path(at: findIndex) else { return }
                 await Task.yield()
@@ -269,6 +332,10 @@ private enum JSONFindCurrentKey: EnvironmentKey {
     static let defaultValue: [Int]? = nil
 }
 
+private enum JSONExpansionKey: EnvironmentKey {
+    static let defaultValue = JSONExpansionCommand()
+}
+
 extension EnvironmentValues {
     fileprivate var jsonFindMatched: Set<[Int]> {
         get { self[JSONFindMatchedKey.self] }
@@ -284,6 +351,11 @@ extension EnvironmentValues {
         get { self[JSONFindCurrentKey.self] }
         set { self[JSONFindCurrentKey.self] = newValue }
     }
+
+    fileprivate var jsonExpansion: JSONExpansionCommand {
+        get { self[JSONExpansionKey.self] }
+        set { self[JSONExpansionKey.self] = newValue }
+    }
 }
 
 private struct JSONNode: View {
@@ -292,10 +364,13 @@ private struct JSONNode: View {
     let depth: Int
     let path: [Int]
     @State private var userExpanded: Bool?
+    /// Which command `userExpanded` was decided under — see `JSONExpansionCommand`.
+    @State private var userGeneration = 0
     @State private var textOverride: String?
     @Environment(\.jsonFindMatched) private var findMatched
     @Environment(\.jsonFindExpand) private var findExpand
     @Environment(\.jsonFindCurrent) private var findCurrent
+    @Environment(\.jsonExpansion) private var expansion
 
     /// A dedicated left gutter that holds every disclosure chevron in one column
     /// at the far left, and per-level indentation applied only to the content —
@@ -306,9 +381,19 @@ private struct JSONNode: View {
 
     /// Search may open a collapsed ancestor so the hit is visible. It must
     /// not close anything the reader already had open — `findExpand` is OR,
-    /// never a replacement for the default / user expansion.
+    /// never a replacement for the default / user expansion. That is why it is
+    /// tested first: a collapse-all does not close a hit the find is sitting on,
+    /// for the same reason.
+    ///
+    /// Otherwise the most recent decision wins: this node's own click while it is as
+    /// new as the last whole-tree command, then the command, then the default.
     private var isExpanded: Bool {
-        (userExpanded ?? (depth < 2)) || findExpand.contains(path)
+        expansion.resolve(
+            depth: depth,
+            userExpanded: userExpanded,
+            userGeneration: userGeneration,
+            findExpanded: findExpand.contains(path)
+        )
     }
 
     /// Whether *this* line is a hit — a set lookup, not a re-match. The node
@@ -369,6 +454,9 @@ private struct JSONNode: View {
         LazyVStack(alignment: .leading, spacing: 1) {
             Button {
                 userExpanded = !isExpanded
+                // Stamped with the command it is answering, so it outlives every
+                // render until the *next* expand-all / collapse-all supersedes it.
+                userGeneration = expansion.generation
             } label: {
                 HStack(spacing: 0) {
                     gutterChevron(isExpanded)

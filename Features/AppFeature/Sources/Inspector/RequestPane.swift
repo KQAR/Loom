@@ -15,6 +15,13 @@ struct RequestPane: View {
     @State private var headersFind = InspectorFind()
     @State private var cookiesFind = InspectorFind()
     @State private var findReport = InspectorFindReport.empty
+    /// Whole-tree expand / collapse for the Body tab's JSON view. Owned here rather
+    /// than inside `BodyView` because the control that issues it lives in the pane's
+    /// floating action cluster, which is a sibling of the body, not a child of it.
+    @State private var bodyExpansion = JSONExpansionCommand()
+    /// Whether the body is currently a tree — reported up by `BodyView`, because only
+    /// it knows whether the parse succeeded and stayed under the render limit.
+    @State private var bodyIsOutline = false
 
     /// What the pane derives from the request body/headers, parsed **once** per
     /// render. `tabs` needs it (to decide which tabs exist) and `content` needs it
@@ -76,12 +83,17 @@ struct RequestPane: View {
 
             content(derived)
                 .onPreferenceChange(InspectorFindReportKey.self) { findReport = $0 }
+                .onPreferenceChange(InspectorBodyOutlineKey.self) { bodyIsOutline = $0 }
                 .overlay(alignment: .topTrailing) {
                     paneActions(derived)
                 }
         }
         .onChange(of: flow.id) {
             bodyFind = InspectorFind()
+            // A new flow is a new body: carrying "expand all" across would open a
+            // tree the reader never asked to open, and carrying "collapse all" would
+            // hide the thing they just clicked a row to look at.
+            bodyExpansion = JSONExpansionCommand()
             headersFind = InspectorFind()
             cookiesFind = InspectorFind()
             // Reset if the selected tab no longer applies to the new flow.
@@ -110,7 +122,8 @@ struct RequestPane: View {
             data: flow.request.body,
             identity: "req-body:\(flow.id)",
             fullBodyBytes: flow.request.fullBodyBytes,
-            find: bodyFind
+            find: bodyFind,
+            expansion: bodyExpansion
         )
         case .diff: Scrolled { DiffView(original: original, replayed: flow) }
         }
@@ -120,7 +133,15 @@ struct RequestPane: View {
         switch tab {
         case .body:
             if let text = Self.bodyText(flow.request.body) {
-                FloatingPaneActions(copyText: text, copyHelp: "Copy body", find: $bodyFind, report: findReport)
+                FloatingPaneActions(
+                    copyText: text,
+                    copyHelp: "Copy body",
+                    find: $bodyFind,
+                    report: findReport,
+                    // Only when a tree is on screen: a raw or empty body has nothing
+                    // to fold, and the command would be a control that does nothing.
+                    expansion: bodyIsOutline ? $bodyExpansion : nil
+                )
             }
         case .headers:
             if Self.hasPairs(headers: flow.request.headers, trailers: flow.request.trailers) {
