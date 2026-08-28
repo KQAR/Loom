@@ -515,11 +515,6 @@ public struct MainView: View {
                         .overlay(alignment: .bottomTrailing) { clearFAB }
                 }
             }
-            // A row of the stack below the table, not an overlay on it: docked, it
-            // reserves its own height and never covers a row, and it stays put when
-            // the table is swapped for the empty state — which is exactly when a chip
-            // that narrowed the window to nothing has to remain undoable.
-            QuickFilterBar(store: captureStore)
         }
         // Scoped to the bar's presence: a blanket `.animation` here would also
         // animate the table's own updates, which arrive ten times a second under
@@ -676,6 +671,18 @@ public struct MainView: View {
                     }
                     .transition(.move(edge: .bottom))
                 }
+                // The window's bottom edge, below the inspector rather than inside the
+                // request area — three things follow from that and each was a reason:
+                //
+                // - It does not move. As the last row of `requestArea` it rode up with
+                //   the table whenever a row was selected, so the control that decides
+                //   which rows exist changed position every time someone looked at one.
+                // - It is drawn *after* the panel, so the inspector's slide passes
+                //   beneath it instead of over it.
+                // - It outlives the empty state, which the table's own overlays cannot:
+                //   a chip that narrows the window to nothing swaps the table out, and
+                //   that is exactly when the only control that undoes it must stay.
+                QuickFilterBar(store: captureStore)
             }
             // Bounds the slide: without it the panel is drawn outside the pane on its way
             // in and out instead of being revealed by the window's bottom edge.

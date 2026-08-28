@@ -47,10 +47,10 @@ narrows on four facets — scheme, the **client's** HTTP version, the response's
   or no scheme matches *no* chip in that facet; `binary` means typed-and-none-of-the-above.
   Folding the unknowns into it would make "show the binary payloads" return every
   pending exchange.
-- **The bar is docked and outlives the empty state.** It is the last row of
-  `MainView.requestArea`'s stack, not an overlay on the table: a chip that narrows the
-  window to zero rows swaps the table out, and taking the only control that undoes it
-  off screen is the `isRecording` shape again. It is applied by both writers of the
+- **The bar is the last row of `MainView.flowArea`, and outlives the empty state.**
+  Below the inspector, so it neither covers rows nor moves when a flow is selected; not
+  an overlay, because a chip narrowing the window to zero rows swaps the table out — and
+  taking the only control that undoes it off screen is `isRecording` again. It is applied by both writers of the
   cached projection (rebuild and incremental fold), which `QuickFilterTests` pins
   against each other.
 

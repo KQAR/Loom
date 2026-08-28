@@ -11,13 +11,15 @@ import SwiftUI
 /// capsule is on, a plain one is off — so what is being filtered and what could be
 /// filtered are the same surface.
 ///
-/// **Docked, not floating.** As an overlay it covered the last rows of the table and
-/// had to be laid out around the clear control's hover growth; as the last row of
-/// `MainView.requestArea`'s stack it reserves its own height, the table resizes to it
-/// the way it already does for the find bar, and it survives the swap to the empty
-/// state — which is exactly when a chip that narrowed the window to nothing has to
-/// remain undoable. It sits *below* the cap / dropped banners, which are the table's
-/// own safe-area insets: those qualify the rows, this one narrows them.
+/// **Docked at the window's bottom edge, below the inspector.** As an overlay it
+/// covered the last rows of the table and had to be laid out around the clear
+/// control's hover growth; as the last row of the *request area* it rode up whenever
+/// the inspector opened, so the control deciding which rows exist moved every time
+/// someone looked at one. As the last row of `MainView.flowArea` it reserves its own
+/// height, stays put, and survives the swap to the empty state — which is exactly
+/// when a chip that narrowed the window to nothing has to remain undoable. It sits
+/// below the cap / dropped banners too, which are the table's own safe-area insets:
+/// those qualify the rows, this one narrows them.
 ///
 /// **Horizontally scrollable, because eighteen chips are wider than the table's
 /// floor.** The strip measures ~740pt laid flat and the request area can be narrower
