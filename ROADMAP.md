@@ -904,6 +904,42 @@ collapsed one, and a whole-tree command is a **generation stamp** rather than a 
 tree is lazy and a `Bool` can neither reach the nodes below the fold nor survive "expand everything,
 then close this branch".
 
+### The window's two capture controls, a header you could not copy, and a port that was a literal (done, 0.0.31)
+
+Three surfaces the round found by *using* the window rather than by working down a list, and all
+three were the same shape: a thing that was true of the engine and not of what the human could see
+or reach.
+
+**A control rendered only over the table is missing exactly when the table is.** The hold-to-clear
+FAB floated in the flow list's bottom-right corner, so it vanished on the empty state and whenever a
+panel (Rules, Audit, Breakpoints) owned the content pane — two of the moments someone reaches for
+it. It sits in the toolbar beside Record/Stop now, and the hold went with the move: the gate was
+guarding a *window-local* list (nothing leaves the engine), and a 0.7 s press on a toolbar glyph
+reads as a button that missed. Firing it wiggles the glyph, which is the only confirmation a clear
+gets — there is no dialog, and an emptied table looks like an idle one.
+
+**`.textSelection(.enabled)` is per-`Text`, so a grid of cells can only ever select one.** A header
+name and its value could not be dragged over together; the pane's Copy button (whole tab) was the
+only way to get both halves of one row out. Headers, Cookies and Query became one pane laid out the
+way the browsers' network panels lay theirs out — key column a **fraction of the pane** rather than
+the widest key (one `content-security-policy` otherwise sets the column for every row after it), a
+key that wraps instead of eliding (the name is what a reader scans for), a **one-line value** so row
+height stops being a function of content, and the full pair one click away in a popover that sizes
+to what it holds.
+
+**A start binds loopback, and every path that started the listener therefore closed it to the LAN.**
+The custom port was the feature; this was what it surfaced. `ProxyClient.start` passes no host, so
+the engine took its `127.0.0.1` default on boot, on the proxy toggle, on arming Record and now on a
+port change — a phone that was capturing simply stopped reaching the proxy, with nothing on any
+surface saying why. The port change is also where the second one showed: `displayHost` printed the
+resolved LAN IP while the listener was on `0.0.0.0`, which is one interface out of several and a
+different question from the one a chip beside the capture dot answers. Both are the same correction
+— **ask the listener, don't assemble an answer about it** — and the port itself carries the two
+rules a rebind needs: a failed bind **rolls back** (the stop has already happened, so a refused
+change must not leave a proxy the operator has to notice is gone), and the **system proxy follows**,
+because that setting stores a port and would otherwise address a listener that has moved while
+Loom's own switch still read "on".
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
