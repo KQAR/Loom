@@ -99,10 +99,48 @@ extension ProxyEngine {
     /// The SOCKS listener moves with the HTTP one: a phone configured to route
     /// through Loom can be pointed at either, and leaving SOCKS on loopback would
     /// make it silently unreachable from the device this rebind exists to serve.
+    ///
+    /// **A failed move puts the listener back.** The stop has already happened by the
+    /// time the new bind is attempted, so throwing from here used to leave the engine
+    /// `running` with nothing listening at all — every surface reporting a healthy
+    /// proxy on a port where no socket exists, and the capture silently over. The
+    /// measured case was another proxy holding `*:9090` (IPv6 wildcard): Loom's
+    /// `127.0.0.1` bind had succeeded, and only the move to `0.0.0.0` collided.
+    ///
+    /// The SOCKS listener needs no rollback: it is not touched until the HTTP bind
+    /// has succeeded, so a failure leaves it where it already was.
     private func rebind(host: String) async throws {
         guard running else { return }
+        let previous = currentBindHost
         await server.stop()
-        boundPort = try await server.start(
+        do {
+            boundPort = try await bindServer(host: host)
+        } catch {
+            let failure = BindDiagnosis.describe(error, host: host, port: boundPort)
+            do {
+                boundPort = try await bindServer(host: previous)
+                throw ProxyControlError.listenerUnavailable(failure)
+            } catch let restoreError as ProxyControlError {
+                throw restoreError
+            } catch {
+                // Both binds failed, which is the state worth stating plainly: the
+                // listener is down and staying down until something frees a port.
+                running = false
+                throw ProxyControlError.listenerUnavailable(
+                    "\(failure) Loom could not return to \(previous):\(boundPort) either, so the proxy is stopped."
+                )
+            }
+        }
+        await socksServer.stop()
+        boundSOCKSPort = nil
+        await startSOCKSIfRequested(host: host)
+        currentBindHost = host
+    }
+
+    /// The one place the accepting socket's configuration is spelled out, so the
+    /// move and the roll-back cannot drift into binding differently.
+    private func bindServer(host: String) async throws -> Int {
+        try await server.start(
             host: host,
             port: boundPort,
             store: store,
@@ -111,9 +149,5 @@ extension ProxyEngine {
             config: config,
             observeTunnels: lastObserveTunnels
         )
-        await socksServer.stop()
-        boundSOCKSPort = nil
-        await startSOCKSIfRequested(host: host)
-        currentBindHost = host
     }
 }
