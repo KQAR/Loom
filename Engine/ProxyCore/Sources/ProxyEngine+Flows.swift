@@ -16,6 +16,7 @@ extension ProxyEngine {
             isRecording: await store.isRecording,
             listenHost: currentBindHost,
             socksPort: boundSOCKSPort,
+            socksError: socksBindError,
             recentRefusals: refusals.recent,
             refusedConnections: refusals.total,
             reverseProxies: reverseProxyConfig.snapshot(),

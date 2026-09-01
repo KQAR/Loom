@@ -184,6 +184,12 @@ public struct AppFeature: Sendable {
         /// the two disagree for exactly as long as a rebind is in flight or has
         /// failed. Persisted (`ProxyPortStore`), so the choice survives relaunch.
         public var configuredPort = ProxyPortStore.defaultPort
+        /// Why the listener isn't up, in the operator's words. Its own field rather
+        /// than `setup.systemProxyMessage`, which it used to borrow: that channel is
+        /// the *system proxy's* feedback line, so a failed start and a failed routing
+        /// change overwrote each other and the panel could only ever show one of them.
+        /// Cleared the moment a start succeeds.
+        public var proxyStartError: String?
         /// Why the last port change was refused or failed, shown in the address
         /// popover. Cleared when a rebind succeeds.
         public var portError: String?
@@ -638,7 +644,8 @@ public struct AppFeature: Sendable {
 
             case let .proxyStartFailed(message):
                 state.status.isRunning = false
-                state.setup.systemProxyMessage = "Proxy failed to start: \(message)"
+                state.isRecording = false
+                state.proxyStartError = message
                 return .none
 
             case .toggleProxyTapped:
@@ -646,10 +653,18 @@ public struct AppFeature: Sendable {
                     state.status.isRunning = false
                     return .run { _ in await proxyClient.stop() }
                 }
+                state.proxyStartError = nil
                 let configured = state.configuredPort
+                // `try` alone here threw into the effect, where TCA logs it and the
+                // action is simply never sent: the switch sprang back with nothing
+                // said, on the one failure the operator can fix (the port is taken).
                 return .run { send in
-                    let port = try await proxyClient.start(configured)
-                    await send(.proxyStarted(port: port))
+                    do {
+                        let port = try await proxyClient.start(configured)
+                        await send(.proxyStarted(port: port))
+                    } catch {
+                        await send(.proxyStartFailed(error.localizedDescription))
+                    }
                 }
 
             case let .localIPResolved(ip):
@@ -746,6 +761,7 @@ public struct AppFeature: Sendable {
 
             case let .proxyStarted(port):
                 state.status.isRunning = true
+                state.proxyStartError = nil
                 state.portRebinding = false
                 state.portError = nil
                 state.configuredPort = port
@@ -812,9 +828,12 @@ public struct AppFeature: Sendable {
                 let configured = state.configuredPort
                 return .run { send in
                     await proxyClient.setRecording(recording)
-                    if needStart {
+                    guard needStart else { return }
+                    do {
                         let port = try await proxyClient.start(configured)
                         await send(.proxyStarted(port: port))
+                    } catch {
+                        await send(.proxyStartFailed(error.localizedDescription))
                     }
                 }
 

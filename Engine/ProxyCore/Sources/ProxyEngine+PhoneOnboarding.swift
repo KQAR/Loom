@@ -79,13 +79,25 @@ extension ProxyEngine {
     }
 
     /// Stop serving provisioning material and return the proxy to loopback-only.
-    public func stopPhoneOnboarding() async {
+    ///
+    /// **Throws rather than swallowing the rebind**, and does it *before* tearing the
+    /// material down, so a failure leaves everything as it was. `try?` here meant a
+    /// loopback bind Loom lost (something else took the port while the listener was on
+    /// `0.0.0.0`) left the switch reading "off" with the proxy still answering the whole
+    /// LAN — a promise about who can reach this machine, quietly not kept.
+    ///
+    /// The order is the other half: with the teardown first, that same failure left the
+    /// provisioning server stopped and `phoneInfo` cleared while the listener stayed on
+    /// the LAN, which is neither state the operator asked for.
+    public func stopPhoneOnboarding() async throws {
+        if running, currentBindHost != "127.0.0.1" {
+            // A failed move puts the listener back on `0.0.0.0` (see `rebind`), which
+            // is what makes throwing honest: LAN is still on, and the switch must say so.
+            try await rebind(host: "127.0.0.1")
+        }
         await provisioning?.stop()
         provisioning = nil
         phoneInfo = nil
-        if running, currentBindHost != "127.0.0.1" {
-            try? await rebind(host: "127.0.0.1")
-        }
     }
 
     /// The current onboarding info, or `nil` when phone onboarding is inactive.

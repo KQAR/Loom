@@ -13,6 +13,13 @@ struct PhoneOnboardingView: View {
         VStack(spacing: LoomTheme.Space.sm) {
             header
 
+            // A banner rather than a branch. A refused *stop* leaves the switch back
+            // on with its material intact — correctly, because the listener is still
+            // on the LAN — so an error that could only render instead of the QR was
+            // an error nobody would see on the one path that produces it.
+            if let error = store.errorMessage {
+                errorBanner(error)
+            }
             if !store.lanEnabled {
                 lanOffState
             } else if let info = store.info {
@@ -24,9 +31,7 @@ struct PhoneOnboardingView: View {
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if let error = store.errorMessage {
-                errorState(error)
-            } else {
+            } else if store.errorMessage == nil {
                 loadingState
             }
         }
@@ -148,17 +153,18 @@ struct PhoneOnboardingView: View {
         .frame(height: 180)
     }
 
-    private func errorState(_ message: String) -> some View {
-        VStack(spacing: LoomTheme.Space.xs) {
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: LoomTheme.Space.xs) {
             Image(systemName: "exclamationmark.triangle")
                 .font(LoomTheme.Icon.card)
                 .foregroundStyle(LoomTheme.Palette.warning)
             Text(message)
-                .font(.callout)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minHeight: 120)
+        .padding(LoomTheme.Space.xs)
+        .background(LoomTheme.Palette.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: LoomTheme.Radius.sm))
     }
 }

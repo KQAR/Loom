@@ -41,6 +41,7 @@ extension MCPToolExecutor {
             flowsRetained: status.retainedCount,
             isRecording: status.isRecording,
             socksPort: status.socksPort,
+            socksError: status.socksError,
             // No routing implementation wired (the engine embedded without the app):
             // "unavailable" says nothing about the machine, which is the honest answer
             // — and a different one from "off", which does.

@@ -140,6 +140,17 @@ public struct PanelView: View {
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
                         .help("SOCKS5 listener on \(store.displayHost):\(socksPort) — for clients that only have a SOCKS field, or set ALL_PROXY")
+                } else if store.status.socksError != nil {
+                    // The engine fails open on this bind, and until now the reason
+                    // reached `os_log` and nothing else — so a SOCKS port another
+                    // proxy already holds looked exactly like a build that never
+                    // asked for one. A line rather than an alert row: the HTTP proxy
+                    // is up and capturing, so this is a missing second door, not a
+                    // console-wide fault.
+                    Label("SOCKS5 unavailable", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(LoomTheme.Palette.warning)
+                        .help(store.status.socksError ?? "")
                 }
                 // Reverse-proxy endpoints are deliberately NOT listed here, even though
                 // they are ports a client gets pointed at like the two above. They have
@@ -333,8 +344,23 @@ public struct PanelView: View {
         // the strip above is only affordable if a healthy console pays nothing
         // for this.
         VStack(spacing: 0) {
+            listenerAlert
             systemProxyAlert
             helperAlert
+        }
+    }
+
+    /// The listener could not be opened. **First in the channel**, because every
+    /// other line here describes a proxy that is running: a system-proxy setting
+    /// pointing at a port with no socket on it is a consequence, not a second
+    /// problem, and reading it first sends the operator after the wrong thing.
+    ///
+    /// It reads `proxyStartError` rather than `setup.systemProxyMessage`, which it
+    /// used to borrow — one channel carrying two subsystems' feedback meant a failed
+    /// start and a failed routing change overwrote each other.
+    @ViewBuilder private var listenerAlert: some View {
+        if let message = store.proxyStartError {
+            ConsoleAlertRow(text: message)
         }
     }
 
