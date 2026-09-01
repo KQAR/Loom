@@ -571,6 +571,12 @@ struct ProxyStatusRender: Encodable {
     /// Reported only when there is one to point at, so its absence is an answer
     /// rather than a zero to interpret.
     var socksPort: Int?
+    /// Why there is no SOCKS listener, when Loom tried to bind one and lost. Absent
+    /// when one is running *and* when none was asked for — `socksPort` tells those
+    /// two apart, and neither is a failure. Read it before concluding a SOCKS client
+    /// is misconfigured: a port another proxy already holds looks identical from the
+    /// client's side.
+    var socksError: String?
     /// Four-valued on purpose: `on` / `off` / `other` / `unavailable`. Collapsing
     /// "can't tell" into off would have an agent "fix" a routing problem it has no
     /// way to observe; collapsing "another app owns it" into off would have it

@@ -119,7 +119,7 @@ struct EngineLifecycleReentrancyTests {
                 "every loser must be refused by the reentrancy guard, not by chance — got \(outcomes)")
         // The winner's server is the live one, so onboarding info is published.
         #expect(await engine.phoneOnboardingInfo() != nil)
-        await engine.stopPhoneOnboarding()
+        try? await engine.stopPhoneOnboarding()
         await engine.stopForTest()
     }
 }

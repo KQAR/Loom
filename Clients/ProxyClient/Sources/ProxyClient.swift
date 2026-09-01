@@ -66,7 +66,7 @@ public struct ProxyClient: Sendable {
     /// (proxy address, CA download URL, QR code). Rebinds the proxy to `0.0.0.0`.
     public var startPhoneOnboarding: @Sendable () async throws -> PhoneOnboardingInfo
     /// Stop serving onboarding material and return the proxy to loopback-only.
-    public var stopPhoneOnboarding: @Sendable () async -> Void
+    public var stopPhoneOnboarding: @Sendable () async throws -> Void
     /// Current onboarding info, or `nil` when inactive.
     public var phoneOnboardingInfo: @Sendable () async -> PhoneOnboardingInfo? = { nil }
     /// Recent write-action audit entries, newest first (the human Audit panel).
@@ -173,7 +173,7 @@ extension ProxyClient: DependencyKey {
             deleteRule: { try await engine.deleteRule(id: $0) },
             setGroupEnabled: { await engine.setGroupEnabled(group: $0, enabled: $1) },
             startPhoneOnboarding: { try await engine.startPhoneOnboarding() },
-            stopPhoneOnboarding: { await engine.stopPhoneOnboarding() },
+            stopPhoneOnboarding: { try await engine.stopPhoneOnboarding() },
             phoneOnboardingInfo: { await engine.phoneOnboardingInfo() },
             recentAuditEntries: { await engine.recentAuditEntries(limit: $0) },
             auditStream: { await engine.auditStream() },

@@ -1009,11 +1009,28 @@ public struct MainView: View {
             } description: {
                 Text("Send requests through \(store.displayHost):\(String(store.status.port))\n`curl -x http://\(store.displayHost):\(String(store.status.port)) http://…`")
             }
+        } else if let reason = store.proxyStartError {
+            // A stopped proxy has two very different causes, and "Proxy stopped"
+            // covered both: someone switched it off, or the listener could not be
+            // opened at all — almost always a port another proxy already holds. The
+            // second one has a repair, and the empty table is where it is read: the
+            // panel's alert channel says the same thing, but only while the popover
+            // is open, and nothing sends anyone there.
+            ContentUnavailableView {
+                Label("Proxy couldn't start", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(reason)
+            } actions: {
+                Button("Change Port…") { showingPortEditor = true }
+                Button("Try Again") { store.send(.toggleProxyTapped) }
+            }
         } else {
             ContentUnavailableView {
                 Label("Proxy stopped", systemImage: "pause.circle")
             } description: {
                 Text("Start the proxy from the menu-bar console.")
+            } actions: {
+                Button("Start Proxy") { store.send(.toggleProxyTapped) }
             }
         }
     }

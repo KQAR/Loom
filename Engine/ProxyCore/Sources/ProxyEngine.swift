@@ -103,6 +103,9 @@ public actor ProxyEngine: ProxyControlling {
     /// the listeners to the LAN) can move the SOCKS listener with it.
     var requestedSOCKSPort: Int?
     var boundSOCKSPort: Int?
+    /// Why the SOCKS listener isn't there, when Loom tried and lost the bind.
+    /// Cleared on every attempt, so it can never outlive the failure it describes.
+    var socksBindError: String?
 
     /// LAN-facing CA/profile download server + last-published info, live only
     /// while phone onboarding is active.
@@ -340,6 +343,7 @@ public actor ProxyEngine: ProxyControlling {
     /// `boundSOCKSPort` nil (so `status()` honestly reports no SOCKS listener) and
     /// the HTTP proxy running.
     func startSOCKSIfRequested(host: String) async {
+        socksBindError = nil
         guard let socksPort = requestedSOCKSPort else { return }
         do {
             boundSOCKSPort = try await socksServer.start(
@@ -353,7 +357,12 @@ public actor ProxyEngine: ProxyControlling {
             )
         } catch {
             boundSOCKSPort = nil
-            Log.proxy.error("SOCKS listener failed to bind on \(host, privacy: .public):\(socksPort): \(String(describing: error))")
+            // Kept as well as logged. A nil `socksPort` alone is indistinguishable
+            // from an embedder that never asked for SOCKS, so the agent pointing a
+            // client at it would have nothing to read (`ProxyStatus.socksError`).
+            let reason = BindDiagnosis.describe(error, host: host, port: socksPort)
+            socksBindError = reason
+            Log.proxy.error("SOCKS listener failed to bind: \(reason, privacy: .public)")
         }
     }
 
