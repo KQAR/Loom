@@ -74,6 +74,16 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// point at a SOCKS proxy needs this number, and a `nil` means pointing it there
     /// would go nowhere.
     public var socksPort: Int?
+    /// Why there is no SOCKS listener, when the reason is a bind Loom attempted and
+    /// lost. Nil when one is running, and also when none was ever asked for — those
+    /// two are told apart by `socksPort`, and neither is a failure.
+    ///
+    /// It exists because the fail-open path reached `os_log` and nothing else: a
+    /// SOCKS port taken by another proxy left `socksPort` nil, which reads exactly
+    /// like an embedder that never requested one, and an agent pointing a client at
+    /// SOCKS had no way to learn why nothing arrived. Log it for the human, return
+    /// it for the agent — this is the returning half.
+    public var socksError: String?
     /// Connections Loom accepted and then refused, newest first (bounded).
     ///
     /// The third answer to "why is nothing captured". `listenHost` and `socksPort`
@@ -110,7 +120,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     public init(
         isRunning: Bool, port: Int, capturedCount: Int, retainedCount: Int? = nil,
         isRecording: Bool = true,
-        listenHost: String = "127.0.0.1", socksPort: Int? = nil,
+        listenHost: String = "127.0.0.1", socksPort: Int? = nil, socksError: String? = nil,
         recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
         reverseProxies: [ReverseProxyStatus] = [],
         droppedByRules: Int = 0
@@ -122,6 +132,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.isRecording = isRecording
         self.listenHost = listenHost
         self.socksPort = socksPort
+        self.socksError = socksError
         self.recentRefusals = recentRefusals
         self.refusedConnections = refusedConnections
         self.reverseProxies = reverseProxies
@@ -233,7 +244,15 @@ public struct SystemRoutingResult: Equatable, Sendable {
     }
 }
 
-public enum ProxyControlError: Error, Equatable, Sendable {
+/// Every failure the control surface can report, in one type.
+///
+/// **`LocalizedError` is not decoration here.** Foundation renders a plain `Error`
+/// as "The operation couldn't be completed. (LoomSharedModels.ProxyControlError
+/// error 15.)", and eleven call sites across the app reach for
+/// `error.localizedDescription` — the phone popover, replay, rules, breakpoints,
+/// the reverse-proxy draft. Without the conformance, `message` is a property the
+/// operator never sees, and every one of those surfaces shows a case number.
+public enum ProxyControlError: Error, LocalizedError, Equatable, Sendable {
     case flowNotFound(UUID)
     case invalidURL(String)
     case replayFailed(String)
@@ -254,6 +273,11 @@ public enum ProxyControlError: Error, Equatable, Sendable {
     /// names neither the port nor the reason, on the one failure (the port is
     /// taken) that the operator can actually do something about.
     case listenerUnavailable(String)
+
+    /// What `error.localizedDescription` returns, which is what every UI surface
+    /// actually shows. Same text as `message` — one wording, whichever way a caller
+    /// reaches for it.
+    public var errorDescription: String? { message }
 
     /// Human-readable text for surfacing to the operator (UI or AI), instead of a
     /// `String(describing:)` enum dump.

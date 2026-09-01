@@ -29,6 +29,11 @@ public struct PhoneOnboardingFeature: Sendable {
         case setLANEnabled(Bool)
         case started(PhoneOnboardingInfo)
         case failed(String)
+        /// The listener came back to loopback and the material is gone.
+        case lanStopped
+        /// The engine refused the move. `revertTo` is what is *actually* true now,
+        /// which is the value the switch has to return to.
+        case lanChangeFailed(String, revertTo: Bool)
         case delegate(Delegate)
 
         public enum Delegate: Sendable, Equatable {
@@ -64,23 +69,53 @@ public struct PhoneOnboardingFeature: Sendable {
             case let .setLANEnabled(enabled):
                 state.lanEnabled = enabled
                 state.errorMessage = nil
+                // The switch moves *the listener*, and a listener move can be refused
+                // — the port Loom needs on the other interface may be held by
+                // something else. Both directions are therefore optimistic-then-
+                // reverted rather than fire-and-forget: the engine is asked, and if it
+                // says no the switch goes back to what is actually true. Leaving it
+                // where the finger put it is a promise about who can reach this
+                // machine, quietly not kept.
                 if enabled {
                     state.isLoading = true
                     return .merge(
                         .send(.delegate(.lanEnabledChanged(true))),
                         .run { send in
                             do { await send(.started(try await proxyClient.startPhoneOnboarding())) }
-                            catch { await send(.failed(error.localizedDescription)) }
+                            catch {
+                                await send(.lanChangeFailed(error.localizedDescription, revertTo: false))
+                            }
                         }
                     )
                 }
-                // Off: drop the material and return the proxy to loopback-only.
-                state.info = nil
-                state.isLoading = false
+                // Off: return the proxy to loopback-only, then drop the material.
+                state.isLoading = true
                 return .merge(
                     .send(.delegate(.lanEnabledChanged(false))),
-                    .run { _ in await proxyClient.stopPhoneOnboarding() }
+                    .run { send in
+                        do {
+                            try await proxyClient.stopPhoneOnboarding()
+                            await send(.lanStopped)
+                        } catch {
+                            await send(.lanChangeFailed(error.localizedDescription, revertTo: true))
+                        }
+                    }
                 )
+
+            case .lanStopped:
+                state.isLoading = false
+                state.info = nil
+                return .none
+
+            case let .lanChangeFailed(message, revertTo):
+                state.isLoading = false
+                state.errorMessage = message
+                state.lanEnabled = revertTo
+                // The parent persisted the optimistic value and re-read `listenHost`
+                // off the back of it, so the correction has to travel the same way —
+                // otherwise the console's phone glyph keeps the answer the engine
+                // refused.
+                return .send(.delegate(.lanEnabledChanged(revertTo)))
 
             case let .started(info):
                 state.isLoading = false

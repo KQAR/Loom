@@ -247,10 +247,14 @@ import Testing
         }
         #expect(store.state.setup.proxyRunning == false, "stopped proxy, stale child")
 
+        // The failure lands in the proxy's own channel, not the system proxy's —
+        // that one is `systemProxyMessage`, and the two used to overwrite each other.
         await store.send(.proxyStartFailed("port in use")) {
-            $0.setup.systemProxyMessage = "Proxy failed to start: port in use"
+            $0.proxyStartError = "port in use"
+            $0.isRecording = false
         }
         #expect(store.state.setup.proxyRunning == false)
+        #expect(store.state.setup.systemProxyMessage == nil)
     }
 
     /// The child owns everything else in its state: a write from the child's own
@@ -775,5 +779,127 @@ import Testing
         await store.receive(\.engineStatusRefreshed) {
             $0.status.listenHost = "0.0.0.0"
         }
+    }
+
+    // MARK: A listener that could not be opened
+
+    /// `try` inside the effect threw into TCA, which logs it and never sends the
+    /// action — so the switch sprang back with nothing said, on the one failure the
+    /// operator can fix. The message is the engine's (`BindDiagnosis`), not a
+    /// placeholder assembled here.
+    @Test func toggleProxy_reportsABindFailureInsteadOfSwallowingIt() async {
+        var state = AppFeature.State()
+        state.lanEnabled = false
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.start = { _ in
+                throw ProxyControlError.listenerUnavailable("127.0.0.1:9090 is already in use")
+            }
+        }
+
+        await store.send(.toggleProxyTapped)
+        await store.receive(\.proxyStartFailed) {
+            $0.status.isRunning = false
+            $0.isRecording = false
+            $0.proxyStartError = "127.0.0.1:9090 is already in use"
+        }
+    }
+
+    /// The failure has its own channel. It used to be written into
+    /// `setup.systemProxyMessage`, which is the *system proxy's* feedback line — so a
+    /// failed start and a failed routing change overwrote each other and the panel
+    /// could only ever show one of them.
+    @Test func aBindFailure_doesNotSpeakThroughTheSystemProxysChannel() async {
+        var state = AppFeature.State()
+        state.lanEnabled = false
+        state.setup.systemProxyMessage = "System proxy is on."
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.start = { _ in throw ProxyControlError.listenerUnavailable("taken") }
+        }
+
+        await store.send(.toggleProxyTapped)
+        await store.receive(\.proxyStartFailed) {
+            $0.proxyStartError = "taken"
+            $0.isRecording = false
+        }
+        #expect(store.state.setup.systemProxyMessage == "System proxy is on.")
+    }
+
+    /// A start that lands clears it, so a repaired port does not leave the window
+    /// still explaining a failure that is over.
+    @Test func aSuccessfulStart_clearsTheFailure() async {
+        var state = AppFeature.State()
+        state.lanEnabled = false
+        state.proxyStartError = "9090 is already in use"
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.proxyStarted(port: 9090)) {
+            $0.proxyStartError = nil
+        }
+    }
+
+    /// The LAN switch moves the *listener*, and a listener move can be refused. It
+    /// used to be fire-and-forget (`try? await rebind` in the engine, no return
+    /// value at the client), so a loopback bind Loom lost left the switch reading
+    /// "off" with the proxy still answering the whole LAN — a promise about who can
+    /// reach this machine, quietly not kept.
+    @Test func lanSwitchOff_revertsWhenTheEngineCannotReturnToLoopback() async {
+        var state = PhoneOnboardingFeature.State(lanEnabled: true)
+        state.info = PhoneOnboardingInfo(
+            lanHost: "192.168.1.20",
+            proxyPort: 9090,
+            provisioningPort: 8_765,
+            provisioningURL: URL(string: "http://192.168.1.20:8765/")!,
+            fingerprint: "AA:BB",
+            commonName: "Loom Root CA",
+            qrPNGData: Data()
+        )
+        let store = TestStore(initialState: state) { PhoneOnboardingFeature() } withDependencies: {
+            $0.proxyClient.stopPhoneOnboarding = {
+                throw ProxyControlError.listenerUnavailable("127.0.0.1:9090 is already in use")
+            }
+        }
+
+        await store.send(.setLANEnabled(false)) {
+            $0.lanEnabled = false
+            $0.isLoading = true
+            $0.errorMessage = nil
+        }
+        await store.receive(\.delegate)
+        await store.receive(\.lanChangeFailed) {
+            $0.isLoading = false
+            $0.lanEnabled = true
+            $0.errorMessage = "127.0.0.1:9090 is already in use"
+        }
+        // The correction travels the same way the optimistic value did: the parent
+        // persisted that one and re-read `listenHost` off the back of it.
+        await store.receive(\.delegate)
+        #expect(store.state.info != nil, "the material is still valid — LAN never went off")
+    }
+
+    /// The other direction, which had the same hole: a refused *start* left the
+    /// switch on with no listener on the LAN behind it.
+    @Test func lanSwitchOn_revertsWhenTheEngineCannotReachTheLAN() async {
+        let store = TestStore(initialState: PhoneOnboardingFeature.State(lanEnabled: false)) {
+            PhoneOnboardingFeature()
+        } withDependencies: {
+            $0.proxyClient.startPhoneOnboarding = {
+                throw ProxyControlError.listenerUnavailable("0.0.0.0:9090 is already in use")
+            }
+        }
+
+        await store.send(.setLANEnabled(true)) {
+            $0.lanEnabled = true
+            $0.isLoading = true
+        }
+        await store.receive(\.delegate)
+        await store.receive(\.lanChangeFailed) {
+            $0.isLoading = false
+            $0.lanEnabled = false
+            $0.errorMessage = "0.0.0.0:9090 is already in use"
+        }
+        await store.receive(\.delegate)
     }
 }
