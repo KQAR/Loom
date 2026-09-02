@@ -46,6 +46,13 @@ public final class ReservedPorts: Sendable {
         holders.withLock { $0[port] }
     }
 
+    /// Everything claimed, for a check that has to look at more than one port —
+    /// validating a listen port means asking about it *and* its SOCKS neighbour
+    /// (`ListenPortRules`).
+    public func snapshot() -> [Int: String] {
+        holders.withLock { $0 }
+    }
+
     /// For tests, and for an embedder that restarts everything in one process.
     public func reset() {
         holders.withLock { $0.removeAll() }

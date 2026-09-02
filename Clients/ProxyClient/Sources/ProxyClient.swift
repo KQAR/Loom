@@ -9,6 +9,10 @@ import LoomSharedModels
 public struct ProxyClient: Sendable {
     public var start: @Sendable (_ port: Int) async throws -> Int
     public var stop: @Sendable () async -> Void
+    /// Move the listener to a different port, keeping the interface it is on. The
+    /// SOCKS neighbour is decided here (`ListenPortRules.socksPort`), not by the
+    /// engine — see the protocol requirement.
+    public var setListenPort: @Sendable (_ port: Int) async throws -> ProxyStatus
     public var status: @Sendable () async -> ProxyStatus = {
         ProxyStatus(isRunning: false, port: 0, capturedCount: 0)
     }
@@ -145,6 +149,9 @@ extension ProxyClient: DependencyKey {
             // content exchanges.
             start: { try await engine.start(port: $0, observeTunnels: true, socksPort: $0 + 1) },
             stop: { await engine.stop() },
+            setListenPort: {
+                try await engine.setListenPort($0, socksPort: ListenPortRules.socksPort(besides: $0))
+            },
             status: { await engine.status() },
             recentFlows: { await engine.recentFlows(limit: $0) },
             recentFlowsMatching: { await engine.recentFlows(matching: $0, limit: $1) },

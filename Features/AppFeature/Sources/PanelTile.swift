@@ -65,11 +65,20 @@ enum DeviceReadiness: Equatable {
     case proxyStopped
     /// The proxy is up but LAN device connection is not allowed.
     case lanDisabled
+    /// LAN device connection is **on and not working**: the listener could not be
+    /// re-opened to the network (almost always a port something else already holds),
+    /// so the switch says one thing and the network says another.
+    ///
+    /// Its own state rather than a tint on `.ready`, because it is the only one here
+    /// the operator can act on and does not yet know about: the proxy is up, this Mac
+    /// is capturing normally, and only a phone can tell that anything is wrong.
+    case lanUnreachable
     case ready
 
-    init(isRunning: Bool, lanEnabled: Bool) {
+    init(isRunning: Bool, lanEnabled: Bool, lanFailure: String? = nil) {
         guard isRunning else { self = .proxyStopped; return }
-        self = lanEnabled ? .ready : .lanDisabled
+        guard lanEnabled else { self = .lanDisabled; return }
+        self = lanFailure == nil ? .ready : .lanUnreachable
     }
 
     /// `iphone.slash` for "can't", and deliberately **not** for "off": a slash is
@@ -79,6 +88,7 @@ enum DeviceReadiness: Equatable {
         switch self {
         case .proxyStopped: return "iphone.slash"
         case .lanDisabled: return "iphone"
+        case .lanUnreachable: return "iphone.badge.exclamationmark"
         case .ready: return "iphone.radiowaves.left.and.right"
         }
     }
@@ -89,11 +99,17 @@ enum DeviceReadiness: Equatable {
         switch self {
         case .proxyStopped: return "Proxy is stopped — start it to connect a device"
         case .lanDisabled: return "LAN device connection is off"
+        case .lanUnreachable: return "LAN device connection is on but the network can't reach Loom — open this to see why"
         case .ready: return "Set up a phone to capture its traffic"
         }
     }
 
     var isReady: Bool { self == .ready }
+
+    /// On, and not doing its job — the tile's own `warning` mode, and the toolbar
+    /// glyph's warning tint. Paired with an alert line in both places, because a
+    /// warning glyph on its own is a dead end (see `PanelTile.Mode.warning`).
+    var isFailing: Bool { self == .lanUnreachable }
 }
 
 /// A tap-to-toggle switch drawn as a tinted glyph over its own name.
@@ -159,7 +175,19 @@ struct PanelTile: View {
                     // STATUS — it repeats for as long as a write is in flight.
                     // Both are gated on Reduce Motion; a repeating effect that
                     // ignores it is the kind that makes a menu-bar panel unusable.
-                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                    //
+                    // **`.magic`, not the default.** A bare `.replace` is
+                    // `.replace.downUp`: the old glyph slides down and out, the new
+                    // one slides up and in — two symbols appearing in two places,
+                    // which is what it looked like. Magic Replace (SF Symbols 6,
+                    // macOS 15 — our floor) morphs between symbols that share a
+                    // shape instead: the slash is *drawn onto* the phone, the radio
+                    // waves grow out of it, and the body never moves. Every glyph
+                    // this tile takes is a same-family triple, which is exactly what
+                    // it is for. `fallback:` covers a pair it can't relate.
+                    .contentTransition(
+                        reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                    )
                     .symbolEffect(.pulse, options: .repeating, isActive: busy && !reduceMotion)
                     // Hangs off the glyph's own corner rather than the tile's, so
                     // it reads as belonging to the icon and not to the caption
@@ -206,6 +234,12 @@ struct PanelTile: View {
             )
             .contentShape(RoundedRectangle(cornerRadius: LoomTheme.Radius.md))
         }
+        // The transition needs an animation to play in — `.contentTransition` on its
+        // own only says *how* a change should look, and an unanimated state change
+        // swaps the glyph outright. Keyed on the symbol and the mode, which are the
+        // two things that make this tile look different.
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: icon)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: mode)
         .buttonStyle(.plain)
         .disabled(disabled)
         // Busy is disabled-for-taps but NOT dimmed: a control that is working is
@@ -338,7 +372,9 @@ struct PanelGlyphButton: View {
                 // is the only one in the console that changes shape with state
                 // (key → key.fill → key.slash), and without a transition an
                 // install or a failure is a silent swap the eye misses entirely.
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
                 .symbolEffect(.pulse, options: .repeating, isActive: busy && !reduceMotion)
                 .overlay(alignment: .topTrailing) {
                     if let badge, badge > 0 {

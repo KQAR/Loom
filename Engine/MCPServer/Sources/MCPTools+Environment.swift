@@ -42,6 +42,7 @@ extension MCPToolExecutor {
             isRecording: status.isRecording,
             socksPort: status.socksPort,
             socksError: status.socksError,
+            listenerError: status.listenerError,
             degradations: status.degradations.isEmpty
                 ? nil
                 : status.degradations.map {
@@ -94,6 +95,57 @@ extension MCPToolExecutor {
         // standing between "a rule told Loom to drop this" and "the client never ran".
         if status.droppedByRules > 0 { render.droppedByRules = status.droppedByRules }
         return prettyJSON(MCPRender.dict(render))
+    }
+
+    /// Move the listener. Goes through the engine's own port path — the same one the
+    /// toolbar's address editor uses — so the invariants (roll-back on a taken port,
+    /// the interface survives, SOCKS follows, phone material is republished) are one
+    /// implementation rather than two.
+    ///
+    /// **The system proxy is re-pointed here when Loom holds it.** That setting stores
+    /// a port; after a move it addresses a listener that is not there, and every app on
+    /// the machine loses the network while Loom's own switch still reads "on". Reported
+    /// either way, because an agent that moved the port needs to know whether the
+    /// machine followed it.
+    func handleSetProxyPort(_ arguments: MCPArguments) async throws -> String {
+        guard let port = try arguments.int("port") else {
+            throw MCPError.invalidParams("`port` is required")
+        }
+        let before = await engine.status()
+        let wasHoldingSystemProxy = await routing?.systemProxyRouting() == .loom
+        let status: ProxyStatus
+        do {
+            status = try await engine.setListenPort(port, socksPort: ListenPortRules.socksPort(besides: port))
+        } catch let error as ProxyControlError {
+            throw MCPToolFailure(error.message)
+        }
+
+        var payload: [String: Any] = [
+            "port": status.port,
+            "listenHost": status.listenHost,
+            "lanReachable": status.isLANReachable,
+            "previousPort": before.port,
+        ]
+        payload["socksPort"] = status.socksPort
+        payload["socksError"] = status.socksError
+        payload["listenerError"] = status.listenerError
+        // `.loom` is decided against the port the engine *had* — the routing
+        // implementation compares the system setting with Loom's current listener, and
+        // by now that has already moved. Read before the move, so the question is
+        // "was the machine pointed at us" rather than "is it pointed where we just
+        // went", which is always no.
+        if let routing, wasHoldingSystemProxy {
+            let result = await routing.setSystemProxy(enabled: true)
+            payload["systemProxy"] = result.ok
+                ? "re-pointed at \(status.port)"
+                : "still points at \(before.port) — \(result.message ?? "the change failed")"
+        }
+        payload["nextStep"] = """
+        Clients already pointed at \(before.port) are now connecting to nothing — update them to \
+        \(status.listenHost):\(status.port). A phone reads the new number from the panel's Connect \
+        Device popover, which republished itself.
+        """
+        return prettyJSON(payload)
     }
 
     func handleSetSystemProxy(_ arguments: MCPArguments) async throws -> String {

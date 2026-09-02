@@ -29,6 +29,7 @@ public struct PanelView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var hoveringWordmark = false
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(store: StoreOf<AppFeature>) {
         self.store = store
@@ -70,6 +71,10 @@ public struct PanelView: View {
 
     // MARK: Header
 
+    /// Reserved for the address so its content cannot shift the helper key beside
+    /// it. `headline` monospaced, sized for `127.0.0.1:9090`.
+    private static let addressWidth: CGFloat = 130
+
     /// Width of the capture dot, and the indent the extra listener lines hang under
     /// so they start where the address does.
     private static let captureDotSize: CGFloat = 7
@@ -95,6 +100,14 @@ public struct PanelView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .layoutPriority(1)
+                    // Fixed, for the same reason as the main window's copy: the
+                    // address is the only thing in this row that resizes with its
+                    // content, and everything to its right (the helper key) moved
+                    // whenever it did. `minWidth` rather than a hard width — the
+                    // panel is a fixed 300pt and the `Spacer` after the key absorbs
+                    // the rest, so reserving the common case is enough and a long
+                    // LAN address may still take the room it needs.
+                    .frame(minWidth: Self.addressWidth, alignment: .leading)
                 // Directly after the address because that is what it is about:
                 // the helper exists so that pointing macOS at *this* listener
                 // stops asking for a password. It is not a switch and it is not a
@@ -118,6 +131,7 @@ public struct PanelView: View {
                 .tint(LoomTheme.Palette.accent)
                 .help(store.status.isRunning ? "Proxy running — tap to stop" : "Proxy stopped — tap to start")
             }
+
 
             VStack(alignment: .leading, spacing: 1) {
                 // The second listener, named only when it is actually up. A client
@@ -238,7 +252,8 @@ public struct PanelView: View {
             // calling it "on".
             let device = DeviceReadiness(
                 isRunning: store.status.isRunning,
-                lanEnabled: store.lanEnabled
+                lanEnabled: store.lanEnabled,
+                lanFailure: store.lanRestoreError
             )
             PanelTile(
                 // Morphs, not just tints: a phone with radio waves is what "a
@@ -246,7 +261,11 @@ public struct PanelView: View {
                 // can't" looks like, and all three are the same family so
                 // `.replace` reads as one becoming the other.
                 icon: device.symbol,
-                mode: device.isReady ? .on : .off,
+                // `.warning` when LAN is on and the network cannot reach Loom: the
+                // switch says one thing and the listener says another, and this tile
+                // is where a phone's owner looks first. The alert row below carries
+                // the reason — a warning tile alone is a dead end.
+                mode: device.isFailing ? .warning : (device.isReady ? .on : .off),
                 title: "Device",
                 badge: store.connectedDeviceCount,
                 toggles: false,
@@ -840,7 +859,9 @@ struct PanelRow: View {
                     // identities, held traffic). A row's trailing detail already
                     // says the same thing in words, so this is reinforcement, and
                     // it must never be the only place a state appears.
-                    .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                    .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
                     .frame(width: 20)
                     .padding(.trailing, LoomTheme.Space.sm)
 

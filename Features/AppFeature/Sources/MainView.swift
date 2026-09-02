@@ -440,7 +440,9 @@ public struct MainView: View {
             Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
                 .symbolRenderingMode(.monochrome)
                 .foregroundStyle(held > 0 ? LoomTheme.Palette.warning : .secondary)
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
         }
         .tag(FlowCategory.breakpoints)
         .help(held > 0
@@ -719,7 +721,11 @@ public struct MainView: View {
 
     /// Phone/QR onboarding entry, right of the toolbar's ip:port chip.
     private var deviceReadiness: DeviceReadiness {
-        DeviceReadiness(isRunning: store.status.isRunning, lanEnabled: store.lanEnabled)
+        DeviceReadiness(
+            isRunning: store.status.isRunning,
+            lanEnabled: store.lanEnabled,
+            lanFailure: store.lanRestoreError
+        )
     }
 
     private var phoneButton: some View {
@@ -730,9 +736,33 @@ public struct MainView: View {
                 // Highlighted while a phone could actually reach Loom; secondary
                 // otherwise, whether that is because LAN capture is off or because
                 // the proxy isn't listening.
-                .foregroundStyle(deviceReadiness.isReady ? LoomTheme.Palette.accent : .secondary)
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                // Warning outranks both: "on and not working" is the only one of the
+                // three the operator can act on and doesn't already know about — the
+                // proxy is up, this Mac captures normally, and only a phone can tell
+                // that anything is wrong. Paired with the console's alert line, never
+                // the sole carrier (DESIGN.md § warning tile).
+                .foregroundStyle(
+                    deviceReadiness.isFailing
+                        ? LoomTheme.Palette.warning
+                        : (deviceReadiness.isReady ? LoomTheme.Palette.accent : Color.secondary)
+                )
+                // Magic Replace, not the default `.replace` (which is
+                // `.replace.downUp`: the old glyph slides out and the new one slides
+                // in). These three share a body, so the slash is drawn onto the phone
+                // and the radio waves grow out of it while the phone stays put.
+                .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
+                // The three symbols are three different widths, and a symbol
+                // transition says nothing about layout. Same 30×26 box as
+                // `statusIcon` and the capture controls, so the glyph changes inside
+                // it rather than resizing the strip.
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
         }
+        // `.contentTransition` declares a transition; it does not cause one. Without
+        // an animation covering *this* change, SwiftUI swaps the glyph outright.
+        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: deviceReadiness)
         .buttonStyle(.borderless)
         .disabled(!store.status.isRunning)
         .accessibilityLabel("Connect Device")
@@ -793,16 +823,28 @@ public struct MainView: View {
     /// `.principal`'s own behavior in both designs, so this note still applies.)
     private var statusChip: some View {
         HStack(spacing: LoomTheme.Space.xs) {
-            // green = proxy up & recording · yellow = up but paused · grey = off.
-            Circle()
-                .fill(captureDotColor)
-                .frame(width: 7, height: 7)
-            addressButton
-
-            // Shown even while the proxy is stopped — see `DeviceReadiness`. It
-            // used to be hidden, which removed the control precisely when someone
-            // was looking for why their phone couldn't connect.
-            phoneButton
+            // The address and the phone button are one pair, spaced tighter than the
+            // rest of the strip: the phone control is *about* the address it sits
+            // beside — whether anything on the network can reach it — and the glyph's
+            // own 30pt box already carries visual air on both sides.
+            HStack(spacing: 2) {
+                // The dot travels *with* the address rather than being pinned to the
+                // strip's leading edge: the reserved width is spent on the left (see
+                // `addressWidth`), so a dot left behind out there would sit in the
+                // slack with a growing gap between it and the thing it is about.
+                HStack(spacing: LoomTheme.Space.xs) {
+                    // green = proxy up & recording · yellow = up but paused · grey = off.
+                    Circle()
+                        .fill(captureDotColor)
+                        .frame(width: 7, height: 7)
+                    addressButton
+                }
+                .frame(width: Self.addressWidth, alignment: .trailing)
+                // Shown even while the proxy is stopped — see `DeviceReadiness`. It
+                // used to be hidden, which removed the control precisely when someone
+                // was looking for why their phone couldn't connect.
+                phoneButton
+            }
 
             Divider().frame(height: 14)
 
@@ -844,6 +886,18 @@ public struct MainView: View {
                 : "Proxy stopped")
                 .font(.callout.monospaced())
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                // **A fixed width, and this is what stops the strip jumping.** The
+                // address is the only item here that resizes with its content —
+                // `0.0.0.0:9090`, `127.0.0.1:9090` and `192.168.1.20:9090` are three
+                // widths — and this strip is `.principal`, i.e. centred on the
+                // *window*. So switching LAN off did not just change the text: it
+                // narrowed the whole strip, and every glyph to the right of it slid
+                // sideways. The phone symbol looked like it was disappearing and
+                // reappearing somewhere else, which is exactly what it was doing —
+                // the symbol changed in place and the place moved.
+                //
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -852,6 +906,15 @@ public struct MainView: View {
             ProxyPortCard(store: store) { showingPortEditor = false }
         }
     }
+
+    /// Width reserved for the capture dot **and** the address, so their content can
+    /// never resize the strip. `192.168.100.100:65535` is the widest realistic
+    /// address (`callout` monospaced, ~7.2pt/character) plus the dot and its gap.
+    ///
+    /// The group is trailing-aligned inside it, so the slack sits on the left and a
+    /// shorter address grows leftwards — the phone button on the right, which is what
+    /// the address is about, keeps a fixed gap and never moves.
+    private static let addressWidth: CGFloat = 167
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
     private var captureDotColor: Color {
@@ -866,7 +929,9 @@ public struct MainView: View {
         Button { store.send(.toggleRecordingTapped) } label: {
             Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
                 .font(LoomTheme.Icon.toolbar)
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
                 .foregroundStyle(store.isRecording ? LoomTheme.Palette.warning : LoomTheme.Palette.error)
                 // Same box as `statusIcon`: every glyph in this strip is spaced by one
                 // measurement, including the gap to the divider on either side.
@@ -895,7 +960,9 @@ public struct MainView: View {
             Image(systemName: store.setup.sslEnabled ? "lock.shield.fill" : "lock.shield")
                 .font(LoomTheme.Icon.toolbar)
                 .foregroundStyle(needsTrust ? LoomTheme.Palette.waiting : (store.setup.sslEnabled ? LoomTheme.Palette.accent : Color.secondary))
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
         }
@@ -933,7 +1000,9 @@ public struct MainView: View {
                 // specific: three toolbar toggles wearing 2xx-green is what made the
                 // color stop reading as a status at all.
                 .foregroundStyle(on ? LoomTheme.Palette.accent : Color.secondary)
-                .contentTransition(reduceMotion ? .identity : .symbolEffect(.replace))
+                .contentTransition(
+                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+                )
                 .symbolEffect(.pulse, options: .repeating, isActive: busy && !reduceMotion)
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())

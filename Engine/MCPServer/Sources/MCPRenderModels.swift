@@ -577,6 +577,14 @@ struct ProxyStatusRender: Encodable {
     /// is misconfigured: a port another proxy already holds looks identical from the
     /// client's side.
     var socksError: String?
+    /// Why the listener is not where it should be. Absent when it is.
+    ///
+    /// **Read this whenever `isRunning` is false or `lanReachable` is false**, because
+    /// those two are answers with no reason attached: a stopped proxy is either one
+    /// somebody switched off or one whose port was taken, and a loopback-only listener
+    /// is either LAN device connection turned off or a LAN bind that was refused.
+    /// Without this there is no way to tell a setting from a failure.
+    var listenerError: String?
     /// What the engine fell back from this run. Absent is the ordinary answer.
     ///
     /// **Read this before trusting the rest of the status.** `rulesUnreadable` means

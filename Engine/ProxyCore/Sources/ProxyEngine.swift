@@ -109,6 +109,11 @@ public actor ProxyEngine: ProxyControlling {
     /// Why the SOCKS listener isn't there, when Loom tried and lost the bind.
     /// Cleared on every attempt, so it can never outlive the failure it describes.
     var socksBindError: String?
+    /// Why the HTTP listener is not where it should be — the last bind attempted and
+    /// lost. Cleared by the next one that lands, so it cannot outlive its condition.
+    /// Reported as `ProxyStatus.listenerError`, because `isRunning: false` and
+    /// `lanReachable: false` are answers with no reason attached.
+    var listenerFailure: String?
 
     /// LAN-facing CA/profile download server + last-published info, live only
     /// while phone onboarding is active.
@@ -286,6 +291,7 @@ public actor ProxyEngine: ProxyControlling {
                 observeTunnels: observeTunnels
             )
             currentBindHost = host
+            listenerFailure = nil
             lastObserveTunnels = observeTunnels
             requestedSOCKSPort = socksPort
             await startSOCKSIfRequested(host: host)
@@ -296,7 +302,13 @@ public actor ProxyEngine: ProxyControlling {
             // Named rather than passed through: a port already held by another proxy
             // is the common failure here, and NIO's own error says neither which
             // port nor why (see `BindDiagnosis`).
-            throw BindDiagnosis.error(error, host: host, port: port)
+            let failure = BindDiagnosis.error(error, host: host, port: port)
+            // Kept as well as thrown. The throw reaches whoever called `start`; an
+            // agent reading `get_proxy_status` later sees only `isRunning: false`,
+            // which is the same shape whether someone switched it off or the port
+            // was taken.
+            listenerFailure = failure.message
+            throw failure
         }
     }
 

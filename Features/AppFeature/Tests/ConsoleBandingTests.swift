@@ -76,6 +76,23 @@ import Testing
         #expect(DeviceReadiness(isRunning: true, lanEnabled: true) == .ready)
         #expect(DeviceReadiness(isRunning: true, lanEnabled: false) == .lanDisabled)
         #expect(DeviceReadiness(isRunning: true, lanEnabled: true).isReady)
+        // On and not working is its own state, not a tint on `.ready`: the proxy is
+        // up and this Mac captures normally, so only a phone can tell that anything
+        // is wrong — which is why the glyph has to say it.
+        #expect(
+            DeviceReadiness(isRunning: true, lanEnabled: true, lanFailure: "port taken") == .lanUnreachable
+        )
+        #expect(DeviceReadiness(isRunning: true, lanEnabled: true, lanFailure: "port taken").isFailing)
+        #expect(!DeviceReadiness(isRunning: true, lanEnabled: true, lanFailure: "port taken").isReady)
+        // A failure recorded while LAN is off does not resurrect the state: the
+        // switch is the more recent decision.
+        #expect(
+            DeviceReadiness(isRunning: true, lanEnabled: false, lanFailure: "port taken") == .lanDisabled
+        )
+        // Nor does it outrank a stopped proxy, which is the thing to fix first.
+        #expect(
+            DeviceReadiness(isRunning: false, lanEnabled: true, lanFailure: "port taken") == .proxyStopped
+        )
         #expect(!DeviceReadiness(isRunning: true, lanEnabled: false).isReady)
     }
 
