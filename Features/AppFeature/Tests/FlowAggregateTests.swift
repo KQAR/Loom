@@ -290,6 +290,7 @@ import Testing
 
         let categories: [FlowCategory?] = [
             nil, .all, .errors, .host("a.test"), .host("missing.test"),
+            .domain("test"), .domain("missing.test"),
             .app(device: "192.168.1.9", key: "com.app"),
             .app(device: "192.168.1.9", key: "com.other"),
             .device("192.168.1.9"), .device("10.0.0.1"),

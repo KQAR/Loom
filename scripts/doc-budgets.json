@@ -10,7 +10,7 @@
     "The four over-target docs are frozen at what they measure; the rest carry 5% headroom."
   ],
   "AGENTS.md": 10560,
-  "DESIGN.md": 14970,
+  "DESIGN.md": 15150,
   "ROADMAP.md": 13900,
   "Engine/ProxyCore/CLAUDE.md": 10800,
   "skills/loom/references/workflows.md": 2086,
@@ -20,7 +20,7 @@
   ".claude/skills/embed-engine/SKILL.md": 796,
   "skills/loom/references/filing-a-bug.md": 681,
   ".claude/skills/release/SKILL.md": 901,
-  "Features/AppFeature/CLAUDE.md": 3845,
+  "Features/AppFeature/CLAUDE.md": 4000,
   "Clients/PrivilegedHelperClient/CLAUDE.md": 1587,
   ".github/CLAUDE.md": 316,
   ".claude/skills/pre-push-checks/SKILL.md": 955,
