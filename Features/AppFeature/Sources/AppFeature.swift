@@ -346,14 +346,18 @@ public struct AppFeature: Sendable {
         /// the setting is what the operator asked for and the engine's own rollback
         /// keeps the loopback listener — but nothing on the network can reach it.
         case lanRestoreFailed(String)
-        /// The address popover's Apply. Persists the choice and rebinds the
-        /// listeners; the system proxy follows if it was pointing at Loom.
+        /// The address popover's Apply. Goes through the engine's own port path, so
+        /// the human's editor and `set_proxy_port` are one implementation.
         case portSubmitted(Int)
         /// Loaded at boot, because the store is side-effecting.
         case configuredPortLoaded(Int)
-        /// The requested port could not be bound. Carries what to fall back to, so
-        /// the reducer never has to remember what it replaced.
-        case portRebindFailed(requested: Int, fallback: Int, message: String)
+        /// The listener is on the new port. Persisted here rather than before the
+        /// attempt: a relaunch must not come up on a port the operator asked for and
+        /// never got.
+        case portRebound(Int)
+        /// The port could not be bound. The engine has already put the listener back,
+        /// so this carries only what to say.
+        case portRebindFailed(requested: Int, message: String)
         /// A LAN device connected to (or was first seen by) the proxy.
         case connectedDeviceCountChanged(Int)
         case toggleRecordingTapped
@@ -737,56 +741,52 @@ public struct AppFeature: Sendable {
                 return .none
 
             case let .portSubmitted(port):
-                // Validated here as well as in the card: the card owns the message
-                // shown while typing, this owns what may reach the engine, and a
-                // reducer that trusts its view is one refactor away from binding
-                // whatever was in the field.
-                let reserved = Set(state.status.reverseProxies.compactMap(\.boundPort))
-                if let refusal = ProxyPortStore.validate(port, reservedPorts: reserved) {
+                // Validated here as well as in the card, and *again* in the engine:
+                // the card owns the message shown while typing, this owns what may be
+                // asked for, and the engine owns what may reach a socket. A reducer
+                // that trusts its view is one refactor away from binding whatever was
+                // in the field.
+                if let refusal = ListenPortRules.refusal(
+                    for: port,
+                    reserved: [ListenPortRules.mcpControlPort: "Loom's MCP control port"],
+                    inUseByLoom: Set(state.status.reverseProxies.compactMap(\.boundPort))
+                ) {
                     state.portError = refusal
                     return .none
                 }
-                guard port != state.status.port || !state.status.isRunning else {
+                guard port != state.status.port else {
                     state.portError = nil
                     return .none
                 }
-                let previous = state.configuredPort
-                state.configuredPort = port
                 state.portError = nil
                 state.portRebinding = true
-                // Persisted before the bind is attempted, and rolled back by
-                // `portRebindFailed` — a relaunch must not come up on a port the
-                // operator asked for and never got.
+                // **Through the engine's own port path**, not a stop-then-start from
+                // here. That is what keeps the interface (a `start()` binds loopback,
+                // which is how a port change used to close the proxy to the LAN), the
+                // roll-back, the SOCKS neighbour and the phone material's republish in
+                // one implementation shared with `set_proxy_port`.
                 return .run { send in
-                    ProxyPortStore.save(port)
-                    await proxyClient.stop()
                     do {
-                        let bound = try await proxyClient.start(port)
-                        await send(.proxyStarted(port: bound))
+                        await send(.engineStatusRefreshed(try await proxyClient.setListenPort(port)))
+                        await send(.portRebound(port))
                     } catch {
-                        await send(.portRebindFailed(
-                            requested: port, fallback: previous, message: error.localizedDescription
-                        ))
+                        await send(.portRebindFailed(requested: port, message: error.localizedDescription))
                     }
                 }
 
-            case let .portRebindFailed(requested, fallback, message):
+            case .portRebound:
+                // The persisting is `engineStatusRefreshed`'s, which every writer's
+                // change passes through. This owns only what the card is showing.
                 state.portRebinding = false
-                state.configuredPort = fallback
-                state.status.isRunning = false
+                state.portError = nil
+                return .none
+
+            case let .portRebindFailed(requested, message):
+                state.portRebinding = false
+                // The engine put the listener back before throwing, so there is
+                // nothing to restart here — only something to say.
                 state.portError = "Port \(requested) is unavailable — \(message)"
-                // The listener is *down* at this point: the stop already happened.
-                // Coming back up on the port that was working is the difference
-                // between a refused change and a proxy the operator has to notice is
-                // gone and restart by hand.
-                return .run { send in
-                    ProxyPortStore.save(fallback)
-                    guard let bound = try? await proxyClient.start(fallback) else {
-                        await send(.proxyStartFailed("could not rebind \(fallback)"))
-                        return
-                    }
-                    await send(.proxyStarted(port: bound))
-                }
+                return .run { send in await send(.engineStatusRefreshed(proxyClient.status())) }
 
             case let .proxyStarted(port):
                 state.status.isRunning = true
@@ -849,7 +849,18 @@ public struct AppFeature: Sendable {
                 state.status.reverseProxies = status.reverseProxies
                 state.status.recentRefusals = status.recentRefusals
                 state.status.refusedConnections = status.refusedConnections
-                return .none
+                state.status.socksError = status.socksError
+                state.status.listenerError = status.listenerError
+                state.status.degradations = status.degradations
+                // **Persisting hangs off the read, not off the writer.** The port has
+                // two writers — the address editor and `set_proxy_port` — and only the
+                // first one used to save it, so a port an agent moved came back as the
+                // old one after a relaunch while everything in the session agreed it
+                // had changed. Whoever moved it, the engine's answer is the one that
+                // gets remembered.
+                guard status.isRunning, status.port != state.configuredPort else { return .none }
+                state.configuredPort = status.port
+                return .run { _ in ProxyPortStore.save(status.port) }
 
 
             case .toggleRecordingTapped:

@@ -84,6 +84,17 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// SOCKS had no way to learn why nothing arrived. Log it for the human, return
     /// it for the agent — this is the returning half.
     public var socksError: String?
+    /// Why the listener is not where it should be — the last bind Loom attempted and
+    /// lost, cleared by the next one that lands. Nil when everything is where it was
+    /// asked to be.
+    ///
+    /// It exists because `isRunning: false` and `lanReachable: false` are **answers
+    /// without reasons**. A stopped proxy is either one somebody switched off or one
+    /// whose port was taken; a loopback-only listener is either LAN device connection
+    /// turned off or a LAN bind that was refused. The human's surfaces have said which
+    /// since the port editor shipped; this is the same fact for the agent, and without
+    /// it an agent reading this status has no way to tell a setting from a failure.
+    public var listenerError: String?
     /// What the engine fell back from this run — a corrupt CA regenerated, an
     /// unreadable rules file that started empty, a write that never reached disk.
     ///
@@ -129,6 +140,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         isRunning: Bool, port: Int, capturedCount: Int, retainedCount: Int? = nil,
         isRecording: Bool = true,
         listenHost: String = "127.0.0.1", socksPort: Int? = nil, socksError: String? = nil,
+        listenerError: String? = nil,
         degradations: [EngineDegradation] = [],
         recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
         reverseProxies: [ReverseProxyStatus] = [],
@@ -142,6 +154,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.listenHost = listenHost
         self.socksPort = socksPort
         self.socksError = socksError
+        self.listenerError = listenerError
         self.degradations = degradations
         self.recentRefusals = recentRefusals
         self.refusedConnections = refusedConnections
@@ -472,6 +485,24 @@ public protocol CaptureControlling: Sendable {
     /// is visible rather than assumed.
     func importFlows(_ flows: [Flow]) async -> Int
     func setRecording(_ recording: Bool) async
+    /// Move the listener to a different port, keeping the interface it is already on.
+    ///
+    /// **The one write path for the port**, shared by the toolbar's address editor and
+    /// `set_proxy_port` — the port has enough invariants (a taken port must roll back,
+    /// the SOCKS listener rides alongside, a LAN binding must survive, phone material
+    /// carries the number) that two implementations would be two sets of them.
+    ///
+    /// - Parameter socksPort: what the SOCKS listener should move to, or nil to leave
+    ///   it off. The neighbour convention (`port + 1`) belongs to the caller, not here:
+    ///   an embedder may not want a SOCKS listener at all.
+    /// - Returns: the status *after* the move, so a caller never has to ask again to
+    ///   find out what happened.
+    /// - Throws: `ProxyControlError.listenerUnavailable` when the port can't be bound,
+    ///   **after putting the listener back** on the one it was serving. A refused move
+    ///   leaves a working proxy, not a stopped one.
+    ///
+    /// Default implementation refuses, for an embedder that owns its own listener.
+    func setListenPort(_ port: Int, socksPort: Int?) async throws -> ProxyStatus
     /// Discard every captured flow — the in-memory ring and the durable store.
     /// Destructive and not undoable. Observers learn about it via
     /// `FlowProviding.flowsClearedStream()`, so a surface showing the old flows
@@ -486,6 +517,9 @@ public protocol CaptureControlling: Sendable {
 
 public extension CaptureControlling {
     func importFlows(_ flows: [Flow]) async -> Int { 0 }
+    func setListenPort(_ port: Int, socksPort: Int?) async throws -> ProxyStatus {
+        throw ProxyControlError.listenerUnavailable("this engine does not own its listener")
+    }
 }
 
 /// A push-based sink for flow updates, for an embedder that keeps captured flows
@@ -608,6 +642,7 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     // CaptureControlling
     case importFlows
     case setRecording
+    case setListenPort
     case clearFlows
     // RulesControlling
     case rulesState

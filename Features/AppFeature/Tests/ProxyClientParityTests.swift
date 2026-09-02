@@ -89,6 +89,7 @@ import Testing
             reading someone else's capture becomes routine with no agent at hand.
             """)
         case .setRecording: return .wired(client.setRecording)
+        case .setListenPort: return .wired(client.setListenPort)
         case .clearFlows: return .wired(client.clearFlows)
 
         // MARK: RulesControlling

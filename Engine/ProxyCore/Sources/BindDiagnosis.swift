@@ -20,6 +20,11 @@ enum BindDiagnosis {
     /// What went wrong binding `host:port`, named.
     static func describe(_ error: Error, host: String, port: Int) -> String {
         let address = "\(host):\(port)"
+        // Already in the operator's words — wrapping it again produced
+        // "could not listen on 0.0.0.0:9099: listenerUnavailable(\"…\")", i.e. this
+        // type's whole purpose applied to its own output. The short-circuit belongs
+        // here as well as in `error(_:)`, which is where it was.
+        if let control = error as? ProxyControlError { return control.message }
         guard let io = error as? IOError else {
             return "could not listen on \(address): \(error)"
         }

@@ -131,6 +131,13 @@ extension ProxyEngine {
             let failure = BindDiagnosis.describe(error, host: host, port: boundPort)
             do {
                 boundPort = try await bindServer(host: previous)
+                // Set *after* the roll-back, which cleared it: unlike a refused port
+                // change (where the listener ends up exactly where it should be), a
+                // refused move to `0.0.0.0` leaves a standing disagreement — LAN
+                // device connection is on and the network cannot reach Loom. An agent
+                // reading `lanReachable: false` otherwise cannot tell that from the
+                // switch simply being off.
+                listenerFailure = failure
                 throw ProxyControlError.listenerUnavailable(failure)
             } catch let restoreError as ProxyControlError {
                 throw restoreError
@@ -149,17 +156,37 @@ extension ProxyEngine {
         currentBindHost = host
     }
 
-    /// The one place the accepting socket's configuration is spelled out, so the
-    /// move and the roll-back cannot drift into binding differently.
-    private func bindServer(host: String) async throws -> Int {
-        try await server.start(
+    /// The one place the accepting socket's configuration is spelled out, so a move,
+    /// a roll-back and a port change cannot drift into binding differently.
+    func bindServer(host: String, port: Int? = nil) async throws -> Int {
+        // A wildcard bind coexists with a loopback one and loses every local client
+        // to it, silently — see `LoopbackProbe`. Asked here so both writers of the
+        // listener (the LAN switch and a port change) get the check.
+        if host == "0.0.0.0", LoopbackProbe.isTaken(port: port ?? boundPort) {
+            listenerFailure = """
+            127.0.0.1:\(port ?? boundPort) is held by another process, so Loom did not take the \
+            LAN binding — this Mac's own clients would have reached that process instead.
+            """
+            throw ProxyControlError.listenerUnavailable("""
+            127.0.0.1:\(port ?? boundPort) is held by another process. Loom can bind every \
+            interface anyway, but the kernel gives loopback connections to the more specific \
+            listener — so this Mac's own clients would reach that process instead, with nothing \
+            saying so. Pick another port, or stop the one holding it.
+            """)
+        }
+        let bound = try await server.start(
             host: host,
-            port: boundPort,
+            port: port ?? boundPort,
             store: store,
             forwarder: forwarder,
             ca: ensureCA(),
             config: config,
             observeTunnels: lastObserveTunnels
         )
+        // Cleared by the bind that lands, never before one is attempted: an entry
+        // that outlives its condition and one that vanishes before it is fixed are
+        // the same defect from opposite sides.
+        listenerFailure = nil
+        return bound
     }
 }

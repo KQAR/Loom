@@ -657,62 +657,123 @@ import Testing
 
     // MARK: Custom listen port
 
-    /// The card validates while typing, but the reducer is what decides what may
-    /// reach the engine — a refused port must not stop the listener on its way to
-    /// being rejected.
+    /// The card validates while typing, but the reducer is what decides what may be
+    /// asked of the engine — a refused port must not reach it at all.
     @Test func portSubmitted_refusesTheMCPPortWithoutTouchingTheListener() async {
         var state = AppFeature.State()
         state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
         state.lanEnabled = false
         let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
-            $0.proxyClient.stop = { Issue.record("a refused port must not stop the proxy") }
-            $0.proxyClient.start = { _ in Issue.record("a refused port must not rebind"); return 0 }
+            $0.proxyClient.setListenPort = { _ in
+                Issue.record("a refused port must not reach the engine")
+                return ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+            }
         }
 
-        // 9091 is refused because the SOCKS listener rides one port above it, which
-        // is the MCP endpoint an agent is connected to.
-        await store.send(.portSubmitted(ProxyPortStore.mcpPort - 1)) {
-            $0.portError = "9092 is the MCP endpoint an agent connects to — the SOCKS listener would take it."
+        // Refused because the SOCKS listener rides one port above it, and that is the
+        // MCP endpoint the agent doing the asking is connected to.
+        await store.send(.portSubmitted(ListenPortRules.mcpControlPort - 1)) {
+            $0.portError = "Port 9092 is Loom's MCP control port, and the SOCKS listener would take it."
         }
         #expect(store.state.configuredPort == ProxyPortStore.defaultPort)
         #expect(store.state.status.port == 9090)
     }
 
-    /// A bind that fails leaves the listener **down** — the stop has already
-    /// happened — so the reducer's job is not just to report it but to come back up
-    /// on the port that was working.
-    @Test func portSubmitted_fallsBackToTheWorkingPortWhenTheBindFails() async {
+    /// A failed move is the **engine's** to roll back (it has already put the listener
+    /// back by the time it throws), so this reducer's job is to say so and re-read —
+    /// not to restart anything itself.
+    @Test func portSubmitted_reportsTheEnginesRefusalAndRereads() async {
         var state = AppFeature.State()
         state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
         state.configuredPort = 9090
         state.lanEnabled = false
         let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
-            $0.proxyClient.stop = {}
-            $0.proxyClient.start = { port in
-                if port == 9090 { return 9090 }
-                throw StubError()
+            $0.proxyClient.setListenPort = { _ in
+                throw ProxyControlError.listenerUnavailable("0.0.0.0:9099 is already in use")
             }
             $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
         }
         store.exhaustivity = .off
 
         await store.send(.portSubmitted(9099)) {
-            $0.configuredPort = 9099
             $0.portRebinding = true
         }
         await store.receive(\.portRebindFailed) {
-            $0.configuredPort = 9090
-            $0.status.isRunning = false
+            $0.portRebinding = false
+            $0.portError = "Port 9099 is unavailable — 0.0.0.0:9099 is already in use"
+        }
+        // The configured port never moved: nothing was persisted for a port that was
+        // never bound.
+        #expect(store.state.configuredPort == 9090)
+        await store.receive(\.engineStatusRefreshed)
+        #expect(store.state.status.port == 9090)
+    }
+
+    /// A move that lands reports the engine's own status — the port, the interface it
+    /// kept, and the SOCKS neighbour — rather than the number that was asked for.
+    @Test func portSubmitted_takesTheEnginesAnswer() async {
+        var state = AppFeature.State()
+        state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+        state.lanEnabled = true
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.setListenPort = { port in
+                // The interface survives a port change — that is the whole reason this
+                // goes through the engine rather than stop-then-start.
+                ProxyStatus(
+                    isRunning: true, port: port, capturedCount: 0,
+                    listenHost: "0.0.0.0", socksPort: port + 1
+                )
+            }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.portSubmitted(9099)) {
+            $0.portRebinding = true
+        }
+        await store.receive(\.engineStatusRefreshed) {
+            $0.status.port = 9099
+            $0.status.listenHost = "0.0.0.0"
+            $0.status.socksPort = 9100
+        }
+        await store.receive(\.portRebound) {
             $0.portRebinding = false
         }
-        #expect(store.state.portError?.contains("9099") == true)
-        // Back on the port that was working, rather than left stopped.
-        await store.receive(\.proxyStarted) {
-            $0.status.isRunning = true
-            $0.status.port = 9090
-            $0.portError = nil
+        // Persisted off the *read*, so it happens whoever moved the port.
+        #expect(store.state.configuredPort == 9099)
+    }
+
+    /// The port has two writers — this editor and `set_proxy_port` — and only the
+    /// first one used to persist it, so a port an agent moved came back as the old
+    /// one after a relaunch while everything in the session agreed it had changed.
+    @Test func aPortAnAgentMoved_isRemembered() async {
+        var state = AppFeature.State()
+        state.status = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
+        state.configuredPort = 9090
+        let store = TestStore(initialState: state) { AppFeature() }
+        store.exhaustivity = .off
+
+        // No `portSubmitted` anywhere: this is the engine's answer arriving because an
+        // agent moved the listener, which is how the app learns of it.
+        await store.send(.engineStatusRefreshed(
+            ProxyStatus(isRunning: true, port: 9099, capturedCount: 0)
+        )) {
+            $0.status.port = 9099
+            $0.configuredPort = 9099
         }
-        await store.receive(\.engineStatusRefreshed)
+    }
+
+    /// A stopped proxy reports `port` too, and it is the port it *was* on. Persisting
+    /// from there would remember a listener that isn't running as a choice nobody made.
+    @Test func aStoppedProxysPort_isNotRemembered() async {
+        var state = AppFeature.State()
+        state.configuredPort = 9090
+        let store = TestStore(initialState: state) { AppFeature() }
+        store.exhaustivity = .off
+
+        await store.send(.engineStatusRefreshed(
+            ProxyStatus(isRunning: false, port: 9099, capturedCount: 0)
+        ))
+        #expect(store.state.configuredPort == 9090)
     }
 
     /// The system proxy stores a *port*. After a rebind it addresses a listener that
@@ -867,15 +928,14 @@ import Testing
             $0.isLoading = true
             $0.errorMessage = nil
         }
-        await store.receive(\.delegate)
         await store.receive(\.lanChangeFailed) {
             $0.isLoading = false
             $0.lanEnabled = true
             $0.errorMessage = "127.0.0.1:9090 is already in use"
         }
-        // The correction travels the same way the optimistic value did: the parent
-        // persisted that one and re-read `listenHost` off the back of it.
-        await store.receive(\.delegate)
+        // No delegate in either direction: nothing was announced to the parent, so
+        // there is nothing to correct. The persisted choice still says LAN is on,
+        // which is what the engine kept.
         #expect(store.state.info != nil, "the material is still valid — LAN never went off")
     }
 
@@ -894,12 +954,45 @@ import Testing
             $0.lanEnabled = true
             $0.isLoading = true
         }
-        await store.receive(\.delegate)
         await store.receive(\.lanChangeFailed) {
             $0.isLoading = false
             $0.lanEnabled = false
             $0.errorMessage = "0.0.0.0:9090 is already in use"
         }
+    }
+
+    /// The bug this ordering exists for: the delegate is what makes the parent
+    /// re-read `listenHost`, and sending it alongside the engine call put that read
+    /// in a race with the rebind it was reading the result of. It lost every time —
+    /// the toolbar went on naming `0.0.0.0` after LAN was switched off, until the
+    /// next relaunch.
+    @Test func lanSwitch_announcesOnlyAfterTheListenerHasActuallyMoved() async {
+        var state = PhoneOnboardingFeature.State(lanEnabled: true)
+        state.info = PhoneOnboardingInfo(
+            lanHost: "192.168.1.20",
+            proxyPort: 9090,
+            provisioningPort: 8_765,
+            provisioningURL: URL(string: "http://192.168.1.20:8765/")!,
+            fingerprint: "AA:BB",
+            commonName: "Loom Root CA",
+            qrPNGData: Data()
+        )
+        let rebound = LockIsolated(false)
+        let store = TestStore(initialState: state) { PhoneOnboardingFeature() } withDependencies: {
+            $0.proxyClient.stopPhoneOnboarding = { rebound.setValue(true) }
+        }
+
+        await store.send(.setLANEnabled(false)) {
+            $0.lanEnabled = false
+            $0.isLoading = true
+            $0.errorMessage = nil
+        }
+        // Nothing announced yet — the engine has not been asked to move anything.
+        await store.receive(\.lanStopped) {
+            $0.isLoading = false
+            $0.info = nil
+        }
+        #expect(rebound.value, "the listener moved before the parent was told")
         await store.receive(\.delegate)
     }
 

@@ -513,6 +513,43 @@ that back at the cost of making the CONNECT handler swap asynchronous, and that 
 load-bearing (see the CONNECT-surgery note [below](#known-issues-engine-scoped)). Not worth it. Re-measure
 before reopening.
 
+## Moving the listener
+
+`setListenPort` is the **one write path for the port** — the toolbar's address editor
+and the `set_proxy_port` tool both land here, because the invariants are too many to
+state twice. Four of them, each a defect on the app's own path before this existed:
+
+- **The interface survives.** A `start()` binds `127.0.0.1`, so restarting the proxy to
+  change its port silently closed it to the LAN and a phone that was capturing stopped
+  reaching it. The move rebinds to `currentBindHost`.
+- **A refused move rolls back.** The stop has already happened when the new bind is
+  attempted, so throwing without restoring leaves a proxy every surface calls running
+  with nothing listening at all.
+- **SOCKS follows**, to `ListenPortRules.socksPort(besides:)`, and only *after* the HTTP
+  bind lands — a SOCKS listener moved for a change that then failed is a second thing to
+  put back.
+- **Phone material republishes**, because the QR and the printed `host:port` carry the
+  port and would otherwise point at a closed socket.
+
+**A wildcard bind is probed against loopback first** (`LoopbackProbe`), and this one is
+not theoretical — it is how two proxies on one machine ended up sharing a port number.
+`SO_REUSEADDR` lets `0.0.0.0:p` and `127.0.0.1:p` coexist, and the kernel gives each
+connection to the **more specific** listener: the bind succeeds, the status says the port
+is listening, and every client on this Mac is silently answered by the other process.
+Measured — `curl -x 127.0.0.1:9099` timed out against the squatter while the LAN address
+served Loom normally. The probe binds loopback *without* `SO_REUSEADDR` (the one
+configuration that refuses to share) and releases it; a listening socket does not enter
+`TIME_WAIT`, so Loom's own just-stopped listener cannot make it a false positive. The
+TOCTOU window between probe and bind is accepted: the alternative is not probing.
+
+**`ProxyStatus.listenerError` means "the listener is not where it should be"**, which is
+narrower than "something failed". A failed start sets it (there is no listener) and so
+does a refused move to `0.0.0.0` (LAN device connection is on and the network cannot
+reach Loom) — a **refused port change does not**, because the listener ends up exactly
+where it belongs and the caller already has the error. An entry that outlives its
+condition is the same defect as no entry, pointed the other way; it is cleared by the
+next bind that lands, never before one is attempted.
+
 ## Known issues (engine-scoped)
 
 Moved here from the root `AGENTS.md`, which loads in full at the start of every session while

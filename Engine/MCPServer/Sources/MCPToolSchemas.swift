@@ -526,6 +526,36 @@ extension MCPToolExecutor {
             handler: { ex, args in try await ex.handleSetRecording(args) }
         ),
         MCPTool(
+            name: "set_proxy_port",
+            description: """
+            Move the proxy's listener to a different port, keeping the interface it is on \
+            (loopback, or the whole LAN when device connection is enabled). The SOCKS listener \
+            moves with it, to `port + 1`.
+
+            Use it when the port Loom wants is taken — another debugging proxy, or a dev server \
+            that will not move. `get_proxy_status.port` is the current one, and its \
+            `degradations`/`socksError` say whether anything about the listener is already \
+            unhealthy.
+
+            **Every client pointed at the old port is talking to nothing afterwards.** The reply \
+            says what to update them to. If macOS's system proxy was pointing at Loom it is \
+            re-pointed automatically and the reply reports whether that landed; a phone re-reads \
+            the new number from the panel's Connect Device popover, which republishes itself.
+
+            A port that cannot be bound is refused with the reason, and **the listener stays on \
+            the port it was serving** — a refused move never leaves the proxy stopped. Ports \
+            below 1024 need root, which Loom does not take; the MCP control port and its \
+            neighbour are refused too, since taking either would disconnect you. This is a write \
+            action.
+            """,
+            inputSchema: .object(
+                ["port": .integer("Port for the HTTP proxy listener (\(ListenPortRules.range.lowerBound)–\(ListenPortRules.range.upperBound)). SOCKS takes the next one up.")],
+                required: ["port"]
+            ),
+            isWrite: true,
+            handler: { ex, args in try await ex.handleSetProxyPort(args) }
+        ),
+        MCPTool(
             name: "clear_flows",
             description: """
             Discard every captured flow, in memory and on disk. Destructive and NOT undoable — \
