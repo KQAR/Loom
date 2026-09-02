@@ -1,6 +1,6 @@
 {
   "name": "loom",
-  "version": "0.0.31",
+  "version": "0.0.32",
   "description": "Drive Loom — an AI-operable HTTP/HTTPS debugging proxy for macOS — over MCP. Inspect captured flows, replay requests with overrides, and mock / map / rewrite / block / delay traffic with rules. See which HTTPS origins Loom passed through without reading and start decrypting one, so an empty capture can be explained instead of guessed. When something looks off, the status says why rather than leaving it to be inferred — a listener that could not bind, a SOCKS port that was taken, an engine still running but no longer doing what it was told. The MCP server is hosted by the running Loom app (HTTP on 127.0.0.1:9092); this plugin connects to it and ships a skill explaining the tools. Launch the Loom app for the tools to work.",
   "author": {
     "name": "KQAR"

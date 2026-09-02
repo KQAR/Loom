@@ -940,6 +940,46 @@ change must not leave a proxy the operator has to notice is gone), and the **sys
 because that setting stores a port and would otherwise address a listener that has moved while
 Loom's own switch still read "on".
 
+### The listener explains itself, a fail-open reports itself, and a row you closed can be reopened (done, 0.0.32)
+
+Five changes with one subject — **what the operator could not tell from the surface in front of
+them** — three of them found by using the window with another proxy already on `:9090`.
+
+**A failed rebind left a running proxy with nothing listening.** `rebind` stopped the server before
+binding the new host, so a refused move to `0.0.0.0` (Whistle on `*:9090` does not collide with
+`127.0.0.1:9090`, only with the wildcard) left the engine `running` with no socket and every surface
+reporting a healthy proxy. It rebinds the previous host before rethrowing now, and the error names
+the port and the reason (`BindDiagnosis`) instead of `NIOCore.IOError error 1`, whose trailing `1`
+is Foundation's numbering and not an errno. The same round made the port a **single write path**
+(`ProxyControlling.setListenPort`, shared by the toolbar editor and the new `set_proxy_port`) and
+probed a wildcard bind against loopback first — `SO_REUSEADDR` lets `0.0.0.0:p` and `127.0.0.1:p`
+coexist with local clients going to the more specific one, so a "successful" move onto a squatted
+port lost every local client while the LAN address still reached Loom. Measured, not theorised.
+
+**None of that reached a human**, because each surface was broken differently: `ProxyControlError`
+was not a `LocalizedError` (eleven call sites rendered a case number), the proxy toggle swallowed
+its bind failure into TCA and sprang back silently, the empty state said "Proxy stopped" for both
+switched-off and could-not-bind, and a refused LAN move left the switch lying. Each now says what
+happened and offers the repair it has. `ProxyStatus.listenerError` / `socksError` give the agent the
+same two-cause split — `isRunning: false` was indistinguishable from a setting.
+
+**Every fail-open reported itself to a log nobody reads.** Eleven paths kept Loom running while
+quietly doing something other than what was asked — rules unreadable (nothing mocked), scope or
+certificates not persisted (the *next* session differs), audit unavailable (writes with no record),
+CA regenerated (every client that trusted the old one fails at the handshake with nothing to point
+at). `EngineDegradation` + `DegradationLog` are the returning half: one entry per kind, counted,
+cleared by a write that later lands, reaching `get_proxy_status.degradations` and the console's
+alert channel. The rule it leaves behind is at the top of AGENTS.md — a fail-open needs both halves.
+
+**Closing the inspector left its row highlighted, and a highlighted row cannot be clicked again.**
+The table's coordinator skipped its selection sync on a compare between the incoming value and a
+binding whose getter *is* that value. The store cleared, the row stayed lit, `NSTableView` posts
+nothing for a click on the selected row — so the flow could not be reopened until traffic moved the
+rows, which made an always-on defect look intermittent. The coordinator keeps its own record of what
+it applied; the test that missed it never reused a `Versioned` box. Opening the inspector also
+stopped tail-follow, because a viewport resize read as the operator scrolling; it is attributed
+like a document growth now.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
