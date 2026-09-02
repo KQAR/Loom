@@ -76,9 +76,27 @@ final class KeychainCAStore: CAStore {
 final class FileCAStore: CAStore {
     private static let separator = "\n--LOOM-CA-SPLIT--\n"
     private let fileURL: URL
+    /// Where "the stored CA was unreadable, so a new one is coming" is reported. It
+    /// is the most invisible failure in the whole engine: the *new* CA works
+    /// perfectly, and every client that trusted the old one fails its handshake with
+    /// nothing to point at.
+    private let degradations: DegradationLog?
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, degradations: DegradationLog? = nil) {
         self.fileURL = fileURL ?? Self.defaultURL
+        self.degradations = degradations
+    }
+
+    /// One wording for all four ways the file can be present and unusable — the
+    /// operator's next step is the same in every one of them.
+    private func reportRegeneration(_ because: String) {
+        let reason = """
+        The stored root CA could not be read (\(because)), so a new one was generated — every \
+        client that trusted the old CA has to trust this one, and until then intercepted HTTPS \
+        fails at the handshake.
+        """
+        Log.tls.error("CA store at \(self.fileURL.path, privacy: .public): \(reason, privacy: .public)")
+        degradations?.record(.certificateAuthorityRegenerated, reason)
     }
 
     private static var defaultURL: URL {
@@ -95,20 +113,16 @@ final class FileCAStore: CAStore {
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
-            Log.tls.error("""
-            CA store unreadable at \(self.fileURL.path, privacy: .public); \
-            a new root CA will be generated and the previously trusted one will stop \
-            working: \(String(describing: error))
-            """)
+            reportRegeneration(error.localizedDescription)
             return nil
         }
         guard let blob = String(data: data, encoding: .utf8) else {
-            Log.tls.error("CA store at \(self.fileURL.path, privacy: .public) is not UTF-8; regenerating (previously trusted CA will stop working).")
+            reportRegeneration("it is not UTF-8")
             return nil
         }
         let parts = blob.components(separatedBy: Self.separator)
         guard parts.count == 2 else {
-            Log.tls.error("CA store at \(self.fileURL.path, privacy: .public) is malformed (\(parts.count) parts); regenerating (previously trusted CA will stop working).")
+            reportRegeneration("it is malformed — \(parts.count) parts")
             return nil
         }
         return CAMaterial(certificatePEM: parts[0], privateKeyPEM: parts[1])

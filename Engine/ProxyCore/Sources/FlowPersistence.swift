@@ -23,6 +23,8 @@ final class FlowPersistence: @unchecked Sendable {
     /// attempt) for every captured flow. The trade is explicit: the file may hold
     /// up to `maxRows + pruneSlack` rows between prunes (2.5% at the default cap).
     private let pruneSlack: Int
+    /// Where a fail-open lands, so it reaches a tool and not only `os_log`.
+    private let degradations: DegradationLog?
     /// Upper bound on rows, maintained incrementally and re-read exactly after each
     /// prune. `INSERT OR REPLACE` can replace rather than add, so this over-counts
     /// at worst — pruning slightly early is harmless, skipping it would not be.
@@ -94,9 +96,15 @@ final class FlowPersistence: @unchecked Sendable {
     // SQLite wants to copy bound bytes, not borrow them.
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init?(fileURL: URL, maxRows: Int = FlowLimits.persistedRows, pruneSlack: Int = 500) {
+    init?(
+        fileURL: URL,
+        maxRows: Int = FlowLimits.persistedRows,
+        pruneSlack: Int = 500,
+        degradations: DegradationLog? = nil
+    ) {
         self.maxRows = maxRows
         self.pruneSlack = max(0, pruneSlack)
+        self.degradations = degradations
         // Owner-only, like the CA store: these rows hold whole request and response
         // bodies — passwords, session tokens, PII — so on a shared Mac they are a
         // bigger prize than the CA key. The directory mode is what covers SQLite's
@@ -106,11 +114,12 @@ final class FlowPersistence: @unchecked Sendable {
         guard sqlite3_open(fileURL.path, &handle) == SQLITE_OK else {
             // The caller falls back to a ring-only store: captures then vanish on
             // quit, and nothing else would have said so.
-            Log.store.error("""
-            Could not open the flow database at \(fileURL.path, privacy: .public) \
-            (\(String(cString: sqlite3_errmsg(handle)), privacy: .public)); \
-            captured flows will not persist across launches.
-            """)
+            let reason = """
+            The flow database could not be opened, so captured traffic lives in memory only and \
+            is gone at quit. (\(String(cString: sqlite3_errmsg(handle))))
+            """
+            Log.store.error("Flow database at \(fileURL.path, privacy: .public): \(reason, privacy: .public)")
+            degradations?.record(.flowHistoryIncomplete, reason)
             sqlite3_close(handle)
             return nil
         }
@@ -217,8 +226,8 @@ final class FlowPersistence: @unchecked Sendable {
         sqlite3_close(db)
     }
 
-    static func makeDefault() -> FlowPersistence? {
-        FlowPersistence(fileURL: LoomPaths.appSupportFile("flows.sqlite"))
+    static func makeDefault(degradations: DegradationLog? = nil) -> FlowPersistence? {
+        FlowPersistence(fileURL: LoomPaths.appSupportFile("flows.sqlite"), degradations: degradations)
     }
 
     func save(_ flow: Flow) {
@@ -228,7 +237,9 @@ final class FlowPersistence: @unchecked Sendable {
         do {
             data = try encoder.encode(flow.strippingBodies())
         } catch {
-            Log.store.error("Encoding flow \(flow.id.uuidString, privacy: .public) failed; it will not persist: \(String(describing: error))")
+            let reason = "A captured flow could not be encoded, so it is in this window and not in the history: \(error.localizedDescription)"
+            Log.store.error("Encoding flow \(flow.id.uuidString, privacy: .public) failed: \(reason, privacy: .public)")
+            degradations?.record(.flowHistoryIncomplete, reason)
             return
         }
         let row = Row(
@@ -284,7 +295,9 @@ final class FlowPersistence: @unchecked Sendable {
             if undecodable > 0 {
                 // Rows that exist but can't be decoded simply vanish from the list —
                 // a capture that looks like it never happened.
-                Log.store.error("Skipped \(undecodable) undecodable flow row(s) while reading history.")
+                let reason = "\(undecodable) stored flow row(s) could not be decoded and are missing from the history."
+                Log.store.error("\(reason, privacy: .public)")
+                degradations?.record(.flowHistoryIncomplete, reason)
             }
             return flows
         }

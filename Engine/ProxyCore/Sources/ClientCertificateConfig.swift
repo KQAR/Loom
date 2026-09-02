@@ -85,17 +85,22 @@ final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
     /// separate no-identity context worth building — see `baseContext()`.
     private let isBaseConfigurationCustom: Bool
 
+    /// Where a fail-open lands, so it reaches a tool and not only `os_log`.
+    private let degradations: DegradationLog?
+
     /// - Parameter fileURL: persistence backing; `nil` disables it (tests, and any
     ///   engine that must not read or clobber the real set).
     init(
         certificates: [ClientCertificate] = [],
         fileURL: URL? = ClientCertificateConfig.defaultFileURL,
-        baseConfiguration: (@Sendable () -> TLSConfiguration)? = nil
+        baseConfiguration: (@Sendable () -> TLSConfiguration)? = nil,
+        degradations: DegradationLog? = nil
     ) {
         self.fileURL = fileURL
+        self.degradations = degradations
         self.isBaseConfigurationCustom = baseConfiguration != nil
         self.baseConfiguration = baseConfiguration ?? { .makeClientConfiguration() }
-        if let fileURL, let saved = Self.load(from: fileURL) {
+        if let fileURL, let saved = Self.load(from: fileURL, degradations: degradations) {
             self.state = Mutex(State(certificates: saved))
         } else {
             self.state = Mutex(State(certificates: certificates))
@@ -231,7 +236,10 @@ final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
             // Any mutation invalidates every built context. Cheap: identities are few
             // and a context is rebuilt on the next request to that host.
             state.contexts = [:]
-            if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
+            if let fileURL {
+                let degradations = degradations
+                persistQueue.async { Self.persist(updated, to: fileURL, degradations: degradations) }
+            }
             return result
         }
     }
@@ -282,29 +290,36 @@ final class ClientCertificateConfig: ClientIdentityProviding, Sendable {
 
     // MARK: - Persistence
 
-    private static func persist(_ certificates: [ClientCertificate], to url: URL) {
+    private static func persist(_ certificates: [ClientCertificate], to url: URL, degradations: DegradationLog?) {
         do {
             let data = try JSONEncoder().encode(certificates)
             try LoomPaths.createSecureDirectory(at: url.deletingLastPathComponent())
             try data.write(to: url, options: .atomic)
             LoomPaths.restrictToOwner(url)
+            degradations?.clear(.clientCertificatesNotPersisted)
         } catch {
-            Log.store.error("Client certificates persist failed; changes may not survive relaunch: \(String(describing: error))")
+            // These carry private keys and their passphrases: a lost write means
+            // re-importing them after the next launch, which nobody will know to do.
+            let reason = "Client certificate changes could not be written to \(url.path): \(error.localizedDescription)"
+            Log.store.error("Client certificates persist failed: \(reason, privacy: .public)")
+            degradations?.record(.clientCertificatesNotPersisted, reason)
         }
     }
 
-    private static func load(from url: URL) -> [ClientCertificate]? {
+    private static func load(from url: URL, degradations: DegradationLog?) -> [ClientCertificate]? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil } // first run
         do {
             return try JSONDecoder().decode([ClientCertificate].self, from: Data(contentsOf: url))
         } catch {
             // Fail open, loudly: every mTLS host silently reverts to presenting no
             // identity, and its handshake failures would look like the origin's fault.
-            Log.tls.error("""
-            Client certificates file at \(url.path, privacy: .public) could not be read; \
-            starting with none — mutual-TLS hosts will fail their handshake: \
-            \(String(describing: error))
-            """)
+            let reason = """
+            \(url.lastPathComponent) could not be read, so no client identity is being presented — \
+            mutual-TLS hosts will fail their handshake and it will look like the origin's fault. \
+            (\(error.localizedDescription))
+            """
+            Log.tls.error("Client certificates file at \(url.path, privacy: .public): \(reason, privacy: .public)")
+            degradations?.record(.clientCertificatesUnreadable, reason)
             return nil
         }
     }

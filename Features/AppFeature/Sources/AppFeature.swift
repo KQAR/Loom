@@ -190,6 +190,14 @@ public struct AppFeature: Sendable {
         /// change overwrote each other and the panel could only ever show one of them.
         /// Cleared the moment a start succeeds.
         public var proxyStartError: String?
+        /// Why the proxy is not reachable from the LAN although the switch is on.
+        ///
+        /// The restore is attempted on **every** path that brings the listener up,
+        /// because a start binds loopback — and it was `try?` on both of them, so a
+        /// refused rebind (something else holding the port on `0.0.0.0`) left the
+        /// phone glyph lit, the switch on, and the phone unable to connect, with
+        /// nothing anywhere saying why. Cleared by the next restore that lands.
+        public var lanRestoreError: String?
         /// Why the last port change was refused or failed, shown in the address
         /// popover. Cleared when a rebind succeeds.
         public var portError: String?
@@ -334,6 +342,10 @@ public struct AppFeature: Sendable {
         /// locally (see the merge in the reducer).
         case engineStatusRefreshed(ProxyStatus)
         case proxyStartFailed(String)
+        /// The LAN listener could not be re-opened after a start. LAN stays *on* —
+        /// the setting is what the operator asked for and the engine's own rollback
+        /// keeps the loopback listener — but nothing on the network can reach it.
+        case lanRestoreFailed(String)
         /// The address popover's Apply. Persists the choice and rebinds the
         /// listeners; the system proxy follows if it was pointing at Loom.
         case portSubmitted(Int)
@@ -686,12 +698,29 @@ public struct AppFeature: Sendable {
                 guard state.lanEnabled, let ip, ip != state.publishedLANHost else { return .none }
                 return .run { send in
                     try await clock.sleep(for: Self.phoneRepublishDebounce)
-                    guard let info = try? await proxyClient.startPhoneOnboarding() else { return }
-                    await send(.phoneOnboardingPublished(info))
+                    do {
+                        await send(.phoneOnboardingPublished(try await proxyClient.startPhoneOnboarding()))
+                    } catch {
+                        // The address moved and the republish for the new one failed:
+                        // the QR in anyone's hand now points at an address that has
+                        // gone away, which is the case this whole watch exists for.
+                        await send(.lanRestoreFailed(error.localizedDescription))
+                    }
                 }
                 .cancellable(id: CancelID.phoneRepublish, cancelInFlight: true)
 
+            case let .lanRestoreFailed(message):
+                // The switch is *not* flipped off: LAN is still what the operator
+                // asked for, and the engine's rebind rolled back rather than leaving
+                // the listener down. What is wrong is narrower than the setting —
+                // this machine is not reachable from the network right now — and the
+                // console says exactly that instead of quietly disagreeing with
+                // itself.
+                state.lanRestoreError = message
+                return .none
+
             case let .phoneOnboardingPublished(info):
+                state.lanRestoreError = nil
                 state.publishedLANHost = info.lanHost
                 // An open popover is showing the material this call just replaced —
                 // including a QR for an address that has moved. Written straight into
@@ -789,8 +818,12 @@ public struct AppFeature: Sendable {
                 let restoreLAN = state.lanEnabled
                 let followSystemProxy = state.setup.isSystemProxy
                 return .run { send in
-                    if restoreLAN, let info = try? await proxyClient.startPhoneOnboarding() {
-                        await send(.phoneOnboardingPublished(info))
+                    if restoreLAN {
+                        do {
+                            await send(.phoneOnboardingPublished(try await proxyClient.startPhoneOnboarding()))
+                        } catch {
+                            await send(.lanRestoreFailed(error.localizedDescription))
+                        }
                     }
                     // After the LAN rebind, so `listenHost` is the one now bound.
                     await send(.engineStatusRefreshed(proxyClient.status()))

@@ -577,6 +577,14 @@ struct ProxyStatusRender: Encodable {
     /// is misconfigured: a port another proxy already holds looks identical from the
     /// client's side.
     var socksError: String?
+    /// What the engine fell back from this run. Absent is the ordinary answer.
+    ///
+    /// **Read this before trusting the rest of the status.** `rulesUnreadable` means
+    /// the rules `list_rules` returns are not the ones the traffic met;
+    /// `sslScopeUnreadable` means interception is off whatever the scope says;
+    /// `auditUnavailable` means a write tool ran with nothing recording that it did.
+    /// Each entry names what happened, when it started, and how many times.
+    var degradations: [EngineDegradationRender]?
     /// Four-valued on purpose: `on` / `off` / `other` / `unavailable`. Collapsing
     /// "can't tell" into off would have an agent "fix" a routing problem it has no
     /// way to observe; collapsing "another app owns it" into off would have it
@@ -599,6 +607,22 @@ struct ProxyStatusRender: Encodable {
     /// invisible on every surface and this count is the only trace. `list_rules` says
     /// which rules and what each cost.
     var droppedByRules: Int?
+}
+
+/// One fail-open the engine took: what it is, why, and whether it is a one-off or
+/// a standing condition.
+struct EngineDegradationRender: Encodable {
+    /// A stable identifier to branch on — `rulesUnreadable`, `auditUnavailable`, …
+    var kind: String
+    /// One line naming the consequence, not just the error.
+    var summary: String
+    var detail: String
+    var since: Date
+    var lastSeen: Date
+    /// `1` is an event; a large number is a condition, and they need different
+    /// reactions — an encode failure recurring per flow is not the same problem as
+    /// one row that would not decode.
+    var count: Int
 }
 
 struct ConnectionRefusalRender: Encodable {
