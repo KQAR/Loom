@@ -49,6 +49,12 @@ public struct MainView: View {
         get { Set(collapsedDevicesRaw.split(separator: "\n").map(String.init)) }
         nonmutating set { collapsedDevicesRaw = newValue.sorted().joined(separator: "\n") }
     }
+    /// Which host groups are unfolded. The **opposite** convention from
+    /// `collapsedDevices`, and deliberately not persisted: a capture holds hundreds
+    /// of hosts under dozens of domains, so a domain arrives *closed* — the tree is
+    /// what keeps the list scannable — and a fold opened while chasing something is
+    /// this session's, not a preference to carry across relaunches. Owner decision.
+    @State private var expandedHostDomains: Set<String> = []
     /// Inspector pane height, set by dragging its top edge. Persisted for the same reason
     /// the section states are: it is view-local chrome nothing else reads, and re-dragging
     /// it on every launch is the annoyance.
@@ -286,18 +292,15 @@ public struct MainView: View {
             }
 
             Section {
-                ForEach(hostsExpanded ? store.capture.hosts : [], id: \.host) { entry in
-                    let pinned = store.capture.pinnedHosts.contains(entry.host)
-                    countedRow(count: entry.count) {
-                        rowTitle(entry.host, pinned: pinned)
-                    } icon: {
-                        FaviconView(host: entry.host)
-                    }
-                    .tag(FlowCategory.host(entry.host))
-                    .contextMenu {
-                        Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
-                            store.send(.capture(.pinHostToggled(entry.host)))
-                        }
+                // A tree, like Devices: hosts fold under their registrable domain
+                // (`HostGrouping`), the way Charles folds a capture by origin. A domain
+                // with one host is that host, flat — a parent over one child hides
+                // nothing and costs a row.
+                ForEach(hostsExpanded ? store.capture.hostGroups : []) { group in
+                    if group.hosts.count == 1, let only = group.hosts.first {
+                        hostRow(only, indented: false)
+                    } else {
+                        hostGroupRows(group)
                     }
                 }
             } header: {
@@ -311,6 +314,63 @@ public struct MainView: View {
         // only needs to fill vertically. (`navigationSplitViewColumnWidth` is a no-op
         // outside `NavigationSplitView`, and the divider is deliberately not draggable.)
         .frame(maxHeight: .infinity)
+    }
+
+    /// One domain and, folded under it, the hosts seen on it. Same shape as
+    /// `deviceRows`, for the same `List(selection:)` reason: the chevron is a button
+    /// in the row, the children are indented siblings, and the row itself selects
+    /// the whole domain's traffic (`FlowCategory.domain`).
+    @ViewBuilder private func hostGroupRows(_ group: CaptureFeature.State.HostGroup) -> some View {
+        let collapsed = !expandedHostDomains.contains(group.domain)
+        countedRow(count: group.count) {
+            HStack(spacing: LoomTheme.Space.xs) {
+                rowTitle(group.domain, pinned: false, decrypted: group.intercepted)
+                Button {
+                    if collapsed { expandedHostDomains.insert(group.domain) }
+                    else { expandedHostDomains.remove(group.domain) }
+                } label: {
+                    SidebarDisclosureChevron(expanded: !collapsed)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(collapsed ? "Show hosts" : "Hide hosts")
+                .help(collapsed ? "Show \(group.hosts.count) hosts" : "Hide hosts")
+                Spacer(minLength: 0)
+            }
+        } icon: {
+            categoryIcon("globe")
+        }
+        .tag(FlowCategory.domain(group.domain))
+        .help(
+            group.intercepted
+                ? "\(group.hosts.count) hosts · \(group.interceptedCount) decrypted"
+                : "\(group.hosts.count) hosts"
+        )
+
+        if !collapsed {
+            ForEach(group.hosts) { entry in
+                hostRow(entry, indented: true)
+            }
+        }
+    }
+
+    /// One host row — flat, or indented under its domain.
+    private func hostRow(_ entry: CaptureFeature.State.HostRow, indented: Bool) -> some View {
+        let pinned = store.capture.pinnedHosts.contains(entry.host)
+        return countedRow(count: entry.count) {
+            rowTitle(entry.host, pinned: pinned, decrypted: entry.intercepted)
+        } icon: {
+            FaviconView(host: entry.host)
+        }
+        .tag(FlowCategory.host(entry.host))
+        // The indent is the only thing saying this row belongs to the domain
+        // above it, since these are siblings in the list.
+        .padding(.leading, indented ? LoomTheme.Space.md : 0)
+        .help(entry.intercepted ? "\(entry.host) — decrypted (in the SSL scope)" : entry.host)
+        .contextMenu {
+            Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
+                store.send(.capture(.pinHostToggled(entry.host)))
+            }
+        }
     }
 
     /// One device and, folded under it, the apps seen on it.
@@ -462,9 +522,20 @@ public struct MainView: View {
     }
 
     /// Sidebar row title with a trailing pin glyph when pinned.
-    @ViewBuilder private func rowTitle(_ text: String, pinned: Bool) -> some View {
+    /// A row's name plus its markers. Both markers are `.caption2` `.secondary`
+    /// glyphs against the name, not tints: the sidebar's one coloured glyph is the
+    /// held-breakpoint alert, and "decrypted" is configuration, not a fault. The
+    /// open lock is the same glyph the request table's SSL column uses for an
+    /// exchange Loom read, so the two surfaces say one thing with one symbol.
+    @ViewBuilder private func rowTitle(_ text: String, pinned: Bool, decrypted: Bool = false) -> some View {
         HStack(spacing: 4) {
             Text(text).lineLimit(1).truncationMode(.middle)
+            if decrypted {
+                Image(systemName: "lock.open.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Decrypted")
+            }
             if pinned {
                 Image(systemName: "pin.fill")
                     .font(.caption2)
@@ -1126,6 +1197,7 @@ public struct MainView: View {
             case .connections: "Connections"
             case .errors: "Errors"
             case let .host(host): host
+            case let .domain(domain): domain
             case let .device(ip): deviceName(ip) ?? ip
             case let .app(device, key): appName(device: device, key: key) ?? key
             case .all, .rules, .audit, .breakpoints: nil

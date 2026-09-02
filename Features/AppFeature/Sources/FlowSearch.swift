@@ -173,11 +173,14 @@ public struct FlowSearch: Equatable, Sendable {
             }
         }
         if recordKinds.count == 1 { query.recordKind = recordKinds[0] }
-        let hosts = filters.compactMap { category -> String? in
-            if case let .host(host) = category { return host }
-            return nil
+        // Only a lone exact host is pushed. A domain row (`.domain`) selects a
+        // suffix `FlowQuery.host` cannot say — its glob would miss the apex — and a
+        // host beside a domain is one member of a two-member OR, so pushing the host
+        // alone would over-narrow. Both fall back to the window's predicate.
+        let hostDimension = filters.filter { $0.dimension == .host }
+        if hostDimension.count == 1, case let .host(host)? = hostDimension.first {
+            query.host = host
         }
-        if hosts.count == 1 { query.host = hosts[0] }
         // Devices and apps share a dimension, so an app row already implies its
         // device — pushing both down is only sound when the whole origin selection
         // is that one row.

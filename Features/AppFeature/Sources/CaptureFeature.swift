@@ -169,6 +169,15 @@ public struct CaptureFeature: Sendable {
         public var pinnedApps: Set<String> = [] {  // sidebar apps pinned to the top (by grouping key)
             didSet { refreshSidebarRows() }
         }
+        /// The interception scope, **projected in by the parent** from `SetupFeature`,
+        /// which owns it. This feature never writes it; it is the third input to the
+        /// host list's order (a decrypted host floats up) and to the row's marker, so
+        /// it drives `refreshSidebarRows` the same way the pins do. Compared first,
+        /// because an agent's `set_ssl_scope` lands as a fresh value on every re-read
+        /// and most of those are the same scope again.
+        public var sslScope = SSLScope.disabled {
+            didSet { if oldValue != sslScope { refreshSidebarRows() } }
+        }
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
 
         /// Written by hand rather than synthesized, because `flows` and `visibleFlows`
@@ -194,6 +203,7 @@ public struct CaptureFeature: Sendable {
                 && lhs.selection == rhs.selection
                 && lhs.pinnedHosts == rhs.pinnedHosts
                 && lhs.pinnedApps == rhs.pinnedApps
+                && lhs.sslScope == rhs.sslScope
                 && lhs.deviceAliases == rhs.deviceAliases
                 && lhs.search == rhs.search
                 && lhs.quickFilter == rhs.quickFilter
@@ -554,6 +564,10 @@ public struct CaptureFeature: Sendable {
             // was recorded, and it is the value the sidebar's categories are keyed by.
             // Scanning the URL string here instead cost 3.2 ms per render over a full ring.
             case let .host(host): hostByRow[flow.id] == host
+            // The group row: this host or anything under it. Same lookup, then a
+            // suffix check on a label boundary (`HostGrouping.isWithin`).
+            case let .domain(domain):
+                hostByRow[flow.id].map { HostGrouping.isWithin($0, domain: domain) } ?? false
             // Both halves, because the row means "this app, on this device" — see
             // `FlowCategory.app`. An app running on two devices has a row under
             // each, and they must not select each other's flows.
@@ -601,9 +615,36 @@ public struct CaptureFeature: Sendable {
         /// are stored now (see `refreshSidebarRows`). Field names are unchanged, so
         /// every reader — `entry.host`, `map(\.app.groupingKey)`, `ForEach(id:
         /// \.device.groupingKey)` — reads exactly as before.
-        public struct HostRow: Equatable, Sendable {
+        public struct HostRow: Equatable, Sendable, Identifiable {
             public let host: String
             public let count: Int
+            /// Whether the SSL scope currently decrypts this host. Carried on the row
+            /// rather than asked of the scope at draw time, because it is also what
+            /// the row is *sorted* by — a decrypted host floats up — and the sort and
+            /// the marker must read the same scope at the same moment.
+            public let intercepted: Bool
+
+            public var id: String { host }
+        }
+
+        /// One node of the Hosts tree: a registrable domain and the hosts under it.
+        ///
+        /// A group with a single host is drawn as that host, flat — a parent row
+        /// over one child is a fold that hides nothing. `HostGrouping` decides which
+        /// domain a host sorts under; the group's own filter is `FlowCategory.domain`.
+        public struct HostGroup: Equatable, Sendable, Identifiable {
+            public let domain: String
+            /// Sum of the member counts.
+            public let count: Int
+            /// Sorted the way the flat list is: pinned, then decrypted, then by name.
+            public let hosts: [HostRow]
+            /// How many members the scope decrypts — the group floats up when any
+            /// does, and the marker on the group row says how many.
+            public let interceptedCount: Int
+            public var pinned: Bool
+            public var intercepted: Bool { interceptedCount > 0 }
+
+            public var id: String { domain }
         }
 
         public struct AppRow: Equatable, Sendable, Identifiable {
@@ -637,8 +678,14 @@ public struct CaptureFeature: Sendable {
         /// connected), then by most flows. Each carries its own apps.
         public var devices: [DeviceRow] { sidebarDevices }
 
-        /// Distinct hosts with counts — pinned first, then alphabetical.
+        /// Distinct hosts with counts — pinned first, then the ones the SSL scope
+        /// decrypts, then alphabetical. Flat; the sidebar draws `hostGroups`.
         public var hosts: [HostRow] { sidebarHosts }
+
+        /// The Hosts tree — `hosts` folded under their registrable domain, groups in
+        /// the same order the flat list uses (a group is pinned or decrypted when any
+        /// member is).
+        public var hostGroups: [HostGroup] { sidebarHostGroups }
 
         /// Every app row across every device, flattened.
         ///
@@ -648,6 +695,7 @@ public struct CaptureFeature: Sendable {
         public var apps: [AppRow] { sidebarDevices.flatMap(\.apps) }
 
         private var sidebarHosts: [HostRow] = []
+        private var sidebarHostGroups: [HostGroup] = []
         private var sidebarDevices: [DeviceRow] = []
 
         /// Re-sort the three grouping lists.
@@ -668,11 +716,36 @@ public struct CaptureFeature: Sendable {
         /// — not by call sites remembering, which is the rule `refreshVisibleFlows`
         /// states and the failure mode it names: a stale list still renders.
         mutating func refreshSidebarRows() {
-            sidebarHosts = aggregates.hostCounts.sorted { a, b in
-                let pa = pinnedHosts.contains(a.key), pb = pinnedHosts.contains(b.key)
-                if pa != pb { return pa }        // pinned rows float to the top
-                return a.key < b.key
-            }.map { HostRow(host: $0.key, count: $0.value) }
+            // Pinned first — a pin is the operator's explicit "keep this at the top",
+            // and a pin that a scope change can bury is not a pin. Then the hosts the
+            // scope decrypts: under a whitelist those are the few the operator named,
+            // i.e. the working set, and the rest is the noise floor. Alphabetical
+            // within each band, so a row keeps its place as counts move.
+            func precedes(_ a: HostRow, _ b: HostRow) -> Bool {
+                let pa = pinnedHosts.contains(a.host), pb = pinnedHosts.contains(b.host)
+                if pa != pb { return pa }
+                if a.intercepted != b.intercepted { return a.intercepted }
+                return a.host < b.host
+            }
+            let rows = aggregates.hostCounts.map { host, count in
+                HostRow(host: host, count: count, intercepted: sslScope.shouldIntercept(host: host))
+            }
+            sidebarHosts = rows.sorted(by: precedes)
+            sidebarHostGroups = Dictionary(grouping: sidebarHosts) { HostGrouping.domain(of: $0.host) }
+                .map { domain, members in
+                    HostGroup(
+                        domain: domain,
+                        count: members.reduce(0) { $0 + $1.count },
+                        hosts: members, // already in `precedes` order — grouping is stable
+                        interceptedCount: members.count(where: \.intercepted),
+                        pinned: members.contains { pinnedHosts.contains($0.host) }
+                    )
+                }
+                .sorted { a, b in
+                    if a.pinned != b.pinned { return a.pinned }
+                    if a.intercepted != b.intercepted { return a.intercepted }
+                    return a.domain < b.domain
+                }
 
             sidebarDevices = aggregates.deviceCounts.sorted { a, b in
                 let da = aggregates.deviceReps[a.key], db = aggregates.deviceReps[b.key]

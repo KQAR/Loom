@@ -20,6 +20,11 @@ public enum FlowCategory: Hashable, Sendable {
     /// one write action that parks a live connection, so it needs a human surface.
     case breakpoints
     case host(String)
+    /// Every host at or under one registrable domain — the Hosts tree's parent row
+    /// (`HostGrouping` decides membership). Same dimension as `.host`, so a domain
+    /// plus one of its own hosts is a union and the domain wins, exactly as a
+    /// device plus one of its apps does.
+    case domain(String)
     /// One app, **on one device**. The pair, not the app alone: the sidebar nests
     /// apps under the device they ran on, so a row there means "Safari, on the
     /// phone" — and Safari on this Mac is a different row two groups up. Filtering
@@ -35,7 +40,7 @@ public enum FlowCategory: Hashable, Sendable {
     public var isPanel: Bool {
         switch self {
         case .rules, .audit, .breakpoints: true
-        case .all, .requests, .connections, .errors, .host, .app, .device: false
+        case .all, .requests, .connections, .errors, .host, .domain, .app, .device: false
         }
     }
 
@@ -44,7 +49,7 @@ public enum FlowCategory: Hashable, Sendable {
     public var isFilter: Bool {
         switch self {
         case .all, .rules, .audit, .breakpoints: false
-        case .requests, .connections, .errors, .host, .app, .device: true
+        case .requests, .connections, .errors, .host, .domain, .app, .device: true
         }
     }
 
@@ -73,7 +78,7 @@ public enum FlowCategory: Hashable, Sendable {
         case .all, .rules, .audit, .breakpoints: nil
         case .requests, .connections: .recordKind
         case .errors: .errors
-        case .host: .host
+        case .host, .domain: .host
         case .app, .device: .origin
         }
     }
@@ -408,6 +413,23 @@ public struct AppFeature: Sendable {
         BindingReducer()
         Scope(state: \.setup, action: \.setup) {
             SetupFeature()
+        }
+        // The capture child sorts and marks its host rows by what the scope decrypts,
+        // and `SetupFeature` owns the scope. Projected on change rather than filled in
+        // on read like `setup.port`: the child caches the sorted rows off a `didSet`,
+        // and a computed projection has no `didSet` to drive it.
+        //
+        // On *this* `Scope`, not on the `Reduce` at the end of the body: a builder
+        // modifier wraps only the expression it is written on, so hanging it off the
+        // parent's own reducer watched a reducer that never writes the scope — the
+        // projection compiled, ran, and never fired (`SidebarScopeProjectionTests`).
+        // The scope is written by `SetupFeature` alone, which is what makes this
+        // placement complete.
+        .onChange(of: \.setup.sslScope) { _, scope in
+            Reduce { state, _ in
+                state.capture.sslScope = scope
+                return .none
+            }
         }
         Scope(state: \.audit, action: \.audit) {
             AuditFeature()
