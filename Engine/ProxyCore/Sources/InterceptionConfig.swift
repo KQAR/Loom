@@ -27,12 +27,20 @@ final class InterceptionConfig: Sendable {
     /// intercepted, which reads as "Loom captured nothing" with no error anywhere.
     private let persistQueue = DispatchQueue(label: "com.loom.interceptionconfig.persist")
 
+    /// Where a fail-open lands, so it reaches a tool and not only `os_log`.
+    private let degradations: DegradationLog?
+
     /// - Parameter defaults: persistence backing; `nil` disables it (tests). When
     ///   non-nil and a scope was previously saved, that saved scope wins over the
     ///   `scope` argument.
-    init(scope: SSLScope = .disabled, defaults: UserDefaults? = .standard) {
+    init(
+        scope: SSLScope = .disabled,
+        defaults: UserDefaults? = .standard,
+        degradations: DegradationLog? = nil
+    ) {
         self.defaults = defaults
-        if let defaults, let saved = Self.load(from: defaults, key: storageKey) {
+        self.degradations = degradations
+        if let defaults, let saved = Self.load(from: defaults, key: storageKey, degradations: degradations) {
             self.scope = Mutex(saved)
         } else {
             self.scope = Mutex(scope)
@@ -84,12 +92,15 @@ final class InterceptionConfig: Sendable {
         guard let defaults else { return }
         do {
             defaults.set(try JSONEncoder().encode(scope), forKey: storageKey)
+            degradations?.clear(.sslScopeNotPersisted)
         } catch {
-            Log.tls.error("SSL scope persist failed; interception settings may not survive relaunch: \(String(describing: error))")
+            let reason = "HTTPS scope changes could not be saved: \(error.localizedDescription)"
+            Log.tls.error("SSL scope persist failed; settings may not survive relaunch: \(reason, privacy: .public)")
+            degradations?.record(.sslScopeNotPersisted, reason)
         }
     }
 
-    private static func load(from defaults: UserDefaults, key: String) -> SSLScope? {
+    private static func load(from defaults: UserDefaults, key: String, degradations: DegradationLog?) -> SSLScope? {
         guard let data = defaults.data(forKey: key) else { return nil }
         do {
             return try JSONDecoder().decode(SSLScope.self, from: data)
@@ -97,7 +108,13 @@ final class InterceptionConfig: Sendable {
             // Falls back to the default (disabled) scope, i.e. HTTPS stops being
             // intercepted and nothing gets captured — the user would just see an
             // empty list, with no hint why.
-            Log.tls.error("Stored SSL scope is undecodable; falling back to interception disabled: \(String(describing: error))")
+            let reason = """
+            The stored HTTPS scope could not be read, so interception is off — HTTPS you expect \
+            to be decrypted is being relayed instead, and nothing is captured for it. \
+            (\(error.localizedDescription))
+            """
+            Log.tls.error("Stored SSL scope is undecodable: \(reason, privacy: .public)")
+            degradations?.record(.sslScopeUnreadable, reason)
             return nil
         }
     }
