@@ -43,13 +43,20 @@ in what order, and what to do when the answer is "nothing captured".
   Cursor) with `get_version`'s `appVersion`; that tool's description says what a
   mismatch means and what to say about it. No version is written down here on
   purpose — a copied number goes stale and then lies.
+- **A status that looks wrong says why — read the reason, don't infer one.**
+  `isRunning: false`, `lanReachable: false` and a null `socksPort` each have two
+  causes: switched off, or a bind that was refused. `listenerError` / `socksError`
+  tell those apart. Read `degradations` before trusting anything else — it is where
+  "running, but not doing what it was told" appears (rules unreadable, so nothing
+  is mocked; audit unavailable, so nothing is recorded).
 - **Traffic only appears if a client routes through the proxy.** HTTP proxy on
   `127.0.0.1:9090`, SOCKS5 on `127.0.0.1:9091` (for clients that only understand
   `ALL_PROXY` / a SOCKS field); a phone on the same Wi-Fi uses the Mac's LAN IP
   (panel QR); the human can enable the macOS system proxy instead. A client that
   ignores proxy settings entirely (Node's `fetch`/undici) needs
   `create_reverse_proxy`. `get_proxy_status` has the authoritative ports and
-  routing state; `list_devices` shows who is sending.
+  routing state — read them rather than repeating the defaults, since
+  `set_proxy_port` can move them; `list_devices` shows who is sending.
 - **HTTPS is decrypted per host, and the list starts empty.** Plain HTTP is
   captured out of the box; an `https://` host is relayed untouched until someone
   names it (`intercept_host`), which is why an app that pins or carries its own
@@ -85,7 +92,7 @@ each one is *for*.
 | Tool | For |
 | --- | --- |
 | `get_version` | app + protocol version — cheap readiness ping |
-| `get_proxy_status` | running state, ports, routing (`systemProxy`), refusals, `droppedByRules`, whether `set_system_proxy` will prompt (`privilegedHelper`) — **first call when a capture is empty** |
+| `get_proxy_status` | running state, ports, routing (`systemProxy`), refusals, `droppedByRules`, whether `set_system_proxy` will prompt (`privilegedHelper`) — plus `listenerError` / `socksError` / `degradations` when something is off. **First call when a capture is empty** |
 | `list_devices` | who sent traffic (this Mac + LAN devices), with counts |
 | `get_recent_flows` | newest-first summaries; filter server-side (host, method, url/header/body contains, status, since, app, device) |
 | `wait_for_flow` | block until a matching flow lands — the "trigger, then look" tool |
@@ -110,6 +117,7 @@ will affect before doing it. Every call is recorded in the audit trail.
 | Tool | For |
 | --- | --- |
 | `set_system_proxy` | route this Mac through Loom, or turn it off (machine-wide, blocks QUIC). Read `privilegedHelper` first — a human-only prompt looks like a hang |
+| `set_proxy_port` | move the listener when its port is taken — clients still on the old port are then talking to nothing |
 | `set_recording` | pause/resume storing flows — keeps background noise out of a capture |
 | `clear_flows` | discard the whole capture, memory and disk. Not undoable, and it empties the human's window too |
 | `replay_flow` | re-send with overrides; `count`/`concurrency` for "is it intermittent?" |

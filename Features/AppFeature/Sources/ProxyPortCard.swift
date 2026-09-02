@@ -1,4 +1,5 @@
 import ComposableArchitecture
+import LoomSharedModels
 import SwiftUI
 
 /// The address popover: what port the proxy listens on, and the only place it can be
@@ -37,8 +38,10 @@ struct ProxyPortCard: View {
         guard let parsed else {
             return text.isEmpty ? nil : "Ports are numbers."
         }
-        return ProxyPortStore.validate(
-            parsed, reservedPorts: Set(store.status.reverseProxies.compactMap(\.boundPort))
+        return ListenPortRules.refusal(
+            for: parsed,
+            reserved: [ListenPortRules.mcpControlPort: "Loom's MCP control port"],
+            inUseByLoom: Set(store.status.reverseProxies.compactMap(\.boundPort))
         )
     }
 

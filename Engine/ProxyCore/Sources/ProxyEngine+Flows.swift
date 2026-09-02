@@ -17,6 +17,7 @@ extension ProxyEngine {
             listenHost: currentBindHost,
             socksPort: boundSOCKSPort,
             socksError: socksBindError,
+            listenerError: listenerFailure,
             degradations: degradations.current,
             recentRefusals: refusals.recent,
             refusedConnections: refusals.total,

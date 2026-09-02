@@ -39,8 +39,12 @@ extension ProxyEngine {
                 ca: ensureCA(), config: config
             )
         } catch {
+            // One wording for every bind in the engine (`BindDiagnosis`). This used
+            // to spell its own, which leaked NIO's `bind(descriptor:ptr:bytes:)` and
+            // an errno into a sentence an operator reads.
             throw ProxyControlError.invalidReverseProxy(
-                "could not listen on port \(endpoint.requestedPort): \(error). Is something else already using it?")
+                BindDiagnosis.describe(error, host: "127.0.0.1", port: endpoint.requestedPort)
+            )
         }
         reverseProxyConfig.upsert(endpoint)
         reverseProxyConfig.noteBound(id: endpoint.id, port: port)
@@ -113,7 +117,7 @@ extension ProxyEngine {
                 )
                 reverseProxyConfig.noteBound(id: endpoint.id, port: port)
             } catch {
-                let message = "could not listen on port \(endpoint.requestedPort): \(error)"
+                let message = BindDiagnosis.describe(error, host: "127.0.0.1", port: endpoint.requestedPort)
                 reverseProxyConfig.noteFailure(id: endpoint.id, error: message)
                 Log.proxy.error("""
                 Reverse proxy for \(endpoint.upstream, privacy: .public) \(message, privacy: .public) \
