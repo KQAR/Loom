@@ -136,6 +136,46 @@ import Testing
         #expect(harness.table.selectedRow == -1, "a selection no longer in the list selects nothing")
     }
 
+    /// The production shape, which the tests above never take: the *same* `Versioned`
+    /// boxes twice, and a binding that answers with the store's current value — so the
+    /// only thing that can tell the two updates apart is the selection itself.
+    ///
+    /// This is the inspector's ✕. It sends `flowSelected(nil)` and changes no row, so
+    /// `update` used to return early on `newSelection == selection` (both read the
+    /// store: always equal) and the row stayed highlighted. A highlighted row posts no
+    /// selection change when clicked, so that flow could not be reopened until a
+    /// capture batch happened to move the rows.
+    @Test func aStoreOnlyDeselectionReachesTheTable() {
+        let harness = Harness()
+        let rows = (0 ..< 20).map { flow($0) }
+        let rowsBox = Versioned(rows)
+        let captureBox = Versioned(capture(rows))
+        // Mirror the store: the binding's getter already holds what `update` is handed.
+        harness.state.selection = rows[7].id
+        harness.coordinator.update(rows: rowsBox, capture: captureBox, selection: rows[7].id)
+        #expect(harness.table.selectedRow == 7)
+
+        harness.state.selection = nil
+        harness.coordinator.update(rows: rowsBox, capture: captureBox, selection: nil)
+        #expect(harness.table.selectedRow == -1, "closing the inspector must clear the row's highlight")
+
+        // And the way back: the store re-selects with no row change.
+        harness.state.selection = rows[3].id
+        harness.coordinator.update(rows: rowsBox, capture: captureBox, selection: rows[3].id)
+        #expect(harness.table.selectedRow == 3)
+    }
+
+    /// Both echo paths stay closed: our own `selectRowIndexes` never writes the binding,
+    /// and a same-valued delegate call never re-sends (which would drop the inspector's
+    /// hydrated body and re-fetch it).
+    @Test func programmaticSelectionDoesNotEchoIntoTheBinding() {
+        let harness = Harness()
+        let rows = (0 ..< 20).map { flow($0) }
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: rows[5].id)
+        #expect(harness.table.selectedRow == 5)
+        #expect(harness.state.selection == nil, "a store-driven sync is not a user selection")
+    }
+
     // MARK: The property the fix is for
 
     /// Having a selection must not make a batch cost the window.

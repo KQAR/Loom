@@ -371,6 +371,15 @@ struct RequestTable: NSViewRepresentable {
         /// echoing that back into the binding turns a programmatic sync into a user
         /// selection.
         private var applyingSelection = false
+        /// The selection this coordinator last put on the table, kept **as its own copy**
+        /// rather than read back through `selection`. In production that binding is
+        /// `$store.selectedFlowID.sending(…)`, whose getter answers with the store's
+        /// *current* value — the same value `update` is handed as `newSelection` — so
+        /// comparing the two was always true and a store-only change (the inspector's ✕
+        /// sending `flowSelected(nil)` with no row change) never reached the table. The
+        /// row stayed highlighted, and a highlighted row cannot be clicked into a
+        /// selection again: `NSTableView` posts nothing for a click on the selected row.
+        private var appliedSelection: Flow.ID?
 
         init(
             selection: Binding<Flow.ID?>,
@@ -434,10 +443,11 @@ struct RequestTable: NSViewRepresentable {
             // comparing 20 000 `Flow`s elementwise. It no longer can (that is the point
             // of `Versioned`), so the question is asked here instead and costs two
             // pointer compares: the contents object is replaced only when the reducer
-            // assigned a new window.
+            // assigned a new window. The selection is compared against what this
+            // coordinator last applied, never against the binding — see `appliedSelection`.
             if rowsSource.isIdentical(to: newRows),
                captureSource.isIdentical(to: newCapture),
-               newSelection == selection {
+               newSelection == appliedSelection {
                 return
             }
             rowsSource = newRows
@@ -539,8 +549,17 @@ struct RequestTable: NSViewRepresentable {
         /// of these arrived with `isApplyingUpdate` already false).
         ///
         /// A glide is ours too, and it is behind the bottom by construction.
-        static func shouldSampleFollow(documentHeightChanged: Bool, gliding: Bool) -> Bool {
-            !documentHeightChanged && !gliding
+        ///
+        /// **The viewport changing height is not the operator either.** Opening the
+        /// inspector shrinks the scroll view; AppKit keeps the top offset, so the visible
+        /// rect's bottom edge rises by the inspector's height and `isAtBottom` answers
+        /// "no" — which read as "they scrolled away" and switched the follow off the
+        /// moment someone clicked a row to read it. A resize moves nothing the operator
+        /// chose to move, so it is attributed the same way a document growth is.
+        static func shouldSampleFollow(
+            documentHeightChanged: Bool, viewportHeightChanged: Bool = false, gliding: Bool
+        ) -> Bool {
+            !documentHeightChanged && !viewportHeightChanged && !gliding
         }
 
         /// Whether this table is on a window someone can currently see.
@@ -805,9 +824,20 @@ struct RequestTable: NSViewRepresentable {
         // MARK: Selection
 
         func tableViewSelectionDidChange(_ notification: Notification) {
-            guard !applyingSelection, let table else { return }
+            // Two guards, two writers. `applyingSelection` is our own `selectRowIndexes`.
+            // `isApplyingUpdate` is the structural edit: a head trim that removes the
+            // selected row makes `NSTableView` post a deselection from inside
+            // `removeRows`, i.e. from inside `updateNSView` — and sending a store action
+            // from a view update is state mutation mid-render. The reducer already
+            // cleared `selectedFlowID` for a dropped flow, and `applySelection` runs
+            // right after `apply`, so nothing is lost by not echoing it.
+            guard !applyingSelection, !isApplyingUpdate, let table else { return }
             let row = table.selectedRow
-            selection = rows.indices.contains(row) ? rows[row].id : nil
+            let id = rows.indices.contains(row) ? rows[row].id : nil
+            appliedSelection = id
+            // Same value is not a change: `flowSelected` drops the hydrated detail and
+            // re-fetches it, which would blank the inspector's body for nothing.
+            if selection != id { selection = id }
         }
 
         /// Sync the table's selected row to `id`.
@@ -828,6 +858,9 @@ struct RequestTable: NSViewRepresentable {
         /// search is kept for the cases where that fails (a `.reload`, or a selection
         /// the store moved), and those are gestures, not traffic.
         private func applySelection(_ id: Flow.ID?, in table: NSTableView) {
+            // Recorded before the early returns: they mean "the table already shows
+            // this", which is exactly what the record claims.
+            appliedSelection = id
             let current = table.selectedRow
             // Already right: either the selected row is the selected flow, or both sides
             // agree there is no selection.
@@ -876,6 +909,7 @@ struct RequestTable: NSViewRepresentable {
             // Unconditional: this notification *means* the operator, so it re-derives
             // even if a batch changed the document's height during the gesture.
             lastSampledDocumentHeight = documentHeight
+            lastSampledViewportHeight = viewportHeight
             let atBottom = isAtBottom()
             if followTail != atBottom { followTail = atBottom }
         }
@@ -899,9 +933,14 @@ struct RequestTable: NSViewRepresentable {
         /// (`willStartLiveScroll` / `didLiveScroll` / `didEndLiveScroll`) arm anything.
         @objc private func viewportDidMove() {
             let height = documentHeight
-            defer { lastSampledDocumentHeight = height }
+            let viewport = viewportHeight
+            defer {
+                lastSampledDocumentHeight = height
+                lastSampledViewportHeight = viewport
+            }
             guard Self.shouldSampleFollow(
                 documentHeightChanged: height != lastSampledDocumentHeight,
+                viewportHeightChanged: viewport != lastSampledViewportHeight,
                 gliding: displayLink != nil
             ) else { return }
             let atBottom = isAtBottom()
@@ -909,10 +948,12 @@ struct RequestTable: NSViewRepresentable {
         }
 
         private var documentHeight: CGFloat { scrollView?.documentView?.frame.height ?? 0 }
+        private var viewportHeight: CGFloat { scrollView?.contentView.bounds.height ?? 0 }
 
-        /// The document height at the last sample, so a move can be attributed. See
-        /// `shouldSampleFollow`.
+        /// The document and viewport heights at the last sample, so a move can be
+        /// attributed. See `shouldSampleFollow`.
         private var lastSampledDocumentHeight: CGFloat = 0
+        private var lastSampledViewportHeight: CGFloat = 0
 
         /// Whether a scroll gesture is in progress, and when the viewport last moved for a
         /// reason that was not this table's own doing.
