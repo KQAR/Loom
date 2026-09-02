@@ -206,6 +206,8 @@ import Testing
                 "a trim or an append is ours, and moves the viewport without an operator")
         #expect(!Decide.shouldSampleFollow(documentHeightChanged: false, gliding: true),
                 "a glide is ours, and is behind the bottom by construction")
+        #expect(!Decide.shouldSampleFollow(documentHeightChanged: false, viewportHeightChanged: true, gliding: false),
+                "the inspector opening resizes the viewport; nobody scrolled")
     }
 
     /// A glide is behind the bottom by construction, so it counts as being there.
