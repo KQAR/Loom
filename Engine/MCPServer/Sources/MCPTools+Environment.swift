@@ -42,6 +42,14 @@ extension MCPToolExecutor {
             isRecording: status.isRecording,
             socksPort: status.socksPort,
             socksError: status.socksError,
+            degradations: status.degradations.isEmpty
+                ? nil
+                : status.degradations.map {
+                    EngineDegradationRender(
+                        kind: $0.kind.rawValue, summary: $0.headline, detail: $0.detail,
+                        since: $0.firstSeen, lastSeen: $0.lastSeen, count: $0.count
+                    )
+                },
             // No routing implementation wired (the engine embedded without the app):
             // "unavailable" says nothing about the machine, which is the honest answer
             // — and a different one from "off", which does.

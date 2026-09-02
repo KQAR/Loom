@@ -40,6 +40,9 @@ public actor ProxyEngine: ProxyControlling {
     /// credential otherwise.
     let upstreamPool: UpstreamConnectionPool?
     let caStore: CAStore
+    /// Everything the engine fell back from this run, reported rather than only
+    /// logged. Read by `status()`; see `EngineDegradation`.
+    let degradations: DegradationLog
     let config: InterceptionConfig
     let rulesConfig: RulesConfig
     /// Configured reverse-proxy endpoints + this run's bind state. Persisted, because
@@ -170,22 +173,35 @@ public actor ProxyEngine: ProxyControlling {
     private init(configuration: EngineConfiguration) {
         self.flowCapacity = configuration.flowCapacity
         let durable = configuration.persistence == .durable
+        // Built first, because every component below reports into it. Per engine
+        // rather than global: a test's fabricated corruption must not leak into the
+        // next test's status, and an embedder running two engines gets two answers.
+        let degradations = DegradationLog()
+        self.degradations = degradations
         // Rules are built before the store, because the store needs them: a rule
         // carrying `dropFromCapture` is evaluated at `FlowStore.upsert`, the capture
         // stage, while every other action is applied in the forwarder below.
-        let rulesConfig = durable ? RulesConfig() : RulesConfig(fileURL: nil)
+        let rulesConfig = durable
+            ? RulesConfig(degradations: degradations)
+            : RulesConfig(fileURL: nil, degradations: degradations)
         self.rulesConfig = rulesConfig
         self.store = FlowStore(
             capacity: configuration.flowCapacity,
-            persistence: durable ? FlowPersistence.makeDefault() : nil,
+            persistence: durable ? FlowPersistence.makeDefault(degradations: degradations) : nil,
             observer: configuration.flowObserver,
             rules: rulesConfig
         )
-        self.auditStore = AuditStore(persistence: durable ? AuditPersistence.makeDefault() : nil)
+        self.auditStore = AuditStore(
+            persistence: durable ? AuditPersistence.makeDefault(degradations: degradations) : nil
+        )
         // SSL scope persists across launches for the app; a test-seam engine gets a
         // non-persisting one so it can't read or clobber the real set.
-        self.config = durable ? InterceptionConfig() : InterceptionConfig(defaults: nil)
-        self.reverseProxyConfig = durable ? ReverseProxyConfig() : ReverseProxyConfig(fileURL: nil)
+        self.config = durable
+            ? InterceptionConfig(degradations: degradations)
+            : InterceptionConfig(defaults: nil, degradations: degradations)
+        self.reverseProxyConfig = durable
+            ? ReverseProxyConfig(degradations: degradations)
+            : ReverseProxyConfig(fileURL: nil, degradations: degradations)
 
         // Every exchange — plain HTTP, MITM'd HTTPS, and replay — re-sends through
         // this one forwarder, so decorating it applies breakpoints and traffic
@@ -194,7 +210,9 @@ public actor ProxyEngine: ProxyControlling {
         let breakpointStore = BreakpointStore()
         self.breakpointStore = breakpointStore
         let clientIdentities = configuration.clientCertificates
-            ?? (durable ? ClientCertificateConfig() : ClientCertificateConfig(fileURL: nil))
+            ?? (durable
+                ? ClientCertificateConfig(degradations: degradations)
+                : ClientCertificateConfig(fileURL: nil, degradations: degradations))
         self.clientIdentities = clientIdentities
         let upstreamPool = configuration.upstream == nil ? UpstreamConnectionPool() : nil
         self.upstreamPool = upstreamPool
@@ -210,7 +228,7 @@ public actor ProxyEngine: ProxyControlling {
         // File-backed CA store: reading it triggers no Keychain ACL prompt, so a
         // rebuilt (ad-hoc re-signed) app doesn't ask for the login password every
         // launch. One-time migration preserves an already-trusted Keychain CA.
-        self.caStore = configuration.caStore ?? Self.migratedCAStore()
+        self.caStore = configuration.caStore ?? Self.migratedCAStore(degradations: degradations)
         self.caExportURL = configuration.caExportURL ?? Self.defaultCAExportURL
     }
 
@@ -220,8 +238,8 @@ public actor ProxyEngine: ProxyControlling {
     /// returns `errSecItemNotFound` without a prompt. The logic (and its failure
     /// logging) lives in `CAStoreMigration` so it can be tested against injected
     /// stores instead of the real path and the real login Keychain.
-    private static func migratedCAStore() -> CAStore {
-        CAStoreMigration.migrate(into: FileCAStore(), from: KeychainCAStore())
+    private static func migratedCAStore(degradations: DegradationLog) -> CAStore {
+        CAStoreMigration.migrate(into: FileCAStore(degradations: degradations), from: KeychainCAStore())
     }
 
     // MARK: - Lifecycle
@@ -395,7 +413,9 @@ public actor ProxyEngine: ProxyControlling {
         do {
             ca = try CertificateAuthority.loadOrGenerate(store: caStore)
         } catch {
-            Log.tls.error("CA load/generate failed; HTTPS interception unavailable: \(String(describing: error))")
+            let reason = "The root CA could not be loaded or generated, so HTTPS cannot be decrypted at all: \(error.localizedDescription)"
+            Log.tls.error("\(reason, privacy: .public)")
+            degradations.record(.certificateAuthorityUnavailable, reason)
         }
         return ca
     }

@@ -345,8 +345,29 @@ public struct PanelView: View {
         // for this.
         VStack(spacing: 0) {
             listenerAlert
+            degradationAlerts
             systemProxyAlert
             helperAlert
+        }
+    }
+
+    /// What the engine fell back from — a rules file that would not read, a write
+    /// that never reached disk, a root CA regenerated out from under the trust the
+    /// user granted.
+    ///
+    /// **These used to reach `os_log` and nothing else**, which is one reader: a
+    /// human with Console open. They are the failures where Loom keeps working and
+    /// quietly stops doing what was asked — the operator's picture stays correct
+    /// right up until it matters. Second in the channel: a listener that never
+    /// opened outranks them, and everything below describes a proxy that is running.
+    ///
+    /// One row each rather than a rolled-up count, because the reactions differ:
+    /// unreadable rules means "your mocks aren't running", a failed write means
+    /// "this session is fine, the next one isn't".
+    @ViewBuilder private var degradationAlerts: some View {
+        ForEach(store.status.degradations) { degradation in
+            ConsoleAlertRow(text: degradation.headline)
+                .help(degradation.detail)
         }
     }
 
@@ -361,6 +382,10 @@ public struct PanelView: View {
     @ViewBuilder private var listenerAlert: some View {
         if let message = store.proxyStartError {
             ConsoleAlertRow(text: message)
+        } else if let message = store.lanRestoreError {
+            // Ranked under a listener that never opened and above the rest: the proxy
+            // *is* running and this Mac can use it — what failed is the LAN's half.
+            ConsoleAlertRow(text: "Phones can't reach Loom — \(message)")
         }
     }
 

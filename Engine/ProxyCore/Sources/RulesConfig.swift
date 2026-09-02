@@ -29,17 +29,26 @@ final class RulesConfig: Sendable {
     /// - Parameter fileURL: persistence backing; `nil` disables it (tests). When
     ///   it points at the default location and no file exists yet, a one-time
     ///   migration imports rules previously saved in UserDefaults.
-    init(state: RulesState = RulesState(), fileURL: URL? = RulesConfig.defaultFileURL) {
+    init(
+        state: RulesState = RulesState(),
+        fileURL: URL? = RulesConfig.defaultFileURL,
+        degradations: DegradationLog? = nil
+    ) {
         self.fileURL = fileURL
-        if let fileURL, let saved = Self.load(from: fileURL) {
+        self.degradations = degradations
+        if let fileURL, let saved = Self.load(from: fileURL, degradations: degradations) {
             self.state = Mutex(saved)
         } else if let fileURL, fileURL == Self.defaultFileURL, let migrated = Self.migrateFromUserDefaults() {
             self.state = Mutex(migrated)
-            Self.persist(migrated, to: fileURL)
+            Self.persist(migrated, to: fileURL, degradations: degradations)
         } else {
             self.state = Mutex(state)
         }
     }
+
+    /// Where a fail-open lands, so it reaches a tool and not only `os_log`. Optional
+    /// because a config built by a test has nowhere to report to and needs none.
+    private let degradations: DegradationLog?
 
     /// `~/Library/Application Support/com.loom/rules.json` — mirrors `FileCAStore`'s
     /// directory.
@@ -110,7 +119,10 @@ final class RulesConfig: Sendable {
             // Enqueued under the lock: that is what pins the write order to the
             // mutation order. Only the enqueue is on the lock; the encode + write run
             // on the queue.
-            if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
+            if let fileURL {
+                let degradations = degradations
+                persistQueue.async { Self.persist(updated, to: fileURL, degradations: degradations) }
+            }
         }
     }
 
@@ -124,7 +136,7 @@ final class RulesConfig: Sendable {
 
     /// Pretty-printed so the file stays human-inspectable / hand-editable; written
     /// atomically with 0600 perms under a 0700 dir, like the CA store.
-    private static func persist(_ state: RulesState, to url: URL) {
+    private static func persist(_ state: RulesState, to url: URL, degradations: DegradationLog?) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         do {
@@ -134,23 +146,33 @@ final class RulesConfig: Sendable {
             LoomPaths.restrictToOwner(url)
         } catch {
             // Rules are primary user data; a lost write means edits vanish on
-            // relaunch. Can't throw from here (mutation setters are sync), so log.
-            Log.store.error("Rules persist failed; changes may not survive relaunch: \(String(describing: error))")
+            // relaunch. Can't throw from here (mutation setters are sync), so log —
+            // and report, because a log line has one reader and this session behaves
+            // correctly right up until the next launch.
+            let reason = "Rule changes could not be written to \(url.path): \(error.localizedDescription)"
+            Log.store.error("Rules persist failed; changes may not survive relaunch: \(reason, privacy: .public)")
+            degradations?.record(.rulesNotPersisted, reason)
+            return
         }
+        // A write that lands ends the condition — an entry that outlives what it
+        // describes is the same defect as no entry, pointed the other way.
+        degradations?.clear(.rulesNotPersisted)
     }
 
-    private static func load(from url: URL) -> RulesState? {
+    private static func load(from url: URL, degradations: DegradationLog?) -> RulesState? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil } // first run
         do {
             return try JSONDecoder().decode(RulesState.self, from: Data(contentsOf: url))
         } catch {
             // Every rule silently disappears: traffic an agent believes is mocked or
             // re-mapped would quietly hit the real upstream instead.
-            Log.store.error("""
-            Rules file at \(url.path, privacy: .public) could not be read; \
-            starting with no rules — traffic you expect to be mocked/mapped will hit \
-            the real upstream: \(String(describing: error))
-            """)
+            let reason = """
+            \(url.lastPathComponent) could not be read, so this session started with no rules — \
+            traffic you expect to be mocked, mapped or blocked is going to the real upstream. \
+            (\(error.localizedDescription))
+            """
+            Log.store.error("Rules file at \(url.path, privacy: .public): \(reason, privacy: .public)")
+            degradations?.record(.rulesUnreadable, reason)
             return nil
         }
     }

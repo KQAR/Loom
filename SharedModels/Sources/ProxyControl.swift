@@ -84,6 +84,14 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// SOCKS had no way to learn why nothing arrived. Log it for the human, return
     /// it for the agent — this is the returning half.
     public var socksError: String?
+    /// What the engine fell back from this run — a corrupt CA regenerated, an
+    /// unreadable rules file that started empty, a write that never reached disk.
+    ///
+    /// Empty is the ordinary answer. **Read it before trusting the rest of this
+    /// status**: `rulesUnreadable` means the rules an agent just listed are not the
+    /// ones the traffic met, and `auditUnavailable` means a write tool's own record
+    /// of itself is missing. See `EngineDegradation`.
+    public var degradations: [EngineDegradation]
     /// Connections Loom accepted and then refused, newest first (bounded).
     ///
     /// The third answer to "why is nothing captured". `listenHost` and `socksPort`
@@ -121,6 +129,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         isRunning: Bool, port: Int, capturedCount: Int, retainedCount: Int? = nil,
         isRecording: Bool = true,
         listenHost: String = "127.0.0.1", socksPort: Int? = nil, socksError: String? = nil,
+        degradations: [EngineDegradation] = [],
         recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
         reverseProxies: [ReverseProxyStatus] = [],
         droppedByRules: Int = 0
@@ -133,6 +142,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.listenHost = listenHost
         self.socksPort = socksPort
         self.socksError = socksError
+        self.degradations = degradations
         self.recentRefusals = recentRefusals
         self.refusedConnections = refusedConnections
         self.reverseProxies = reverseProxies

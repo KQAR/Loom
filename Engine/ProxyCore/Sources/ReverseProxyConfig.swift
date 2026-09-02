@@ -33,9 +33,17 @@ final class ReverseProxyConfig: Sendable {
     private let fileURL: URL?
     private let persistQueue = DispatchQueue(label: "com.loom.reverseproxyconfig.persist")
 
-    init(endpoints: [ReverseProxyEndpoint] = [], fileURL: URL? = ReverseProxyConfig.defaultFileURL) {
+    /// Where a fail-open lands, so it reaches a tool and not only `os_log`.
+    private let degradations: DegradationLog?
+
+    init(
+        endpoints: [ReverseProxyEndpoint] = [],
+        fileURL: URL? = ReverseProxyConfig.defaultFileURL,
+        degradations: DegradationLog? = nil
+    ) {
         self.fileURL = fileURL
-        if let fileURL, let saved = Self.load(from: fileURL) {
+        self.degradations = degradations
+        if let fileURL, let saved = Self.load(from: fileURL, degradations: degradations) {
             self.state = Mutex(State(endpoints: saved))
         } else {
             self.state = Mutex(State(endpoints: endpoints))
@@ -110,7 +118,10 @@ final class ReverseProxyConfig: Sendable {
         state.withLock { state in
             let result = body(&state)
             let updated = state.endpoints
-            if let fileURL { persistQueue.async { Self.persist(updated, to: fileURL) } }
+            if let fileURL {
+                let degradations = degradations
+                persistQueue.async { Self.persist(updated, to: fileURL, degradations: degradations) }
+            }
             return result
         }
     }
@@ -123,7 +134,7 @@ final class ReverseProxyConfig: Sendable {
 
     // MARK: - Persistence
 
-    private static func persist(_ endpoints: [ReverseProxyEndpoint], to url: URL) {
+    private static func persist(_ endpoints: [ReverseProxyEndpoint], to url: URL, degradations: DegradationLog?) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
@@ -132,12 +143,17 @@ final class ReverseProxyConfig: Sendable {
             try LoomPaths.createSecureDirectory(at: url.deletingLastPathComponent())
             try data.write(to: url, options: .atomic)
             LoomPaths.restrictToOwner(url)
+            degradations?.clear(.reverseProxiesNotPersisted)
         } catch {
-            Log.store.error("Reverse-proxy endpoints persist failed; they may not survive relaunch: \(String(describing: error))")
+            // The endpoint's whole point is outliving a relaunch: its port lives in a
+            // dev server's config file, which Loom restarting does not edit.
+            let reason = "Reverse-proxy endpoints could not be written to \(url.path): \(error.localizedDescription)"
+            Log.store.error("Reverse-proxy endpoints persist failed: \(reason, privacy: .public)")
+            degradations?.record(.reverseProxiesNotPersisted, reason)
         }
     }
 
-    private static func load(from url: URL) -> [ReverseProxyEndpoint]? {
+    private static func load(from url: URL, degradations: DegradationLog?) -> [ReverseProxyEndpoint]? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -146,11 +162,15 @@ final class ReverseProxyConfig: Sendable {
         } catch {
             // Fail open, loudly: the endpoints vanish, so a dev server pointed at one
             // gets connection-refused and looks like Loom is down.
-            Log.store.error("""
-            Reverse-proxy endpoints at \(url.path, privacy: .public) could not be read; \
-            starting with none — a client pointed at one will get connection refused: \
-            \(String(describing: error))
-            """)
+            let reason = """
+            \(url.lastPathComponent) could not be read, so no reverse-proxy endpoint is listening — \
+            a client pointed at one gets connection refused and it looks like Loom is down. \
+            (\(error.localizedDescription))
+            """
+            Log.store.error("Reverse-proxy endpoints at \(url.path, privacy: .public): \(reason, privacy: .public)")
+            // Recorded under the persist kind: both mean "the endpoints on disk and
+            // the ones running have parted company", which is the operator's question.
+            degradations?.record(.reverseProxiesNotPersisted, reason)
             return nil
         }
     }

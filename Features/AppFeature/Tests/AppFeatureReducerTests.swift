@@ -902,4 +902,57 @@ import Testing
         }
         await store.receive(\.delegate)
     }
+
+    /// A start binds loopback, so the LAN listener is re-opened on every path that
+    /// brings the proxy up — and both of those were `try?`. A refused rebind left
+    /// the switch on, the phone glyph lit, and the phone unable to connect, with
+    /// nothing anywhere saying why.
+    @Test func aRefusedLANRestore_isReportedWithoutTurningLANOff() async {
+        var state = AppFeature.State()
+        state.lanEnabled = true
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.startPhoneOnboarding = {
+                throw ProxyControlError.listenerUnavailable("0.0.0.0:9090 is already in use")
+            }
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.proxyStarted(port: 9090))
+        await store.receive(\.lanRestoreFailed) {
+            $0.lanRestoreError = "0.0.0.0:9090 is already in use"
+        }
+        // LAN stays on: it is what the operator asked for, and the engine's own
+        // rollback kept the loopback listener. What is wrong is narrower than the
+        // setting, and the console says exactly that.
+        #expect(store.state.lanEnabled)
+    }
+
+    /// A restore that lands clears it, so the console stops explaining a failure
+    /// that is over.
+    @Test func aLANRestoreThatLands_clearsTheFailure() async {
+        var state = AppFeature.State()
+        state.lanEnabled = true
+        state.lanRestoreError = "0.0.0.0:9090 is already in use"
+        let published = PhoneOnboardingInfo(
+            lanHost: "192.168.1.20",
+            proxyPort: 9090,
+            provisioningPort: 8_765,
+            provisioningURL: URL(string: "http://192.168.1.20:8765/")!,
+            fingerprint: "AA:BB",
+            commonName: "Loom Root CA",
+            qrPNGData: Data()
+        )
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.proxyClient.startPhoneOnboarding = { published }
+            $0.proxyClient.status = { ProxyStatus(isRunning: true, port: 9090, capturedCount: 0) }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.proxyStarted(port: 9090))
+        await store.receive(\.phoneOnboardingPublished) {
+            $0.lanRestoreError = nil
+            $0.publishedLANHost = "192.168.1.20"
+        }
+    }
 }

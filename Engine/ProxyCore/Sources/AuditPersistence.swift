@@ -23,9 +23,15 @@ final class AuditPersistence: @unchecked Sendable {
     // SQLite wants to copy bound bytes, not borrow them.
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-    init?(fileURL: URL, maxRows: Int = 10_000, pruneSlack: Int = 250) {
+    /// Where a fail-open lands, so it reaches a tool and not only `os_log`. The
+    /// audit trail is the one subsystem whose whole job is being readable later, so
+    /// a silent hole in it is the failure this reporting exists for.
+    private let degradations: DegradationLog?
+
+    init?(fileURL: URL, maxRows: Int = 10_000, pruneSlack: Int = 250, degradations: DegradationLog? = nil) {
         self.maxRows = maxRows
         self.pruneSlack = max(0, pruneSlack)
+        self.degradations = degradations
         // Owner-only, like the CA store. Audit rows carry each write tool's full
         // arguments — `replay_flow` header/body overrides included — so this file
         // is as sensitive as the traffic it describes.
@@ -34,11 +40,12 @@ final class AuditPersistence: @unchecked Sendable {
         guard sqlite3_open(fileURL.path, &handle) == SQLITE_OK else {
             // The audit trail is the human's record of what the agent did; losing
             // durability silently is the one thing it must not do.
-            Log.audit.error("""
-            Could not open the audit database at \(fileURL.path, privacy: .public) \
-            (\(String(cString: sqlite3_errmsg(handle)), privacy: .public)); \
-            write actions will only be recorded in memory for this session.
-            """)
+            let reason = """
+            The audit database could not be opened, so write actions are recorded in memory only \
+            and this session's trail is gone at quit. (\(String(cString: sqlite3_errmsg(handle))))
+            """
+            Log.audit.error("Audit database at \(fileURL.path, privacy: .public): \(reason, privacy: .public)")
+            degradations?.record(.auditUnavailable, reason)
             sqlite3_close(handle)
             return nil
         }
@@ -57,8 +64,8 @@ final class AuditPersistence: @unchecked Sendable {
 
     deinit { sqlite3_close(db) }
 
-    static func makeDefault() -> AuditPersistence? {
-        AuditPersistence(fileURL: LoomPaths.appSupportFile("audit.sqlite"))
+    static func makeDefault(degradations: DegradationLog? = nil) -> AuditPersistence? {
+        AuditPersistence(fileURL: LoomPaths.appSupportFile("audit.sqlite"), degradations: degradations)
     }
 
     /// Fire-and-forget write; drained by `flush()` on quit. Strong capture so a
@@ -126,7 +133,9 @@ final class AuditPersistence: @unchecked Sendable {
         VALUES (?, ?, ?, ?, ?, ?, ?);
         """
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-            Log.audit.error("Audit entry for \(entry.tool, privacy: .public) could not be prepared: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
+            let reason = "A write action (\(entry.tool)) could not be recorded: \(String(cString: sqlite3_errmsg(self.db)))"
+            Log.audit.error("\(reason, privacy: .public)")
+            degradations?.record(.auditUnavailable, reason)
             return
         }
         defer { sqlite3_finalize(stmt) }
@@ -140,7 +149,9 @@ final class AuditPersistence: @unchecked Sendable {
         guard sqlite3_step(stmt) == SQLITE_DONE else {
             // A write action that happened but wasn't recorded — the audit trail's
             // one unacceptable failure.
-            Log.audit.error("Audit entry for \(entry.tool, privacy: .public) failed to persist: \(String(cString: sqlite3_errmsg(self.db)), privacy: .public)")
+            let reason = "A write action (\(entry.tool)) happened but was not recorded: \(String(cString: sqlite3_errmsg(self.db)))"
+            Log.audit.error("\(reason, privacy: .public)")
+            degradations?.record(.auditUnavailable, reason)
             return
         }
         rowCount += 1
