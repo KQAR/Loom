@@ -208,6 +208,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             }
             // The request line, decided once per exchange rather than per attempt.
             let target = Self.requestTarget(url: url, clientURLString: clientURLString)
+            if target.normalized {
+                Log.forward.notice(
+                    """
+                    \(host, privacy: .public):\(port, privacy: .public) — the client's request \
+                    target contains bytes RFC 9112 excludes, so Loom percent-encoded it to send it. \
+                    The flow says so (`requestTargetNormalized`); an origin that signs the raw \
+                    target will not accept this request.
+                    """
+                )
+            }
             let key = UpstreamPoolKey(
                 host: host, port: port, isTLS: isTLS, identity: identity, preferHTTP2: wantsHTTP2
             )
@@ -274,7 +284,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
         downgradedForHeaderSize: Bool,
-        target: String
+        target: RequestTarget
     ) async throws -> [HeaderPair]? {
         let replayable: Bool
         if case .bytes = body.source { replayable = true } else { replayable = false }
@@ -373,7 +383,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         /// The request line, resolved once per exchange in `forwardStream` rather
         /// than re-derived here: a retry must put the same bytes on the wire as the
         /// attempt it is replacing.
-        target: String
+        target: RequestTarget
     ) async throws -> [HeaderPair]? {
         if connection.negotiated == .http2 {
             return try await attemptHTTP2(
@@ -411,7 +421,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     remoteAddress: remoteAddress,
                     connectionReused: reused,
                     upstreamTLS: tlsBox.info,
-                    upstreamProtocolDowngraded: downgradedForHeaderSize ? true : nil
+                    upstreamProtocolDowngraded: downgradedForHeaderSize ? true : nil,
+                    requestTargetNormalized: target.normalized ? true : nil
                 )
                 if var setup {
                     // Read at head time like the rest: the handshake finishes after
@@ -532,7 +543,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
-        target: String
+        target: RequestTarget
     ) async throws -> [HeaderPair]? {
         guard let multiplexer = connection.multiplexer else {
             throw ForwarderError.connectionClosed
@@ -584,7 +595,11 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 var transport = FlowTransport(
                     remoteAddress: remoteAddress,
                     connectionReused: reused,
-                    upstreamTLS: tlsBox.info
+                    upstreamTLS: tlsBox.info,
+                    // Both legs, unlike `upstreamProtocolDowngraded` — that one can
+                    // only be true when the exchange did *not* go h2, this one is a
+                    // property of the request line and reaches either.
+                    requestTargetNormalized: target.normalized ? true : nil
                 )
                 if var setup {
                     setup.tlsHandshakeMS = tlsBox.handshakeMS
@@ -944,7 +959,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     ///   the same either way; the *framing* is not, and both differences below are
     ///   things HTTP/2 forbids or wastes rather than preferences.
     private static func writeRequest(
-        channel: Channel, method: String, url: URL, target: String, host: String, port: Int,
+        channel: Channel, method: String, url: URL, target: RequestTarget, host: String, port: Int,
         headers: [HeaderPair], body: RequestBody, wire: UpstreamWireProtocol = .http1
     ) async throws {
         var httpHeaders = HTTPHeaders()
@@ -1045,7 +1060,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         }
 
         let head = HTTPRequestHead(
-            version: .http1_1, method: httpMethod(method), uri: target, headers: httpHeaders
+            version: .http1_1, method: httpMethod(method), uri: target.value, headers: httpHeaders
         )
         // `promise: nil`, and **do not "fix" this by awaiting it**. A `write` without
         // a flush completes only when the flush happens, and the flush is the `.end`
@@ -1107,19 +1122,35 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     /// `mapRemote` rule or a breakpoint edit produces a different `url`, the
     /// comparison fails, and the rewritten target wins. Re-deriving is also the
     /// fallback whenever there is no raw string (replay, a synthesised URL).
-    static func requestTarget(url: URL, clientURLString: String?) -> String {
+    /// The request line, and whether Loom had to rewrite it to send it.
+    ///
+    /// The two travel together on purpose: a hop that carried the bytes without the
+    /// fact would put a silently-edited request on the wire, which is the defect the
+    /// flag exists to report.
+    struct RequestTarget {
+        let value: String
+        /// True only for the one fallback Loom is *hiding*: the client's own target
+        /// could not go on the wire. A rewritten URL is a rule doing its visible job
+        /// (`appliedRules` already says so), and no raw string at all means there was
+        /// nothing to preserve — neither is a mutation to report.
+        let normalized: Bool
+    }
+
+    static func requestTarget(url: URL, clientURLString: String?) -> RequestTarget {
         guard let clientURLString,
               URL(string: clientURLString) == url,
-              let raw = HTTPUtil.originForm(ofAbsolute: clientURLString),
-              // **And only if NIO will send it.** Its outbound validator refuses a
-              // target outside RFC 9112's byte set, so preferring the raw form
-              // unconditionally would turn a request Loom mangles today (`?cols=a|b|c`)
-              // into one that fails outright — a regression dressed as a fix. For
-              // those, the normalised form is what Loom has always sent and still is;
-              // what changes is everything the RFC *does* allow, `?ids[]=1` above all.
-              HTTPUtil.isSendableRequestTarget(raw)
-        else { return requestURI(url) }
-        return raw
+              let raw = HTTPUtil.originForm(ofAbsolute: clientURLString)
+        else { return RequestTarget(value: requestURI(url), normalized: false) }
+        // **And only if NIO will send it.** Its outbound validator refuses a target
+        // outside RFC 9112's byte set, so preferring the raw form unconditionally
+        // would turn a request Loom mangles today (`?cols=a|b|c`) into one that fails
+        // outright — a regression dressed as a fix. For those the normalised form is
+        // what Loom has always sent and still is; what changes is everything the RFC
+        // *does* allow, `?ids[]=1` above all.
+        guard HTTPUtil.isSendableRequestTarget(raw) else {
+            return RequestTarget(value: requestURI(url), normalized: true)
+        }
+        return RequestTarget(value: raw, normalized: false)
     }
 
     private static func requestURI(_ url: URL) -> String {

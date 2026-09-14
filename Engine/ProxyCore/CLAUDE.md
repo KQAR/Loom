@@ -445,12 +445,25 @@ So the raw string travels alongside the URL (`clientURLString`) and
   produces a different `url`; the comparison fails and the rewrite wins. That check is
   what lets every decorator pass the string through blindly — none of them has to
   notice it edited something.
-- **The raw form loses to the RFC.** `NIOHTTPRequestHeadersValidator` fails the
-  *write* for a target outside RFC 9112's byte set (`|` `{` `}` `"` `^` `\` `<` `>`),
-  so preferring it unconditionally turns a request Loom merely mangles into one it
-  cannot send — measured, `invalidHeaderToken` before a byte left the process. Those
-  keep the encoding Loom has always sent. Closing that last gap means relaxing the
-  validator, which is a request-smuggling decision and not this one.
+- **The raw form loses to the RFC, and the flow says when it did.**
+  `NIOHTTPRequestHeadersValidator` fails the *write* for a target outside RFC 9112's
+  byte set (`|` `{` `}` `"` `^` `\` `<` `>`), so preferring it unconditionally turns a
+  request Loom merely mangles into one it cannot send — measured,
+  `invalidHeaderToken` before a byte left the process. Those keep the encoding Loom
+  has always sent, and carry `FlowTransport.requestTargetNormalized`, because it is
+  the one edit to the request line nothing else reveals: most origins decode `%7C`
+  back and never notice, one that signs the raw target answers 401/403, and the
+  capture would show the client's URL against an origin that saw another.
+
+  **Relaxing the validator is the obvious next step and is deliberately not taken.**
+  Measured against live traffic — 1409 flows, 10 hosts — **zero** requests carry any
+  of those bytes; well-behaved clients percent-encode already. And the security cost
+  is not where it first looks: a proxied request's bytes have been through llhttp or
+  NIOHTTP2 and cannot contain CR/LF, so the untrusted input is **Loom's own write
+  tools** (`replay_flow` overrides, rule rewrites), which compose header values from
+  agent-supplied strings with no parser in between. That is exactly what the
+  validator protects. If the flag ever fires, the case it fires on decides the byte
+  set; until then the residue is visible rather than guessed at.
 - **Every decorator must carry it, and the buffered path is the one that forgets.**
   Buffering is forced by things with nothing to do with the URL — a response-header
   rewrite is the common one — so dropping it there sends a different request line
