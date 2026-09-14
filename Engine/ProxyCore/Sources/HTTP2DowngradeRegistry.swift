@@ -22,10 +22,19 @@ import Synchronization
 ///
 /// Three rules.
 ///
-/// **The trigger is narrow.** Only a codec error on a connection that has not yet
-/// delivered a single frame, i.e. the first header block. A codec error later in a
-/// connection's life is something else and must not silently change how the next
+/// **The codec-error trigger is narrow.** Only a codec error on a connection that has
+/// not yet delivered a single frame, i.e. the first header block. A codec error later
+/// in a connection's life is something else and must not silently change how the next
 /// connection is negotiated.
+///
+/// **There is a second entry point, and it is narrow for the opposite reason.**
+/// `MITMPipeline`'s h2 stack registers a host whose *response* field section cannot be
+/// framed for the client (`HTTP2HeaderBudget` — SwiftNIO's encoder writes no
+/// CONTINUATION frames, so the write would kill the connection and the exchange is
+/// answered 502 instead). That evidence is **measured, not inferred**: the section was
+/// sized, so unlike a codec error there is nothing ambiguous to be narrow about. What
+/// it buys is the retry — without it that host is permanently 502 through Loom and
+/// perfectly fine without it, which is the class of bug this proxy must not create.
 ///
 /// **It is session-scoped and not persisted.** The condition depends on how large the
 /// client's headers are *today* and on a library version; carrying it across launches

@@ -194,7 +194,8 @@ enum MITMPipeline {
         channel: Channel, host: String, port: Int,
         store: FlowStore, forwarder: UpstreamForwarding,
         upstreamTLS: Bool, clientTLSVersion: String?,
-        certificateAuthority: CertificateAuthority? = nil
+        certificateAuthority: CertificateAuthority? = nil,
+        downgrades: HTTP2DowngradeRegistry = .shared
     ) -> EventLoopFuture<Void> {
         // Added *before* the codec, so it sits head-side of it: `NIOHTTP2Handler`
         // writes its GOAWAY outbound from its own position, which travels toward the
@@ -202,6 +203,23 @@ enum MITMPipeline {
         // `HTTP2GoAwayObserver` — the code in that frame is the entire diagnosis for
         // an `unableToParseFrame`, and nothing else carries it.
         let goAway = HTTP2GoAwayCode()
+        // The recovery for a response this leg cannot frame (`HTTP2HeaderBudget`).
+        // Built here because this is the only place holding all three things it
+        // needs, and installed only on the h2 stack because it is the only leg with
+        // a frame size at all. It is the *same* two steps the pre-ACK HPACK
+        // downgrade takes (`HTTP2ConnectionErrorReporter`): record the host, then
+        // drop the cached TLS context — which is what still advertises `h2`, so
+        // without the second step the first changes nothing.
+        let onUndeliverableResponse: @Sendable () -> Void = { [host] in
+            guard downgrades.downgrade(host: host) else { return }
+            certificateAuthority?.invalidateContext(for: host)
+            Log.tls.error("""
+            Serving \(host, privacy: .public) as HTTP/1.1 from now on: its response field section \
+            does not fit in one HTTP/2 HEADERS frame, which SwiftNIO's encoder cannot split across \
+            CONTINUATION frames. This exchange was answered 502; the next connection gets a leg that \
+            can carry it, and every flow on it says the client protocol is Loom's doing.
+            """)
+        }
         return channel.eventLoop.makeCompletedFuture {
             try channel.pipeline.syncOperations.addHandler(HTTP2GoAwayObserver(box: goAway))
         }.flatMap {
@@ -219,7 +237,8 @@ enum MITMPipeline {
                     TLSInterceptHandler(
                         host: host, port: port, store: store, forwarder: forwarder,
                         upstreamTLS: upstreamTLS,
-                        negotiatedProtocol: "HTTP/2", clientTLSVersion: clientTLSVersion
+                        negotiatedProtocol: "HTTP/2", clientTLSVersion: clientTLSVersion,
+                        onUndeliverableResponse: onUndeliverableResponse
                     )
                 )
             }

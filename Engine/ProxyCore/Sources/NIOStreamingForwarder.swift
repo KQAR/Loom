@@ -113,10 +113,34 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             // `resolveClientTLS` rather than being assumed here. An exchange that
             // ends up on HTTP/1.1 says so on the flow: `CapturedResponse.httpVersion`
             // is Loom's upstream hop, so the leg is readable rather than guessed at.
+            // Whether h2 may be *offered* at all, which is a question about this
+            // request and not about the origin: a field section too large to fit in
+            // one HEADERS frame cannot go over h2 at any price (see
+            // `HTTP2HeaderBudget`), and the offer has to be withheld here
+            // rather than later — ALPN is what decides which stack gets installed,
+            // so an accepted `h2` offer with an HTTP/1.1 pipeline behind it reads
+            // HTTP/2 frames with an HTTP/1.1 parser.
+            // Short-circuited on the client's protocol: an h1 client can never take
+            // this branch, and the estimate walks every header of every exchange —
+            // the "prepare a filter once, not per row" rule applied to the path an
+            // exchange actually pays.
+            //
+            // `requestURI`/`host` are passed because they become `:path` and
+            // `:authority`, which ride the same HEADERS block and are not in
+            // `headers` — a 20 KB query string is an oversized field section whose
+            // headers are all small.
+            let headerBytes = clientProtocol.isHTTP2
+                ? HTTP2HeaderBudget.estimatedBlockBytes(
+                    headers, requestTarget: Self.requestURI(url), authority: host
+                )
+                : 0
+            let headersFitOneFrame = headerBytes <= HTTP2HeaderBudget.maxFieldSectionBytes
             let clientTLS: (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool)?
             do {
                 clientTLS = try isTLS
-                    ? self.resolveClientTLS(host: host, offerHTTP2: clientProtocol.isHTTP2)
+                    ? self.resolveClientTLS(
+                        host: host, offerHTTP2: clientProtocol.isHTTP2 && headersFitOneFrame
+                    )
                     : nil
             } catch {
                 // A configured identity that won't load: the error already names it
@@ -135,7 +159,23 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             // flow) rather than hanging. See `docs/decisions/h2c-upstream-stall.md`.
             let wantsHTTP2 = isTLS
                 ? (clientProtocol.isHTTP2 && (clientTLS?.offersHTTP2 ?? false))
-                : (Self.cleartextHTTP2Upstream && clientProtocol == .http2Cleartext)
+                : (Self.cleartextHTTP2Upstream && clientProtocol == .http2Cleartext && headersFitOneFrame)
+            // Only for an exchange that would otherwise have gone out over h2 — an
+            // h1 client's leg was never downgraded, and an h2c client's leg is on
+            // HTTP/1.1 for an unrelated reason. Claiming either would be a lie the
+            // Inspector renders in the warning colour.
+            let downgradedForHeaderSize = !headersFitOneFrame && clientProtocol.isHTTP2
+                && (isTLS || Self.cleartextHTTP2Upstream)
+            if downgradedForHeaderSize {
+                Log.forward.error(
+                    """
+                    \(host, privacy: .public):\(port, privacy: .public) — request field section is \
+                    ~\(headerBytes, privacy: .public) bytes, past the \
+                    \(HTTP2HeaderBudget.maxFieldSectionBytes, privacy: .public) an HTTP/2 HEADERS frame holds; \
+                    sending this exchange upstream over HTTP/1.1
+                    """
+                )
+            }
             let key = UpstreamPoolKey(
                 host: host, port: port, isTLS: isTLS, identity: identity, preferHTTP2: wantsHTTP2
             )
@@ -144,7 +184,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 do {
                     let trailers = try await self.runExchange(
                         key: key, clientTLS: clientTLS, method: method, url: url,
-                        headers: headers, body: body, continuation: continuation, active: active
+                        headers: headers, body: body, continuation: continuation, active: active,
+                        downgradedForHeaderSize: downgradedForHeaderSize
                     )
                     // The forwarder, not the relay, terminates the caller's stream:
                     // a failure with nothing yet yielded is a retry candidate, and a
@@ -194,7 +235,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         clientTLS: (context: NIOSSLContext, serverName: String?, offersHTTP2: Bool)?,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
-        active: ActiveUpstreamBox
+        active: ActiveUpstreamBox,
+        downgradedForHeaderSize: Bool
     ) async throws -> [HeaderPair]? {
         let replayable: Bool
         if case .bytes = body.source { replayable = true } else { replayable = false }
@@ -205,7 +247,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 return try await attempt(
                     on: leased.connection, reused: true, idle: leased.idle,
                     method: method, url: url, headers: headers, body: body,
-                    continuation: continuation, active: active
+                    continuation: continuation, active: active,
+                    downgradedForHeaderSize: downgradedForHeaderSize
                 )
             } catch let failure as UpstreamAttemptFailure {
                 guard !failure.didYield else { throw failure.underlying }
@@ -232,7 +275,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             return try await attempt(
                 on: fresh, reused: false, idle: .zero,
                 method: method, url: url, headers: headers, body: body,
-                continuation: continuation, active: active
+                continuation: continuation, active: active,
+                downgradedForHeaderSize: downgradedForHeaderSize
             )
         } catch let failure as UpstreamAttemptFailure {
             throw failure.underlying
@@ -286,7 +330,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         idle: TimeAmount,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
-        active: ActiveUpstreamBox
+        active: ActiveUpstreamBox,
+        downgradedForHeaderSize: Bool
     ) async throws -> [HeaderPair]? {
         if connection.negotiated == .http2 {
             return try await attemptHTTP2(
@@ -323,7 +368,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 var transport = FlowTransport(
                     remoteAddress: remoteAddress,
                     connectionReused: reused,
-                    upstreamTLS: tlsBox.info
+                    upstreamTLS: tlsBox.info,
+                    upstreamProtocolDowngraded: downgradedForHeaderSize ? true : nil
                 )
                 if var setup {
                     // Read at head time like the rest: the handshake finishes after

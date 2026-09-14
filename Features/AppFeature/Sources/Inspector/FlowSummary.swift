@@ -191,6 +191,18 @@ struct FlowSummary: View {
                     color: LoomTheme.Palette.warning
                 )
             }
+            // Same colour and the same reason, one leg further out: the response's
+            // "HTTP/1.1" is Loom's hop. The wording says "withheld" rather than
+            // "forced by", because whether this origin would have taken `h2` is not
+            // known — the decision precedes the connection, and an h1-only origin
+            // would have landed here regardless.
+            if transport.upstreamProtocolDowngraded == true {
+                row(
+                    "Upstream protocol",
+                    "HTTP/1.1 — Loom withheld HTTP/2 (this request's headers exceed one frame)",
+                    color: LoomTheme.Palette.warning
+                )
+            }
             if let tls = transport.upstreamTLS { upstreamTLSRows(tls) }
         }
     }
