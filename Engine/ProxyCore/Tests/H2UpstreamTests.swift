@@ -149,6 +149,109 @@ final class H2UpstreamTests {
         #expect(origin.cookieFields == ["a=1; user_session=abc; z=9"])
     }
 
+    /// A field section too large for one HEADERS frame goes upstream over HTTP/1.1
+    /// rather than failing to serialize.
+    ///
+    /// The defect this pins was reported from a real Android app and reproduced with
+    /// no Loom code at all (`Tools/h2-frame-size-repro`): SwiftNIO's frame encoder
+    /// emits no CONTINUATION frames, so a HEADERS payload past
+    /// `SETTINGS_MAX_FRAME_SIZE` throws `NIOHTTP2Errors.UnableToSerializeFrame` — a
+    /// *connection* error. Direct, and through a plain tunnelling proxy, the same
+    /// request is answered 200, because real clients do send CONTINUATION. So the
+    /// failure existed **only while Loom was in the path**, which is the one class of
+    /// bug a debugging proxy must not introduce.
+    ///
+    /// The origin below offers only `h2`, so if Loom still asked for it the exchange
+    /// would land on the h2 leg and the write would fail — the assertion is the round
+    /// trip, not the recorded version.
+    @Test func anOversizedFieldSectionFallsBackToHTTP1() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2", "http/1.1"], group: group)
+        defer { origin.stop() }
+
+        // Base64-ish, so HPACK's Huffman coding cannot shrink it into the frame the
+        // way a run of one character would.
+        let attestation = String(
+            (0 ..< 24_000).map { _ in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".randomElement()! }
+        )
+        let result = try await forwarder().forwardStream(
+            method: "GET", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc")!,
+            headers: [HeaderPair(name: "x-attestation", value: attestation)],
+            body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+
+        #expect(result.statusCode == 200, "this request is answered direct; it must be answered through Loom")
+        #expect(result.httpVersion == "HTTP/1.1")
+        #expect(origin.negotiatedProtocol != "h2",
+                """
+                h2 must not even be *offered*: ALPN is what decides which stack Loom \
+                installs, so an accepted offer with an HTTP/1.1 pipeline behind it reads \
+                HTTP/2 frames with an HTTP/1.1 parser — which is how this test first failed
+                """)
+    }
+
+    /// The bytes need not be in a *header*. `:path` rides the same HEADERS block and
+    /// is not one of the fields the caller passes, so a request whose weight is all
+    /// query string read as tiny, went out over h2, and died the same way — an OAuth
+    /// PAR `request` parameter or a `SAMLRequest` is exactly this shape.
+    @Test func anOversizedQueryStringAlsoLeavesH2() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2", "http/1.1"], group: group)
+        defer { origin.stop() }
+
+        let query = String(repeating: "q", count: 20_000)
+        let result = try await forwarder().forwardStream(
+            method: "GET", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc?request=\(query)")!,
+            headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+
+        #expect(result.statusCode == 200)
+        #expect(origin.negotiatedProtocol != "h2",
+                "the target is part of the field section; an estimate that ignores it is not a bound")
+    }
+
+    /// …and the downgrade says so, because "HTTP/1.1" on the flow is otherwise
+    /// indistinguishable from an origin that declined `h2`.
+    @Test func anOversizedFieldSectionMarksTheFlow() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2", "http/1.1"], group: group)
+        defer { origin.stop() }
+
+        let big = String(repeating: "x", count: 20_000)
+        let downgraded = try await forwarder().forwardStream(
+            method: "GET", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc")!,
+            headers: [HeaderPair(name: "x-attestation", value: big)],
+            body: .bytes(nil), origin: nil, clientProtocol: .http2
+        ).collect()
+        #expect(downgraded.transport?.upstreamProtocolDowngraded == true)
+
+        let ordinary = try await forwarder().forwardStream(
+            method: "GET", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc")!,
+            headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http1
+        ).collect()
+        #expect(ordinary.transport?.upstreamProtocolDowngraded == nil,
+                "an h1 client's leg was never downgraded; the key must not be there at all")
+    }
+
+    /// The estimate only ever guesses **high**. HPACK shrinks a field and never grows
+    /// one, so a bound that read low would be the one that kills a connection —
+    /// sending an exchange to HTTP/1.1 that would have fitted costs nothing.
+    @Test func theHeaderEstimateIsAnUpperBound() {
+        #expect(HTTP2HeaderBudget.estimatedBlockBytes([]) > 0,
+                "the pseudo-header block and the fields writeRequest adds are not free")
+        let one = HTTP2HeaderBudget.estimatedBlockBytes(
+            [HeaderPair(name: "x", value: String(repeating: "a", count: 100))]
+        )
+        #expect(one > 101)
+        // A cookie is re-split one field per crumb on the h2 leg, and each crumb
+        // carries its own prefix — a bound that missed this would under-count exactly
+        // the field that gets large.
+        let crumbs = HTTP2HeaderBudget.estimatedBlockBytes(
+            [HeaderPair(name: "cookie", value: (0 ..< 50).map { "k\($0)=v" }.joined(separator: "; "))]
+        )
+        let flat = HTTP2HeaderBudget.estimatedBlockBytes(
+            [HeaderPair(name: "cookie", value: String(repeating: "z", count: 350))]
+        )
+        #expect(crumbs > flat, "50 fields cost more prefixes than one field of the same length")
+    }
+
     /// An unknown-length body round-trips over an h2 leg, carrying no framing header.
     ///
     /// **This test cannot fail on the framing half, and that is worth stating rather

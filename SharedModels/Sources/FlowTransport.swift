@@ -77,6 +77,27 @@ public struct FlowTransport: Equatable, Codable, Sendable {
     /// `Bool?` rather than `Bool`: a flag that only ever means true adds a key that was
     /// never there when it is false (AGENTS.md § renders).
     public var clientProtocolDowngraded: Bool?
+    /// The **upstream** leg is HTTP/1.1 because Loom did not offer `h2` for it: the
+    /// request's field section is too large to put in one HTTP/2 HEADERS frame.
+    ///
+    /// It says what Loom did, and deliberately **not** that the origin would have
+    /// accepted `h2` — that is unknowable here, because the decision is made before
+    /// the connection exists and an h1-only origin would have landed on HTTP/1.1
+    /// anyway. Reading it as "the origin was willing" is the one wrong inference.
+    ///
+    /// SwiftNIO's frame encoder emits no CONTINUATION frames (RFC 9113 §6.10), so a
+    /// HEADERS payload larger than the peer's `SETTINGS_MAX_FRAME_SIZE` — 16 KB until
+    /// a peer raises it — fails to serialize and takes the whole connection down with
+    /// `UnableToSerializeFrame`. Measured against the pinned 1.44.0: a 30 KB header
+    /// value is refused, the same request over HTTP/1.1 is answered, and the same
+    /// request direct from the app works because real clients do send CONTINUATION.
+    /// So an oversized section goes upstream over HTTP/1.1, which has no frame at all.
+    ///
+    /// Same rule as `clientProtocolDowngraded` and the same reason for existing:
+    /// `CapturedResponse.httpVersion` then reads `HTTP/1.1`, which is true of Loom's
+    /// hop and indistinguishable from an origin that refused `h2` — a difference the
+    /// operator is measuring.
+    public var upstreamProtocolDowngraded: Bool?
 
     public init(
         clientTLSVersion: String? = nil,
@@ -87,7 +108,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         responseEncodedBodyBytes: Int? = nil,
         setup: ConnectionSetup? = nil,
         requestSendMS: Int? = nil,
-        clientProtocolDowngraded: Bool? = nil
+        clientProtocolDowngraded: Bool? = nil,
+        upstreamProtocolDowngraded: Bool? = nil
     ) {
         self.clientTLSVersion = clientTLSVersion
         self.remoteAddress = remoteAddress
@@ -98,6 +120,7 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         self.setup = setup
         self.requestSendMS = requestSendMS
         self.clientProtocolDowngraded = clientProtocolDowngraded
+        self.upstreamProtocolDowngraded = upstreamProtocolDowngraded
     }
 
     public var isEmpty: Bool { self == FlowTransport() }
@@ -117,7 +140,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
             responseEncodedBodyBytes: other.responseEncodedBodyBytes ?? responseEncodedBodyBytes,
             setup: other.setup ?? setup,
             requestSendMS: other.requestSendMS ?? requestSendMS,
-            clientProtocolDowngraded: other.clientProtocolDowngraded ?? clientProtocolDowngraded
+            clientProtocolDowngraded: other.clientProtocolDowngraded ?? clientProtocolDowngraded,
+            upstreamProtocolDowngraded: other.upstreamProtocolDowngraded ?? upstreamProtocolDowngraded
         )
     }
 }

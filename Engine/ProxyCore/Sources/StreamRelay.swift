@@ -30,6 +30,11 @@ enum StreamRelay {
         /// upstream events only ever describe Loom's own hop, and a failure
         /// before any head would otherwise lose the client half entirely.
         clientTransport: FlowTransport? = nil,
+        /// Called when the client leg cannot carry the origin's response head.
+        /// Supplied only by the h2 client stack (`MITMPipeline`), which is the only
+        /// one that can hit it and the only place that holds what the recovery
+        /// needs. See the call site for why a 502 alone is not an answer.
+        onUndeliverableResponse: (@Sendable () -> Void)? = nil,
         captureCap: Int = StreamRelay.captureCap
     ) async {
         // If the client disconnects mid-stream (closed SSE tab, aborted download),
@@ -41,7 +46,8 @@ enum StreamRelay {
             stream: stream, channel: channel, keepAlive: keepAlive, flowID: flowID,
             request: request, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
             store: store, bodyCapture: bodyCapture, requestTrailers: requestTrailers,
-            clientTransport: clientTransport, captureCap: captureCap
+            clientTransport: clientTransport, onUndeliverableResponse: onUndeliverableResponse,
+            captureCap: captureCap
         ) }
         channel.closeFuture.whenComplete { _ in work.cancel() }
         await work.value
@@ -60,8 +66,17 @@ enum StreamRelay {
         bodyCapture: RequestBodyCapture?,
         requestTrailers: RequestTrailers?,
         clientTransport: FlowTransport?,
+        onUndeliverableResponse: (@Sendable () -> Void)?,
         captureCap: Int
     ) async {
+        // What the *client* negotiated with Loom, which is what decides whether the
+        // response head has to be framable. `CapturedRequest.httpVersion` is the
+        // client leg by construction (`CapturedExchange.ClientLeg`), not Loom's
+        // upstream hop — the two routinely disagree, and it is this one that has to
+        // carry the bytes.
+        let clientIsHTTP2 = ClientWireProtocol(
+            httpVersion: baseRequest.httpVersion, clientTLSVersion: clientTransport?.clientTLSVersion
+        ).isHTTP2
         // For a streamed request body, fold the (by-now complete) captured copy into
         // the request recorded on the flow. `baseRequest.body` is nil while streaming;
         // this backfills it once the body has flowed.
@@ -111,8 +126,13 @@ enum StreamRelay {
             )
         }
 
+        /// Set when the client leg cannot carry the origin's response head. Not a
+        /// `throw`: the exchange did not fail, the *delivery* did, and the catch
+        /// block below would record the origin as having errored.
+        var undeliverable: String?
+
         do {
-            for try await event in stream {
+            relay: for try await event in stream {
                 // Client gone — stop relaying and let the loop's end tear down the
                 // upstream stream (onTermination → upstream close).
                 if Task.isCancelled || !channel.isActive { break }
@@ -126,6 +146,56 @@ enum StreamRelay {
                     transport = (transport ?? FlowTransport()).merging(info)
                 case let .head(code, version, headers):
                     firstByteAt = Date()
+                    // **The client leg's half of `HTTP2HeaderBudget`, and the half
+                    // with no lever.** The upstream leg answers an oversized field
+                    // section by not offering `h2`; here the client's connection
+                    // already exists and its protocol cannot be renegotiated, so
+                    // writing this head would throw `UnableToSerializeFrame` at
+                    // *connection* level — the client would get no response, no
+                    // status and no reason, and every other stream on the socket
+                    // would die with it. Measured (`Tools/h2-frame-size-repro`, the
+                    // response direction): a 30 KB field section is refused outright.
+                    //
+                    // So it is answered with a 502 that says why, and the origin's
+                    // real head is kept on the flow as the partial response. A
+                    // delivery Loom could not perform is still a fact about Loom,
+                    // not about the origin — and the alternative is the silent hang
+                    // this project exists to not produce.
+                    //
+                    // **The trailer section is deliberately unguarded.** It is
+                    // written after the body, where there is no status left to
+                    // change, and a trailer section anywhere near this size has
+                    // never been observed — a guard there could only drop it.
+                    if clientIsHTTP2, !HTTP2HeaderBudget.fitsOneFrame(headers) {
+                        let bytes = HTTP2HeaderBudget.estimatedBlockBytes(headers)
+                        undeliverable = """
+                            the origin's response headers are ~\(bytes) bytes, past the \
+                            \(HTTP2HeaderBudget.maxFieldSectionBytes) an HTTP/2 HEADERS frame holds; \
+                            Loom cannot forward them to this HTTP/2 client
+                            """
+                        Log.proxy.error(
+                            """
+                            \(baseRequest.url, privacy: .public) — response field section is \
+                            ~\(bytes, privacy: .public) bytes and cannot be framed for this HTTP/2 \
+                            client; answering 502
+                            """
+                        )
+                        // **A 502 on its own would make this host permanently
+                        // broken through Loom and fine without it** — the exact
+                        // shape of bug this whole change exists to remove. The
+                        // recovery is the lever the *next* connection has: serve
+                        // this host HTTP/1.1 from now on, which has no frame, so
+                        // the retry actually delivers. Same registry, same session
+                        // scope and same flow marking as the pre-ACK HPACK
+                        // downgrade (`HTTP2DowngradeRegistry`) — a second entry
+                        // point to it, on evidence that is measured rather than
+                        // inferred from an ambiguous codec error.
+                        onUndeliverableResponse?()
+                        statusCode = code
+                        httpVersion = version
+                        responseHeaders = headers
+                        break relay
+                    }
                     statusCode = code
                     httpVersion = version
                     responseHeaders = headers
@@ -154,6 +224,32 @@ enum StreamRelay {
                     responseTrailers = trailers
                     HTTPUtil.finishResponse(channel: channel, keepAlive: keepAlive, trailers: trailers)
                 }
+            }
+            if let undeliverable {
+                await store.upsert(Flow(
+                    id: flowID, request: request(), startedAt: startedAt,
+                    outcome: .failed(
+                        FlowError("Loom: \(undeliverable)"), at: Date(),
+                        // The origin's head, which is what the client never saw.
+                        // **`body: nil`, not the empty `capturedBody`**: relaying
+                        // stopped before a single byte was read, and an absent body
+                        // means unmeasured where an empty one would claim the origin
+                        // answered with nothing (AGENTS.md § FlowTransport).
+                        partialResponse: CapturedResponse(
+                            statusCode: statusCode, httpVersion: httpVersion,
+                            headers: responseHeaders, body: nil
+                        )
+                    ),
+                    firstByteAt: firstByteAt,
+                    sourceApp: sourceApp, sourceDevice: sourceDevice,
+                    appliedRules: appliedRules.isEmpty ? nil : appliedRules,
+                    transport: transport
+                ))
+                HTTPUtil.writeResponse(
+                    channel: channel, status: 502, headers: [],
+                    body: Data("Loom: \(undeliverable)\n".utf8), keepAlive: false
+                )
+                return
             }
             await store.upsert(Flow(
                 id: flowID, request: request(), startedAt: startedAt,

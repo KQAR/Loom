@@ -23,6 +23,11 @@ enum CapturedExchange {
         let webSocketUpstreamTLS: Bool
         let webSocketRequestPath: String
         let webSocketRemoveHandlerNames: [String]
+        /// What to do when the client leg cannot carry the origin's response head.
+        /// Only the h2 client stack supplies one — it is the only leg with a frame
+        /// size, and `MITMPipeline` is the only place holding what the recovery
+        /// needs. See `StreamRelay`.
+        var onUndeliverableResponse: (@Sendable () -> Void)?
     }
 
     /// A request recorded the moment its head was parsed, before anything decided
@@ -270,7 +275,8 @@ enum CapturedExchange {
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
                 request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
                 store: store, bodyCapture: bodyCapture, requestTrailers: body.trailers,
-                clientTransport: clientLeg.transport
+                clientTransport: clientLeg.transport,
+                onUndeliverableResponse: routing.onUndeliverableResponse
             )
         }
     }

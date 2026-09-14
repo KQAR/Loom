@@ -322,14 +322,63 @@ Measured after the fix: the steady-state case answers 200, and the first-request
 case fails in 80 ms with a closed connection instead of hanging for 20 s. Closing
 that window needs a change in swift-nio-http2, not here.
 
-**One boundary this deliberately does not close.** Loom→origin is always
-HTTP/1.1, and the encoding direction has no limit (NIO's llhttp does not bound
-outgoing headers), so the 1 MB request head goes out — but an origin's *h1
-front-end* can refuse the coalesced giant Cookie line (nginx's
-`large_client_header_buffers` defaults to 8 KB) where the same client direct over
-h2, crumbs split per RFC 9113 §8.2.3, gets through. Unlike the hang this section
-fixed, that failure is visible — a 4xx, captured and forwarded — so it reads as
-what it is. A fix would mean speaking h2 upstream, which is its own project.
+**The same rule on the encoding side, which was the half left undone.** SwiftNIO's
+frame encoder writes **no CONTINUATION frames** (RFC 9113 §6.10): the whole HPACK
+block goes in one HEADERS payload, and past `SETTINGS_MAX_FRAME_SIZE` —
+16 KB until a peer raises it, and the minimum any peer may advertise — it throws,
+which `NIOHTTP2Handler` reports as `UnableToSerializeFrame` **at connection level**,
+taking every other stream on the socket with it. So once the upstream leg started
+matching the client's protocol (0.0.27), a request Loom could *read* became one it
+could not *re-send*: a real client sends CONTINUATION and is answered, and the
+failure existed only while Loom was in the path. Reported from an Android app whose
+attestation header and grown cookie jar together cleared 16 KB; reproduced with no
+Loom code in `Tools/h2-frame-size-repro` (1.44.0: 12 KB accepted, 20 KB refused).
+
+There is no knob and no way to pre-split, so **`HTTP2HeaderBudget` is one ceiling
+and one estimate for both legs** — two copies of that arithmetic is how one leg's
+limit drifts from the other's. What differs is the answer each leg can give.
+
+**Upstream: not offering `h2`** (`NIOStreamingForwarder`), which sends the exchange
+over HTTP/1.1 — no frame at all. Three rules. *The estimate only ever guesses high*
+— HPACK shrinks a field and never grows one, so a bound that reads low is the one
+that kills a connection, and it charges a `cookie` per crumb because the h2 leg
+re-splits it. *It is decided before ALPN, not after*: the offer is what picks the
+stack, so an accepted `h2` with an HTTP/1.1 pipeline behind it parses HTTP/2 frames
+with llhttp — measured, that is `HTTPParserError.invalidConstant` and it is how the
+fix first failed. *And the flow says so*
+(`FlowTransport.upstreamProtocolDowngraded`), because `HTTP/1.1` on the response is
+otherwise indistinguishable from an origin that declined `h2`.
+
+**Client leg: a 502 that says why, plus a downgrade so the retry works**
+(`StreamRelay`). *This* connection has no lever — it exists and its protocol cannot
+be renegotiated — so the exchange is answered 502 with the reason, and the origin's
+real head is kept on the flow (**body nil, not empty**: nothing was read, and an
+empty body would claim the origin sent none). But a 502 alone would leave the host
+permanently broken through Loom and fine without it, so it also registers in
+`HTTP2DowngradeRegistry`: the *next* connection is served HTTP/1.1, which has no
+frame. That is the registry's second entry point and it is sound for the opposite
+reason to the first — the section was **measured**, not inferred from an ambiguous
+codec error. Measured: a 30 KB field section is refused by the encoder, and with the
+guard removed the test client waits out its own deadline having received no status,
+no reason and no bytes.
+
+Two things the estimate must not forget. **`:path` and `:authority` ride the same
+block** and are not header fields — a request whose weight is all query string (an
+OAuth PAR `request`, a `SAMLRequest`) read as tiny and died anyway; that is why
+`estimatedBlockBytes` takes the target. And **guessing high is not free**: a needless
+downgrade coalesces `cookie` into one line and meets the nginx limit below, which is
+why the coefficients are the smallest sound ones (a crumb costs 4, not 8 — its name
+is static index 32). The **trailer section is deliberately unguarded**: it is written
+after the body, where there is no status left to change, and a guard there could only
+drop it.
+
+**One boundary this deliberately does not close.** An origin's *h1 front-end* can
+refuse the coalesced giant Cookie line (nginx's `large_client_header_buffers`
+defaults to 8 KB) where the same client direct over h2, crumbs split per RFC 9113
+§8.2.3, gets through — and a downgraded exchange is now exactly that shape. Unlike
+the hang this section fixed, that failure is visible: a 4xx, captured and forwarded.
+(The response direction had no lever either, which is why it gets a 502 rather than
+a protocol change.)
 
 ## Response streaming
 

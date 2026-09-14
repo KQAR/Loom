@@ -181,6 +181,12 @@ struct RenderedTransport: Encodable {
     /// false about what the app would have done without Loom in the path — read
     /// this before comparing a capture with production behaviour.
     var clientProtocolDowngraded: Bool?
+    /// Present **only when true**: Loom did not offer `h2` on this exchange's
+    /// upstream leg, because its field section does not fit in one HTTP/2 HEADERS
+    /// frame. It says what Loom did — whether the origin would have accepted `h2`
+    /// is unknown, since the decision precedes the connection.
+    /// `response.httpVersion` reads `HTTP/1.1` and is true about Loom's hop only.
+    var upstreamProtocolDowngraded: Bool?
 
     init?(_ transport: FlowTransport?) {
         guard let transport, !transport.isEmpty else { return nil }
@@ -193,6 +199,7 @@ struct RenderedTransport: Encodable {
         setup = transport.setup.flatMap(RenderedConnectionSetup.init)
         requestSendMS = transport.requestSendMS
         clientProtocolDowngraded = transport.clientProtocolDowngraded
+        upstreamProtocolDowngraded = transport.upstreamProtocolDowngraded
     }
 }
 
