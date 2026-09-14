@@ -98,6 +98,25 @@ public struct FlowTransport: Equatable, Codable, Sendable {
     /// hop and indistinguishable from an origin that refused `h2` — a difference the
     /// operator is measuring.
     public var upstreamProtocolDowngraded: Bool?
+    /// The request line Loom put on the wire is **not** the one the client wrote:
+    /// its target contains bytes RFC 9112 excludes from a request-target
+    /// (`|` `{` `}` `"` `^` `\` `<` `>`), so Loom percent-encoded them to send it.
+    ///
+    /// Loom forwards the client's own target byte for byte wherever it can
+    /// (`NIOStreamingForwarder.requestTarget`). This flag is the one case it cannot:
+    /// SwiftNIO's outbound validator refuses to *write* such a target, so the choice
+    /// is between re-encoding it and not sending the request at all.
+    ///
+    /// **It exists because the alternative is an invisible mutation.** Most origins
+    /// decode `%7C` back to `|` and never notice; one that signs the raw target
+    /// answers `401`/`403`, and without this flag nothing in the capture connects
+    /// that to Loom — the flow shows the client's URL, the origin saw another, and
+    /// the operator spends the afternoon on their own auth code.
+    ///
+    /// Deliberately **not** set when a rule rewrote the URL (`appliedRules` already
+    /// says so, and that mutation was asked for) or when there was no raw target to
+    /// preserve (a replay of a synthesised URL).
+    public var requestTargetNormalized: Bool?
 
     public init(
         clientTLSVersion: String? = nil,
@@ -109,7 +128,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         setup: ConnectionSetup? = nil,
         requestSendMS: Int? = nil,
         clientProtocolDowngraded: Bool? = nil,
-        upstreamProtocolDowngraded: Bool? = nil
+        upstreamProtocolDowngraded: Bool? = nil,
+        requestTargetNormalized: Bool? = nil
     ) {
         self.clientTLSVersion = clientTLSVersion
         self.remoteAddress = remoteAddress
@@ -121,6 +141,7 @@ public struct FlowTransport: Equatable, Codable, Sendable {
         self.requestSendMS = requestSendMS
         self.clientProtocolDowngraded = clientProtocolDowngraded
         self.upstreamProtocolDowngraded = upstreamProtocolDowngraded
+        self.requestTargetNormalized = requestTargetNormalized
     }
 
     public var isEmpty: Bool { self == FlowTransport() }
@@ -141,7 +162,8 @@ public struct FlowTransport: Equatable, Codable, Sendable {
             setup: other.setup ?? setup,
             requestSendMS: other.requestSendMS ?? requestSendMS,
             clientProtocolDowngraded: other.clientProtocolDowngraded ?? clientProtocolDowngraded,
-            upstreamProtocolDowngraded: other.upstreamProtocolDowngraded ?? upstreamProtocolDowngraded
+            upstreamProtocolDowngraded: other.upstreamProtocolDowngraded ?? upstreamProtocolDowngraded,
+            requestTargetNormalized: other.requestTargetNormalized ?? requestTargetNormalized
         )
     }
 }

@@ -187,6 +187,11 @@ struct RenderedTransport: Encodable {
     /// is unknown, since the decision precedes the connection.
     /// `response.httpVersion` reads `HTTP/1.1` and is true about Loom's hop only.
     var upstreamProtocolDowngraded: Bool?
+    /// Present **only when true**: the request line Loom sent is not the one the
+    /// client wrote — its target holds bytes RFC 9112 excludes, which SwiftNIO
+    /// refuses to write, so Loom percent-encoded them. Harmless against an origin
+    /// that decodes them, a `401`/`403` against one that signs the raw target.
+    var requestTargetNormalized: Bool?
 
     init?(_ transport: FlowTransport?) {
         guard let transport, !transport.isEmpty else { return nil }
@@ -200,6 +205,7 @@ struct RenderedTransport: Encodable {
         requestSendMS = transport.requestSendMS
         clientProtocolDowngraded = transport.clientProtocolDowngraded
         upstreamProtocolDowngraded = transport.upstreamProtocolDowngraded
+        requestTargetNormalized = transport.requestTargetNormalized
     }
 }
 

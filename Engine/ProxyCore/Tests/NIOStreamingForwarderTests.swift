@@ -107,6 +107,47 @@ final class NIOStreamingForwarderTests {
                 "unsendable raw bytes must fall back, not fail the exchange")
     }
 
+    /// …and the fallback **says so on the flow**, because it is the one mutation
+    /// Loom makes to the request line that nothing else reveals.
+    ///
+    /// Most origins decode `%7C` back to `|` and never notice. One that signs the raw
+    /// target answers 401/403, and without this the capture shows the client's URL,
+    /// the origin saw another, and nothing connects the two. It is measured-rare —
+    /// zero occurrences across 1409 flows and 10 hosts of live traffic — which is the
+    /// argument for making it *visible* rather than for relaxing SwiftNIO's validator
+    /// to send it, a change that would also relax the checks on Loom's own write
+    /// tools (`replay_flow` overrides and rule rewrites are the untrusted input here,
+    /// not the proxied client, whose bytes llhttp has already parsed).
+    @Test func aReEncodedRequestLineIsRecordedOnTheFlow() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        let host = "http://127.0.0.1:\(server.localAddress!.port!)"
+
+        let reEncoded = try await forwarder.forwardStream(
+            method: "GET", url: try #require(URL(string: host + "/v1/report?cols=a|b|c")),
+            headers: [], body: .bytes(nil),
+            origin: nil, clientProtocol: .http1, clientURLString: host + "/v1/report?cols=a|b|c"
+        ).collect()
+        #expect(reEncoded.transport?.requestTargetNormalized == true)
+
+        // A target that travels as written says nothing — the key is absent, not false.
+        let verbatim = try await forwarder.forwardStream(
+            method: "GET", url: try #require(URL(string: host + "/v1/x?ids[]=1")),
+            headers: [], body: .bytes(nil),
+            origin: nil, clientProtocol: .http1, clientURLString: host + "/v1/x?ids[]=1"
+        ).collect()
+        #expect(verbatim.transport?.requestTargetNormalized == nil)
+
+        // Neither does a rule's rewrite: that mutation was asked for and
+        // `appliedRules` already reports it. Claiming it here would teach the
+        // operator to ignore the flag.
+        let rewritten = try await forwarder.forwardStream(
+            method: "GET", url: try #require(URL(string: host + "/v1/new")),
+            headers: [], body: .bytes(nil),
+            origin: nil, clientProtocol: .http1, clientURLString: host + "/v1/old?cols=a|b|c"
+        ).collect()
+        #expect(rewritten.transport?.requestTargetNormalized == nil)
+    }
+
     /// …and the raw form loses to a rewritten URL, which is what makes it safe to
     /// hand every decorator without any of them checking. A `mapRemote` rule or a
     /// breakpoint edit produces a different URL; the stale target would otherwise

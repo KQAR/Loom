@@ -203,6 +203,16 @@ struct FlowSummary: View {
                     color: LoomTheme.Palette.warning
                 )
             }
+            // Warning-coloured for the same reason as the two rows above it: the
+            // URL shown elsewhere in this pane is the client's, and it is *not*
+            // what the origin received. A quiet row would read as a detail.
+            if transport.requestTargetNormalized == true {
+                row(
+                    "Request line",
+                    "re-encoded by Loom (the target holds characters RFC 9112 excludes)",
+                    color: LoomTheme.Palette.warning
+                )
+            }
             if let tls = transport.upstreamTLS { upstreamTLSRows(tls) }
         }
     }
