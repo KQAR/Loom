@@ -107,12 +107,15 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     func forwardStream(method: String, url: URL, headers: [HeaderPair], body: RequestBody) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
-        forwardStream(method: method, url: url, headers: headers, body: body, origin: nil, clientProtocol: .http1)
+        forwardStream(
+            method: method, url: url, headers: headers, body: body,
+            origin: nil, clientProtocol: .http1, clientURLString: nil
+        )
     }
 
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String? = nil
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             guard let host = url.host else {
@@ -203,6 +206,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     """
                 )
             }
+            // The request line, decided once per exchange rather than per attempt.
+            let target = Self.requestTarget(url: url, clientURLString: clientURLString)
             let key = UpstreamPoolKey(
                 host: host, port: port, isTLS: isTLS, identity: identity, preferHTTP2: wantsHTTP2
             )
@@ -212,7 +217,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     let trailers = try await self.runExchange(
                         key: key, clientTLS: clientTLS, method: method, url: url,
                         headers: headers, body: body, continuation: continuation, active: active,
-                        downgradedForHeaderSize: downgradedForHeaderSize
+                        downgradedForHeaderSize: downgradedForHeaderSize, target: target
                     )
                     // The forwarder, not the relay, terminates the caller's stream:
                     // a failure with nothing yet yielded is a retry candidate, and a
@@ -268,7 +273,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
-        downgradedForHeaderSize: Bool
+        downgradedForHeaderSize: Bool,
+        target: String
     ) async throws -> [HeaderPair]? {
         let replayable: Bool
         if case .bytes = body.source { replayable = true } else { replayable = false }
@@ -280,7 +286,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     on: leased.connection, reused: true, idle: leased.idle,
                     method: method, url: url, headers: headers, body: body,
                     continuation: continuation, active: active,
-                    downgradedForHeaderSize: downgradedForHeaderSize
+                    downgradedForHeaderSize: downgradedForHeaderSize, target: target
                 )
             } catch let failure as UpstreamAttemptFailure {
                 guard !failure.didYield else { throw failure.underlying }
@@ -308,7 +314,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 on: fresh, reused: false, idle: .zero,
                 method: method, url: url, headers: headers, body: body,
                 continuation: continuation, active: active,
-                downgradedForHeaderSize: downgradedForHeaderSize
+                downgradedForHeaderSize: downgradedForHeaderSize, target: target
             )
         } catch let failure as UpstreamAttemptFailure {
             throw failure.underlying
@@ -363,12 +369,16 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
-        downgradedForHeaderSize: Bool
+        downgradedForHeaderSize: Bool,
+        /// The request line, resolved once per exchange in `forwardStream` rather
+        /// than re-derived here: a retry must put the same bytes on the wire as the
+        /// attempt it is replacing.
+        target: String
     ) async throws -> [HeaderPair]? {
         if connection.negotiated == .http2 {
             return try await attemptHTTP2(
                 on: connection, reused: reused, idle: idle, method: method, url: url, headers: headers,
-                body: body, continuation: continuation, active: active
+                body: body, continuation: continuation, active: active, target: target
             )
         }
         guard active.adopt(closing: { connection.close() }) else {
@@ -432,7 +442,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let sendStartedAt = NIODeadline.now()
         do {
             try await Self.writeRequest(
-                channel: connection.channel, method: method, url: url,
+                channel: connection.channel, method: method, url: url, target: target,
                 host: connection.key.host, port: connection.key.port, headers: headers, body: body
             )
             requestWritten = true
@@ -521,7 +531,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         idle: TimeAmount,
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
-        active: ActiveUpstreamBox
+        active: ActiveUpstreamBox,
+        target: String
     ) async throws -> [HeaderPair]? {
         guard let multiplexer = connection.multiplexer else {
             throw ForwarderError.connectionClosed
@@ -588,7 +599,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         var requestWritten = false
         do {
             try await Self.writeRequest(
-                channel: stream, method: method, url: url,
+                channel: stream, method: method, url: url, target: target,
                 host: connection.key.host, port: connection.key.port, headers: headers, body: body,
                 wire: .http2
             )
@@ -933,7 +944,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     ///   the same either way; the *framing* is not, and both differences below are
     ///   things HTTP/2 forbids or wastes rather than preferences.
     private static func writeRequest(
-        channel: Channel, method: String, url: URL, host: String, port: Int,
+        channel: Channel, method: String, url: URL, target: String, host: String, port: Int,
         headers: [HeaderPair], body: RequestBody, wire: UpstreamWireProtocol = .http1
     ) async throws {
         var httpHeaders = HTTPHeaders()
@@ -1004,7 +1015,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         }
 
         let head = HTTPRequestHead(
-            version: .http1_1, method: httpMethod(method), uri: requestURI(url), headers: httpHeaders
+            version: .http1_1, method: httpMethod(method), uri: target, headers: httpHeaders
         )
         // `promise: nil`, and **do not "fix" this by awaiting it**. A `write` without
         // a flush completes only when the flush happens, and the flush is the `.end`
@@ -1051,6 +1062,36 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     }
 
     /// Origin-form request target: path + query (path defaults to "/").
+    /// The request line to put on the wire: **what the client wrote**, when that is
+    /// still what this exchange is sending.
+    ///
+    /// `URL(string:)` normalises on construction, so by the time a `URL` exists the
+    /// client's `?cols=a|b|c` is `%7C` and `?ids[]=1` is `%5B%5D`. Most origins
+    /// decode both the same way; a gateway that HMACs the raw target does not, and
+    /// the captured flow — which keeps the raw string — then describes a request
+    /// Loom never made. Both are the same defect: a debugging proxy must put the
+    /// client's bytes on the wire and report the bytes it put there.
+    ///
+    /// **The raw form is honoured only while `url` still agrees with it**, and that
+    /// check is what makes this safe without any decorator having to cooperate: a
+    /// `mapRemote` rule or a breakpoint edit produces a different `url`, the
+    /// comparison fails, and the rewritten target wins. Re-deriving is also the
+    /// fallback whenever there is no raw string (replay, a synthesised URL).
+    static func requestTarget(url: URL, clientURLString: String?) -> String {
+        guard let clientURLString,
+              URL(string: clientURLString) == url,
+              let raw = HTTPUtil.originForm(ofAbsolute: clientURLString),
+              // **And only if NIO will send it.** Its outbound validator refuses a
+              // target outside RFC 9112's byte set, so preferring the raw form
+              // unconditionally would turn a request Loom mangles today (`?cols=a|b|c`)
+              // into one that fails outright — a regression dressed as a fix. For
+              // those, the normalised form is what Loom has always sent and still is;
+              // what changes is everything the RFC *does* allow, `?ids[]=1` above all.
+              HTTPUtil.isSendableRequestTarget(raw)
+        else { return requestURI(url) }
+        return raw
+    }
+
     private static func requestURI(_ url: URL) -> String {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.path.isEmpty ? "/" : url.path

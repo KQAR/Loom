@@ -44,7 +44,7 @@ final class BreakpointForwarder: UpstreamForwarding {
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         forwardStream(
             method: method, url: url, headers: headers, body: body,
-            origin: origin, clientProtocol: .http1
+            origin: origin, clientProtocol: .http1, clientURLString: nil
         )
     }
 
@@ -53,7 +53,7 @@ final class BreakpointForwarder: UpstreamForwarding {
     /// it travels on.
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String? = nil
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         let originalMethod = method
         let originalURL = url.absoluteString
@@ -65,7 +65,7 @@ final class BreakpointForwarder: UpstreamForwarding {
         guard requestBP != nil || responseBP != nil else {
             return base.forwardStream(
                 method: method, url: url, headers: headers, body: body,
-                origin: origin, clientProtocol: clientProtocol
+                origin: origin, clientProtocol: clientProtocol, clientURLString: clientURLString
             )
         }
 
@@ -111,7 +111,12 @@ final class BreakpointForwarder: UpstreamForwarding {
                     for try await event in base.forwardStream(
                         method: method, url: url, headers: headers,
                         body: .bytes(body, trailers: requestTrailers),
-                        origin: origin, clientProtocol: clientProtocol
+                        // Passed through even though a hold may have *edited* the URL:
+                        // `NIOStreamingForwarder.requestTarget` honours the raw form
+                        // only while the URL still agrees with it, so an edit wins
+                        // here without this decorator having to detect one.
+                        origin: origin, clientProtocol: clientProtocol,
+                        clientURLString: clientURLString
                     ) {
                         switch event {
                         case let .metadata(rules): continuation.yield(.metadata(appliedRules: rules))

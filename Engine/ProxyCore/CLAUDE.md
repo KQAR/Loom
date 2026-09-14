@@ -407,6 +407,35 @@ sends the operator to their own app. `UpstreamDecompressionError` wraps that one
 — not `inflationError`, which is a fact about the origin — with the host, the ceiling
 and the one lever that exists (take the host out of the SSL scope and let the client
 decompress it itself).
+## The request line on the wire is the client's, as far as the RFC allows
+
+`URL(string:)` **normalises on construction**, so by the time a `URL` exists the
+client's `?ids[]=1` is `%5B%5D` and `?cols=a|b|c` is `%7C` — and `absoluteString` is
+already re-encoded, so nothing downstream can recover what was sent. Loom recorded
+the raw string on the flow (the entry points build it by concatenation, never through
+`URL`) and then put the normalised one on the wire. Measured: the origin received
+`/v1/x?ids%5B%5D=1` for a flow that reads `ids[]=1` — a debugging proxy reporting a
+request it did not make, and a signature mismatch for any gateway that HMACs the raw
+target.
+
+So the raw string travels alongside the URL (`clientURLString`) and
+`NIOStreamingForwarder.requestTarget` decides the request line. Three rules:
+
+- **The raw form loses to a rewritten URL.** A `mapRemote` rule or a breakpoint edit
+  produces a different `url`; the comparison fails and the rewrite wins. That check is
+  what lets every decorator pass the string through blindly — none of them has to
+  notice it edited something.
+- **The raw form loses to the RFC.** `NIOHTTPRequestHeadersValidator` fails the
+  *write* for a target outside RFC 9112's byte set (`|` `{` `}` `"` `^` `\` `<` `>`),
+  so preferring it unconditionally turns a request Loom merely mangles into one it
+  cannot send — measured, `invalidHeaderToken` before a byte left the process. Those
+  keep the encoding Loom has always sent. Closing that last gap means relaxing the
+  validator, which is a request-smuggling decision and not this one.
+- **Every decorator must carry it, and the buffered path is the one that forgets.**
+  Buffering is forced by things with nothing to do with the URL — a response-header
+  rewrite is the common one — so dropping it there sends a different request line
+  whenever a rule is active than the same exchange takes with rules off.
+  `EngineInvariantTests` pins both paths; that is how the buffered one was caught.
 
 ## Response streaming
 

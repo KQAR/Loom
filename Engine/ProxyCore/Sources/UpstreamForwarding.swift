@@ -132,14 +132,32 @@ protocol UpstreamForwarding: Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
 
-    /// Same again, plus what the client spoke. Every production caller uses this one;
-    /// the default below drops the protocol, so a test stub still only needs
-    /// `forward`. A decorator must override it to pass the value down — the compiler
-    /// cannot catch that, which is why `EngineInvariantTests` checks the h2 leg
-    /// survives the rules chain.
+    /// Same again, plus what the client spoke and **the URL exactly as it wrote it**.
+    /// Every production caller uses this one; the default below drops both, so a test
+    /// stub still only needs `forward`. A decorator must override it to pass the
+    /// values down — the compiler cannot catch that, which is why
+    /// `EngineInvariantTests` checks that both survive the rules chain.
+    ///
+    /// - Parameter clientURLString: the absolute URL as a **string that has never
+    ///   been through `URL`**. `URL(string:)` normalises on construction, so a target
+    ///   the client wrote as `?cols=a|b|c` is `%7C` by the time anything downstream
+    ///   sees it, and `url` here cannot answer what was actually sent. Loom recorded
+    ///   the raw form on the flow and then put the normalised one on the wire — a
+    ///   debugging proxy reporting a request it did not make. Nil means "no raw form
+    ///   to preserve" (replay of a synthesised URL, a test), and the normalised
+    ///   target is used. It is honoured **only while `url` still agrees with it**, so
+    ///   a rule or breakpoint that rewrites the URL wins without the decorators
+    ///   needing to know.
+    ///
+    /// Swift forbids a default argument on a protocol requirement, so the concrete
+    /// forwarders declare `= nil` for the stubs and buffered paths with no client
+    /// behind them. Every production caller passes it, and `EngineInvariantTests`
+    /// pins that it survives the decorator chain — a dropped value would fix unruled
+    /// exchanges and leave ruled ones sending a request nobody made, which is the
+    /// worst shape a partial fix can take.
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error>
 
     /// Whether anything in this forwarding chain currently matches on the
@@ -162,10 +180,11 @@ extension UpstreamForwarding {
         forwardStream(method: method, url: url, headers: headers, body: body)
     }
 
-    /// A forwarder with one upstream shape has no use for the client's protocol.
+    /// A forwarder with one upstream shape has no use for the client's protocol, and
+    /// one that re-derives its own target has none for the raw URL.
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String? = nil
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         forwardStream(method: method, url: url, headers: headers, body: body, origin: origin)
     }

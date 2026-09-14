@@ -23,6 +23,60 @@ enum HTTPUtil {
         "HTTP/\(version.major).\(version.minor)"
     }
 
+    /// The origin-form request target inside an absolute URL **string**, taken by
+    /// string surgery rather than through `URL`.
+    ///
+    /// That is the whole point. `URL(string:)` normalises on construction — a client
+    /// that wrote `?cols=a|b|c` or `?ids[]=1` comes back out as `%7C` and `%5B%5D`,
+    /// and `absoluteString` is already re-encoded, so there is nothing left to
+    /// recover once the string has been through it. The bytes survive only if they
+    /// are never handed to `URL` in the first place.
+    ///
+    /// Returns nil when `absolute` has no `scheme://authority` to strip, which is
+    /// not a target Loom built.
+    static func originForm(ofAbsolute absolute: String) -> String? {
+        guard let schemeEnd = absolute.range(of: "://") else { return nil }
+        let afterScheme = absolute[schemeEnd.upperBound...]
+        guard let slash = afterScheme.firstIndex(of: "/") else { return "/" }
+        return String(afterScheme[slash...])
+    }
+
+    /// Whether a request target can go on the wire as written.
+    ///
+    /// The byte set is RFC 9112 §3.2's `request-target` via RFC 3986's `pchar` —
+    /// exactly what `NIOHTTPRequestHeadersValidator` enforces on the way out, and
+    /// the reason this predicate exists rather than a `try`: NIO *refuses the write*
+    /// for anything outside it, so handing it a client's `?cols=a|b|c` would turn a
+    /// request Loom mangles today into one it cannot send at all. Anything it says
+    /// no to falls back to the normalised form, which is what Loom has always sent.
+    ///
+    /// Note what **is** allowed and therefore now travels untouched: `[` `]` `:` `@`
+    /// and the sub-delims. `?ids[]=1` is the common real case — PHP and Rails array
+    /// parameters — and Loom used to send it as `%5B%5D`.
+    static func isSendableRequestTarget(_ target: String) -> Bool {
+        target.utf8.allSatisfy { byte in
+            switch byte {
+            case UInt8(ascii: "A") ... UInt8(ascii: "Z"),
+                 UInt8(ascii: "a") ... UInt8(ascii: "z"),
+                 UInt8(ascii: "0") ... UInt8(ascii: "9"),
+                 // unreserved
+                 UInt8(ascii: "-"), UInt8(ascii: "."), UInt8(ascii: "_"), UInt8(ascii: "~"),
+                 // gen-delims
+                 UInt8(ascii: ":"), UInt8(ascii: "/"), UInt8(ascii: "?"), UInt8(ascii: "#"),
+                 UInt8(ascii: "["), UInt8(ascii: "]"), UInt8(ascii: "@"),
+                 // sub-delims
+                 UInt8(ascii: "!"), UInt8(ascii: "$"), UInt8(ascii: "&"), UInt8(ascii: "'"),
+                 UInt8(ascii: "("), UInt8(ascii: ")"), UInt8(ascii: "*"), UInt8(ascii: "+"),
+                 UInt8(ascii: ","), UInt8(ascii: ";"), UInt8(ascii: "="),
+                 // pct-encoded's escape character
+                 UInt8(ascii: "%"):
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
     static func headerPairs(_ headers: HTTPHeaders) -> [HeaderPair] {
         headers.map { HeaderPair(name: $0.name, value: $0.value) }
     }
