@@ -2,7 +2,6 @@ import AppKit
 import ComposableArchitecture
 import LoomSharedModels
 import SwiftUI
-import TipKit
 
 /// The main window. Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style):
 /// left category sidebar, then a vertical split — a multi-column request table
@@ -101,12 +100,6 @@ public struct MainView: View {
         self.store = store
     }
 
-    /// Interception on, whitelist empty — every origin relayed unread. Drives
-    /// `SSLScopeWhitelistTip`.
-    private var interceptsNothing: Bool {
-        store.setup.sslEnabled && store.setup.sslScope.include.isEmpty
-    }
-
     /// A plain `HStack`, and each of the alternatives was tried on this exact view before
     /// settling here:
     ///
@@ -169,12 +162,6 @@ public struct MainView: View {
         // `.toolbarBackground` nor AppKit's own titlebar fill does the job here.
         .background(WindowChrome())
         .task { store.send(.viewAppeared) }
-        // The tip's rule is a mirror of engine state, so it is pushed from the one
-        // place that re-reads it rather than stored twice (AGENTS.md § "A human
-        // surface that mirrors engine state re-reads it").
-        .onChange(of: interceptsNothing, initial: true) { _, nothing in
-            SSLScopeWhitelistTip.interceptsNothing = nothing
-        }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
             RuleEditorView(store: editorStore)
         }
@@ -1161,11 +1148,6 @@ public struct MainView: View {
                 Label("Waiting for traffic", systemImage: "dot.radiowaves.left.and.right")
             } description: {
                 Text("Send requests through \(store.displayHost):\(String(store.status.port))\n`curl -x http://\(store.displayHost):\(String(store.status.port)) http://…`")
-            } actions: {
-                // Shows only while the whitelist is empty: the one case where
-                // "waiting for traffic" can be false — HTTPS is flowing, unread.
-                TipView(SSLScopeWhitelistTip())
-                    .frame(maxWidth: 420)
             }
         } else if let reason = store.proxyStartError {
             // A stopped proxy has two very different causes, and "Proxy stopped"

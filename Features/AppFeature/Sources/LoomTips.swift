@@ -30,17 +30,24 @@ public enum LoomTips {
 struct SSLScopeWhitelistTip: Tip {
     @Parameter static var interceptsNothing: Bool = false
 
-    var title: Text { Text("Name a host to decrypt it") }
+    var title: Text { Text("Nothing is decrypted yet") }
 
+    /// Short on purpose: the console's scarcest resource is height, and a tip that
+    /// pushes the config rows off the panel costs more than it explains.
     var message: Text? {
-        Text(
-            "HTTPS interception is on, but the scope is a whitelist — Loom passes every "
-                + "origin through unread until you add one. Open SSL Scope in the menu-bar "
-                + "console, or ask an agent to intercept a host."
-        )
+        Text("The scope is a whitelist — every origin is relayed unread until you name one.")
     }
 
     var image: Image? { Image(systemName: "lock.shield") }
+
+    /// The repair, attached. Same rule as the console's alert channel: a line that
+    /// only states a problem is a dead end, because the one thing its own surface
+    /// offers is turning the broken thing off.
+    /// Built per read rather than held in a static: `Tips.Action` is not `Sendable`,
+    /// and this tip has exactly one action, so nothing needs to name it by id.
+    var actions: [Tip.Action] {
+        [Tip.Action(id: "open-ssl-scope", title: "Open SSL Scope")]
+    }
 
     var rules: [Rule] { #Rule(Self.$interceptsNothing) { $0 } }
 }
