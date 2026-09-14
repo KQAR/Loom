@@ -2,6 +2,7 @@ import Foundation
 import Synchronization
 import NIOCore
 import NIOHTTP1
+import NIOHTTPCompression
 import NIOPosix
 import Testing
 @testable import LoomProxyCore
@@ -89,6 +90,67 @@ final class NIOStreamingForwarderTests {
         let forwarder = NIOStreamingForwarder(group: group)
         _ = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
         #expect(recorder.headerValue("Accept-Encoding") == "gzip, deflate")
+    }
+
+    /// A very compressible response is ordinary content, not an attack.
+    ///
+    /// The cap used to be a 100:1 *ratio*, justified in a comment as "text gzips
+    /// 3–10x, so 100x costs nothing legitimate". Measured with `gzip -6`, a log-tail
+    /// endpoint and a server-rendered HTML table both reach 293x — so this exact
+    /// response came back `DecompressionError.limit`, i.e. a 502 for a body the
+    /// origin serves and every client reads. The ratio was also the wrong *shape*:
+    /// one DEFLATE stream cannot exceed ~1032:1 (measured: 100 MB of zeros is
+    /// 1029x), so there is under a factor of four between ordinary logs and the most
+    /// compressible bytes that exist, and no threshold to pick in between.
+    @Test func aVeryCompressibleResponseIsNotRefused() async throws {
+        // ~8.6 MB of identical log lines: 293x, and nothing unusual about it.
+        let plaintext = String(
+            repeating: "2026-09-14 05:52:24 INFO  [http-nio-8080-exec-3] c.f.s.OrderService - order processed\n",
+            count: 100_000
+        )
+        let logGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        defer { shutdownBlocking(logGroup) }
+        let logServer = try await ServerBootstrap(group: logGroup)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { ch in
+                ch.pipeline.configureHTTPServerPipeline().flatMap {
+                    ch.pipeline.addHandler(DeflateResponder(plaintext: plaintext))
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).get()
+        defer { logServer.close(promise: nil) }
+
+        let forwarder = NIOStreamingForwarder(group: group)
+        let result = try await forwarder.forward(
+            method: "GET", url: URL(string: "http://127.0.0.1:\(logServer.localAddress!.port!)/logs")!,
+            headers: [], body: nil
+        )
+
+        #expect(result.statusCode == 200)
+        #expect(result.body.count == plaintext.utf8.count,
+                "the whole body, inflated — a proxy that truncates here is worse than one that refuses")
+    }
+
+    /// …and when the ceiling *is* hit, it says so in words. `DecompressionError.limit`
+    /// carries no context at all and reached every surface as the single word
+    /// "limit", which points at nothing and sends the operator to their own app.
+    @Test func theDecompressionCeilingNamesItselfAndTheHost() {
+        let wrapped = UpstreamDecompressionError.wrapping(
+            NIOHTTPDecompression.DecompressionError.limit,
+            host: "api.example.test", limitBytes: 1 << 30
+        )
+        let message = (wrapped as? LocalizedError)?.errorDescription ?? "\(wrapped)"
+        #expect(message.contains("api.example.test"))
+        #expect(message.contains("Loom"), "the cause is Loom's ceiling and the message must own it")
+        #expect(message.contains("set_ssl_scope"), "an operator needs the one lever that exists")
+
+        // Only the ceiling. A body that was not valid gzip is the origin's fact and
+        // must not be dressed up as Loom's limit.
+        let inflation = NIOHTTPDecompression.DecompressionError.inflationError(3)
+        #expect(
+            UpstreamDecompressionError.wrapping(inflation, host: "api.example.test", limitBytes: 1 << 30)
+                is NIOHTTPDecompression.DecompressionError
+        )
     }
 
     @Test func deflateResponse_reachesTheCallerAsPlaintext_withEncodingHeadersGone() async throws {

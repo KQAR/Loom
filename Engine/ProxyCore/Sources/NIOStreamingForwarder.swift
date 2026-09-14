@@ -21,9 +21,36 @@ import LoomSharedModels
 // @unchecked Sendable with nothing to protect: every stored property is a `let`.
 // The hatch exists because `EventLoopGroup` carries no Sendable conformance.
 final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
-    /// Largest decompressed:compressed ratio accepted from an upstream response.
-    /// See the decompressor's installation below for why this isn't `.none`.
-    static let maxDecompressionRatio = 100
+    /// Largest **inflated** response body Loom will decompress, in bytes.
+    ///
+    /// This was a *ratio* (100:1) until it was measured, and the ratio was both the
+    /// wrong number and the wrong shape.
+    ///
+    /// Wrong number: the comment justifying it said "text gzips ~3–10x, so 100x
+    /// costs nothing legitimate". Measured with `gzip -6` — a log-tail endpoint
+    /// (100 k identical lines, 8.6 MB) and a server-rendered HTML table (4.2 MB)
+    /// both reach **293x**, and a list endpoint of 20 k near-identical rows reaches
+    /// 61x. The log response was put through this forwarder and came back
+    /// `DecompressionError.limit`, i.e. a `502` for a response the origin serves
+    /// fine and every client reads fine. That is the failure this engine must never
+    /// introduce: it exists only while Loom is in the path.
+    ///
+    /// Wrong shape, and this is the part worth keeping: a *ratio* cannot separate
+    /// legitimate content from a bomb, because a single DEFLATE stream has a hard
+    /// ceiling of about 1032:1 and nothing can exceed it. Measured: 1 MB of zeros
+    /// compresses 997x, 100 MB of zeros 1029x. So the entire usable range between
+    /// "ordinary logs" (293x) and "the most compressible bytes that exist" is under
+    /// a factor of four — there is no threshold in there to pick.
+    ///
+    /// A size limit bounds the thing actually at risk. Loom pins `Accept-Encoding`
+    /// even when the client sent none (see `writeRequest`), so it inflates on the
+    /// client's behalf and a small body claiming gigabytes is work nobody asked
+    /// for; `.none` is what swift-nio-extras itself documents as a denial-of-service
+    /// hole. 1 GB is far above anything a debugging session handles — the capture
+    /// itself stops at `StreamRelay.captureCap` (5 MB) and no Loom surface renders,
+    /// diffs or replays a body near this — and it is a bound on resources rather
+    /// than a judgement about content, which is what the ratio was pretending to be.
+    static let maxDecompressedBodyBytes = 1 << 30
 
     /// Whether an h2c client's exchange also gets an **h2c upstream leg**.
     ///
@@ -196,13 +223,18 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     continuation.yield(.end(trailers: trailers))
                     continuation.finish()
                 } catch {
-                    // Two wrappers, one hop each, and neither touches what the other
-                    // claims: the TLS one only wraps NIOSSL's own errors, the
-                    // connection one only wraps a failure to reach the address at all.
-                    // Anything else — a mid-exchange close, an invalid URL — passes
-                    // through both untouched.
+                    // Anything not matched — a mid-exchange close, an invalid URL —
+                    // passes through all three untouched.
+                    // Three wrappers, one hop each, and none touches what the others
+                    // claim: TLS wraps only NIOSSL's own errors, the connection one
+                    // only a failure to reach the address, and this one only the
+                    // decompressor's ceiling — the single error in the set that is
+                    // wholly Loom's doing and said so in one unattributable word.
+                    let inflated = UpstreamDecompressionError.wrapping(
+                        error, host: host, limitBytes: Self.maxDecompressedBodyBytes
+                    )
                     let contextualized = UpstreamTLSError.wrapping(
-                        error, host: host, isTLS: isTLS, identity: identity
+                        inflated, host: host, isTLS: isTLS, identity: identity
                     )
                     continuation.finish(throwing: UpstreamConnectionError.wrapping(
                         contextualized, host: host, port: port
@@ -504,7 +536,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 try sync.addHandler(HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: scheme))
                 try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
                 try sync.addHandler(
-                    NIOHTTPResponseDecompressor(limit: .ratio(Self.maxDecompressionRatio))
+                    NIOHTTPResponseDecompressor(limit: .size(Self.maxDecompressedBodyBytes))
                 )
                 try sync.addHandler(
                     UpstreamResponseRelay(slot: slot, notifier: notifier, httpVersion: "HTTP/2")
@@ -830,16 +862,15 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // wire size still exists.
         try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
         // Decompress gzip/deflate so relayed/captured bytes are plaintext; the
-        // now-wrong Content-Encoding/Length are stripped on `.head`. The ratio cap is
-        // a decompression-bomb guard: bodies come from arbitrary origins, and `.none`
-        // is the setting swift-nio-extras itself documents as leaving you open to
-        // denial of service. 100x is far above real content (text gzips ~3-10x) and
-        // far below a zip bomb (1000x+), so it costs nothing legitimate. The capture
-        // is separately capped; this bounds the *inflation*.
+        // now-wrong Content-Encoding/Length are stripped on `.head`. The cap is a
+        // decompression-bomb guard — bodies come from arbitrary origins and `.none`
+        // is what swift-nio-extras documents as a denial-of-service hole — and it is
+        // an absolute size rather than a ratio, for the reasons measured on
+        // `maxDecompressedBodyBytes`.
         //
         // Safe to keep across a pooled connection's later requests: it builds a
         // decoder per response `.head` and drops it on `.end`.
-        try sync.addHandler(NIOHTTPResponseDecompressor(limit: .ratio(maxDecompressionRatio)))
+        try sync.addHandler(NIOHTTPResponseDecompressor(limit: .size(maxDecompressedBodyBytes)))
         try sync.addHandler(UpstreamResponseRelay(slot: slot, notifier: notifier))
     }
 
