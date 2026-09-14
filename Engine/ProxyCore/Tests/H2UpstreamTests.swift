@@ -252,6 +252,72 @@ final class H2UpstreamTests {
         #expect(crumbs > flat, "50 fields cost more prefixes than one field of the same length")
     }
 
+    /// `te: trailers` survives the h2 leg, because gRPC does not work without it.
+    ///
+    /// `TE` is hop-by-hop (RFC 9110 §7.6.1) and Loom dropped it on both legs. RFC
+    /// 9113 §8.2.2 carves it out by name for HTTP/2 — a request *may* carry `te`
+    /// when the value is exactly `trailers` — and the gRPC wire spec makes it
+    /// mandatory.
+    ///
+    /// Measured against a real grpc C-core server (grpcio 1.84 — the transport behind
+    /// C++, Python, Ruby, C#, PHP and Objective-C), same health-check RPC, raw HTTP/2
+    /// framer so only this one field differs:
+    ///
+    ///     with    te: trailers → :status=200, grpc-status=0
+    ///     without te: trailers → RST_STREAM INTERNAL_ERROR, no status, no response
+    ///
+    /// Its source says why: `MalformedRequest("Missing :te header")`. grpc-java only
+    /// warns — and names the culprit, "some intermediate proxy may not support
+    /// trailers" — while grpc-go does not check at all, which is why one
+    /// implementation was not enough to answer this.
+    @Test func theH2LegKeepsTETrailers() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2"], group: group)
+        defer { origin.stop() }
+
+        _ = try await forwarder().forwardStream(
+            method: "POST", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc")!,
+            headers: [HeaderPair(name: "te", value: "trailers"),
+                      HeaderPair(name: "content-type", value: "application/grpc")],
+            body: .bytes(Data()), origin: nil, clientProtocol: .http2
+        ).collect()
+
+        #expect(origin.teField == "trailers",
+                "a C-core gRPC server answers RST_STREAM without this, and nothing says why")
+    }
+
+    /// Only the literal `trailers`, and that bound is not tidiness: RFC 9113 §8.2.2
+    /// allows no other value, and `NIOHTTP2` enforces it with
+    /// `forbiddenHeaderField` — so forwarding an h1 client's `te: gzip` would trade a
+    /// stripped field for a killed connection.
+    @Test func theH2LegDropsAnyOtherTEValue() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["h2"], group: group)
+        defer { origin.stop() }
+
+        let result = try await forwarder().forwardStream(
+            method: "POST", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc")!,
+            headers: [HeaderPair(name: "te", value: "gzip, trailers")],
+            body: .bytes(Data()), origin: nil, clientProtocol: .http2
+        ).collect()
+
+        #expect(result.statusCode == 200, "the exchange must survive, not be refused by the codec")
+        #expect(origin.teField == nil)
+    }
+
+    /// …and an HTTP/1.1 leg still drops it, because there `TE` is exactly the
+    /// hop-by-hop field RFC 9110 §7.6.1 says it is — the carve-out is HTTP/2's alone.
+    @Test func theHTTP1LegStillDropsTE() async throws {
+        let origin = try ALPNOrigin(material: material, offering: ["http/1.1"], group: group)
+        defer { origin.stop() }
+
+        _ = try await forwarder().forwardStream(
+            method: "POST", url: URL(string: "https://127.0.0.1:\(origin.port)/rpc")!,
+            headers: [HeaderPair(name: "te", value: "trailers")],
+            body: .bytes(Data()), origin: nil, clientProtocol: .http1
+        ).collect()
+
+        #expect(origin.teField == nil)
+    }
+
     /// An unknown-length body round-trips over an h2 leg, carrying no framing header.
     ///
     /// **This test cannot fail on the framing half, and that is worth stating rather
@@ -387,6 +453,7 @@ private final class ALPNOrigin {
     /// own, so on an h2 leg this is literally how many fields were sent.
     var cookieFields: [String] { observed.cookies }
     var transferEncoding: String? { observed.transferEncoding }
+    var teField: String? { observed.te }
     var requestBody: String { observed.body }
 
     init(material: TLSMaterial, offering: [String], group: EventLoopGroup) throws {
@@ -454,6 +521,7 @@ private final class ALPNObservations: Sendable {
         var connectionTotal = 0
         var cookieFields: [String] = []
         var transferEncodingField: String?
+        var teField: String?
         var bodyText = ""
     }
 
@@ -463,6 +531,7 @@ private final class ALPNObservations: Sendable {
     var connections: Int { state.withLock { $0.connectionTotal } }
     var cookies: [String] { state.withLock { $0.cookieFields } }
     var transferEncoding: String? { state.withLock { $0.transferEncodingField } }
+    var te: String? { state.withLock { $0.teField } }
     var body: String { state.withLock { $0.bodyText } }
 
     func record(_ name: String) { state.withLock { $0.negotiatedName = name } }
@@ -472,11 +541,13 @@ private final class ALPNObservations: Sendable {
         // `headers[name]`, not `canonicalForm`: the latter splits list-typed fields
         // on commas, which would report a different number of fields than were
         // actually sent — and the number is the whole assertion here.
-        record(cookies: head.headers["cookie"], transferEncoding: head.headers.first(name: "transfer-encoding"))
+        record(cookies: head.headers["cookie"], transferEncoding: head.headers.first(name: "transfer-encoding"),
+               te: head.headers.first(name: "te"))
     }
 
-    func record(cookies: [String], transferEncoding: String?) {
+    func record(cookies: [String], transferEncoding: String?, te: String? = nil) {
         state.withLock {
+            $0.teField = te
             $0.cookieFields = cookies
             $0.transferEncodingField = transferEncoding
             $0.bodyText = ""
@@ -500,7 +571,8 @@ private final class HeadersFrameObserver: ChannelInboundHandler {
         if case let .headers(headers) = unwrapInboundIn(data) {
             observed.record(
                 cookies: headers.headers[canonicalForm: "cookie"].map { String($0) },
-                transferEncoding: headers.headers.first(name: "transfer-encoding")
+                transferEncoding: headers.headers.first(name: "transfer-encoding"),
+                te: headers.headers.first(name: "te")
             )
         }
         context.fireChannelRead(data)

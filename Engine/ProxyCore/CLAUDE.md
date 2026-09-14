@@ -114,6 +114,26 @@ nowhere to record one. Four rules:
   `FlowComparison` — a field that moved between the head and the trailers is a real
   difference, and merging them would report it as none.
 
+### `te: trailers` is the one hop-by-hop field an h2 leg keeps
+
+`TE` is hop-by-hop (RFC 9110 §7.6.1) and Loom dropped it on both legs. **RFC 9113
+§8.2.2 carves it out by name** — an HTTP/2 request may carry `te` when the value is
+exactly `trailers` — and the gRPC wire spec makes it mandatory.
+
+Measured, because one implementation could not answer it (`Tools/grpc-te-repro`, a
+raw HTTP/2 framer so only that field differs). **grpc-go does not check.** **grpc
+C-core does** — the transport behind C++, Python, Ruby, C#, PHP and Objective-C:
+`RST_STREAM INTERNAL_ERROR`, no status and no message, against `grpc-status: 0` with
+the field. Its source is unambiguous: `MalformedRequest("Missing :te header")`.
+grpc-java serves the request and logs *"Expected header TE: trailers … some
+intermediate proxy may not support trailers"*, which is Loom.
+
+Two bounds. **Only the literal `trailers`** — RFC 9113 allows no other value and
+`NIOHTTP2` enforces it (`forbiddenHeaderField`), so forwarding an h1 client's
+`te: gzip` would trade a stripped field for a killed connection. **And only on an h2
+leg**, where the carve-out exists; on HTTP/1.1 `TE` is exactly the hop-by-hop field
+the RFC says it is.
+
 ## Upstream connections are pooled
 
 `UpstreamConnectionPool` keeps upstream sockets alive between requests, keyed by
