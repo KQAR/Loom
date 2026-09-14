@@ -270,7 +270,12 @@ enum CapturedExchange {
                     // client rather than on what the origin offers.
                     clientProtocol: ClientWireProtocol(
                         httpVersion: clientLeg.httpVersion, clientTLSVersion: clientLeg.tlsVersion
-                    )
+                    ),
+                    // The absolute URL as the entry point built it from the client's
+                    // own request line — never through `URL`, which normalises. This
+                    // is the same string the flow records, which is the point: the
+                    // capture and the wire must be the same request.
+                    clientURLString: routing.urlString
                 ),
                 channel: channel, keepAlive: keepAlive, flowID: flowID,
                 request: capturedRequest, startedAt: startedAt, sourceApp: sourceApp, sourceDevice: sourceDevice,
