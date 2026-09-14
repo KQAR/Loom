@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- `AppleTitle` is what Help Viewer matches against the app's CFBundleHelpBookName.
+     Keep all three spellings identical (see this book's Info.plist). -->
+<meta name="AppleTitle" content="Loom Help">
+<meta name="robots" content="anchors">
+<meta name="description" content="Loom is an AI-operable HTTP and HTTPS debugging proxy for macOS. Capture traffic, decrypt HTTPS, change requests in flight, and hand the whole loop to an agent.">
+<title>Loom Help</title>
+<link rel="stylesheet" href="loom.css">
+</head>
+<body>
+<h1>Loom Help</h1>
+<p class="lede">Loom is an HTTP/HTTPS debugging proxy that lives in your menu bar. It captures
+traffic the way Charles or Proxyman do — and it can also be <em>operated by an AI agent</em>,
+which is the part that makes it different. You supervise from the console; the agent
+replays, mocks and diffs.</p>
+
+<h2>Start here</h2>
+<ol>
+<li>Turn the proxy on with the switch at the top right of the menu-bar console.</li>
+<li>Point something at it — <a href="pgs/traffic.html">get traffic in</a>.</li>
+<li>If you need to read HTTPS bodies, <a href="pgs/https.html">name the hosts to decrypt</a>.
+Loom decrypts nothing until you do.</li>
+<li>Watch it land in the main window (click the <strong>Loom</strong> wordmark at the
+bottom of the console).</li>
+</ol>
+
+<h2>Topics</h2>
+<ul class="toc">
+<li><a href="pgs/traffic.html">Getting traffic into Loom</a>
+<span>System proxy, <code>curl -x</code>, a phone on the same Wi-Fi, SOCKS5, and reverse-proxy
+endpoints for clients that ignore proxy settings.</span></li>
+<li><a href="pgs/https.html">Decrypting HTTPS</a>
+<span>Trusting the certificate, and why the scope is a whitelist you add hosts to.</span></li>
+<li><a href="pgs/window.html">Reading a capture</a>
+<span>The sidebar, the request table, the inspector, and how filters combine.</span></li>
+<li><a href="pgs/change.html">Changing traffic</a>
+<span>Replay with overrides, rules that mock or map or block, and breakpoints that hold a
+request mid-flight.</span></li>
+<li><a href="pgs/agent.html">Handing it to an agent</a>
+<span>Connecting Claude Code or Cursor, what the agent can do, and how you stay in the loop.</span></li>
+<li><a href="pgs/console.html">The menu-bar console</a>
+<span>What each switch, row and glyph means.</span></li>
+<li><a href="pgs/trouble.html">When nothing shows up</a>
+<span>The five reasons a request you expected isn't in the table.</span></li>
+</ul>
+
+<footer>Loom is a personal project. Its source, releases and issue tracker are at
+<a href="https://github.com/KQAR/Loom">github.com/KQAR/Loom</a>.</footer>
+</body>
+</html>
