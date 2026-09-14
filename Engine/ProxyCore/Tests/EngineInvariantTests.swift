@@ -516,6 +516,10 @@ struct ReplayLinkInvariantTests {
 /// Which, for a gRPC origin, means they stop working: h2-only servers do not answer
 /// HTTP/1.1 at all. The failure would look like "rules break gRPC" and point nowhere
 /// near the forwarder that dropped a parameter.
+/// The same invariant now covers the client's **request line**: `URL` normalises on
+/// construction, so the raw string is the only thing that still knows what the client
+/// wrote, and a decorator that drops it puts Loom back to sending a request nobody
+/// made — for ruled traffic only, which is the worst shape a partial fix can take.
 @Suite("Invariant: the chain keeps the client's protocol", .timeLimit(.minutes(1)))
 struct ClientProtocolInvariantTests {
     private func chain(_ base: UpstreamForwarding, rules: [TrafficRule] = []) -> UpstreamForwarding {
@@ -533,10 +537,12 @@ struct ClientProtocolInvariantTests {
         let stream = chain(base).forwardStream(
             method: "POST", url: URL(string: "https://api.example.test/rpc")!,
             headers: [], body: .bytes(Data("x".utf8)),
-            origin: nil, clientProtocol: .http2Cleartext
+            origin: nil, clientProtocol: .http2Cleartext, clientURLString: "https://api.example.test/rpc?a=a|b"
         )
         for try await _ in stream {}
         #expect(await base.seen == .http2Cleartext)
+        #expect(await base.seenClientURL == "https://api.example.test/rpc?a=a|b",
+                "the client's own request line must survive the chain, or only unruled traffic is sent verbatim")
     }
 
     /// And the buffered path too, which is the one a rule that must materialize the
@@ -555,16 +561,18 @@ struct ClientProtocolInvariantTests {
         ]).forwardStream(
             method: "POST", url: URL(string: "https://api.example.test/rpc")!,
             headers: [], body: .bytes(Data("x".utf8)),
-            origin: nil, clientProtocol: .http2
+            origin: nil, clientProtocol: .http2, clientURLString: "https://api.example.test/rpc?a=a|b"
         )
         for try await _ in stream {}
         #expect(await base.seen == .http2)
+        #expect(await base.seenClientURL == "https://api.example.test/rpc?a=a|b")
     }
 }
 
 /// Records the protocol the chain handed down. Answers 200 so the stream completes.
 private actor ProtocolRecordingUpstream: UpstreamForwarding {
     var seen: ClientWireProtocol?
+    var seenClientURL: String?
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         ForwardResult(statusCode: 200, headers: [], body: Data())
@@ -572,11 +580,11 @@ private actor ProtocolRecordingUpstream: UpstreamForwarding {
 
     nonisolated func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String? = nil
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
-                await self.record(clientProtocol)
+                await self.record(clientProtocol, clientURLString)
                 continuation.yield(.head(statusCode: 200, httpVersion: nil, headers: []))
                 continuation.yield(.end(trailers: nil))
                 continuation.finish()
@@ -584,7 +592,10 @@ private actor ProtocolRecordingUpstream: UpstreamForwarding {
         }
     }
 
-    private func record(_ clientProtocol: ClientWireProtocol) { seen = clientProtocol }
+    private func record(_ clientProtocol: ClientWireProtocol, _ clientURL: String?) {
+        seen = clientProtocol
+        seenClientURL = clientURL
+    }
 }
 
 // MARK: - Shared stubs

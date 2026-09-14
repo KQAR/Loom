@@ -39,7 +39,8 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     private func execute(
         plan: RuleEngine.RequestPlan,
         requestTrailers: [HeaderPair]? = nil,
-        clientProtocol: ClientWireProtocol = .http1
+        clientProtocol: ClientWireProtocol = .http1,
+        clientURLString: String? = nil
     ) async throws -> ForwardResult {
         if plan.delayMilliseconds > 0 {
             // `try await` (not `try?`) so a cancelled — client-gone — request
@@ -57,7 +58,14 @@ final class RuleApplyingForwarder: UpstreamForwarding {
             result = try await base.forwardStream(
                 method: plan.method, url: plan.url, headers: plan.headers,
                 body: .bytes(plan.body, trailers: requestTrailers),
-                origin: nil, clientProtocol: clientProtocol
+                // Carried, not blanked. Buffering is forced by things that have
+                // nothing to do with the URL — a response-header rewrite is the
+                // common one — so a rule that never touched the target would
+                // otherwise put a *different request line* on the wire than the same
+                // exchange takes with rules off. When a rule really did rewrite the
+                // URL, `plan.url` no longer matches this string and the resolver
+                // drops it on its own.
+                origin: nil, clientProtocol: clientProtocol, clientURLString: clientURLString
             ).collect()
         case let .block(ruleName):
             result = ForwardResult(
@@ -89,10 +97,10 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     /// ruled exchange back on HTTP/1.1 — including the gRPC calls this exists for.
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String? = nil
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         plan(method: method, url: url, headers: headers, body: body,
-             origin: origin, clientProtocol: clientProtocol)
+             origin: origin, clientProtocol: clientProtocol, clientURLString: clientURLString)
     }
 
     /// Stream the request body straight through when no matched rule needs the whole
@@ -105,12 +113,18 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     func forwardStream(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody, origin: RequestOrigin?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
-        plan(method: method, url: url, headers: headers, body: body, origin: origin, clientProtocol: .http1)
+        plan(method: method, url: url, headers: headers, body: body,
+             origin: origin, clientProtocol: .http1, clientURLString: nil)
     }
 
     private func plan(
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
-        origin: RequestOrigin?, clientProtocol: ClientWireProtocol
+        origin: RequestOrigin?, clientProtocol: ClientWireProtocol,
+        /// Passed down untouched even though a `mapRemote` or URL substitution may
+        /// rewrite the URL: `NIOStreamingForwarder.requestTarget` honours the raw
+        /// form only while the URL still agrees with it, so a rewrite wins without
+        /// this decorator having to detect one.
+        clientURLString: String?
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         // Matched once and threaded into the plan below: this used to filter here to
         // decide `needsBuffering` and then let `planRequest` filter the same rules
@@ -148,7 +162,8 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                         // knowable; carrying it forward is what stops a rule that
                         // merely rewrites a header from also eating it.
                         let result = try await self.execute(
-                            plan: plan, requestTrailers: collected.trailers, clientProtocol: clientProtocol
+                            plan: plan, requestTrailers: collected.trailers,
+                            clientProtocol: clientProtocol, clientURLString: clientURLString
                         )
                         continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
                         if !result.body.isEmpty { continuation.yield(.body(result.body)) }
@@ -182,7 +197,12 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                     if !appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: appliedRules)) }
                     for try await event in base.forwardStream(
                         method: planMethod, url: planURL, headers: planHeaders, body: body,
-                        origin: origin, clientProtocol: clientProtocol
+                        // `planURL` may be a rule's rewrite. Passed through anyway:
+                        // the resolver honours the raw form only while the URL still
+                        // agrees with it, so a `mapRemote` wins by construction
+                        // rather than by this decorator remembering to blank it.
+                        origin: origin, clientProtocol: clientProtocol,
+                        clientURLString: clientURLString
                     ) {
                         // The base (NIO) forwarder carries no rules; forward its events
                         // untouched — the leading `.metadata` above is the rule carrier.

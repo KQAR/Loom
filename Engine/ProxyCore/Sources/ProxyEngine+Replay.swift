@@ -81,7 +81,13 @@ extension ProxyEngine {
                 clientProtocol: ClientWireProtocol(
                     httpVersion: source.request.httpVersion,
                     clientTLSVersion: source.transport?.clientTLSVersion
-                )
+                ),
+                // The string the flow recorded (or the override), which has not been
+                // through `URL` — so a replay puts the same request line on the wire
+                // as the capture it re-sends. Re-deriving it from `url` would
+                // normalise `?ids[]=1` to `%5B%5D` and make the replay a different
+                // request from the one under test.
+                clientURLString: urlString
             ) {
                 switch event {
                 case let .metadata(rules): appliedRules = rules

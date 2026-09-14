@@ -58,6 +58,70 @@ final class NIOStreamingForwarderTests {
         #expect(recorder.bodyText == "hello")
     }
 
+    /// The request line on the wire is the one the client wrote.
+    ///
+    /// `URL(string:)` normalises on construction, so a client's `?ids[]=1` became
+    /// `%5B%5D` before anything downstream could see it — while the captured flow
+    /// kept the raw string it was built from. Measured before the fix: the origin
+    /// received `/v1/x?ids%5B%5D=1` for a flow that records `ids[]=1`, i.e. a
+    /// debugging proxy reporting a request it never made. Most origins decode both
+    /// the same way; a gateway that HMACs the raw target does not, and then the
+    /// request fails only while Loom is in the path.
+    ///
+    /// `[` `]` `:` `@` and the sub-delims are RFC 9112 targets, so they travel as
+    /// written. The characters the RFC excludes are a separate case — see below.
+    @Test func theClientsOwnRequestLineReachesTheOrigin() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        for raw in ["/v1/x?ids[]=1&ids[]=2", "/v1/a?b=c:d@e", "/v1/sign?sig=abc%2Fdef",
+                    "/v1/f?q=a+b&r=x,y;z"] {
+            let absolute = "http://127.0.0.1:\(server.localAddress!.port!)" + raw
+            let url = try #require(URL(string: absolute))
+            _ = try await forwarder.forwardStream(
+                method: "GET", url: url, headers: [], body: .bytes(nil),
+                origin: nil, clientProtocol: .http1, clientURLString: absolute
+            ).collect()
+            #expect(recorder.uri == raw, "the origin must receive what the client sent, not what URL made of it")
+        }
+    }
+
+    /// A target the RFC excludes still goes out normalised, and that is the fix
+    /// refusing to become a regression.
+    ///
+    /// `NIOHTTPRequestHeadersValidator` fails the *write* for anything outside RFC
+    /// 9112's byte set (`|` `{` `}` `"` `^` `\` `<` `>` and backtick). Preferring the
+    /// raw form unconditionally would turn a request Loom merely mangles today into
+    /// one it cannot send at all — measured: `HTTPParserError.invalidHeaderToken`
+    /// before a byte reached the origin. So those keep the encoding Loom has always
+    /// sent; closing that last gap needs the validator relaxed, which is a separate
+    /// decision about request smuggling and not this one.
+    @Test func anRFCExcludedTargetKeepsTheEncodingItAlwaysHad() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        let raw = "/v1/report?cols=a|b|c"
+        let absolute = "http://127.0.0.1:\(server.localAddress!.port!)" + raw
+        let url = try #require(URL(string: absolute))
+        _ = try await forwarder.forwardStream(
+            method: "GET", url: url, headers: [], body: .bytes(nil),
+            origin: nil, clientProtocol: .http1, clientURLString: absolute
+        ).collect()
+        #expect(recorder.uri == "/v1/report?cols=a%7Cb%7Cc",
+                "unsendable raw bytes must fall back, not fail the exchange")
+    }
+
+    /// …and the raw form loses to a rewritten URL, which is what makes it safe to
+    /// hand every decorator without any of them checking. A `mapRemote` rule or a
+    /// breakpoint edit produces a different URL; the stale target would otherwise
+    /// send the old path to the new origin.
+    @Test func aRewrittenURLBeatsTheClientsRequestLine() async throws {
+        let forwarder = NIOStreamingForwarder(group: group)
+        let clientWrote = "http://127.0.0.1:\(server.localAddress!.port!)/v1/old?ids[]=1"
+        let rewritten = try #require(URL(string: "http://127.0.0.1:\(server.localAddress!.port!)/v1/new"))
+        _ = try await forwarder.forwardStream(
+            method: "GET", url: rewritten, headers: [], body: .bytes(nil),
+            origin: nil, clientProtocol: .http1, clientURLString: clientWrote
+        ).collect()
+        #expect(recorder.uri == "/v1/new")
+    }
+
     @Test func defaultHost_followsURL() async throws {
         let forwarder = NIOStreamingForwarder(group: group)
         _ = try await forwarder.forward(method: "GET", url: baseURL, headers: [], body: nil)
