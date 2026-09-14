@@ -980,6 +980,50 @@ it applied; the test that missed it never reused a `Versioned` box. Opening the 
 stopped tail-follow, because a viewport resize read as the operator scrolling; it is attributed
 like a document growth now.
 
+### A proxy that was stricter than both ends it stood between (done, 0.0.33)
+
+Five defects with one shape, found by pulling on one bug report: **Loom introduced failures that
+existed only while it was in the path**. Every one of them was measured before it was fixed, and
+two of the measurements overturned the first answer.
+
+**A header block Loom could read was one it could not re-send.** An Android app's request came back
+`NIOHTTP2Errors.UnableToSerializeFrame`; the same request direct, and through a hand-written
+tunnelling proxy, answered 200. SwiftNIO's frame encoder writes **no CONTINUATION frames** (RFC 9113
+§6.10 — it only parses them), so a HEADERS block past `SETTINGS_MAX_FRAME_SIZE` fails to serialize
+*at connection level*, taking every other stream on the socket with it. Reproduced with no Loom code
+(`Tools/h2-frame-size-repro`: 12 KB accepted, 20 KB refused). It became reachable in 0.0.27, when
+the upstream leg started matching the client's protocol; 0.0.24 had fixed the decode side
+(`MITMPipeline.maxHeaderListSize`) and this was the half left undone. `HTTP2HeaderBudget` is now one
+ceiling for both legs, and each answers with the lever it has — upstream, don't offer `h2`; on the
+client leg, where the connection already exists, a 502 that says why plus an
+`HTTP2DowngradeRegistry` entry so the retry lands. The response direction had no coverage at all and
+failed worse: no status, no reason, no bytes.
+
+**A 100:1 decompression ratio refused ordinary responses.** The comment defending it said "text
+gzips 3–10x". Measured: a log-tail endpoint and a server-rendered HTML table both reach **293x**, and
+that response came back as a `502` reading `limit`. The reusable half is that a *ratio* was the wrong
+shape — one DEFLATE stream cannot exceed ~1032:1 (100 MB of zeros measures 1029x), so the whole range
+between ordinary logs and the most compressible bytes that exist is under a factor of four.
+
+**Loom sent a request line the client never wrote, and recorded the one it did not send.**
+`URL(string:)` normalises on construction, so `?ids[]=1` went upstream as `%5B%5D` while the flow
+kept the raw string — a debugging proxy reporting a request it did not make, and a signature
+mismatch for any gateway that HMACs the raw target. The raw string now travels with the URL and
+loses twice, both load-bearing: to a rewritten URL (so decorators need no cooperation), and to RFC
+9112, because SwiftNIO refuses the *write* for an illegal target and preferring it unconditionally
+turns a mangled request into an unsendable one. What could not be sent verbatim is now marked
+(`requestTargetNormalized`) rather than silently re-encoded; relaxing the validator is **decided
+against** — zero occurrences across 1409 live flows, and the untrusted input is Loom's own write
+tools, not the proxied client whose bytes llhttp already parsed.
+
+**Stripping `te` broke gRPC against every C-core server.** `TE` is hop-by-hop (RFC 9110 §7.6.1), but
+RFC 9113 §8.2.2 carves it out for HTTP/2 and gRPC requires it. This one is the lesson of the round:
+grpc-go **does not check**, so the obvious first measurement said "no problem". grpc C-core — the
+transport behind C++, Python, Ruby, C#, PHP and Objective-C — answers `RST_STREAM INTERNAL_ERROR`
+with no status and no message (`MalformedRequest("Missing :te header")`), and grpc-java logs
+*"some intermediate proxy may not support trailers"*, naming Loom. `Tools/grpc-te-repro` runs both.
+**A claim about what a peer refuses is a measurement, and one implementation is not the protocol.**
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
