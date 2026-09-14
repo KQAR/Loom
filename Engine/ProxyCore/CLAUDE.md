@@ -380,6 +380,34 @@ the hang this section fixed, that failure is visible: a 4xx, captured and forwar
 (The response direction had no lever either, which is why it gets a 502 rather than
 a protocol change.)
 
+## A limit that is a ratio is usually the wrong shape
+
+`maxDecompressedBodyBytes` bounds how far Loom will inflate an upstream body. It was
+a **100:1 ratio**, and both halves of that were wrong in a way worth keeping.
+
+*Wrong number.* The comment defending it said "text gzips ~3–10x, so 100x costs
+nothing legitimate". Measured with `gzip -6`: a log-tail endpoint (100 k identical
+lines) and a server-rendered HTML table both reach **293x**, a list endpoint of 20 k
+near-identical rows 61x. Put through the forwarder, the log response came back
+`DecompressionError.limit` — a `502` for a body the origin serves and every client
+reads, i.e. a failure that exists only while Loom is in the path.
+
+*Wrong shape, which is the reusable part.* A single DEFLATE stream cannot exceed
+about **1032:1** (measured: 1 MB of zeros is 997x, 100 MB is 1029x). So the whole
+usable range between ordinary logs and the most compressible bytes that exist is
+under a factor of four, and there is no threshold in there to pick. A ratio was never
+going to separate content from an attack; an absolute size bounds the thing actually
+at risk. The guard itself stays — Loom pins `Accept-Encoding` even when the client
+sent none, so it inflates on the client's behalf and `.none` is what swift-nio-extras
+documents as a denial-of-service hole.
+
+And the refusal **names itself**: `DecompressionError.limit` has no associated values
+and reached every surface as the single word "limit", which points at nothing and
+sends the operator to their own app. `UpstreamDecompressionError` wraps that one case
+— not `inflationError`, which is a fact about the origin — with the host, the ceiling
+and the one lever that exists (take the host out of the SSL scope and let the client
+decompress it itself).
+
 ## Response streaming
 
 - `forwardStream` yields head/body/end events; `StreamRelay` relays them to the client (chunked
