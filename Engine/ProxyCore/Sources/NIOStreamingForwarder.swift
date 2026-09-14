@@ -949,12 +949,26 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     ) async throws {
         var httpHeaders = HTTPHeaders()
         var sawHost = false
+        var sawTETrailers = false
         for header in headers {
             let lower = header.name.lowercased()
             // We set the framing (Content-Length / Transfer-Encoding) ourselves; drop
             // hop-by-hop and any framing the client stack must own. Host is kept if
             // present (so keepHostHeader works).
-            if HTTPUtil.isHopByHop(lower) || lower == "content-length" || lower == "transfer-encoding" { continue }
+            if HTTPUtil.isHopByHop(lower) {
+                // …with one exception, restored below for an h2 leg only. `TE` is
+                // hop-by-hop (RFC 9110 §7.6.1) and dropping it is right for HTTP/1.1,
+                // but RFC 9113 §8.2.2 carves it out by name — an h2 request *may*
+                // carry `te`, provided the value is exactly `trailers` — and gRPC
+                // requires it.
+                if lower == "te",
+                   header.value.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("trailers")
+                    == .orderedSame {
+                    sawTETrailers = true
+                }
+                continue
+            }
+            if lower == "content-length" || lower == "transfer-encoding" { continue }
             if lower == "host" { sawHost = true }
             httpHeaders.add(name: header.name, value: header.value)
         }
@@ -1006,6 +1020,22 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // be every unknown-length upload on an h2 leg becoming a stream error.
 
         if wire == .http2 {
+            // **`te: trailers` goes back on, and gRPC is why.** Measured against a
+            // real grpc C-core server (grpcio 1.84, the transport behind C++, Python,
+            // Ruby, C#, PHP and Objective-C): the same health-check RPC answers
+            // `grpc-status: 0` with the field and is killed with `RST_STREAM
+            // INTERNAL_ERROR` — no status, no message, nothing to read — without it.
+            // The check is `MalformedRequest("Missing :te header")` in that
+            // transport's HTTP server filter. grpc-java is softer and still names the
+            // culprit: "Expected header TE: trailers … some intermediate proxy may
+            // not support trailers". grpc-go does not check, which is exactly why
+            // this had to be measured against more than one implementation.
+            //
+            // Only the literal `trailers`, which is all RFC 9113 §8.2.2 allows on an
+            // h2 request — `NIOHTTP2` enforces that itself
+            // (`NIOHTTP2Errors.forbiddenHeaderField`), so forwarding any other value
+            // would trade a stripped field for a killed connection.
+            if sawTETrailers { httpHeaders.replaceOrAdd(name: "te", value: "trailers") }
             // One field per cookie-pair — the encoding §8.2.3 exists to permit. The
             // model's canonical single field (see `HTTPUtil.coalesceCookieCrumbs`) is
             // what the origin's application still sees; this is framing, and it is
