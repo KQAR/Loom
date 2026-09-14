@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="Connect Claude Code or Cursor to Loom over MCP, what an agent can read and write, and how the loopback boundary and audit trail keep you supervising.">
+<title>Handing it to an agent</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>Handing it to an agent</h1>
+<p class="lede">This is what Loom is for. An AI agent can drive the whole debug loop —
+capture, change, replay, compare — while you watch from the console.</p>
+
+<h2>Connecting</h2>
+<p>In Claude Code:</p>
+<pre><code>claude plugin marketplace add KQAR/Loom
+claude plugin install loom@loom</code></pre>
+<p>Then make sure the Loom app is running and restart Claude Code. Cursor works the same way —
+add <code>KQAR/Loom</code> as a plugin marketplace in its plugin settings.</p>
+<p>The plugin doesn't launch or build anything; it just points the agent at the running app on
+<code>http://127.0.0.1:9092/mcp</code>. If the tools are unreachable, the app isn't running.</p>
+
+<h2>What it can do</h2>
+<p>Everything you can do from the window, and a few things you can't:</p>
+<ul>
+<li><strong>Read</strong> — list recent flows, read one in full, search headers and bodies,
+list devices, aggregate timings and error rates.</li>
+<li><strong>Wait</strong> — block until the request you're about to trigger actually arrives,
+instead of polling.</li>
+<li><strong>Write</strong> — replay with overrides, set rules, arm breakpoints and edit a held
+request, change the SSL scope, toggle the system proxy, create reverse-proxy endpoints,
+import and export HAR.</li>
+<li><strong>Compare</strong> — diff two flows and get the answer as data.</li>
+</ul>
+<p>Things to say out loud, as examples:</p>
+<ul>
+<li>"What did the app just call when I tapped login?"</li>
+<li>"Replay that without the auth header and tell me what changed."</li>
+<li>"Mock this endpoint to return a 500 and see how the app handles it."</li>
+<li>"Point this API at staging."</li>
+<li>"Why is this endpoint slow?"</li>
+</ul>
+
+<h2>How you stay in the loop</h2>
+<p>There is no approval prompt, on purpose — an agent that has to ask before every write can't
+close a loop. Two things replace it:</p>
+<ul>
+<li><strong>The control port is loopback only.</strong> It is a separate port from the proxy
+precisely so that turning on device capture, which binds the proxy to the whole network, never
+exposes the write-capable control plane to the Wi-Fi.</li>
+<li><strong>Every write is audited.</strong> The <strong>Audit</strong> panel in the sidebar
+lists each write tool call with its arguments and when it happened. Secrets in those arguments
+— certificate bundles, passphrases — are redacted.</li>
+</ul>
+<p>And because the agent is a second writer, the window and console re-read the engine after
+every write rather than trusting their own copy: if an agent turns recording off, the dot
+goes yellow.</p>
+
+<div class="note"><p>The plugin and the app update independently. If the agent's description
+of a tool doesn't match what the app actually offers, one of the two is behind — the agent is
+told to check and say so, and the live tool list is always the truth.</p></div>
+
+<footer><a href="../index.html">Loom Help</a> · Next: <a href="console.html">The menu-bar console</a></footer>
+</body>
+</html>

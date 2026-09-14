@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en-us</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.loom.app.help</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Loom Help</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleSignature</key>
+	<string>hbwr</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<!-- The app's `CFBundleHelpBookName` points at this bundle's
+	     **CFBundleIdentifier**, not at `HPDBookTitle`. The old documentation says
+	     the title, and on macOS 26 that silently registers the book and then opens
+	     nothing (helpd logs `NSBundle (null) initWithPath failed`). Every shipping
+	     app that still works this way — CotEditor, Hopper, Safari — uses the
+	     identifier, which is what this follows. -->
+	<key>HPDBookTitle</key>
+	<string>Loom Help</string>
+	<key>HPDBookType</key>
+	<string>3</string>
+	<key>HPDBookAccessPath</key>
+	<string>index.html</string>
+	<!-- `HPDBookCSIndexPath`, relative to the .lproj, is the CoreSpotlight-era key.
+	     `HPDBookIndexPath` is its predecessor and is ignored. -->
+	<key>HPDBookCSIndexPath</key>
+	<string>Loom.cshelpindex</string>
+</dict>
+</plist>

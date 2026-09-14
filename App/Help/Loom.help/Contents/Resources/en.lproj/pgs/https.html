@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="Trust Loom's certificate authority, then name the hosts you want decrypted. The SSL scope is a whitelist: Loom decrypts nothing until you add a host.">
+<title>Decrypting HTTPS</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>Decrypting HTTPS</h1>
+<p class="lede">Reading an HTTPS body takes two separate things: the client has to trust
+Loom's certificate, and you have to tell Loom which hosts to decrypt. Neither happens on
+its own.</p>
+
+<h2>1. Trust the certificate</h2>
+<p>Turn on the <strong>HTTPS</strong> switch. Loom generates its own certificate authority the
+first time and mints a certificate per host from it. Until that CA is trusted, the tile goes
+yellow and a card appears with an <strong>Install &amp; Trust</strong> button — that is the
+whole step for this Mac.</p>
+<p>For a phone or another machine, use the link in the <strong>Device</strong> tile's
+instructions and trust the downloaded certificate there. On iOS that is two places: install
+the profile, then enable it under <em>Settings ▸ General ▸ About ▸ Certificate Trust
+Settings</em>.</p>
+<div class="note"><p>Loom's CA is generated on your machine and its private key never leaves
+it. Removing trust is done in Keychain Access, like any other certificate.</p></div>
+
+<h2>2. Name the hosts to decrypt</h2>
+<p>The SSL scope is a <strong>whitelist</strong>. It starts empty, and while it is empty Loom
+passes every HTTPS origin through untouched — encrypted end to end, exactly as if Loom
+weren't there.</p>
+<p>Open <strong>SSL Scope</strong> in the console and add a host, or a glob:</p>
+<pre><code>api.example.com
+*.example.com</code></pre>
+<p>From then on those hosts are decrypted and their requests and responses show full headers
+and bodies. Everything else stays relayed.</p>
+
+<div class="warn"><p><strong>A relayed host records no flow at all.</strong> That is the one
+thing worth remembering about the whitelist: a host you haven't named looks exactly the same
+in the table as a client that never ran. If traffic seems to be missing, check the scope
+before you debug the client.</p></div>
+
+<h2>What Loom saw but couldn't read</h2>
+<p>Because that state is so easy to misread, Loom records every origin it relayed and why.
+The <strong>SSL Scope</strong> row shows the count, and expanding it lists the hosts with a
+reason each:</p>
+<table>
+<tr><th>Reason</th><th>Meaning</th></tr>
+<tr><td>Not in scope</td><td>You haven't named it. One click away from being captured.</td></tr>
+<tr><td>Excluded</td><td>An <code>exclude</code> pattern covers it. You asked for this.</td></tr>
+<tr><td>Interception off</td><td>The HTTPS switch is off entirely.</td></tr>
+</table>
+<p>Adding a host from that list is the fastest way in: you are picking from what actually
+happened rather than guessing a hostname.</p>
+
+<h2>When a handshake fails</h2>
+<p>If the upstream server refuses the connection, the flow carries the error and names which
+side rejected whom, and the row shows it in the table. A server that requires a client
+certificate is the common case — see <strong>Client Certificates</strong> in the console,
+where you can add a PKCS#12 bundle scoped to a host pattern.</p>
+<div class="note"><p>Some apps pin their certificates and will refuse Loom's no matter what
+you trust. That is the app working as designed; there is nothing to configure here.</p></div>
+
+<footer><a href="../index.html">Loom Help</a> · Next: <a href="window.html">Reading a capture</a></footer>
+</body>
+</html>
