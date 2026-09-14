@@ -188,6 +188,103 @@ struct HTTP2InterceptionTests {
         await engine.stopForTest()
     }
 
+    /// The other side of `HTTP2HeaderBudget`, and the side with no lever: a
+    /// **response** whose field section cannot be framed for this h2 client is
+    /// answered with a 502 that says why, instead of an unserializable write that
+    /// kills the connection.
+    ///
+    /// The upstream leg answers the same problem by not offering `h2` — here the
+    /// client's connection already exists and its protocol cannot be renegotiated.
+    /// Measured with no Loom code (`Tools/h2-frame-size-repro`, response direction):
+    /// a 30 KB field section is refused by the encoder outright, and what the client
+    /// sees is nothing at all — no status, no reason, and every other stream on the
+    /// socket dead with it. A 502 is not a fix for the request; it is the difference
+    /// between a diagnosable failure and a hang.
+    ///
+    /// The origin's real answer stays on the flow, because the whole point is that
+    /// the client never saw it.
+    @Test func anUnframeableResponseIsAnsweredWithA502RatherThanKillingTheConnection() async throws {
+        let progress = H2Progress()
+        // **Its own host, and that is the assertion's twin rather than hygiene.**
+        // The recovery this test triggers registers the host in the process-wide
+        // `HTTP2DowngradeRegistry`, so using `example.test` would serve every later
+        // test in this bundle HTTP/1.1 — which is how it was first caught: the h2
+        // upload test, running after this one, hung its full deadline.
+        let host = "unframeable.test"
+        defer { HTTP2DowngradeRegistry.shared.reset() }
+        // 30 KB of `set-cookie`, the shape a login response takes when a site's
+        // cookie jar has grown — and past what one HEADERS frame can hold.
+        let bigCookie = "session=" + String(repeating: "z", count: 30 * 1024)
+        let forwarder = StubForwarder(
+            status: 200, body: Data(#"{"ok":true}"#.utf8),
+            extraHeaders: [HeaderPair(name: "set-cookie", value: bigCookie)]
+        )
+        let engine = ProxyEngine(forwarder: forwarder, caStore: InMemoryCAStore())
+
+        let port = try await engine.start(port: 0)
+        await engine.setSSLScope(SSLScope(enabled: true, include: ["*"]))
+        let caURL = try await engine.exportCACertificate()
+        let caPEM = try String(contentsOf: caURL)
+
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { shutdownBlocking(group) }
+
+        var clientConfig = TLSConfiguration.makeClientConfiguration()
+        clientConfig.trustRoots = .certificates([try NIOSSLCertificate(bytes: Array(caPEM.utf8), format: .pem)])
+        clientConfig.applicationProtocols = ["h2"]
+        let clientCtx = try NIOSSLContext(configuration: clientConfig)
+
+        let connected = group.next().makePromise(of: Void.self)
+        let sender = ConnectSender(connected: connected, host: host)
+        let client = try await ClientBootstrap(group: group)
+            .channelInitializer { $0.pipeline.addHandler(sender) }
+            .connect(host: "127.0.0.1", port: port).get()
+        defer { client.close(promise: nil) }
+
+        try await awaitOrReport(connected.futureResult, stage: "CONNECT ack",
+                                timeout: Self.connectTimeout, progress: progress)
+        try await client.pipeline.removeHandler(sender).get()
+
+        let tls = try NIOSSLClientHandler(context: clientCtx, serverHostname: host)
+        try await client.pipeline.addHandler(HandshakeMarker(progress: progress), position: .first).get()
+        try await client.pipeline.addHandler(tls, position: .first).get()
+        let multiplexer = try await client.configureHTTP2Pipeline(mode: .client).get()
+
+        let responded = group.next().makePromise(of: H2Response.self)
+        multiplexer.createStreamChannel(promise: nil) { stream in
+            stream.pipeline.addHandler(HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: .https)).flatMap {
+                stream.pipeline.addHandler(H2RequestHandler(
+                    promise: responded, path: "/h2/huge-response", host: host
+                ))
+            }
+        }
+
+        let response = try await awaitOrReport(responded.futureResult, stage: "502 response",
+                                               timeout: Self.getTimeout, progress: progress)
+        #expect(response.status == 502,
+                "without the guard this write is unserializable and the client gets no status at all")
+        #expect(response.body.contains("HTTP/2"),
+                "the answer has to name the reason — a bare 502 sends the operator to the origin")
+
+        let flow = try #require(await awaitFlow(from: engine) {
+            $0.request.url.contains("/h2/huge-response") && $0.error != nil
+        })
+        #expect(flow.error?.contains("Loom") == true,
+                "the failure is Loom's delivery, not the origin's answer, and must read that way")
+        #expect(flow.response?.statusCode == 200,
+                "what the origin actually said is kept — that the client never saw it is the point")
+        #expect(flow.response?.headers.contains { $0.name.lowercased() == "set-cookie" } == true)
+        #expect(flow.response?.body == nil,
+                "relaying stopped before a byte was read — an empty body would claim the origin sent none")
+        // The half that makes the 502 recoverable rather than a permanent wall: the
+        // next connection to this host is served HTTP/1.1, which has no frame and
+        // can carry the response. Without it the site is broken through Loom and
+        // fine without it — the class of bug this whole change removes.
+        #expect(HTTP2DowngradeRegistry.shared.isDowngraded(host: host),
+                "a 502 the client can only ever repeat is not an answer")
+        await engine.stopForTest()
+    }
+
     /// An h2 POST body (DATA frames, no Content-Length) must stream through and be
     /// captured. The payload is larger than the default 64 KiB flow-control window,
     /// so the client can only finish sending if the MITM side replenishes the window
@@ -617,11 +714,16 @@ private final class ConnectSender: ChannelInboundHandler, RemovableChannelHandle
     private let connected: EventLoopPromise<Void>
     private var acked = false
 
-    init(connected: EventLoopPromise<Void>) { self.connected = connected }
+    private let host: String
+
+    init(connected: EventLoopPromise<Void>, host: String = "example.test") {
+        self.connected = connected
+        self.host = host
+    }
 
     func channelActive(context: ChannelHandlerContext) {
         var buffer = context.channel.allocator.buffer(capacity: 64)
-        buffer.writeString("CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+        buffer.writeString("CONNECT \(host):443 HTTP/1.1\r\nHost: \(host):443\r\n\r\n")
         context.writeAndFlush(wrapOutboundOut(buffer), promise: nil)
     }
 
@@ -642,18 +744,23 @@ private final class H2RequestHandler: ChannelInboundHandler {
     private let promise: EventLoopPromise<H2Response>
     private let path: String
     private let extraHeaders: [(String, String)]
+    private let host: String
     private var status = 0
     private var body = ""
 
-    init(promise: EventLoopPromise<H2Response>, path: String = "/h2/thing", extraHeaders: [(String, String)] = []) {
+    init(
+        promise: EventLoopPromise<H2Response>, path: String = "/h2/thing",
+        extraHeaders: [(String, String)] = [], host: String = "example.test"
+    ) {
         self.promise = promise
         self.path = path
         self.extraHeaders = extraHeaders
+        self.host = host
     }
 
     func channelActive(context: ChannelHandlerContext) {
         var headers = HTTPHeaders()
-        headers.add(name: "host", value: "example.test")
+        headers.add(name: "host", value: host)
         for (name, value) in extraHeaders { headers.add(name: name, value: value) }
         let head = HTTPRequestHead(version: .init(major: 1, minor: 1), method: .GET, uri: path, headers: headers)
         context.write(wrapOutboundOut(.head(head)), promise: nil)

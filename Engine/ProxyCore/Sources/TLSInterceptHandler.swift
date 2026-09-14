@@ -41,6 +41,9 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     /// once the request is in hand a downgraded leg is indistinguishable from a
     /// genuine h1 client, and the difference is what an operator is measuring.
     private let clientProtocolDowngraded: Bool
+    /// Supplied by the h2 stack only: what to do when a response cannot be framed
+    /// for this client. See `StreamRelay` and `HTTP2HeaderBudget`.
+    private let onUndeliverableResponse: (@Sendable () -> Void)?
 
     private var requestHead: HTTPRequestHead?
     private var requestURL: URL?
@@ -56,7 +59,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
     init(
         host: String, port: Int, store: FlowStore, forwarder: UpstreamForwarding,
         upstreamTLS: Bool = true, negotiatedProtocol: String? = nil, clientTLSVersion: String? = nil,
-        clientProtocolDowngraded: Bool = false
+        clientProtocolDowngraded: Bool = false,
+        onUndeliverableResponse: (@Sendable () -> Void)? = nil
     ) {
         self.host = host
         self.port = port
@@ -66,6 +70,7 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
         self.negotiatedProtocol = negotiatedProtocol
         self.clientTLSVersion = clientTLSVersion
         self.clientProtocolDowngraded = clientProtocolDowngraded
+        self.onUndeliverableResponse = onUndeliverableResponse
     }
 
     private func clientLeg(for head: HTTPRequestHead) -> CapturedExchange.ClientLeg {
@@ -175,7 +180,8 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                 webSocketRequestPath: requestPath,
                 webSocketRemoveHandlerNames: [
                     MITMPipeline.encoderName, MITMPipeline.decoderName, MITMPipeline.interceptName,
-                ]
+                ],
+                onUndeliverableResponse: onUndeliverableResponse
             ),
             store: store, forwarder: forwarder, observed: observed, clientLeg: clientLeg(for: head)
         )

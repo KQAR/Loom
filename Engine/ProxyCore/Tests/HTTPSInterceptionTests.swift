@@ -170,6 +170,9 @@ struct HTTPSInterceptionTests {
 final class StubForwarder: UpstreamForwarding, Sendable {
     let status: Int
     let body: Data
+    /// Extra response fields, for the tests that care what the *origin's* field
+    /// section costs rather than what it says.
+    let extraHeaders: [HeaderPair]
 
     private struct Seen {
         var url: URL?
@@ -180,16 +183,17 @@ final class StubForwarder: UpstreamForwarding, Sendable {
     var lastURL: URL? { seen.withLock { $0.url } }
     var lastBody: Data? { seen.withLock { $0.body } }
 
-    init(status: Int, body: Data) {
+    init(status: Int, body: Data, extraHeaders: [HeaderPair] = []) {
         self.status = status
         self.body = body
+        self.extraHeaders = extraHeaders
     }
 
     func forward(method: String, url: URL, headers: [HeaderPair], body: Data?) async throws -> ForwardResult {
         seen.withLock { $0.url = url; $0.body = body }
         return ForwardResult(
             statusCode: status,
-            headers: [HeaderPair(name: "Content-Type", value: "application/json")],
+            headers: [HeaderPair(name: "Content-Type", value: "application/json")] + extraHeaders,
             body: self.body
         )
     }
