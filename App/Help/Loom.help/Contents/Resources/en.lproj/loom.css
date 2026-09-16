@@ -1,0 +1,76 @@
+/* Help Viewer renders in its own window with no app styling, so the look is
+   rebuilt here from the same primitives DESIGN.md uses: system text styles, system
+   semantic colours, and no fixed hex outside the two colour-scheme blocks. */
+:root {
+    color-scheme: light dark;
+    --fg: #1d1d1f;
+    --fg-secondary: #6e6e73;
+    --bg: #ffffff;
+    --bg-raised: #f5f5f7;
+    --rule: #d2d2d7;
+    --accent: #0071e3;
+    --warn: #b25000;
+    --code-bg: #f5f5f7;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --fg: #f5f5f7;
+        --fg-secondary: #98989d;
+        --bg: #1e1e1e;
+        --bg-raised: #2a2a2c;
+        --rule: #3a3a3c;
+        --accent: #4ea1ff;
+        --warn: #ff9f3f;
+        --code-bg: #2a2a2c;
+    }
+}
+body {
+    font: -apple-system-body, 13px/1.55 -apple-system, "SF Pro Text", sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    margin: 0;
+    padding: 20px 26px 44px;
+    -webkit-text-size-adjust: 100%;
+}
+h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 6px; }
+h2 { font-size: 15px; font-weight: 600; margin: 26px 0 8px; }
+h3 { font-size: 13px; font-weight: 600; margin: 18px 0 4px; }
+p, li { font-size: 13px; }
+p { margin: 0 0 10px; }
+ul, ol { margin: 0 0 12px; padding-left: 20px; }
+li { margin-bottom: 5px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.lede { color: var(--fg-secondary); font-size: 13px; margin-bottom: 18px; }
+code, kbd {
+    font: 11.5px/1.45 ui-monospace, "SF Mono", Menlo, monospace;
+    background: var(--code-bg);
+    border-radius: 4px;
+    padding: 1px 5px;
+}
+pre {
+    background: var(--code-bg);
+    border-radius: 7px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    margin: 0 0 12px;
+}
+pre code { background: none; padding: 0; }
+.note, .warn {
+    border-left: 3px solid var(--rule);
+    background: var(--bg-raised);
+    border-radius: 0 7px 7px 0;
+    padding: 9px 12px;
+    margin: 0 0 14px;
+}
+.warn { border-left-color: var(--warn); }
+.note p:last-child, .warn p:last-child { margin-bottom: 0; }
+.toc { list-style: none; padding: 0; margin: 18px 0 0; }
+.toc li { margin-bottom: 12px; }
+.toc a { font-weight: 600; font-size: 14px; }
+.toc span { display: block; color: var(--fg-secondary); }
+.crumb { font-size: 11px; color: var(--fg-secondary); margin: 0 0 14px; }
+table { border-collapse: collapse; width: 100%; margin: 0 0 14px; font-size: 12.5px; }
+th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; color: var(--fg-secondary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+footer { margin-top: 34px; padding-top: 12px; border-top: 1px solid var(--rule); color: var(--fg-secondary); font-size: 11.5px; }

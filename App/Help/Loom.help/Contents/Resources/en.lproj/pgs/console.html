@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="What every part of Loom's menu-bar console means: the capture dot, the address, the privileged helper key, the four switch tiles, the alert channel and the config rows.">
+<title>The menu-bar console</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>The menu-bar console</h1>
+<p class="lede">The console is for configuring and controlling Loom, not for reading traffic —
+that is the main window's job. It is laid out in bands, and what lands in which band comes
+down to one question: can this thing's state be read off a colour?</p>
+
+<h2>Header</h2>
+<ul>
+<li><strong>The dot</strong> — green while recording, yellow when the proxy is up but
+recording is paused, grey when the proxy is off.</li>
+<li><strong>The address</strong> — where to point clients. It reads <code>127.0.0.1</code>
+normally and this Mac's LAN address while device capture is on. Click it in the main window's
+toolbar to change the port.</li>
+<li><strong>The key glyph</strong> — the privileged helper (below).</li>
+<li><strong>The switch</strong> — the proxy itself, on or off.</li>
+</ul>
+
+<h2>The four tiles</h2>
+<p>Each is one boolean, and the tint is the state.</p>
+<table>
+<tr><th>Tile</th><th>What it switches</th></tr>
+<tr><td>System</td><td>Routes the whole Mac through Loom, and blocks QUIC so browsers stay
+visible.</td></tr>
+<tr><td>HTTPS</td><td>Interception. On its own it decrypts nothing — see
+<a href="https.html">Decrypting HTTPS</a>.</td></tr>
+<tr><td>Rules</td><td>The master switch for all rules. The badge counts the active ones.</td></tr>
+<tr><td>Device</td><td>Not a switch — it opens the QR and instructions for capturing a phone.
+The badge counts connected devices.</td></tr>
+</table>
+
+<h2>The alert channel</h2>
+<p>A line appears between the tiles and the rows only when something needs you. It exists
+because a tint can say "wrong" but not <em>what</em> is wrong — which app took the system
+proxy, that the helper is waiting for approval in System Settings, that the network can't
+reach Loom. Each line carries the repair with it, so it is never a dead end.</p>
+
+<h2>Config rows</h2>
+<p>These are the settings whose state is a phrase rather than a colour, so they keep their
+words — <em>none</em>, <em>3 unread</em>, <em>2 not listening</em>. A <code>›</code> expands
+the row in place; a <code>↗</code> leaves the console.</p>
+<ul>
+<li><strong>Reverse Proxies</strong> — local ports standing in for upstream origins.</li>
+<li><strong>SSL Scope</strong> — which hosts get decrypted, and which ones Loom saw but
+relayed.</li>
+<li><strong>Client Certificates</strong> — PKCS#12 identities for servers that ask for
+mutual TLS. Shown only once you have one.</li>
+<li><strong>Breakpoints</strong> — appears while anything is armed or held.</li>
+</ul>
+
+<h2>The privileged helper</h2>
+<p>Blocking QUIC needs root, which would otherwise mean a password prompt every single time
+you toggle the system proxy. The helper is a small root service you install once and approve
+in Login Items; after that the toggle is silent.</p>
+<p>It is never required. Without it Loom falls back to asking for the password, and the key
+glyph tells you which state you're in — not installed, waiting for approval in System
+Settings, or working.</p>
+<div class="note"><p>The helper deliberately does <em>not</em> handle certificate trust.
+Installing a root certificate is machine-wide, so that step stays something you do yourself,
+with the button or the printed <code>sudo</code> command.</p></div>
+
+<h2>Footer</h2>
+<p>The version number doubles as the update check. The <strong>Loom</strong> wordmark opens
+the main window. <strong>Quit</strong> exits — and on the way out, if the system proxy still
+points at Loom, it is switched off, so the machine isn't left routing traffic to a dead
+port.</p>
+
+<footer><a href="../index.html">Loom Help</a> · Next: <a href="trouble.html">When nothing shows up</a></footer>
+</body>
+</html>

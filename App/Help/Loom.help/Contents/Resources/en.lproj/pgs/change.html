@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="Replay a request with overrides, write rules that mock, map, rewrite, block, delay or drop traffic, and hold a request mid-flight with a breakpoint.">
+<title>Changing traffic</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>Changing traffic</h1>
+<p class="lede">Capturing is half of it. The other half is sending the request again with
+something different, or changing it before it ever leaves the machine.</p>
+
+<h2>Replay</h2>
+<p>Select a flow and replay it. You can override the method, the URL, headers (set or remove)
+and the body before it goes out. The result arrives as a new flow that remembers what it was
+replayed from, so you can compare the two.</p>
+<p>Comparing is a first-class answer rather than a squint: Loom diffs status, headers — with
+repeats preserved — and bodies line by line, and says plainly when one side never answered.
+Timing is deliberately <em>not</em> counted as a difference, since two runs never share it.</p>
+
+<h2>Rules</h2>
+<p>A rule is a matcher plus an action, applied to live traffic. Open <strong>Rules</strong>
+in the sidebar, or flip them all off at once with the <strong>Rules</strong> switch in the
+console — the badge counts the active ones.</p>
+<table>
+<tr><th>Action</th><th>What it does</th></tr>
+<tr><td>Mock</td><td>Answer locally with a status, headers and body you supply. The request
+never reaches the server.</td></tr>
+<tr><td>Map remote</td><td>Send the request to a different host or path — production URL,
+staging server.</td></tr>
+<tr><td>Rewrite</td><td>Change headers or body content on the way through, in either
+direction.</td></tr>
+<tr><td>Block</td><td>Fail the request, so you can see how the client copes.</td></tr>
+<tr><td>Delay</td><td>Hold it for a while first — slow networks, race conditions.</td></tr>
+<tr><td>Drop from capture</td><td>Let it through untouched but never record it. This is the
+noise filter, not a way to affect the client.</td></tr>
+</table>
+<p>Rules can be put in <strong>groups</strong> and switched as a set, which is how you keep
+one scenario ("everything mocked", "staging") a single toggle away from another.</p>
+<p>A rule can also be scoped to where the traffic came from — one app, one device. Traffic
+Loom could not attribute does <em>not</em> match such a rule, on purpose: a scoped rule that
+fired on unknown origins would be worse than one that didn't fire.</p>
+<div class="note"><p>A dropped exchange leaves no flow, so there is nothing in the table to
+show that the rule worked. The Rules panel counts the drops per rule instead — that counter
+is the only place an absence you asked for can be seen.</p></div>
+
+<h2>Breakpoints</h2>
+<p>A breakpoint holds a matching exchange <em>mid-flight</em>, before it goes upstream, and
+waits. Arm one from the <strong>Breakpoints</strong> panel; while anything is held, an orange
+row appears in the console so you can't forget about it.</p>
+<p>From the window you have two decisions: let it proceed unmodified, or abort it. Editing a
+held request is done by an agent, over the control port — deliberately, so there is one
+write path onto a held connection rather than two.</p>
+<div class="warn"><p>Breakpoints are not saved across a relaunch, because a held exchange is
+a live connection someone is waiting on. A hold can also end on its own if the client hangs
+up or the watchdog fires.</p></div>
+
+<h2>HAR, in and out</h2>
+<p>A capture can be exported as HAR — optionally redacted — and a HAR from somewhere else can
+be imported and read in the same window, which is the usual way to look at a capture someone
+sent you.</p>
+
+<footer><a href="../index.html">Loom Help</a> · Next: <a href="agent.html">Handing it to an agent</a></footer>
+</body>
+</html>

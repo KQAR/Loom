@@ -26,7 +26,13 @@ let project = Project(
             product: .app,
             bundleIdSuffix: "app",
             sources: ["App/Sources/**"],
-            resources: ["App/Resources/**"], // Assets.xcassets → AppIcon
+            resources: [
+                "App/Resources/**", // Assets.xcassets → AppIcon
+                // A `.help` bundle must reach `Contents/Resources/Loom.help` whole —
+                // a `**` glob would copy its files in as loose resources and there
+                // would be no book. `folderReference` copies the directory as-is.
+                .folderReference(path: "App/Help/Loom.help"),
+            ],
             infoPlist: .extendingDefault(with: [
                 // Regular app, not an agent: Loom shows in the Dock and the app
                 // switcher. It was `LSUIElement: true` (status-bar only) — but the
@@ -61,6 +67,16 @@ let project = Project(
                 // regression to chase.
                 "UIDesignRequiresCompatibility": true,
                 "CFBundleDisplayName": "Loom",
+                // Help Book. The folder is the bundle copied above; the *name* is
+                // that bundle's `CFBundleIdentifier` — not its `HPDBookTitle`, which
+                // is what the old documentation says and what every stale answer
+                // repeats. With the title here the book still registers and the menu
+                // item still appears, and clicking it opens nothing at all (helpd:
+                // `NSBundle (null) initWithPath failed`). Setting these two keys is
+                // also what puts the Help item in the menu; nothing in the view tree
+                // does.
+                "CFBundleHelpBookFolder": "Loom.help",
+                "CFBundleHelpBookName": "com.loom.app.help",
                 "CFBundleIconName": "AppIcon", // resolves to the asset-catalog icon set
                 "CFBundleShortVersionString": "0.0.33", // marketing version
                 "CFBundleVersion": "32",               // build number — Sparkle compares THIS, bump it every release
@@ -113,6 +129,16 @@ let project = Project(
                     outputPaths: [
                         "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/HelperTools/com.loom.proxyhelper",
                         "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Library/LaunchDaemons/com.loom.proxyhelper.plist",
+                    ]
+                ),
+                // Same ordering reason as the helper embed: the search index has to
+                // exist before the app is sealed. Generated rather than committed —
+                // it is derived entirely from the HTML beside it.
+                .post(
+                    path: "Scripts/index-help.sh",
+                    name: "Index help book",
+                    outputPaths: [
+                        "$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Resources/Loom.help/Contents/Resources/en.lproj/Loom.cshelpindex",
                     ]
                 ),
             ],
