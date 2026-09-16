@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="Point a client at Loom: the macOS system proxy, curl -x, a phone on the same Wi-Fi, the SOCKS5 listener, or a reverse-proxy endpoint for clients that ignore proxy settings.">
+<title>Getting traffic into Loom</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>Getting traffic into Loom</h1>
+<p class="lede">Loom only sees what is sent to it. It listens on three ports, and which one a
+client can use depends on how much that client is willing to be told.</p>
+
+<table>
+<tr><th>Port</th><th>What it is</th></tr>
+<tr><td><code>9090</code></td><td>The HTTP/HTTPS proxy. This is the one you normally use.</td></tr>
+<tr><td><code>9091</code></td><td>A SOCKS5 listener, one port up, for clients that only speak SOCKS.</td></tr>
+<tr><td><code>9092</code></td><td>The control port an AI agent talks to. Loopback only — never LAN.</td></tr>
+</table>
+
+<h2>The whole machine at once</h2>
+<p>Turn on the <strong>System</strong> switch in the console. macOS routes every app that
+respects the system proxy through Loom, and turning it off restores nothing — it just
+switches the system proxy off again.</p>
+<div class="note"><p>If another proxy (Charles, Proxyman, a VPN client) already holds the
+system proxy setting, enabling Loom's takes it over, and the console's alert line tells you
+whose it was. Loom cannot give it back later, because it has no way to know whether that app
+is still running.</p></div>
+<p>Enabling the system proxy also blocks QUIC, so browsers fall back to HTTP/2 where Loom can
+see them. That part needs root, which is what the <a href="console.html">privileged helper</a>
+is for — install it once and the toggle stops asking for a password.</p>
+
+<h2>One command</h2>
+<pre><code>curl -x http://127.0.0.1:9090 https://example.com</code></pre>
+<p>Most tools take the same idea as environment variables:</p>
+<pre><code>export HTTP_PROXY=http://127.0.0.1:9090
+export HTTPS_PROXY=http://127.0.0.1:9090</code></pre>
+
+<h2>A phone or another machine on the same Wi-Fi</h2>
+<p>Click the <strong>Device</strong> tile in the console. It shows a QR code and the
+instructions for the device: set a manual HTTP proxy to this Mac's LAN address on port 9090,
+then open the certificate link to trust Loom's CA. The tile counts the devices currently
+connected.</p>
+<p>Loom binds <code>0.0.0.0</code> while device capture is on, so the address in the console
+header changes from <code>127.0.0.1</code> to the LAN one. Traffic from a device is grouped
+under it in the sidebar, with the apps Loom could name nested underneath.</p>
+
+<h2>Clients that only understand SOCKS</h2>
+<p>Point them at <code>socks5://127.0.0.1:9091</code> — the usual case is a tool that reads
+<code>ALL_PROXY</code> but not <code>HTTP_PROXY</code>, or a GUI with only a SOCKS field.
+Loom works out what the traffic actually is by looking at the first bytes, not at the port,
+so HTTPS and WebSocket over SOCKS are captured the same as over 9090.</p>
+
+<h2>Clients that ignore proxy settings entirely</h2>
+<p>Some runtimes never look at the environment at all — Node's global <code>fetch</code> is
+the common one. For those, create a <strong>reverse-proxy endpoint</strong>: a local port that
+stands in for one upstream origin.</p>
+<p>Open <strong>Reverse Proxies</strong> in the console, add the upstream
+(<code>https://api.example.com</code>), and point the client at the local port Loom gives you.</p>
+<ul>
+<li>The local hop is <strong>plain HTTP even when the upstream is HTTPS</strong>, so the client
+needs no certificate and no keychain step.</li>
+<li>The captured flow records the <strong>real upstream URL</strong>, not
+<code>127.0.0.1:port</code> — so rules and searches written against the real host keep
+matching.</li>
+<li>Endpoints survive a relaunch, because the port is usually written into some config file
+that Loom restarting doesn't edit.</li>
+</ul>
+
+<div class="warn"><p>One thing Loom deliberately cannot do: capture a process that ignores
+every proxy setting <em>and</em> can't be given a reverse-proxy endpoint. That would need
+transparent redirection at the packet layer, which Loom does not do.</p></div>
+
+<footer><a href="../index.html">Loom Help</a> · Next: <a href="https.html">Decrypting HTTPS</a></footer>
+</body>
+</html>

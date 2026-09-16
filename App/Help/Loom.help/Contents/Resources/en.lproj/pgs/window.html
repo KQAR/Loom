@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="The Loom main window: the sidebar of devices, apps and hosts, the request table, the inspector tabs, the find bar, and how multiple filters combine.">
+<title>Reading a capture</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>Reading a capture</h1>
+<p class="lede">The main window is the working surface: a sidebar that narrows what you are
+looking at, a table of exchanges, and an inspector underneath. Open it from the
+<strong>Loom</strong> wordmark at the bottom of the console, or from the Dock.</p>
+
+<h2>The sidebar</h2>
+<p>Top section: the whole capture sliced by kind — <strong>All Flows</strong>,
+<strong>Requests</strong>, <strong>Connections</strong> (relayed tunnels, which have no
+body to read), <strong>Errors</strong>. Below those are panels rather than filters:
+<strong>Rules</strong>, <strong>Audit</strong>, <strong>Breakpoints</strong>.</p>
+<p><strong>Devices</strong> is a tree. Each device Loom has seen — this Mac, a phone, another
+machine — holds the apps whose traffic it could attribute, so you can ask for one app
+<em>on one device</em>. Local apps are identified exactly, by process; a phone's apps are
+named from what they say about themselves in <code>User-Agent</code>, which is a claim
+rather than a measurement.</p>
+<p><strong>Hosts</strong> folds by domain, and the hosts Loom is decrypting sort first, since
+those are the ones with something to read.</p>
+
+<h3>Selecting more than one row</h3>
+<p>Selection is a set, and it combines the way you would want rather than the way that is
+easiest to implement:</p>
+<ul>
+<li>Two hosts means <strong>either</strong> host.</li>
+<li>A host plus a device means that host's traffic <strong>from that device</strong>.</li>
+</ul>
+<p>In other words: rows in the same group widen the list, rows in different groups narrow it.
+If a selection ends up admitting nothing, the empty state says which rows you picked and
+offers a way back.</p>
+
+<h2>The table</h2>
+<p>One row per exchange, newest at the bottom, following the tail until you scroll away.
+The columns cover what you normally sort or scan by — status, app, whether it was decrypted,
+protocol, method, host, path, and time.</p>
+<p>Under the table, the chip strip is a quick filter: protocol, content type, status class.
+Chips in one group widen, chips in different groups narrow — same rule as the sidebar.</p>
+<p>Press <kbd>⌘F</kbd> for the find bar. It can search the URL within this window, or ask
+the engine to search stored headers and bodies, which reaches further back than the rows
+currently loaded.</p>
+
+<h2>The inspector</h2>
+<p>Select a row and the pane below fills in: request and response headers in wire order
+(duplicates and all), the body with JSON, XML, HTML and image rendering, the timing
+breakdown, and the connection's own facts — which TLS versions each leg negotiated, whether
+the upstream socket was reused, how many bytes the compressed body actually was.</p>
+<p>Timing answers "why is this slow" in parts rather than as one number: DNS, TCP and the TLS
+handshake are counted separately and charged to the exchange that opened the connection, so a
+request that reused a socket honestly shows none of them. What is left is the server's think
+time and the body transfer.</p>
+
+<h2>Housekeeping</h2>
+<p>The toolbar's record button pauses capture without stopping the proxy — traffic keeps
+flowing, Loom just stops writing it down. The eraser clears what has been captured.
+Both are also reachable by an agent, so if the dot and the button disagree with what you
+remember doing, something else changed it; the window re-reads the engine rather than
+trusting its own copy.</p>
+
+<footer><a href="../index.html">Loom Help</a> · Next: <a href="change.html">Changing traffic</a></footer>
+</body>
+</html>

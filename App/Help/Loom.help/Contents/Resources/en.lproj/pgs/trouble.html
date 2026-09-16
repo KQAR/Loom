@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="description" content="A request you expected isn't in the table: the five reasons, in the order worth checking — SSL scope, the client not being proxied, recording paused, a drop rule, or a refused connection.">
+<title>When nothing shows up</title>
+<link rel="stylesheet" href="../loom.css">
+</head>
+<body>
+<p class="crumb"><a href="../index.html">Loom Help</a></p>
+<h1>When nothing shows up</h1>
+<p class="lede">A request you expected isn't in the table. These are the causes in the order
+worth checking, because several of them look identical from the outside.</p>
+
+<h2>1. The host isn't in the SSL scope</h2>
+<p>By far the most common. The scope is a whitelist, and a host you haven't named is relayed
+encrypted — which records no flow at all, so it looks exactly like a client that never ran.
+Open <strong>SSL Scope</strong>: the hosts Loom saw but couldn't read are listed there, and
+adding one is a click. See <a href="https.html">Decrypting HTTPS</a>.</p>
+
+<h2>2. The client isn't going through Loom</h2>
+<p>Plenty of software ignores the system proxy — anything using its own HTTP stack, most
+notably Node's global <code>fetch</code>. Check with a request you control:</p>
+<pre><code>curl -x http://127.0.0.1:9090 http://example.com</code></pre>
+<p>If that lands and your app doesn't, the app isn't being proxied. Give it a
+<a href="traffic.html">reverse-proxy endpoint</a> or point it at the SOCKS port.</p>
+
+<h2>3. Recording is paused</h2>
+<p>The dot in the console is yellow and the toolbar's record button reads "Start". Traffic is
+still flowing — Loom just isn't writing it down. An agent can pause recording too, so this can
+be true without you having done it.</p>
+
+<h2>4. A rule is dropping it</h2>
+<p>A <em>drop from capture</em> rule forwards the request normally and never records it. That
+is what it is for, but it means the traffic is genuinely working and genuinely invisible.
+The Rules panel counts the drops per rule — that counter is the only evidence.</p>
+
+<h2>5. The connection was refused</h2>
+<p>If a client connected and Loom turned it away — a SOCKS4 client on the SOCKS port, an HTTP
+request sent to the wrong listener — that is counted and reported rather than left silent.
+The console's alert channel and the proxy status both carry the count, so "nothing arrived"
+and "something arrived and was rejected" don't read the same.</p>
+
+<h2>Still nothing</h2>
+<ul>
+<li><strong>The proxy didn't start.</strong> The main window says so plainly and offers to
+change the port — almost always another proxy already holding 9090.</li>
+<li><strong>The app pins its certificates.</strong> It will refuse Loom's certificate no
+matter what is trusted. Nothing to configure; that app can't be intercepted.</li>
+<li><strong>A phone can't reach this Mac.</strong> The Device tile goes orange when device
+capture is on but the network can't reach the listener — usually a Wi-Fi network with client
+isolation, or a firewall.</li>
+</ul>
+
+<div class="note"><p>If you think you have found a real bug, the project's issue tracker is at
+<a href="https://github.com/KQAR/Loom/issues">github.com/KQAR/Loom/issues</a>. Captures hold
+real credentials — export with redaction on, and check what you're attaching.</p></div>
+
+<footer><a href="../index.html">Loom Help</a></footer>
+</body>
+</html>
