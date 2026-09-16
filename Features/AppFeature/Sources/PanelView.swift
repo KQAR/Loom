@@ -1,6 +1,7 @@
 import AppKit
 import ComposableArchitecture
 import SwiftUI
+import TipKit
 
 /// The status-bar popover: a compact **config & control console**, not a traffic
 /// view.
@@ -54,6 +55,25 @@ public struct PanelView: View {
                     .padding(.horizontal, LoomTheme.consoleMargin)
                     .padding(.top, LoomTheme.Space.xxs)
             }
+            // Sits with the trust card for the same reason it does: both are the
+            // HTTPS tile's line in richer form, and both name a state where
+            // interception is on and decrypting nothing. Inline rather than a
+            // `.popoverTip` — a popover raised from a menu-bar window fights the
+            // panel's own dismissal, and the SSL Scope row it points at is three
+            // rows below.
+            TipView(whitelistTip) { _ in
+                // The only action it has, so no need to switch on the id — but it
+                // must expand the row rather than just scroll to it, since the
+                // collapsed row says `none` and that is the thing being explained.
+                if !store.setup.sslScopeExpanded { store.send(.setup(.sslScopeExpandTapped)) }
+                // Taking the action retires the tip. Without this the card stays
+                // until a host is actually named, sitting on top of the very row it
+                // just opened — and TipKit's own close control is not drawn at this
+                // width, so the action is the only way out the human has.
+                whitelistTip.invalidate(reason: .actionPerformed)
+            }
+            .padding(.horizontal, LoomTheme.consoleMargin)
+            .padding(.top, LoomTheme.Space.xxs)
 
             VStack(spacing: 0) {
                 reverseProxyRow
@@ -67,6 +87,23 @@ public struct PanelView: View {
         }
         .frame(width: LoomTheme.consoleWidth)
         .task { store.send(.viewAppeared) }
+        // The tip's rule is a mirror of engine state, so it is pushed from the
+        // surface that re-reads it rather than stored a second time (AGENTS.md
+        // § "A human surface that mirrors engine state re-reads it"). The panel
+        // re-reads on every open, which is exactly when the tip is evaluated.
+        .onChange(of: interceptsNothing, initial: true) { _, nothing in
+            SSLScopeWhitelistTip.interceptsNothing = nothing
+        }
+    }
+
+    /// Held rather than constructed per render so the action handler can retire
+    /// the same instance it drew.
+    private let whitelistTip = SSLScopeWhitelistTip()
+
+    /// Interception on, whitelist empty — every origin relayed unread. Drives
+    /// `SSLScopeWhitelistTip`.
+    private var interceptsNothing: Bool {
+        store.setup.sslEnabled && store.setup.sslScope.include.isEmpty
     }
 
     // MARK: Header
