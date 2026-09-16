@@ -25,6 +25,8 @@ struct LoomApp: App {
         // number, but it must not know what an MCP server is, so the number is declared
         // from here (see `ReservedPorts`).
         ReservedPorts.shared.reserve(MCPServer.defaultPort, holder: "Loom's MCP control port")
+        // TipKit's datastore, opened before any view that renders a tip.
+        LoomTips.configure()
         // The proxy is started by AppFeature's one-shot boot effect (fired by the
         // always-present menu-bar label at launch) — the single start owner, so we
         // don't race a second bind here. The MCP server is independent; start it.
