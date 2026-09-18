@@ -78,8 +78,8 @@ let project = Project(
                 "CFBundleHelpBookFolder": "Loom.help",
                 "CFBundleHelpBookName": "com.loom.app.help",
                 "CFBundleIconName": "AppIcon", // resolves to the asset-catalog icon set
-                "CFBundleShortVersionString": "0.0.33", // marketing version
-                "CFBundleVersion": "32",               // build number — Sparkle compares THIS, bump it every release
+                "CFBundleShortVersionString": "0.0.34", // marketing version
+                "CFBundleVersion": "33",               // build number — Sparkle compares THIS, bump it every release
                 // Sparkle auto-update. The feed is the signed appcast attached to
                 // each GitHub release. We drive the once-a-day check ourselves
                 // (silent probe → panel "Update" button), so leave Sparkle's own
