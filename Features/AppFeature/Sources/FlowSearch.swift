@@ -58,6 +58,19 @@ public struct FlowSearch: Equatable, Sendable {
     public var text: String = ""
     public var scope: FlowSearchScope = .url
 
+    /// Treat the needle as a regular expression instead of a substring.
+    ///
+    /// **URL scope only** (`usesRegex`), and deliberately: the other two scopes are
+    /// answered by the engine, whose `FlowQuery` matches substrings over header bytes
+    /// and raw body bytes. Honouring the toggle there would mean either a second
+    /// matcher in the engine or — worse — quietly falling back to substring, which is
+    /// the shape of bug this file's `dismiss()` comment is about: a filter that is not
+    /// what the control says it is.
+    ///
+    /// Survives `dismiss()`, because it is a mode rather than a question. The needle is
+    /// what gets cleared.
+    public var isRegex = false
+
     /// Ids the engine matched, for an engine scope. `nil` means "no answer yet" and
     /// is deliberately distinct from an empty set, which means "asked, nothing
     /// matched" — the same distinction `TunneledHostLog` exists to preserve, and the
@@ -95,6 +108,23 @@ public struct FlowSearch: Equatable, Sendable {
     /// call site that could leave a needle behind.
     public var isActive: Bool { isPresented && needle != nil }
 
+    /// Whether the needle is actually being read as a pattern. See `isRegex`.
+    public var usesRegex: Bool { isRegex && scope == .url }
+
+    /// The compiled pattern, or nil when there is nothing to compile — including a
+    /// pattern that doesn't compile. Callers distinguish those two by `needle`:
+    /// a needle with no regex is the invalid case, and the bar says so rather than
+    /// falling back to a substring search the user didn't ask for.
+    var regex: Regex<AnyRegexOutput>? {
+        guard usesRegex, let needle else { return nil }
+        return try? Regex(needle).ignoresCase()
+    }
+
+    /// An entered pattern that doesn't compile. Nothing matches while this is true,
+    /// which is the honest answer — the alternative is showing rows the filter never
+    /// selected.
+    public var hasInvalidRegex: Bool { usesRegex && needle != nil && regex == nil }
+
     /// Back to the state a fresh window has.
     mutating func dismiss() {
         isPresented = false
@@ -131,6 +161,10 @@ public struct FlowSearch: Equatable, Sendable {
         guard isActive, let needle else { return { _ in true } }
         switch scope {
         case .url:
+            if usesRegex {
+                guard let regex else { return { _ in false } }
+                return { $0.request.url.contains(regex) }
+            }
             let matcher = NeedleMatcher(needle)
             return { matcher.contains($0.request.url) }
         case .headers, .body:
@@ -209,6 +243,7 @@ public struct FlowSearch: Equatable, Sendable {
         isPresented != old.isPresented
             || scope != old.scope
             || needle != old.needle
+            || isRegex != old.isRegex
             || engineMatches != old.engineMatches
     }
 }

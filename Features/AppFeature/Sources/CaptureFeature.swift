@@ -842,6 +842,8 @@ public struct CaptureFeature: Sendable {
         case searchDismissed
         case searchTextChanged(String)
         case searchScopeChanged(FlowSearchScope)
+        /// The bar's `.*` toggle. URL scope only — see `FlowSearch.isRegex`.
+        case searchRegexToggled(Bool)
         /// The bar's "re-run" affordance, for flows captured since the last answer.
         case searchRefreshRequested
         /// An engine-scope answer landed. Carries the needle and scope it was asked
@@ -1033,6 +1035,12 @@ public struct CaptureFeature: Sendable {
             case let .searchScopeChanged(scope):
                 state.search.scope = scope
                 return runSearch(&state)
+
+            case let .searchRegexToggled(on):
+                state.search.isRegex = on
+                // No `runSearch`: the toggle only changes how the *URL* scope reads the
+                // needle, and that scope never asks the engine.
+                return .none
 
             case .searchRefreshRequested:
                 return runSearch(&state)

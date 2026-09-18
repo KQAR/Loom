@@ -321,6 +321,58 @@ import Testing
         #expect(other.affectsProjection(comparedTo: search))
     }
 
+    // MARK: Regex mode
+
+    @Test func regexScope_matchesAsAPattern() {
+        var state = state([
+            Fixtures.flow(url: "https://a.com/orders/1"),
+            Fixtures.flow(url: "https://a.com/orders/22"),
+            Fixtures.flow(url: "https://a.com/health"),
+        ])
+        state.search.isPresented = true
+        state.search.isRegex = true
+        state.search.text = #"orders/\d$"#
+        #expect(state.displayFlows.map(\.request.url) == ["https://a.com/orders/1"])
+
+        // Case-insensitive, like the substring path it replaces.
+        state.search.text = "ORD.RS"
+        #expect(state.displayFlows.count == 2)
+    }
+
+    /// A half-typed pattern matches nothing and says so — never a silent fall back to
+    /// substring, which would show rows the filter didn't select.
+    @Test func anInvalidPatternMatchesNothingAndIsReported() {
+        var state = state([Fixtures.flow(url: "https://a.com/orders/1")])
+        state.search.isPresented = true
+        state.search.isRegex = true
+        state.search.text = "orders("
+        #expect(state.displayFlows.isEmpty)
+        #expect(state.search.hasInvalidRegex)
+    }
+
+    /// The toggle is URL-only: the engine scopes match substrings, so honouring it
+    /// there would make the control lie about what ran.
+    @Test func regexIsIgnoredByTheEngineScopes() {
+        var search = FlowSearch()
+        search.isPresented = true
+        search.isRegex = true
+        search.text = "orders/.*"
+        search.scope = .body
+        #expect(!search.usesRegex)
+        #expect(!search.hasInvalidRegex)
+        #expect(search.engineQuery(selection: [.all])?.bodyContains == "orders/.*")
+    }
+
+    /// Flipping the mode changes which rows match, so it must rebuild the projection.
+    @Test func togglingRegexAffectsTheProjection() {
+        var search = FlowSearch()
+        search.isPresented = true
+        search.text = "orders"
+        var other = search
+        other.isRegex = true
+        #expect(other.affectsProjection(comparedTo: search))
+    }
+
     /// The byte scan is only taken for an ASCII needle; anything else falls back to
     /// Foundation, because case folding outside ASCII is not a bit flip.
     @Test func needleMatcherFoldsASCIIAndDefersOnTheRest() {
