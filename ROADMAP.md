@@ -1024,6 +1024,44 @@ with no status and no message (`MalformedRequest("Missing :te header")`), and gr
 *"some intermediate proxy may not support trailers"*, naming Loom. `Tools/grpc-te-repro` runs both.
 **A claim about what a peer refuses is a measurement, and one implementation is not the protocol.**
 
+### Three dead ends that only the human hit (done, 0.0.34)
+
+One round, three surfaces, one shape — and it is the *inverse* of the rule this repo keeps
+learning. "Log it for the human, return it for the agent" has a half that is easier to miss,
+because the agent-facing gap is the one that gets noticed: every fact below was already
+reachable over MCP and unreachable from the window.
+
+**A whitelist that decrypts nothing looks exactly like a client that never ran.** Interception on,
+`include` still empty, every origin relayed unread and recording no flow at all. An agent asks
+`get_ssl_scope.tunneledHosts` and sees it; the person watching the table sees nothing, which is
+byte-for-byte what a client that never started looks like. TipKit carries the one-time fact, and
+where it sits was a measurement rather than a guess: the main window's empty state renders only
+with *no* flows, while this state is loudest with HTTP filling the table — measured on a live
+capture, **14,076 flows, HTTPS on, and the tip could not appear**. It moved to the console, and it
+carries the repair (`Open SSL Scope`) because a line that only states a problem is a dead end. The
+boundary is written at `LoomTips`: a tip states a fact, never a condition to monitor, so nothing
+may exist *only* as a tip.
+
+**A Help menu whose only item was a search field that searched nothing.** Seven pages now:
+how traffic reaches Loom, what the HTTPS whitelist costs, reading a capture, changing one, handing
+the loop to an agent, the console part by part, and the five reasons a request you expected isn't
+in the table. Two spellings in Apple's own documentation are wrong and both were found by
+measurement: `CFBundleHelpBookName` is the bundle's **identifier**, not its `HPDBookTitle`, and the
+index key is `HPDBookCSIndexPath` with the index at the .lproj root. With the documented ones the
+book registers and the menu item appears, and clicking it opens nothing. Known and unresolved on
+this macOS 26.5 machine: nothing renders a local help book at all — `Help Viewer.app` is gone and
+`Tips.app` claims the `help:` scheme, launches, and creates zero windows, for this book *and* for
+CotEditor's shipping notarized one.
+
+**A find bar that could only ask for a literal.** `FlowQuery` has composed predicates for an agent
+since M6; the human's needle was a substring and nothing else, so "which of these ended in a single
+digit" could only be answered by reading rows. `.*` switches the needle to a pattern — URL scope
+only, and the control *says so* (disabled, not hidden, for the engine scopes, whose answers are
+`FlowQuery`'s substring matching). Two things it keeps from the substring path: the compile is
+hoisted out of the row loop, and an invalid pattern matches **nothing** and shows why, because
+falling back to a substring would put rows on screen the filter never selected and an empty table
+with no explanation reads as "no traffic".
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
