@@ -51,6 +51,24 @@ struct FlowFilterBar: View {
             .focused($fieldFocused)
             .onSubmit { store.send(.searchRefreshRequested) }
 
+            // A mode on the needle, so it sits with the needle rather than with the
+            // scope. Disabled — not hidden — for the engine scopes: a control that
+            // vanishes when the scope moves reads as a bug, and its help text is the
+            // only place the URL-only limit can be stated (see `FlowSearch.isRegex`).
+            Button {
+                store.send(.searchRegexToggled(!store.search.isRegex))
+            } label: {
+                Text(".*")
+                    .font(.callout.monospaced())
+                    .foregroundStyle(store.search.usesRegex ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+            }
+            .buttonStyle(.borderless)
+            .disabled(store.search.scope != .url)
+            .help(store.search.scope == .url
+                ? "Match the needle as a regular expression"
+                : "Regular expressions apply to the URL scope; headers and bodies are matched as substrings by the engine")
+            .accessibilityLabel("Regular expression")
+            .accessibilityAddTraits(store.search.usesRegex ? .isSelected : [])
 
             status
 
@@ -88,7 +106,16 @@ struct FlowFilterBar: View {
     /// scope is live by construction, the engine scopes are a snapshot that the
     /// capture keeps moving past.
     @ViewBuilder private var status: some View {
-        if store.search.isSearching {
+        if store.search.hasInvalidRegex {
+            // Nothing matches while the pattern is broken, and the table is already
+            // empty — this is what says why, rather than leaving it reading as "no
+            // traffic".
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help("Not a valid regular expression")
+                .accessibilityLabel("Invalid regular expression")
+        } else if store.search.isSearching {
             ProgressView().controlSize(.small)
         } else if store.search.staleCount > 0 {
             // Never silently stale: an engine-scope answer is not re-run on every
