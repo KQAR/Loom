@@ -81,7 +81,7 @@ import Testing
     }
 
     /// Reached through `#filePath` rather than the bundle, the same way
-    /// `VersionFieldParityTests` reads the manifests: the question is what is
+    /// `SkillContentTests` reads the skill: the question is what is
     /// *authored*, and the built product has already folded these into one binary.
     private static let catalog = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()   // Tests/

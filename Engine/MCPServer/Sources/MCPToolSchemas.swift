@@ -149,15 +149,6 @@ extension MCPToolExecutor {
             description: """
             Get the Loom app version and MCP protocol version. Cheap readiness ping — if this \
             errors, the app isn't running and no other tool will work either.
-
-            `appVersion` is also the skew check: the tools you can call come from the app, their \
-            prose from whatever plugin version is installed, so compare it against the version in \
-            the loom plugin's own manifest. Older app → tell the user to update Loom (panel footer \
-            → Update), because tools the skill describes may not exist yet. Newer app → tell them \
-            to run `/plugin update loom`, because tools you can call aren't documented there. \
-            Either way it is a stale *description*, never a broken connection — `tools/list` is \
-            the truth about what exists — so say it once, name which side is behind, carry on, \
-            and don't block work on it.
             
             `protocolTraffic` reports which MCP revision the requests reaching this endpoint \
             actually spoke this run, and which clients spoke them. Loom serves two revisions at \

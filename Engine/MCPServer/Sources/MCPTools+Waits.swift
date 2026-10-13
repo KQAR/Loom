@@ -28,7 +28,7 @@ extension MCPToolExecutor {
     ///
     /// The cap is the client's, not ours: Claude Code gives an HTTP MCP server 60 s
     /// to produce the first response byte unless the server entry raises it (the
-    /// plugin's `.mcp.json` sets `timeout: 120000`, and the bridge sets its own
+    /// `install-agent.sh` registration sets `timeout: 120000`, and the bridge sets its own
     /// request timeout), and aborts a call that goes 5 minutes without a byte. 60 s
     /// therefore stays inside the *unconfigured* limit, so a wait can't fail as a
     /// transport error on a client that never read our config.
