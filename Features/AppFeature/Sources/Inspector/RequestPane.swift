@@ -22,6 +22,17 @@ struct RequestPane: View {
     /// Whether the body is currently a tree — reported up by `BodyView`, because only
     /// it knows whether the parse succeeded and stayed under the render limit.
     @State private var bodyIsOutline = false
+    @State private var derivedMemo = RenderMemo<DerivedKey, Derived>()
+    @State private var bodyTextMemo = RenderMemo<BodyMemoKey, String?>()
+
+    /// Everything `Derived` reads off the request.
+    private struct DerivedKey: Equatable {
+        var flowID: UUID
+        var method: String
+        var url: String
+        var headerCount: Int
+        var bodyBytes: Int?
+    }
 
     /// What the pane derives from the request body/headers, parsed **once** per
     /// render. `tabs` needs it (to decide which tabs exist) and `content` needs it
@@ -70,7 +81,11 @@ struct RequestPane: View {
     }
 
     var body: some View {
-        let derived = Self.derive(flow)
+        let request = flow.request
+        let derived = derivedMemo.value(for: DerivedKey(
+            flowID: flow.id, method: request.method, url: request.url,
+            headerCount: request.headers.count, bodyBytes: request.body?.count
+        )) { Self.derive(flow) }
         return VStack(spacing: 0) {
             HStack(spacing: LoomTheme.Space.sm) {
                 InspectorTabStrip(tabs: tabs(derived), selection: $tab)
@@ -133,7 +148,10 @@ struct RequestPane: View {
     @ViewBuilder private func paneActions(_ derived: Derived) -> some View {
         switch tab {
         case .body:
-            if let text = Self.bodyText(flow.request.body) {
+            if let text = bodyTextMemo.value(
+                for: BodyMemoKey(flowID: flow.id, bytes: flow.request.body?.count),
+                { Self.bodyText(flow.request.body) }
+            ) {
                 FloatingPaneActions(
                     copyText: text,
                     copyHelp: "Copy body",
