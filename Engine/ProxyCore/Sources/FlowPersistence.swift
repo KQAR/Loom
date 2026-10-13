@@ -23,6 +23,13 @@ final class FlowPersistence: @unchecked Sendable {
     /// attempt) for every captured flow. The trade is explicit: the file may hold
     /// up to `maxRows + pruneSlack` rows between prunes (2.5% at the default cap).
     private let pruneSlack: Int
+    /// Body bytes on disk before the oldest rows lose theirs. See
+    /// `FlowLimits.persistedBodyBytes`.
+    private let maxBodyBytes: Int
+    /// Rows exempt from body eviction, newest first: the engine's ring holds slimmed
+    /// copies of these that hydrate from this table, and a copy whose bytes vanished
+    /// underneath it would read as a flow that never had a body.
+    private let protectedNewest: Int
     /// Where a fail-open lands, so it reaches a tool and not only `os_log`.
     private let degradations: DegradationLog?
     /// Upper bound on rows, maintained incrementally and re-read exactly after each
@@ -46,6 +53,14 @@ final class FlowPersistence: @unchecked Sendable {
     private struct Counts {
         var stored = 0
         var pending = 0
+        /// Body bytes on disk — an upper bound between evictions, like `stored`,
+        /// because a replaced row's old bodies still count until the next re-anchor.
+        var bodyBytes = 0
+    }
+
+    private var storedBodyBytes: Int {
+        get { counts.withLock { $0.bodyBytes } }
+        set { counts.withLock { $0.bodyBytes = newValue } }
     }
 
     /// Call after every mutation of `pending`, so `approximateStoredRowCount` counts
@@ -94,6 +109,10 @@ final class FlowPersistence: @unchecked Sendable {
         let deviceJSON: Data?
         let isError: Bool
         let recordKind: String
+
+        var bodyBytes: Int {
+            (requestBody?.count ?? 0) + (responseBody?.count ?? 0) + (webSocketPayloads?.count ?? 0)
+        }
     }
 
     // SQLite wants to copy bound bytes, not borrow them.
@@ -103,10 +122,14 @@ final class FlowPersistence: @unchecked Sendable {
         fileURL: URL,
         maxRows: Int = FlowLimits.persistedRows,
         pruneSlack: Int = 500,
+        maxBodyBytes: Int = FlowLimits.persistedBodyBytes,
+        protectedNewest: Int = FlowLimits.memoryRing,
         degradations: DegradationLog? = nil
     ) {
         self.maxRows = maxRows
         self.pruneSlack = max(0, pruneSlack)
+        self.maxBodyBytes = maxBodyBytes
+        self.protectedNewest = max(0, protectedNewest)
         self.degradations = degradations
         // Owner-only, like the CA store: these rows hold whole request and response
         // bodies — passwords, session tokens, PII — so on a shared Mac they are a
@@ -150,6 +173,10 @@ final class FlowPersistence: @unchecked Sendable {
         // overrides when a body column is present.
         migrateAddBodyColumns()
         rowCount = countRows()
+        storedBodyBytes = sumBodyBytes()
+        // An existing store over the budget is brought under it now rather than at
+        // the next write, which may be a while.
+        evictBodiesIfNeeded()
     }
 
     /// Belt to the directory's braces: chmod the database and its WAL siblings to
@@ -589,7 +616,9 @@ final class FlowPersistence: @unchecked Sendable {
             """)
         }
         rowCount += written
+        storedBodyBytes += rows.reduce(0) { $0 + $1.bodyBytes }
         pruneIfNeeded()
+        evictBodiesIfNeeded()
     }
 
     /// Bind and step one row on the shared statement. Returns whether it landed.
@@ -647,6 +676,81 @@ final class FlowPersistence: @unchecked Sendable {
         body.withUnsafeBytes { raw in
             _ = sqlite3_bind_blob(stmt, index, raw.baseAddress, Int32(body.count), transient)
         }
+    }
+
+    /// Every body byte in the table. `length()` of a BLOB is read from the record
+    /// header, so this walks rows without loading a single body.
+    private func sumBodyBytes() -> Int {
+        var total = 0
+        forEachRow("""
+        SELECT COALESCE(SUM(COALESCE(length(reqBody), 0) + COALESCE(length(respBody), 0)
+                            + COALESCE(length(wsPayloads), 0)), 0) FROM flows;
+        """) { stmt in total = Int(sqlite3_column_int64(stmt, 0)) }
+        return total
+    }
+
+    /// Bring body bytes under `maxBodyBytes` by evicting the oldest rows' bodies —
+    /// never the rows. Runs only once the budget is exceeded by `bodySlack`, then
+    /// takes it to `bodySlack` *under*, so a store at its ceiling pays for this once
+    /// per slack's worth of capture rather than per write.
+    ///
+    /// Each evicted row keeps its metadata and says what it lost: `bodiesEvicted`, and
+    /// each side's `fullBodyBytes` — so an agent reads "this had 4 MB and it was
+    /// evicted", never "this had no body".
+    private func evictBodiesIfNeeded() {
+        let bodySlack = max(maxBodyBytes / 32, 1)
+        guard storedBodyBytes > maxBodyBytes + bodySlack else { return }
+        var excess = storedBodyBytes - max(0, maxBodyBytes - bodySlack)
+
+        var victims: [(id: String, json: Data, request: Int, response: Int)] = []
+        var stmt: OpaquePointer?
+        let sql = """
+        SELECT id, json, COALESCE(length(reqBody), 0), COALESCE(length(respBody), 0),
+               COALESCE(length(wsPayloads), 0)
+        FROM flows WHERE id NOT IN (SELECT id FROM flows ORDER BY startedAt DESC LIMIT ?)
+          AND (reqBody IS NOT NULL OR respBody IS NOT NULL OR wsPayloads IS NOT NULL)
+        ORDER BY startedAt ASC;
+        """
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        sqlite3_bind_int(stmt, 1, Int32(protectedNewest))
+        while excess > 0, sqlite3_step(stmt) == SQLITE_ROW {
+            guard let id = Self.text(stmt, 0), let blob = sqlite3_column_blob(stmt, 1) else { continue }
+            let json = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 1)))
+            let request = Int(sqlite3_column_int64(stmt, 2))
+            let response = Int(sqlite3_column_int64(stmt, 3))
+            let frames = Int(sqlite3_column_int64(stmt, 4))
+            victims.append((id, json, request, response))
+            excess -= request + response + frames
+        }
+        sqlite3_finalize(stmt)
+        guard !victims.isEmpty else { return }
+
+        exec("BEGIN IMMEDIATE;")
+        var update: OpaquePointer?
+        sqlite3_prepare_v2(db, """
+        UPDATE flows SET json = ?, reqBody = NULL, respBody = NULL, wsPayloads = NULL WHERE id = ?;
+        """, -1, &update, nil)
+        for victim in victims {
+            guard let flow = try? decoder.decode(Flow.self, from: victim.json),
+                  let json = try? encoder.encode(flow.recordingStoredBodiesEvicted(
+                      requestBytes: victim.request, responseBytes: victim.response
+                  ))
+            else { continue }
+            json.withUnsafeBytes { raw in
+                _ = sqlite3_bind_blob(update, 1, raw.baseAddress, Int32(json.count), transient)
+            }
+            sqlite3_bind_text(update, 2, victim.id, -1, transient)
+            sqlite3_step(update)
+            sqlite3_reset(update)
+            sqlite3_clear_bindings(update)
+        }
+        sqlite3_finalize(update)
+        exec("COMMIT;")
+        storedBodyBytes = sumBodyBytes() // re-anchor, as the row count does after a prune
+        Log.store.notice("""
+        Flow history was over its \(self.maxBodyBytes) body-byte budget; evicted the bodies of \
+        the \(victims.count) oldest flows (their metadata stays).
+        """)
     }
 
     /// Keep at most `maxRows`, dropping the oldest — but only once the count has
@@ -940,6 +1044,33 @@ extension Flow {
         else { return self }
         var copy = self
         copy.webSocketMessages = zip(messages, payloads).map { var m = $0; m.payload = $1; return m }
+        return copy
+    }
+}
+
+extension Flow {
+    /// This flow as its row reads once its bodies have been evicted from the store:
+    /// marked `bodiesEvicted`, each side's size kept as `fullBodyBytes`. The stored
+    /// JSON is body-free already, so the sizes come from the columns being cleared.
+    /// A side that was already a capped prefix keeps the wire size it recorded.
+    func recordingStoredBodiesEvicted(requestBytes: Int, responseBytes: Int) -> Flow {
+        var copy = self
+        if requestBytes > 0, copy.request.fullBodyBytes == nil { copy.request.fullBodyBytes = requestBytes }
+        if responseBytes > 0 {
+            func evicted(_ response: CapturedResponse) -> CapturedResponse {
+                var response = response
+                if response.fullBodyBytes == nil { response.fullBodyBytes = responseBytes }
+                return response
+            }
+            switch copy.outcome {
+            case .pending: break
+            case let .streaming(response): copy.outcome = .streaming(evicted(response))
+            case let .completed(response, at): copy.outcome = .completed(evicted(response), at: at)
+            case let .failed(error, at, partial):
+                copy.outcome = .failed(error, at: at, partialResponse: partial.map(evicted))
+            }
+        }
+        copy.bodiesEvicted = true
         return copy
     }
 }
