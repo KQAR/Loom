@@ -435,13 +435,79 @@ final class H2UpstreamTests {
         #expect(pool.statistics.livenessProbeFailures == 0, "a live origin answers its PING")
         #expect(pool.statistics.deadReuseDetected == 0)
     }
+    /// Response back-pressure holds on an h2 leg too, where the read gate sits on the
+    /// *stream* channel: a held read there stops the stream's WINDOW_UPDATEs, so the
+    /// origin is flow-controlled rather than merely buffered. The h1 half of this is
+    /// `ResponseBackPressureTests`.
+    @Test func anH2ResponseIsPacedOnTheConsumer() async throws {
+        let total = 128 << 20
+        let sent = Counter()
+        let origin = try StreamingH2Origin(material: material, total: total, sent: sent, group: group)
+        defer { origin.stop() }
+
+        let stream = forwarder().forwardStream(
+            method: "GET", url: URL(string: "https://127.0.0.1:\(origin.port)/big")!,
+            headers: [], body: .bytes(nil), origin: nil, clientProtocol: .http2
+        )
+        var events = stream.makeAsyncIterator()
+        var received = 0
+        while let event = try await events.next() {
+            if case let .body(chunk) = event { received += chunk.count; break }
+        }
+
+        var last = -1
+        for _ in 0 ..< 100 {
+            try await Task.sleep(for: .milliseconds(200))
+            if sent.value == last { break }
+            last = sent.value
+        }
+        #expect(
+            sent.value < 48 << 20,
+            "the h2 origin got \(sent.value >> 20) MB out while the consumer took one chunk"
+        )
+
+        while let event = try await events.next() {
+            if case let .body(chunk) = event { received += chunk.count }
+        }
+        #expect(received == total, "the stream must complete once the consumer resumes")
+    }
 }
 
-// MARK: - Test doubles
+/// An h2-only TLS origin answering with `StreamingOrigin`.
+private final class StreamingH2Origin {
+    let port: Int
+    private let channel: Channel
 
-/// A TLS origin that negotiates ALPN from a fixed offer list and answers over
-/// whichever protocol was chosen — `200` with a body and a `grpc-status: 0` trailer,
-/// so the trailer path is exercised on both legs.
+    init(material: TLSMaterial, total: Int, sent: Counter, group: EventLoopGroup) throws {
+        var configuration = TLSConfiguration.makeServerConfiguration(
+            certificateChain: try NIOSSLCertificate.fromPEMBytes(Array(material.serverCertPEM.utf8))
+                .map { .certificate($0) },
+            privateKey: .privateKey(try NIOSSLPrivateKey(bytes: Array(material.serverKeyPEM.utf8), format: .pem))
+        )
+        configuration.applicationProtocols = ["h2"]
+        let context = try NIOSSLContext(configuration: configuration)
+        channel = try ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                channel.eventLoop.makeCompletedFuture {
+                    try channel.pipeline.syncOperations.addHandler(NIOSSLServerHandler(context: context))
+                }.flatMap {
+                    channel.configureHTTP2Pipeline(mode: .server) { stream in
+                        stream.eventLoop.makeCompletedFuture {
+                            let sync = stream.pipeline.syncOperations
+                            try sync.addHandler(HTTP2FramePayloadToHTTP1ServerCodec())
+                            try sync.addHandler(StreamingOrigin(total: total, sent: sent))
+                        }
+                    }.map { _ in }
+                }
+            }
+            .bind(host: "127.0.0.1", port: 0).wait()
+        port = channel.localAddress?.port ?? 0
+    }
+
+    func stop() { try? channel.close().wait() }
+}
+
 private final class ALPNOrigin {
     let port: Int
     private let channel: Channel

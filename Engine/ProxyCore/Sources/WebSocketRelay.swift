@@ -123,8 +123,6 @@ enum WebSocketRelay {
         // server→client bytes start with the 101 handshake, which the tap skips.
         let clientTap = WebSocketTapHandler(direction: .clientToServer, expectsHandshake: false, sink: sink)
         let upstreamTap = WebSocketTapHandler(direction: .serverToClient, expectsHandshake: true, sink: sink)
-        clientTap.partner = upstreamTap
-        upstreamTap.partner = clientTap
 
         // A failed removal must NOT be swallowed: a leftover HTTP-typed handler
         // would force-unwrap the raw post-upgrade bytes and crash. Let the
@@ -132,9 +130,16 @@ enum WebSocketRelay {
         let removals = removeHandlerNames.map { name in
             client.pipeline.removeHandler(name: name)
         }
+        // Each side is a tap (observe) followed by a glue half (relay): the splice is
+        // `GlueHandler`'s, so back-pressure and a close that keeps the tail are too.
         EventLoopFuture.andAllSucceed(removals, on: client.eventLoop)
-            .flatMap { client.pipeline.addHandler(clientTap) }
-            .flatMap { upstream.pipeline.addHandler(upstreamTap) }
+            .flatMap {
+                client.eventLoop.makeCompletedFuture {
+                    let (clientGlue, upstreamGlue) = GlueHandler.matchedPair()
+                    try client.pipeline.syncOperations.addHandlers([clientTap, clientGlue])
+                    try upstream.pipeline.syncOperations.addHandlers([upstreamTap, upstreamGlue])
+                }
+            }
             .whenComplete { outcome in
                 switch outcome {
                 case .success:
@@ -398,16 +403,18 @@ struct WebSocketStreamTap {
     }
 }
 
-/// Byte-transparent relay for one side of a spliced WebSocket, tapping inbound
-/// bytes for capture. Modeled on `GlueHandler`.
+/// Observes one side of a spliced WebSocket for capture, passing every byte on
+/// untouched to the `GlueHandler` behind it, which does the relaying.
+///
+/// It used to relay too — a second copy of the glue, with the glue's two defects:
+/// no back-pressure, and a close that dropped whatever was still queued for the peer.
+/// Observing only, it cannot get either wrong.
 // @unchecked Sendable: event-loop confined, no lock — see ProxyCore/CLAUDE.md
 // § Sendable escape hatches for what that forbids inside a `Task {}`.
 final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
-    typealias OutboundOut = ByteBuffer
+    typealias InboundOut = ByteBuffer
 
-    var partner: WebSocketTapHandler?
-    private var context: ChannelHandlerContext?
     private let direction: WebSocketMessage.Direction
     private let sink: WebSocketCaptureSink
     private var tap: WebSocketStreamTap
@@ -420,20 +427,11 @@ final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
         self.tap = WebSocketStreamTap(expectsHandshake: expectsHandshake)
     }
 
-    func handlerAdded(context: ChannelHandlerContext) {
-        self.context = context
-    }
-
-    func handlerRemoved(context: ChannelHandlerContext) {
-        self.context = nil
-        partner = nil
-    }
-
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let buffer = unwrapInboundIn(data)
         // Relay first, parse second — capture never gates the splice, so a stream
         // the tap can't read still reaches its peer byte for byte.
-        partner?.relayWrite(buffer)
+        context.fireChannelRead(data)
         if let bytes = buffer.getBytes(at: buffer.readerIndex, length: buffer.readableBytes) {
             for frame in tap.consume(bytes) {
                 sink.record(direction: direction, frame: frame)
@@ -445,24 +443,8 @@ final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
         }
     }
 
-    func channelReadComplete(context: ChannelHandlerContext) {
-        partner?.relayFlush()
-    }
-
     func channelInactive(context: ChannelHandlerContext) {
-        partner?.relayClose()
         sink.finish()
-    }
-
-    private func relayWrite(_ buffer: ByteBuffer) {
-        context?.write(NIOAny(buffer), promise: nil)
-    }
-
-    private func relayFlush() {
-        context?.flush()
-    }
-
-    private func relayClose() {
-        context?.close(promise: nil)
+        context.fireChannelInactive()
     }
 }

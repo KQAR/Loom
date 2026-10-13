@@ -1,7 +1,9 @@
+import Compression
 import Foundation
 import Synchronization
 import NIOCore
 import NIOEmbedded
+import NIOHTTPCompression
 import NIOHTTP1
 import NIOPosix
 import Testing
@@ -85,6 +87,76 @@ struct ResponseBackPressureTests {
         await engine.stopForTest()
     }
 
+    /// A compressed body is inflated a slice at a time, so a single socket read cannot
+    /// outrun the gate.
+    ///
+    /// The decompressor emits its output in ≤64 KB pieces, but every piece one input
+    /// buffer yields comes out inside that one `channelRead` — before the gate can hold
+    /// anything. At DEFLATE's ~1000:1 ceiling a 64 KB read (what a pooled connection's
+    /// adaptive allocator has typically grown to) is ~64 MB arriving at once. Fed here
+    /// as exactly that read; without `UpstreamInflationPacer` all 64 MB lands in one
+    /// step.
+    @Test func aCompressedReadIsInflatedNoFasterThanItIsConsumed() throws {
+        let total = 64 << 20
+        let compressed = try Self.zlibCompressed(Data(repeating: 0x61, count: total))
+        let gate = UpstreamReadGate()
+        let sink = InboundBodySink()
+        let channel = EmbeddedChannel()
+        try channel.pipeline.syncOperations.addHandlers([
+            UpstreamInflationPacer(gate: gate),
+            NIOHTTPResponseDecompressor(limit: .none),
+            gate,
+            sink,
+        ])
+        let generation = gate.begin()
+        var headers = HTTPHeaders()
+        headers.add(name: "Content-Encoding", value: "deflate")
+        try channel.writeInbound(HTTPClientResponsePart.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers)))
+        try channel.writeInbound(HTTPClientResponsePart.body(channel.allocator.buffer(bytes: compressed)))
+        try channel.writeInbound(HTTPClientResponsePart.end(nil))
+
+        // The consumer pulls everything outstanding, then asks for more, until done.
+        let bound = UpstreamReadGate.highWatermark + UpstreamInflationPacer.sliceBytes * 1100
+        var peak = gate.outstandingBytes
+        for _ in 0 ..< 10_000 where !sink.ended {
+            gate.consumed(gate.outstandingBytes, generation: generation)
+            channel.read()
+            peak = max(peak, gate.outstandingBytes)
+        }
+        #expect(sink.ended, "the held end must be delivered once the body drains")
+        #expect(sink.bytes == total)
+        #expect(
+            peak <= bound,
+            "one step put \(peak >> 20) MB in front of the consumer; the bound is \(bound >> 20) MB"
+        )
+        _ = try channel.finish()
+    }
+
+    /// RFC 1950 framing around the raw DEFLATE `Compression` produces.
+    private static func zlibCompressed(_ input: Data) throws -> Data {
+        var output = Data(count: input.count / 100 + 4096)
+        let written = output.withUnsafeMutableBytes { out in
+            input.withUnsafeBytes { inp in
+                compression_encode_buffer(
+                    out.bindMemory(to: UInt8.self).baseAddress!, out.count,
+                    inp.bindMemory(to: UInt8.self).baseAddress!, inp.count, nil, COMPRESSION_ZLIB
+                )
+            }
+        }
+        try #require(written > 0)
+        var a: UInt32 = 1, b: UInt32 = 0
+        for chunk in stride(from: 0, to: input.count, by: 5552) {
+            for byte in input[chunk ..< min(chunk + 5552, input.count)] {
+                a &+= UInt32(byte)
+                b &+= a
+            }
+            a %= 65521
+            b %= 65521
+        }
+        let adler = (b << 16 | a).bigEndian
+        return Data([0x78, 0x9C]) + output.prefix(written) + withUnsafeBytes(of: adler) { Data($0) }
+    }
+
     @Test func theGateHoldsAReadPastItsWatermarkAndReleasesItOnConsumption() throws {
         let reads = Counter()
         let gate = UpstreamReadGate()
@@ -126,19 +198,23 @@ struct ResponseBackPressureTests {
 }
 
 /// Streams `total` bytes as fast as its socket will take them, counting what was
-/// actually handed to the kernel.
-private final class StreamingOrigin: ChannelInboundHandler, @unchecked Sendable {
+/// actually handed to the kernel. With `closeWhenDone` it closes the connection the
+/// moment the last byte is written — the origin a relay must not truncate.
+/// Shared with `TunnelBackPressureTests`.
+final class StreamingOrigin: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
     private let total: Int
     private let sent: Counter
+    private let closeWhenDone: Bool
     private var queued = 0
     private var started = false
 
-    init(total: Int, sent: Counter) {
+    init(total: Int, sent: Counter, closeWhenDone: Bool = false) {
         self.total = total
         self.sent = sent
+        self.closeWhenDone = closeWhenDone
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -171,12 +247,15 @@ private final class StreamingOrigin: ChannelInboundHandler, @unchecked Sendable 
             // Once: a later writability change re-enters `pump`, and a second `.end`
             // is a protocol violation NIO traps on.
             started = false
-            context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+            let ended = context.writeAndFlush(wrapOutboundOut(.end(nil)))
+            if closeWhenDone {
+                ended.assumeIsolated().whenComplete { _ in context.close(promise: nil) }
+            }
         }
     }
 }
 
-private final class ByteCounter: ChannelInboundHandler, Sendable {
+final class ByteCounter: ChannelInboundHandler, Sendable {
     typealias InboundIn = ByteBuffer
     private let received: Counter
     init(received: Counter) { self.received = received }
@@ -196,8 +275,22 @@ private final class ReadCounter: ChannelOutboundHandler, Sendable {
     }
 }
 
-private final class Counter: Sendable {
+final class Counter: Sendable {
     private let state = Mutex(0)
     var value: Int { state.withLock { $0 } }
     func add(_ n: Int) { state.withLock { $0 += n } }
+}
+
+/// The end of a test pipeline: counts the body and notes the end.
+private final class InboundBodySink: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = HTTPClientResponsePart
+    private(set) var bytes = 0
+    private(set) var ended = false
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        switch unwrapInboundIn(data) {
+        case let .body(buffer): bytes += buffer.readableBytes
+        case .end: ended = true
+        case .head: break
+        }
+    }
 }
