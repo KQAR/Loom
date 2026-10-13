@@ -69,7 +69,38 @@ final class BreakpointForwarder: UpstreamForwarding {
             )
         }
 
-        // A held exchange is buffered (we may edit the request or the whole response),
+        // A request-phase hold alone needs the request and nothing after it: once
+        // released, the response streams. Buffering it anyway made every large
+        // download through a request breakpoint fail at `BufferCap` for a response no
+        // one was going to look at.
+        guard let responseBP else {
+            let base = self.base
+            let store = self.store
+            return DeferredResponseStream.events {
+                let collected = try await body.collect(cap: .breakpoint)
+                let info = PendingBreakpoint(
+                    breakpointID: requestBP!.id, phase: .request,
+                    method: method, url: url.absoluteString, requestHeaders: headers, requestBody: collected.body
+                )
+                switch await store.hold(info) {
+                case .abort:
+                    return (Self.events(of: Self.aborted()), nil)
+                case let .proceed(edit):
+                    let (method, url, headers, requestBody) = Self.applyRequestEdit(
+                        edit, method: method, url: url, headers: headers, body: collected.body
+                    )
+                    // Base events — rule `.metadata` included — pass straight through.
+                    return ([], base.forwardStream(
+                        method: method, url: url, headers: headers,
+                        body: .bytes(requestBody, trailers: collected.trailers),
+                        origin: origin, clientProtocol: clientProtocol,
+                        clientURLString: clientURLString
+                    ))
+                }
+            }
+        }
+
+        // A response hold buffers the response (the operator may replace all of it),
         // but the base stream's rule `.metadata` is surfaced *immediately* — so a held
         // exchange that then fails upstream still records the rules that acted on it.
         return AsyncThrowingStream { continuation in
@@ -141,7 +172,8 @@ final class BreakpointForwarder: UpstreamForwarding {
                     // Response phase: hold the final response before it reaches the client.
                     // Matched off the *original* request so a request-phase URL edit can't
                     // change whether the response pauses.
-                    if let bp = responseBP {
+                    do {
+                        let bp = responseBP
                         let info = PendingBreakpoint(
                             breakpointID: bp.id, phase: .response,
                             method: method, url: url.absoluteString, requestHeaders: headers, requestBody: body,
@@ -165,11 +197,18 @@ final class BreakpointForwarder: UpstreamForwarding {
 
     /// Yield a buffered result to the client stream as head/body/end, then finish.
     private static func emit(_ result: ForwardResult, into continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation) {
-        if let transport = result.transport { continuation.yield(.transport(transport)) }
-        continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
-        if !result.body.isEmpty { continuation.yield(.body(result.body)) }
-        continuation.yield(.end(trailers: result.trailers))
+        for event in events(of: result) { continuation.yield(event) }
         continuation.finish()
+    }
+
+    /// A buffered result as the events a stream carries it in.
+    private static func events(of result: ForwardResult) -> [UpstreamResponseEvent] {
+        var events: [UpstreamResponseEvent] = []
+        if let transport = result.transport { events.append(.transport(transport)) }
+        events.append(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
+        if !result.body.isEmpty { events.append(.body(result.body)) }
+        events.append(.end(trailers: result.trailers))
+        return events
     }
 
     // MARK: - Edit application
