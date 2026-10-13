@@ -23,8 +23,9 @@ is **you, the agent, over MCP** — and the MCP surface exposes **write actions*
 loop with no GUI; the human supervises from the menu-bar panel.
 
 The tools are hosted by the **running Loom app**, which serves MCP over HTTP on
-`127.0.0.1:9092`. This plugin only points Claude at that URL — it launches and
-builds nothing. All state and logic live in the app.
+`127.0.0.1:9092`. This skill ships inside the app bundle and is linked into
+your skills directory, so it always matches the running app. All state and logic
+live in the app.
 
 **Each tool's own description is authoritative for its arguments and edge
 cases** (it arrives with `tools/list`). This file is the map: what to reach for,
@@ -36,13 +37,10 @@ in what order, and what to do when the answer is "nothing captured".
   are missing, fail to connect, or `get_version` errors, it isn't running (or
   isn't installed). Do not invent data — tell the user: *"Loom's MCP server
   isn't reachable. Install Loom (https://github.com/KQAR/Loom) if you don't have
-  it, then launch the Loom app (menu-bar icon) and retry."*
-- **Check plugin/app version skew, once per session.** The tools come from the
-  app, this prose from the plugin. Compare the `version` in
-  `../../.claude-plugin/plugin.json` (or `../../.cursor-plugin/plugin.json` under
-  Cursor) with `get_version`'s `appVersion`; that tool's description says what a
-  mismatch means and what to say about it. No version is written down here on
-  purpose — a copied number goes stale and then lies.
+  it, then launch the Loom app (menu-bar icon) and retry."* If the skill loads but
+  no `loom` server is configured, the one-time setup is
+  `sh /Applications/Loom.app/Contents/Resources/install-agent.sh` (add `cursor`
+  for Cursor), then restart the agent.
 - **A status that looks wrong says why — read the reason, don't infer one.**
   `isRunning: false`, `lanReachable: false` and a null `socksPort` each have two
   causes: switched off, or a bind that was refused. `listenerError` / `socksError`

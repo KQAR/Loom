@@ -10,8 +10,8 @@ rules), not just read queries. The agent closes the debug loop
 
 ## Install the app
 
-Loom's tools are served by the running app — the plugin below only points your
-agent at it. Grab `Loom.dmg` from the
+Loom's tools are served by the running app, and the agent skill ships inside it.
+Grab `Loom.dmg` from the
 [latest release](https://github.com/KQAR/Loom/releases/latest), or build from
 source (below).
 
@@ -20,21 +20,20 @@ source (below).
 > standing decision, not a bug: updates are authenticated by Sparkle's EdDSA
 > signature instead. Subsequent launches are normal.
 
-## Install the plugin (Claude Code)
+## Connect your agent (Claude Code / Cursor)
 
-Loom ships as a Claude Code plugin that connects to the running app's MCP server.
+The agent skill ships inside the app. Run this once:
 
 ```bash
-claude plugin marketplace add KQAR/Loom
-claude plugin install loom@loom
+sh /Applications/Loom.app/Contents/Resources/install-agent.sh          # Claude Code
+sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 ```
 
-Then **launch the Loom app** (the plugin talks to it over `http://127.0.0.1:9092/mcp`).
-Restart Claude Code so the `loom` MCP server connects; the agent then has the
-full tool set (read + write) plus the `loom` skill explaining them.
-
-> Cursor: the repo is also a Cursor plugin (`.cursor-plugin/`) — add
-> `KQAR/Loom` as a plugin marketplace from Cursor's plugin settings.
+It symlinks the bundled `loom` skill into the agent's skills directory and registers
+the MCP server at `http://127.0.0.1:9092/mcp`. Because the skill is a link into the
+app, **updating Loom updates the skill** — there is nothing to re-install. (It also
+removes the old `loom@loom` plugin if you had it.) Launch the Loom app and restart
+the agent; it then has the full tool set (read + write) plus the skill explaining them.
 
 ## Using it over MCP
 

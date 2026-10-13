@@ -30,7 +30,7 @@ import Testing
 ///
 /// `AppFeature` cannot import `MCPServer` — they are siblings, and the dependency
 /// direction is one-way — so the registry is read from disk through `#filePath`, the
-/// same seam `VersionFieldParityTests` uses for the version manifests. It fails if
+/// same seam `SkillContentTests` uses for the skill. It fails if
 /// the file moves, which is intended: a registry that moved without this moving with
 /// it is a check that stopped being maintained.
 @Suite struct AuditOptOutParityTests {
