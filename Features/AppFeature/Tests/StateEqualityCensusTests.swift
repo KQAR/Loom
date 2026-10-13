@@ -25,6 +25,7 @@ import Testing
         "aggregates",
         "aggregatesCoverHistory",
         "hostByRow",
+        "interceptedByHost",
         "pinnedHosts",
         "pinnedApps",
         "sslScope",

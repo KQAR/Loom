@@ -121,6 +121,18 @@ import Testing
         #expect(s.hosts.map(\.host) == ["z.test", "a.test"])
     }
 
+    /// The per-host verdict is cached across refreshes, so a scope change has to
+    /// drop it — in both directions, or a host stays marked decrypted after its
+    /// include entry is gone.
+    @Test func aCachedVerdictFollowsTheScopeBothWays() {
+        var s = state(hosts: ["a.test", "z.test"])
+        s.sslScope = SSLScope(enabled: true, include: ["z.test"], exclude: [])
+        #expect(s.hosts.first { $0.host == "z.test" }?.intercepted == true)
+        s.sslScope = SSLScope(enabled: true, include: [], exclude: [])
+        #expect(s.hosts.allSatisfy { !$0.intercepted })
+        #expect(s.hosts.map(\.host) == ["a.test", "z.test"])
+    }
+
     // MARK: - Search pushdown
 
     @Test func aDomainIsNeverPushedDownToTheEngine() {

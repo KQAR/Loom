@@ -139,7 +139,10 @@ public struct CaptureFeature: Sendable {
         /// One of the three inputs to the sidebar's grouping lists; assigning it
         /// re-sorts them (see `refreshSidebarRows`).
         var aggregates = FlowAggregates() {
-            didSet { refreshSidebarRows() }
+            // The refresh runs a scope glob per host and three sorts; the comparison is
+            // a dictionary walk. A capture batch reassigns this whether or not any count
+            // moved — a stream of requests to hosts already listed changes nothing here.
+            didSet { if aggregates != oldValue { refreshSidebarRows() } }
         }
         /// Whether `aggregates` covers stored history yet, or only what the engine has
         /// restored so far (a brief window after launch). Surfaced rather than smoothed
@@ -157,6 +160,12 @@ public struct CaptureFeature: Sendable {
         /// (measured 0.8 % of the main thread) to notify observers that do not exist.
         /// It stays in `State.==`, so equality still means equal contents.
         @ObservationStateIgnored var hostByRow: [Flow.ID: String] = [:]
+        /// `sslScope.shouldIntercept(host:)` per host, so a sidebar refresh — every
+        /// aggregate update, i.e. up to five a second under traffic — asks the scope's
+        /// include and exclude globs once per *new* host instead of once per host per
+        /// refresh. Cleared when the scope changes, which is the only input besides the
+        /// host. Ignored and compared for the same reasons as `hostByRow`.
+        @ObservationStateIgnored var interceptedByHost: [String: Bool] = [:]
         /// Flows that failed or answered 4xx/5xx — the sidebar's Errors badge. A
         /// passthrough so the badge and the tests keep reading one name; everything
         /// that *writes* it goes through `FlowAggregates`.
@@ -176,7 +185,11 @@ public struct CaptureFeature: Sendable {
         /// because an agent's `set_ssl_scope` lands as a fresh value on every re-read
         /// and most of those are the same scope again.
         public var sslScope = SSLScope.disabled {
-            didSet { if oldValue != sslScope { refreshSidebarRows() } }
+            didSet {
+                guard oldValue != sslScope else { return }
+                interceptedByHost.removeAll()
+                refreshSidebarRows()
+            }
         }
         public var deviceAliases: [String: String] = [:] // user labels for devices, keyed by IP
 
@@ -214,6 +227,7 @@ public struct CaptureFeature: Sendable {
                 && lhs.sidebarDevices == rhs.sidebarDevices
                 && lhs.selectionByDimension == rhs.selectionByDimension
                 && lhs.hostByRow == rhs.hostByRow
+                && lhs.interceptedByHost == rhs.interceptedByHost
                 && lhs.visiblePositions == rhs.visiblePositions
                 && lhs.visibleFlows.value == rhs.visibleFlows.value
                 && lhs.flows.value == rhs.flows.value
@@ -381,6 +395,7 @@ public struct CaptureFeature: Sendable {
         mutating func forgetCapturedFlows() {
             flows.replace(with: [])
             hostByRow.removeAll()
+            interceptedByHost.removeAll()
             // Cleared locally as well as re-read: the engine's own counts go to zero in
             // the same operation, and waiting for the round trip would leave a sidebar
             // full of hosts with no rows behind them for a frame.
@@ -727,9 +742,16 @@ public struct CaptureFeature: Sendable {
                 if a.intercepted != b.intercepted { return a.intercepted }
                 return a.host < b.host
             }
+            var intercepted = interceptedByHost
             let rows = aggregates.hostCounts.map { host, count in
-                HostRow(host: host, count: count, intercepted: sslScope.shouldIntercept(host: host))
+                let decrypted = intercepted[host] ?? {
+                    let answer = sslScope.shouldIntercept(host: host)
+                    intercepted[host] = answer
+                    return answer
+                }()
+                return HostRow(host: host, count: count, intercepted: decrypted)
             }
+            interceptedByHost = intercepted
             sidebarHosts = rows.sorted(by: precedes)
             sidebarHostGroups = Dictionary(grouping: sidebarHosts) { HostGrouping.domain(of: $0.host) }
                 .map { domain, members in

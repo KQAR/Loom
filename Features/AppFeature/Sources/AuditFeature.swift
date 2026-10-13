@@ -32,6 +32,10 @@ public struct AuditFeature: Sendable {
     public enum Action: Sendable {
         /// One-shot boot: seed history, then follow the live trail.
         case task
+        /// The stored trail, oldest first, in one action. History is not a write that
+        /// just happened, so it re-reads nothing — and one action rather than one per
+        /// entry, because the boot seed is up to `displayCap` of them.
+        case historySeeded([AuditEntry])
         case entryReceived(AuditEntry)
         case clearTapped
         case delegate(Delegate)
@@ -80,14 +84,29 @@ public struct AuditFeature: Sendable {
                 // before the stream's first entry or a resubscribe could interleave
                 // an old entry after a new one.
                 return .run { send in
-                    for entry in await proxyClient.recentAuditEntries(State.displayCap).reversed() {
-                        await send(.entryReceived(entry))
-                    }
+                    await send(.historySeeded(Array(proxyClient.recentAuditEntries(State.displayCap).reversed())))
                     for await entry in await proxyClient.auditStream() {
                         await send(.entryReceived(entry))
                     }
                 }
                 .cancellable(id: CancelID.subscription, cancelInFlight: true)
+
+            case let .historySeeded(entries):
+                // Same dedup-by-id and bound as a live entry, applied to a local copy
+                // and assigned once — the observed array costs work on every write.
+                var merged = state.entries
+                for entry in entries {
+                    if let existing = merged.index(id: entry.id) {
+                        merged[existing] = entry
+                    } else {
+                        merged.append(entry)
+                    }
+                }
+                if merged.count > State.displayCap {
+                    merged.removeFirst(merged.count - State.displayCap)
+                }
+                state.entries = merged
+                return .none
 
             case let .entryReceived(entry):
                 // Dedup by id (a re-seed after a resubscribe could repeat), then bound
