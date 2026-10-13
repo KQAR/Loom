@@ -242,11 +242,14 @@ public struct SetupFeature: Sendable {
         Reduce { state, action in
             switch action {
             case .task:
+                // Cancel-in-flight, like every other long-lived subscription here: a
+                // second `.task` would otherwise stack a second SCDynamicStore watch.
                 return .run { send in
                     for await snapshot in privilegedHelperClient.systemProxySnapshots() {
                         await send(.systemProxySnapshotChanged(snapshot))
                     }
                 }
+                .cancellable(id: CancelID.systemProxySnapshots, cancelInFlight: true)
 
             case .refresh:
                 let port = state.port
@@ -695,7 +698,7 @@ public struct SetupFeature: Sendable {
         }
     }
 
-    private enum CancelID: Hashable { case tunneledHostPoll }
+    private enum CancelID: Hashable { case tunneledHostPoll, systemProxySnapshots }
 
     /// Write an edited scope through and re-read the tunnelled list against it, so a
     /// host that just became intercepted stops being offered.

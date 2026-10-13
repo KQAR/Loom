@@ -1485,10 +1485,10 @@ private final class UpstreamResponseRelay: ChannelInboundHandler, Sendable {
             let headers = HTTPUtil.sanitizeDecodedResponseHeaders(HTTPUtil.headerPairs(head.headers))
             let version = httpVersionOverride ?? "HTTP/\(head.version.major).\(head.version.minor)"
             slot.receivedHead(head, headers: headers, httpVersion: version)
-        case var .body(chunk):
-            if let bytes = chunk.readBytes(length: chunk.readableBytes) {
-                slot.receivedBody(Data(bytes))
-            }
+        case let .body(chunk):
+            // One copy, straight out of the buffer's storage — not via a `[UInt8]`
+            // first, which was a second copy and an allocation per chunk.
+            if chunk.readableBytes > 0 { slot.receivedBody(Data(chunk.readableBytesView)) }
         case let .end(trailers):
             // `.end(nil)` is an ordinary response with no trailer section, and
             // `.end(headers)` is one that had one — the two must not collapse, or a
