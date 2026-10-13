@@ -9,7 +9,7 @@
 
 ## 安装 App
 
-Loom 的工具由运行中的 App 提供,下面的插件只负责把 Agent 指向它。从
+Loom 的工具由运行中的 App 提供,Agent skill 也随 App 一起分发。从
 [最新 release](https://github.com/KQAR/Loom/releases/latest) 下载 `Loom.dmg`,
 或按下文自行构建。
 
@@ -17,20 +17,19 @@ Loom 的工具由运行中的 App 提供,下面的插件只负责把 Agent 指�
 > 所以直接双击会被 Gatekeeper 拦下。这是既定选择而非缺陷:更新的真实性由 Sparkle
 > 的 EdDSA 签名保证。之后启动一切照常。
 
-## 安装插件(Claude Code)
+## 连接 Agent(Claude Code / Cursor)
 
-Loom 以 Claude Code 插件形式分发,连接到运行中的 App 的 MCP 服务。
+Agent skill 随 App 一起分发。执行一次即可:
 
 ```bash
-claude plugin marketplace add KQAR/Loom
-claude plugin install loom@loom
+sh /Applications/Loom.app/Contents/Resources/install-agent.sh          # Claude Code
+sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 ```
 
-然后**启动 Loom App**(插件通过 `http://127.0.0.1:9092/mcp` 与它通信)。重启 Claude Code
-让 `loom` MCP 服务连上;之后 Agent 即可使用全部读/写工具,以及讲解用法的 `loom` skill。
-
-> Cursor:本仓库同时是 Cursor 插件(`.cursor-plugin/`)——在 Cursor 的插件设置里把
-> `KQAR/Loom` 添加为插件 marketplace 即可。
+它把 App 内置的 `loom` skill 符号链接到 Agent 的 skills 目录,并注册
+`http://127.0.0.1:9092/mcp` 这个 MCP 服务。skill 是指向 App 内部的链接,所以**更新 Loom
+就等于更新 skill**,无需重新安装(装过旧的 `loom@loom` 插件也会顺手卸掉)。启动 Loom App
+并重启 Agent,之后即可使用全部读/写工具,以及讲解用法的 skill。
 
 ## 通过 MCP 使用
 

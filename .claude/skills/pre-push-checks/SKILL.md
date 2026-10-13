@@ -41,7 +41,7 @@ Then pick from the table by what the diff *reaches*, not by which directory it s
 | `SharedModels/**` | `SharedModelsTests` **and** the bundles of every consumer the changed type reaches — a value type here is the one thing all five see |
 | `Features/AppFeature/**` | `AppFeatureTests` |
 | `Clients/PrivilegedHelperClient/**`, `Helper/**` | `PrivilegedHelperClientTests` — note the privileged paths themselves (pf, `networksetup`, the launchd record) are unreachable from any test and need one real toggle |
-| `Project.swift`, `Tuist/Package.swift`, target deps, embed steps | `tuist install && tuist generate --no-open` and a build; the plugin-version parity test lives in `SharedModelsTests` |
+| `Project.swift`, `Tuist/Package.swift`, target deps, embed steps | `tuist install && tuist generate --no-open` and a build |
 | root `Package.swift`, anything under the SPM library products | `swift build && swift test` — this graph resolves without Tuist and rots silently otherwise |
 | any `*.md`, `scripts/doc-budgets.json` | `scripts/verify-doc-budgets.py`, `scripts/verify-md-links.py` |
 | `docs/decisions/**` | the two above plus `scripts/verify-decision-records.py` |

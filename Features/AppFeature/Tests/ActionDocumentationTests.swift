@@ -18,8 +18,8 @@ import Testing
 /// codebase where the comments carry the invariants, a comment on the wrong declaration
 /// is worse than no comment at all — so it is checked rather than watched for.
 ///
-/// Read from source through `#filePath`, the same way `VersionFieldParityTests` reads
-/// the plugin manifests: there is no reflection that can see a comment.
+/// Read from source through `#filePath`, the same way `SkillContentTests` reads
+/// the skill: there is no reflection that can see a comment.
 @Suite struct ActionDocumentationTests {
     /// Every reducer whose `Action` this lint covers.
     ///

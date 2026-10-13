@@ -100,7 +100,7 @@ public final class MCPServer: @unchecked Sendable {
     /// full dual-era set lives in `MCPProtocol.supported`.
     public static let protocolVersion = MCPProtocol.latest
     /// Fixed loopback port for the HTTP MCP endpoint, so a static client config
-    /// (the Claude Code plugin's `.mcp.json`, `http://127.0.0.1:9092/mcp`) can
+    /// (the one `install-agent.sh` registers, `http://127.0.0.1:9092/mcp`) can
     /// reach it without discovering a random port. The `loom-mcp` stdio bridge
     /// still reads the handshake, so it keeps working if this ever falls back.
     public static let defaultPort = 9092
@@ -351,7 +351,7 @@ final class MCPDispatcher: @unchecked Sendable {
 
     /// `instructions` from `server/discover` — the one place the protocol lets a server
     /// say what it is for. Deliberately short: the depth lives in each tool's
-    /// description and in the plugin's skill, and this string is paid for on every
+    /// description and in the bundled skill, and this string is paid for on every
     /// discovery.
     private static let instructions = """
     An AI-operable HTTP/HTTPS debugging proxy. Read captured flows, then modify live \
@@ -553,9 +553,10 @@ final class MCPHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private func authorized(_ head: HTTPRequestHead) -> Bool {
         // The endpoint binds loopback only. A request with no Authorization header
-        // is allowed (local trust) so a fixed-URL HTTP client — the Claude Code
-        // plugin's MCP — can connect without the per-launch token. When a token IS
-        // sent (the loom-mcp stdio bridge), it must still match.
+        // is allowed (local trust) so a fixed-URL HTTP client — Claude Code or
+        // Cursor, as install-agent.sh registers it — can connect without the
+        // per-launch token. When a token IS sent (the loom-mcp stdio bridge), it
+        // must still match.
         guard let auth = head.headers.first(name: "Authorization") else { return true }
         return Self.constantTimeEqual(auth, "Bearer \(token)")
     }
