@@ -195,34 +195,58 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         let planMethod = plan.method
         let planURL = plan.url
         let planHeaders = plan.headers
-        return AsyncThrowingStream { continuation in
-            let task = Task {
-                do {
-                    // Cancellation (client gone) aborts the delay instead of
-                    // sleeping then forwarding anyway.
-                    if delayMs > 0 { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
-                    // Emit rule hits before touching the network so they survive an
-                    // upstream failure that throws before any response head.
-                    if !appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: appliedRules)) }
-                    for try await event in base.forwardStream(
-                        method: planMethod, url: planURL, headers: planHeaders, body: body,
-                        // `planURL` may be a rule's rewrite. Passed through anyway:
-                        // the resolver honours the raw form only while the URL still
-                        // agrees with it, so a `mapRemote` wins by construction
-                        // rather than by this decorator remembering to blank it.
-                        origin: origin, clientProtocol: clientProtocol,
-                        clientURLString: clientURLString
-                    ) {
-                        // The base (NIO) forwarder carries no rules; forward its events
-                        // untouched — the leading `.metadata` above is the rule carrier.
-                        continuation.yield(event)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
+        // Pulled, never pumped. This used to be a `Task` copying every base event into a
+        // second unbounded stream as fast as the origin sent them — which drained
+        // `NIOStreamingForwarder`'s stream on the consumer's behalf and so opened its
+        // read gate (`UpstreamReadGate`) for good: any matched-but-streaming rule (a
+        // header rewrite, a mapRemote, a delay) turned response back-pressure off.
+        let state = RuledStream(delayMilliseconds: delayMs, appliedRules: appliedRules) {
+            base.forwardStream(
+                method: planMethod, url: planURL, headers: planHeaders, body: body,
+                // `planURL` may be a rule's rewrite. Passed through anyway: the
+                // resolver honours the raw form only while the URL still agrees with
+                // it, so a `mapRemote` wins by construction rather than by this
+                // decorator remembering to blank it.
+                origin: origin, clientProtocol: clientProtocol,
+                clientURLString: clientURLString
+            )
+        }
+        return AsyncThrowingStream { try await state.next() }
+    }
+
+    /// The streaming branch's events, produced on demand: the delay, then the rule
+    /// carrier, then the base forwarder's events untouched (it carries no rules).
+    ///
+    /// `@unchecked Sendable` for the reason `PulledIterator` is: `AsyncThrowingStream`'s
+    /// unfolding producer is called once at a time, by the one consumer.
+    private final class RuledStream: @unchecked Sendable {
+        private let delayMilliseconds: Int
+        private let appliedRules: [AppliedRule]
+        private let open: @Sendable () -> AsyncThrowingStream<UpstreamResponseEvent, Error>
+        private var events: PulledIterator<AsyncThrowingStream<UpstreamResponseEvent, Error>.Iterator>?
+
+        init(
+            delayMilliseconds: Int, appliedRules: [AppliedRule],
+            open: @escaping @Sendable () -> AsyncThrowingStream<UpstreamResponseEvent, Error>
+        ) {
+            self.delayMilliseconds = delayMilliseconds
+            self.appliedRules = appliedRules
+            self.open = open
+        }
+
+        func next() async throws -> UpstreamResponseEvent? {
+            if let events { return try await events.next() }
+            // Cancellation (client gone) aborts the delay instead of sleeping then
+            // forwarding anyway.
+            if delayMilliseconds > 0 {
+                try await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
             }
-            continuation.onTermination = { _ in task.cancel() }
+            let opened = PulledIterator(open().makeAsyncIterator())
+            events = opened
+            // Rule hits lead, so they survive an upstream failure that throws before
+            // any response head.
+            if !appliedRules.isEmpty { return .metadata(appliedRules: appliedRules) }
+            return try await opened.next()
         }
     }
 

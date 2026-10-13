@@ -342,6 +342,9 @@ final class UpstreamConnection: @unchecked Sendable {
     /// gets a slot of its own and this one is never armed (which is also what makes
     /// `isBusy` correctly false for a shared connection).
     let slot: UpstreamExchangeSlot
+    /// Paces this connection's reads on the consumer — HTTP/1.1 only, for the reason
+    /// `slot` is; an h2 stream gets its own (`attemptHTTP2`).
+    let readGate: UpstreamReadGate
     /// What the connection speaks, once it is known. For h2, `multiplexer` is how a
     /// new stream is opened.
     let negotiated: UpstreamWireProtocol
@@ -389,6 +392,7 @@ final class UpstreamConnection: @unchecked Sendable {
         key: UpstreamPoolKey,
         channel: Channel,
         slot: UpstreamExchangeSlot,
+        readGate: UpstreamReadGate = UpstreamReadGate(),
         negotiated: UpstreamWireProtocol = .http1,
         multiplexer: HTTP2StreamMultiplexer? = nil,
         tlsInfo: UpstreamTLSInfoBox = UpstreamTLSInfoBox(),
@@ -398,6 +402,7 @@ final class UpstreamConnection: @unchecked Sendable {
         self.key = key
         self.channel = channel
         self.slot = slot
+        self.readGate = readGate
         self.negotiated = negotiated
         self.multiplexer = multiplexer
         self.tlsInfo = tlsInfo
