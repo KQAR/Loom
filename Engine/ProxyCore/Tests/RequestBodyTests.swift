@@ -60,6 +60,42 @@ import LoomSharedModels
         #expect(streamed.body == Data("ab".utf8))
     }
 
+    /// A buffering decorator must stop at its cap rather than hold an unbounded body,
+    /// and say which side and which holder — that text is what lands in `Flow.error`.
+    @Test func requestBody_collect_failsPastTheBufferCap() async throws {
+        let cap = BufferCap(bytes: 4, holder: .breakpoint)
+        let bridge = RequestBodyBridge(capture: RequestBodyCapture())
+        bridge.yield(Data("abc".utf8)); bridge.yield(Data("de".utf8)); bridge.finish()
+        do {
+            _ = try await RequestBody.stream(bridge.chunks, contentLength: nil).collect(cap: cap)
+            Issue.record("expected the cap to throw")
+        } catch let error as BufferedBodyTooLarge {
+            #expect(error.side == .request)
+            #expect(error.holder == .breakpoint)
+        }
+
+        // Exactly at the cap is fine; an in-memory body is never refused.
+        let atCap = RequestBodyBridge(capture: RequestBodyCapture())
+        atCap.yield(Data("abcd".utf8)); atCap.finish()
+        #expect(try await RequestBody.stream(atCap.chunks, contentLength: 4).collect(cap: cap).body?.count == 4)
+        #expect(try await RequestBody.bytes(Data(count: 10)).collect(cap: cap).body?.count == 10)
+    }
+
+    @Test func responseCollect_failsPastTheBufferCap() async throws {
+        let events = AsyncThrowingStream<UpstreamResponseEvent, Error> { c in
+            c.yield(.head(statusCode: 200, httpVersion: nil, headers: []))
+            c.yield(.body(Data(count: 3))); c.yield(.body(Data(count: 3)))
+            c.yield(.end(trailers: nil)); c.finish()
+        }
+        do {
+            _ = try await events.collect(cap: BufferCap(bytes: 5, holder: .rule))
+            Issue.record("expected the cap to throw")
+        } catch let error as BufferedBodyTooLarge {
+            #expect(error.side == .response)
+            #expect(error.localizedDescription.contains("traffic rule"))
+        }
+    }
+
     /// Draining is what makes a streamed request's trailer section knowable, so the
     /// two have to come back together — a `collect()` that returned only bytes is
     /// how every buffering path used to eat them.
