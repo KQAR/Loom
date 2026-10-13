@@ -47,6 +47,9 @@ enum RuleEngine {
     /// `matchingRules` needs would cost more than it saves here.
     static func captureDropRule(state: RulesState, flow: Flow) -> TrafficRule? {
         guard state.enabled else { return nil }
+        // Before the URL parse, which every new flow paid even with no capture rule
+        // anywhere in the list — the usual case.
+        guard state.rules.contains(where: { $0.actions.dropFromCapture }) else { return nil }
         guard let url = URL(string: flow.request.url) else { return nil }
         var context = RequestMatchContext(method: flow.request.method, url: url.absoluteString)
         let origin = RequestOrigin(app: flow.sourceApp, device: flow.sourceDevice)

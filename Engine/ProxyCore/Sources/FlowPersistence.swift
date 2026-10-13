@@ -80,6 +80,10 @@ final class FlowPersistence: @unchecked Sendable {
     private let maxBatch = 256
     /// Reused across writes instead of re-prepared per row.
     private var insertStatement: OpaquePointer?
+    /// `bodies(id:)`'s two statements, keyed by whether frames are read — kept for the
+    /// same reason as `insertStatement`. An export or a body search hydrates one row
+    /// per flow, and re-preparing per row was most of what each call cost.
+    private var bodiesStatements: [Bool: OpaquePointer] = [:]
     /// Called with the flows a prune deleted, on this store's queue.
     ///
     /// The pruner is the only place a *retained* flow disappears without anyone having
@@ -256,6 +260,7 @@ final class FlowPersistence: @unchecked Sendable {
         // can hold a reference, so exclusive access is already guaranteed.
         writePending()
         sqlite3_finalize(insertStatement)
+        for statement in bodiesStatements.values { sqlite3_finalize(statement) }
         sqlite3_close(db)
     }
 
@@ -536,18 +541,27 @@ final class FlowPersistence: @unchecked Sendable {
         -> (request: Data?, response: Data?, webSocket: [Data]?)? {
         queue.sync {
             writePending()
-            var stmt: OpaquePointer?
-            let sql = includingWebSocket
-                ? "SELECT reqBody, respBody, wsPayloads FROM flows WHERE id = ?;"
-                : "SELECT reqBody, respBody FROM flows WHERE id = ?;"
-            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK
-            else { return nil }
-            defer { sqlite3_finalize(stmt) }
+            guard let stmt = preparedBodies(includingWebSocket: includingWebSocket) else { return nil }
+            defer {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+            }
             sqlite3_bind_text(stmt, 1, id.uuidString, -1, transient)
             guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
             let frames = includingWebSocket ? Self.blob(stmt, 2).flatMap(WebSocketPayloads.decode) : nil
             return (Self.blob(stmt, 0), Self.blob(stmt, 1), frames)
         }
+    }
+
+    private func preparedBodies(includingWebSocket: Bool) -> OpaquePointer? {
+        if let cached = bodiesStatements[includingWebSocket] { return cached }
+        let sql = includingWebSocket
+            ? "SELECT reqBody, respBody, wsPayloads FROM flows WHERE id = ?;"
+            : "SELECT reqBody, respBody FROM flows WHERE id = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        bodiesStatements[includingWebSocket] = stmt
+        return stmt
     }
 
     /// A BLOB column as `Data`, or nil when NULL/empty.

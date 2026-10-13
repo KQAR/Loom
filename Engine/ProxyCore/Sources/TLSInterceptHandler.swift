@@ -103,7 +103,7 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                 channel: context.channel, head: head, urlString: absolute, store: store,
                 clientLeg: clientLeg(for: head)
             )
-        case var .body(chunk):
+        case let .body(chunk):
             if droppingRequest { return }
             if bodyBridge == nil {
                 guard let head = requestHead, let url = requestURL, let absolute = requestAbsolute else { return }
@@ -117,7 +117,7 @@ final class TLSInterceptHandler: ChannelInboundHandler, RemovableChannelHandler,
                                             trailers: bridge.trailers),
                               capture: bridge.capture)
             }
-            if let bytes = chunk.readBytes(length: chunk.readableBytes) { bodyBridge?.yield(Data(bytes)) }
+            if chunk.readableBytes > 0 { bodyBridge?.yield(Data(chunk.readableBytesView)) }
         case let .end(trailers):
             if let bodyBridge {
                 bodyBridge.finish(trailers: trailers.map(HTTPUtil.headerPairs))

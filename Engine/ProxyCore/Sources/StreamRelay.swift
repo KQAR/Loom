@@ -1,5 +1,6 @@
 import Foundation
 import NIOCore
+import Synchronization
 import LoomSharedModels
 
 /// Consumes an upstream response stream, relaying it to the client channel
@@ -55,8 +56,9 @@ enum StreamRelay {
             clientTransport: clientTransport, onUndeliverableResponse: onUndeliverableResponse,
             captureCap: captureCap
         ) }
-        channel.closeFuture.whenComplete { _ in work.cancel() }
+        let token = ClientCloseWatch.shared.track(work, on: channel)
         await work.value
+        ClientCloseWatch.shared.untrack(token)
     }
 
     private static func relayInner(
@@ -329,5 +331,61 @@ enum StreamRelay {
                 )
             }
         }
+    }
+}
+
+/// Cancels a client channel's in-flight relays when it closes — with one `closeFuture`
+/// callback per channel, not one per exchange.
+///
+/// `relay` used to hang `work.cancel()` off the client's `closeFuture` for every
+/// exchange, and a future's callbacks stay until it completes: on a keep-alive
+/// connection — an app polling for an hour, a browser's pooled socket — each request
+/// left a closure and its finished `Task` behind until the client disconnected.
+/// Here the channel's single callback cancels whatever is still tracked, and an
+/// exchange that finishes takes itself out.
+final class ClientCloseWatch: Sendable {
+    static let shared = ClientCloseWatch()
+
+    struct Token: Sendable {
+        fileprivate let channel: ObjectIdentifier
+        fileprivate let id: UUID
+    }
+
+    private let watched = Mutex<[ObjectIdentifier: [UUID: Task<Void, Never>]]>([:])
+
+    init() {}
+
+    func track(_ work: Task<Void, Never>, on channel: Channel) -> Token {
+        let key = ObjectIdentifier(channel)
+        let token = Token(channel: key, id: UUID())
+        let firstOnChannel = watched.withLock { watched -> Bool in
+            let first = watched[key] == nil
+            watched[key, default: [:]][token.id] = work
+            return first
+        }
+        if firstOnChannel {
+            // `self` rather than capturing the `Mutex` — see `RelayedTunnelRegistry`.
+            channel.closeFuture.whenComplete { [self] _ in
+                let orphans = watched.withLock { $0.removeValue(forKey: key) } ?? [:]
+                for work in orphans.values { work.cancel() }
+            }
+        }
+        // A channel already closed when we got here: its callback has run, so make
+        // sure this exchange does not wait on a client that is gone.
+        if !channel.isActive { work.cancel() }
+        return token
+    }
+
+    func untrack(_ token: Token) {
+        watched.withLock { watched in
+            // Leave the channel's (now possibly empty) entry: its one callback is
+            // already registered, and removing the key would register a second.
+            _ = watched[token.channel]?.removeValue(forKey: token.id)
+        }
+    }
+
+    /// Exchanges currently tracked on `channel` — for tests.
+    func trackedCount(on channel: Channel) -> Int {
+        watched.withLock { $0[ObjectIdentifier(channel)]?.count ?? 0 }
     }
 }

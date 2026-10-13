@@ -47,6 +47,11 @@ struct WebSocketFrameParser {
     /// alignment cannot be realigned from bytes alone.
     private(set) var failure: String?
 
+    /// Frame payloads are not wanted — the capture is past its cap and only counts
+    /// what it drops. Frames still delimit and are still returned (that is the
+    /// count), with empty payloads: no copy, no unmasking, for bytes nobody keeps.
+    var discardsPayloads = false
+
     /// Append newly-arrived bytes and return every frame now fully available.
     mutating func feed(_ bytes: [UInt8]) -> [Frame] {
         guard failure == nil else { return [] }
@@ -136,6 +141,9 @@ struct WebSocketFrameParser {
         }
 
         guard data.count - index >= length else { return .needMore }
+        if discardsPayloads {
+            return .frame(Frame(isFinal: isFinal, opcode: opcode, payload: Data()), consumed: index + length - start)
+        }
         var payload = Array(data[index ..< index + length])
         if masked {
             for offset in 0 ..< payload.count { payload[offset] ^= maskKey[offset % 4] }

@@ -36,6 +36,20 @@ import LoomSharedModels
         #expect(frames[0].payload == Data("hello".utf8))
     }
 
+    /// Past the capture cap the frames are only counted, so their payloads are not
+    /// copied or unmasked — but every frame is still delimited and returned, and the
+    /// stream stays aligned for the frames after it.
+    @Test func discardingPayloadsStillDelimitsEveryFrame() {
+        let key: [UInt8] = [0x37, 0xfa, 0x21, 0x3d]
+        let masked = Array("hello".utf8).enumerated().map { $0.element ^ key[$0.offset % 4] }
+        var parser = WebSocketFrameParser()
+        parser.discardsPayloads = true
+        let frames = parser.feed([0x81, 0x85] + key + masked + [0x81, 0x01, 0x41])
+        #expect(frames.count == 2)
+        #expect(frames.allSatisfy { $0.payload.isEmpty })
+        #expect(parser.feed([0x81, 0x01, 0x42]).count == 1, "alignment survives the skipped payloads")
+    }
+
     /// Two frames arriving in one read are both returned.
     @Test func multipleFramesInOneFeed() {
         var parser = WebSocketFrameParser()
