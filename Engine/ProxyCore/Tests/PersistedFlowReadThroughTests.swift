@@ -50,6 +50,32 @@ import LoomSharedModels
         #expect(store.flow(id: UUID()) == nil)
     }
 
+    /// A WebSocket flow loaded at boot carries frames without bytes; the detail read
+    /// is what puts them back, the same way it does a slimmed body.
+    @Test func store_bootLoadedWebSocketFlow_hydratesItsFrames() async throws {
+        let messages = [
+            WebSocketMessage(direction: .serverToClient, kind: .text, payload: Data("tick".utf8), timestamp: Date(timeIntervalSince1970: 1)),
+        ]
+        let saved = Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "wss://ws.test/", headers: []),
+            startedAt: Date(timeIntervalSince1970: 1),
+            outcome: .completed(CapturedResponse(statusCode: 101, headers: []), at: Date(timeIntervalSince1970: 2)),
+            webSocketMessages: messages
+        )
+        do {
+            let persistence = try #require(FlowPersistence(fileURL: fileURL))
+            persistence.save(saved)
+            persistence.flush()
+        }
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        let store = FlowStore(capacity: 10, persistence: persistence)
+        await store.loadPersisted(limit: 10)
+
+        #expect(await store.recent(limit: 1).first?.webSocketPayloadsStripped == true, "the list read stays byte-free")
+        #expect(await store.flow(id: saved.id)?.webSocketMessages == messages)
+    }
+
     /// The actual bug: evicted from a tiny ring, still on disk, still resolvable.
     @Test func store_flowAgedOutOfTheRing_stillResolves() async throws {
         let persistence = try #require(FlowPersistence(fileURL: fileURL))
