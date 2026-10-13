@@ -38,7 +38,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
     /// and the plan actually run can't disagree if rules mutate mid-request.
     private func execute(
         plan: RuleEngine.RequestPlan,
-        requestTrailers: [HeaderPair]? = nil,
+        requestBody: RequestBody,
         clientProtocol: ClientWireProtocol = .http1,
         clientURLString: String? = nil
     ) async throws -> ForwardResult {
@@ -57,7 +57,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
             // it exists for (a mock, a replay) have no client behind them.
             result = try await base.forwardStream(
                 method: plan.method, url: plan.url, headers: plan.headers,
-                body: .bytes(plan.body, trailers: requestTrailers),
+                body: requestBody,
                 // Carried, not blanked. Buffering is forced by things that have
                 // nothing to do with the URL — a response-header rewrite is the
                 // common one — so a rule that never touched the target would
@@ -140,114 +140,134 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                 origin: origin, clientProtocol: clientProtocol, clientURLString: clientURLString
             )
         }
-        let needsBuffering = matched.contains { rule in
-            let a = rule.actions
-            switch a.route {
-            case .passthrough, .mapRemote: break // retarget is a non-body edit
-            case .block, .mock, .mapLocal: return true // short-circuit: drain + capture the body
-            }
-            if a.rewriteRequest?.bodyText != nil { return true }
-            // `contains`, never `activeRequestSubstitutions.contains` — the latter
-            // builds a filtered array per matched rule per exchange to ask a
-            // yes/no question.
-            if a.requestSubstitutions.contains(where: { !$0.isEmpty && $0.field == .body }) { return true }
-            if a.rewriteResponse?.isEmpty == false { return true }
-            if a.hasActiveResponseSubstitutions { return true }
-            return false
-        }
+        let shape = BufferShape(matched)
 
-        if needsBuffering {
-            // Materialize the body, then run the SAME plan against it.
-            return AsyncThrowingStream { continuation in
-                let task = Task {
-                    do {
-                        let collected = try await body.collect(cap: .rule)
-                        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: collected.body)
-                        // Emit rule hits before running the plan so they survive an
-                        // upstream failure (the exchange records what matched even if
-                        // the connection never completes).
-                        if !plan.appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: plan.appliedRules)) }
-                        // Draining the body is what made the client's trailer section
-                        // knowable; carrying it forward is what stops a rule that
-                        // merely rewrites a header from also eating it.
-                        let result = try await self.execute(
-                            plan: plan, requestTrailers: collected.trailers,
-                            clientProtocol: clientProtocol, clientURLString: clientURLString
-                        )
-                        continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
-                        if !result.body.isEmpty { continuation.yield(.body(result.body)) }
-                        continuation.yield(.end(trailers: result.trailers))
-                        continuation.finish()
-                    } catch {
-                        continuation.finish(throwing: error)
-                    }
-                }
-                continuation.onTermination = { _ in task.cancel() }
-            }
-        }
-
-        // Streaming: plan with no body so only the non-body request edits apply
-        // (URL/host/headers/method); the real body streams through untouched.
-        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: nil)
-        let base = self.base
-        let appliedRules = plan.appliedRules
-        let delayMs = plan.delayMilliseconds
-        let planMethod = plan.method
-        let planURL = plan.url
-        let planHeaders = plan.headers
-        // Pulled, never pumped. This used to be a `Task` copying every base event into a
-        // second unbounded stream as fast as the origin sent them — which drained
-        // `NIOStreamingForwarder`'s stream on the consumer's behalf and so opened its
-        // read gate (`UpstreamReadGate`) for good: any matched-but-streaming rule (a
-        // header rewrite, a mapRemote, a delay) turned response back-pressure off.
-        let state = RuledStream(delayMilliseconds: delayMs, appliedRules: appliedRules) {
-            base.forwardStream(
-                method: planMethod, url: planURL, headers: planHeaders, body: body,
-                // `planURL` may be a rule's rewrite. Passed through anyway: the
-                // resolver honours the raw form only while the URL still agrees with
-                // it, so a `mapRemote` wins by construction rather than by this
-                // decorator remembering to blank it.
-                origin: origin, clientProtocol: clientProtocol,
-                clientURLString: clientURLString
+        guard shape.buffersResponse || shape.shortCircuits else {
+            // The response streams. Delay, URL, headers and method come from the
+            // body-less plan (none of them depends on the body), and the request body
+            // is prepared — streamed, drained or collected — only as far as the rules
+            // need, inside the first pull.
+            let bodiless = RuleEngine.planRequest(
+                matched: matched, method: method, url: url, headers: headers, body: nil
             )
+            let delayMs = bodiless.delayMilliseconds
+            let base = self.base
+            let leading: [UpstreamResponseEvent] = [.metadata(appliedRules: bodiless.appliedRules)]
+            return DeferredResponseStream.events {
+                // Cancellation (client gone) aborts the delay instead of sleeping then
+                // forwarding anyway.
+                if delayMs > 0 { try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000) }
+                let (plan, requestBody) = try await Self.prepareRequest(
+                    matched: matched, shape: shape, method: method, url: url, headers: headers, body: body
+                )
+                // Rule hits lead, so they survive an upstream failure that throws
+                // before any response head.
+                return (leading, base.forwardStream(
+                    method: plan.method, url: plan.url, headers: plan.headers, body: requestBody,
+                    // `plan.url` may be a rule's rewrite. Passed through anyway: the
+                    // resolver honours the raw form only while the URL still agrees
+                    // with it, so a `mapRemote` wins by construction rather than by
+                    // this decorator remembering to blank it.
+                    origin: origin, clientProtocol: clientProtocol,
+                    clientURLString: clientURLString
+                ))
+            }
         }
-        return AsyncThrowingStream { try await state.next() }
+
+        // The response is buffered — a response edit needs all of it — or answered in
+        // the origin's place. Not a pump: the result is complete before it is emitted.
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let (plan, requestBody) = try await Self.prepareRequest(
+                        matched: matched, shape: shape, method: method, url: url, headers: headers, body: body
+                    )
+                    // Emit rule hits before running the plan so they survive an
+                    // upstream failure (the exchange records what matched even if
+                    // the connection never completes).
+                    if !plan.appliedRules.isEmpty { continuation.yield(.metadata(appliedRules: plan.appliedRules)) }
+                    let result = try await self.execute(
+                        plan: plan, requestBody: requestBody,
+                        clientProtocol: clientProtocol, clientURLString: clientURLString
+                    )
+                    continuation.yield(.head(statusCode: result.statusCode, httpVersion: result.httpVersion, headers: result.headers))
+                    if !result.body.isEmpty { continuation.yield(.body(result.body)) }
+                    continuation.yield(.end(trailers: result.trailers))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
-    /// The streaming branch's events, produced on demand: the delay, then the rule
-    /// carrier, then the base forwarder's events untouched (it carries no rules).
+    /// What the matched rules need held in memory — decided per side, because the two
+    /// sides need different things and buffering one used to buffer both.
     ///
-    /// `@unchecked Sendable` for the reason `PulledIterator` is: `AsyncThrowingStream`'s
-    /// unfolding producer is called once at a time, by the one consumer.
-    private final class RuledStream: @unchecked Sendable {
-        private let delayMilliseconds: Int
-        private let appliedRules: [AppliedRule]
-        private let open: @Sendable () -> AsyncThrowingStream<UpstreamResponseEvent, Error>
-        private var events: PulledIterator<AsyncThrowingStream<UpstreamResponseEvent, Error>.Iterator>?
+    /// It used to be one flag, and the flag meant "collect the request body, then
+    /// buffer the response", whatever the rule was. So a rule that only rewrote a
+    /// response header capped every *upload* through it at `BufferCap`, and a block
+    /// rule — which never sends the body anywhere — failed a large upload instead of
+    /// answering 403. Worse, the flag looked for `bodyText` and missed a body replaced
+    /// from a *file*: such a rule took the streaming path, which forwards the client's
+    /// own body, and the rewrite silently never happened.
+    struct BufferShape {
+        /// A body substitution edits the client's bytes, so it needs all of them.
+        let needsOriginalRequestBody: Bool
+        /// Block / mock / mapLocal: answered here, so nothing goes upstream.
+        let shortCircuits: Bool
+        /// A response rewrite or substitution needs the whole response.
+        let buffersResponse: Bool
 
-        init(
-            delayMilliseconds: Int, appliedRules: [AppliedRule],
-            open: @escaping @Sendable () -> AsyncThrowingStream<UpstreamResponseEvent, Error>
-        ) {
-            self.delayMilliseconds = delayMilliseconds
-            self.appliedRules = appliedRules
-            self.open = open
-        }
-
-        func next() async throws -> UpstreamResponseEvent? {
-            if let events { return try await events.next() }
-            // Cancellation (client gone) aborts the delay instead of sleeping then
-            // forwarding anyway.
-            if delayMilliseconds > 0 {
-                try await Task.sleep(nanoseconds: UInt64(delayMilliseconds) * 1_000_000)
+        init(_ matched: [TrafficRule]) {
+            var original = false, short = false, response = false
+            for rule in matched {
+                let a = rule.actions
+                switch a.route {
+                case .passthrough, .mapRemote: break
+                case .block, .mock, .mapLocal: short = true
+                }
+                // `contains`, never `activeRequestSubstitutions.contains` — the latter
+                // builds a filtered array per matched rule per exchange to ask a
+                // yes/no question.
+                if a.requestSubstitutions.contains(where: { !$0.isEmpty && $0.field == .body }) { original = true }
+                if a.rewriteResponse?.isEmpty == false || a.hasActiveResponseSubstitutions { response = true }
             }
-            let opened = PulledIterator(open().makeAsyncIterator())
-            events = opened
-            // Rule hits lead, so they survive an upstream failure that throws before
-            // any response head.
-            if !appliedRules.isEmpty { return .metadata(appliedRules: appliedRules) }
-            return try await opened.next()
+            // Answered in the origin's place, the client's body is never sent, so
+            // nothing about it needs to be read.
+            needsOriginalRequestBody = original && !short
+            shortCircuits = short
+            buffersResponse = response
         }
+    }
+
+    /// The plan, and the request body that goes with it: the client's own stream when
+    /// no rule touches it, the collected bytes when a substitution edits them, and the
+    /// replacement (the client's drained and discarded) when the body goes nowhere.
+    ///
+    /// A wholesale replacement needs no flag of its own: it is `plan.body` being set,
+    /// which the body-less plan already answers — including the case where the
+    /// replacement file could not be read, which leaves it nil and sends the client's
+    /// own body, as `RewriteBody.file` documents.
+    private static func prepareRequest(
+        matched: [TrafficRule], shape: BufferShape,
+        method: String, url: URL, headers: [HeaderPair], body: RequestBody
+    ) async throws -> (RuleEngine.RequestPlan, RequestBody) {
+        if shape.needsOriginalRequestBody {
+            let collected = try await body.collect(cap: .rule)
+            let plan = RuleEngine.planRequest(
+                matched: matched, method: method, url: url, headers: headers, body: collected.body
+            )
+            // Draining the body is what made the client's trailer section knowable;
+            // carrying it forward is what stops a rule that merely edits the body from
+            // also eating it.
+            return (plan, .bytes(plan.body, trailers: collected.trailers))
+        }
+        let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: nil)
+        guard plan.shortCircuit != nil || plan.body != nil else { return (plan, body) }
+        let trailers = try await body.drain()
+        return (plan, .bytes(plan.body, trailers: trailers))
     }
 
     private static func synthesize(_ mock: MockResponseAction) -> ForwardResult {
