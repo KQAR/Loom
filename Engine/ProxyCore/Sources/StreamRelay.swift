@@ -11,6 +11,12 @@ enum StreamRelay {
     /// copy is capped.
     static let captureCap = 5_000_000
 
+    /// Response bytes the relay may have handed to the client channel and not yet seen
+    /// written, before it stops pulling from upstream. Big enough that a client keeping
+    /// up never waits (measured: the 64 KB channel watermark alone cost 12 % of a fast
+    /// transfer), small enough that a slow client costs a megabyte, not the response.
+    static let clientWriteBudget = 1 << 20
+
     static func relay(
         stream: AsyncThrowingStream<UpstreamResponseEvent, Error>,
         channel: Channel,
@@ -109,6 +115,10 @@ enum StreamRelay {
         /// Every response byte relayed, cap included — so a truncated capture can
         /// report the true size rather than looking like a body that ended at the cap.
         var wireBodyBytes = 0
+        /// Body writes handed to the client channel and not yet completed, oldest
+        /// first — what the client-side pacing waits on. See the `.body` case.
+        var unwritten: [(write: EventLoopFuture<Void>, bytes: Int)] = []
+        var unwrittenBytes = 0
         var headWritten = false
         var bodyless = false
         /// The origin's trailer section, arriving with the terminal event. Kept as a
@@ -214,7 +224,38 @@ enum StreamRelay {
                 case let .body(chunk):
                     // A bodyless response (HEAD / 204 / 304) must never carry body
                     // bytes on the wire; still capture them for the inspector.
-                    if !bodyless { HTTPUtil.writeResponseChunk(channel: channel, data: chunk) }
+                    if !bodyless {
+                        // The client side of response back-pressure: past
+                        // `clientWriteBudget` of unfinished writes, take nothing more
+                        // from upstream until the oldest has gone. Without it every
+                        // chunk the origin sent queued toward the client however slowly
+                        // it read — the whole response, for a slow enough client. The
+                        // upstream side is `UpstreamReadGate`, which pauses on this.
+                        //
+                        // Counted here rather than read off `channel.isWritable`, and
+                        // that was measured: a write reaches the channel through
+                        // `eventLoop.execute`, so while the loop is busy the queued
+                        // writes sit in its task queue where the watermark cannot see
+                        // them — a fast client still peaked at 650 MB that way.
+                        unwritten.append((HTTPUtil.writeResponseChunk(channel: channel, data: chunk), chunk.count))
+                        unwrittenBytes += chunk.count
+                        //
+                        // Over budget it waits once, for enough to get back under half
+                        // of it — writes complete in order, so the last of that run
+                        // stands for all of them. Waiting per chunk instead put a task
+                        // hop on every chunk and measured 41 % off a fast transfer.
+                        if unwrittenBytes > clientWriteBudget {
+                            var drained = 0
+                            var count = 0
+                            while count < unwritten.count, unwrittenBytes - drained > clientWriteBudget / 2 {
+                                drained += unwritten[count].bytes
+                                count += 1
+                            }
+                            try? await unwritten[count - 1].write.get()
+                            unwritten.removeFirst(count)
+                            unwrittenBytes -= drained
+                        }
+                    }
                     wireBodyBytes += chunk.count
                     if capturedBody.count < captureCap {
                         let remaining = captureCap - capturedBody.count

@@ -54,9 +54,13 @@ production path**:
 Captured body bytes are **capped observation copies** (`StreamRelay.captureCap`, 5 MB,
 request and response sides alike, streaming and buffered alike) — never the
 authoritative byte path, never retained beyond the bounded `Flow` projection, and only
-that capped copy persists to SQLite. Wire bytes move to the client under the existing
-high/low-watermark back-pressure (`RequestBodyBridge`). **The event stream must never
-be treated as a replayable byte log.** Any change to this path must preserve the cap.
+that capped copy persists to SQLite. Wire bytes are back-pressured both ways: the
+request through `RequestBodyBridge`'s watermarks, the response through
+`UpstreamReadGate` (upstream reads pause on what the consumer has pulled) and
+`StreamRelay.clientWriteBudget` (the relay stops pulling while writes are unfinished).
+Any stage that pumps one stream into another breaks that — pull, never pump.
+**The event stream must never be treated as a replayable byte log.** Any change to
+this path must preserve the cap.
 
 ## Replay & the body boundary
 
@@ -143,7 +147,7 @@ the single representation of applied rules.
 - no rule + upstream error: `appliedRules == nil`, error message byte-identical to the
   pre-migration one (regression guard).
 - large streaming response: memory stays bounded (observation capped, back-pressure
-  intact).
+  intact) — `ResponseBackPressureTests`.
 - WebSocket: frames appear as observations; splice throughput unaffected.
 
 ### Out of scope (YAGNI — do not build until ≥2 real needs exist)

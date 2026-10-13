@@ -117,7 +117,10 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         origin: RequestOrigin?, clientProtocol: ClientWireProtocol, clientURLString: String? = nil
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
-        AsyncThrowingStream { continuation in
+        // Paces the upstream socket on what the consumer has actually taken — see
+        // `UpstreamReadGate`. Without it the response leg had no back-pressure at all.
+        let demand = UpstreamResponseDemand()
+        return AsyncThrowingStream { continuation in
             guard let host = url.host else {
                 continuation.finish(throwing: ForwarderError.invalidURL(url.absoluteString))
                 return
@@ -227,7 +230,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                     let trailers = try await self.runExchange(
                         key: key, clientTLS: clientTLS, method: method, url: url,
                         headers: headers, body: body, continuation: continuation, active: active,
-                        downgradedForHeaderSize: downgradedForHeaderSize, target: target
+                        demand: demand, downgradedForHeaderSize: downgradedForHeaderSize, target: target
                     )
                     // The forwarder, not the relay, terminates the caller's stream:
                     // a failure with nothing yet yielded is a retry candidate, and a
@@ -259,6 +262,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             // On stream completion/cancellation, stop connecting and close the socket.
             continuation.onTermination = { _ in task.cancel(); active.terminate() }
         }
+        .reportingConsumption(to: demand)
     }
 
     // MARK: - One exchange, over a pooled or a fresh connection
@@ -283,6 +287,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
+        demand: UpstreamResponseDemand,
         downgradedForHeaderSize: Bool,
         target: RequestTarget
     ) async throws -> [HeaderPair]? {
@@ -295,7 +300,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 return try await attempt(
                     on: leased.connection, reused: true, idle: leased.idle,
                     method: method, url: url, headers: headers, body: body,
-                    continuation: continuation, active: active,
+                    continuation: continuation, active: active, demand: demand,
                     downgradedForHeaderSize: downgradedForHeaderSize, target: target
                 )
             } catch let failure as UpstreamAttemptFailure {
@@ -323,7 +328,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             return try await attempt(
                 on: fresh, reused: false, idle: .zero,
                 method: method, url: url, headers: headers, body: body,
-                continuation: continuation, active: active,
+                continuation: continuation, active: active, demand: demand,
                 downgradedForHeaderSize: downgradedForHeaderSize, target: target
             )
         } catch let failure as UpstreamAttemptFailure {
@@ -379,6 +384,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
+        demand: UpstreamResponseDemand,
         downgradedForHeaderSize: Bool,
         /// The request line, resolved once per exchange in `forwardStream` rather
         /// than re-derived here: a retry must put the same bytes on the wire as the
@@ -388,7 +394,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         if connection.negotiated == .http2 {
             return try await attemptHTTP2(
                 on: connection, reused: reused, idle: idle, method: method, url: url, headers: headers,
-                body: body, continuation: continuation, active: active, target: target
+                body: body, continuation: continuation, active: active, demand: demand, target: target
             )
         }
         guard active.adopt(closing: { connection.close() }) else {
@@ -413,6 +419,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // paid none of them, and charging it the original handshake would inflate
         // exactly the number someone is reading this to explain.
         let setup = reused ? nil : connection.setup
+        demand.bind(connection.readGate)
         connection.slot.arm(
             continuation: continuation,
             methodIsHead: method.uppercased() == "HEAD",
@@ -543,6 +550,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody,
         continuation: AsyncThrowingStream<UpstreamResponseEvent, Error>.Continuation,
         active: ActiveUpstreamBox,
+        demand: UpstreamResponseDemand,
         target: RequestTarget
     ) async throws -> [HeaderPair]? {
         guard let multiplexer = connection.multiplexer else {
@@ -550,6 +558,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         }
         let slot = UpstreamExchangeSlot()
         let notifier = UpstreamInactiveNotifier()
+        let readGate = UpstreamReadGate()
         let scheme: HTTP2FramePayloadToHTTP1ClientCodec.HTTPProtocol = connection.key.isTLS ? .https : .http
         let streamPromise = connection.channel.eventLoop.makePromise(of: Channel.self)
         multiplexer.createStreamChannel(promise: streamPromise) { stream in
@@ -560,6 +569,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 try sync.addHandler(
                     NIOHTTPResponseDecompressor(limit: .size(Self.maxDecompressedBodyBytes))
                 )
+                try sync.addHandler(readGate)
                 try sync.addHandler(
                     UpstreamResponseRelay(slot: slot, notifier: notifier, httpVersion: "HTTP/2")
                 )
@@ -588,6 +598,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         let remoteAddress = connection.remoteAddress
         let tlsBox = connection.tlsInfo
         let setup = reused ? nil : connection.setup
+        demand.bind(readGate)
         slot.arm(
             continuation: continuation,
             methodIsHead: method.uppercased() == "HEAD",
@@ -739,6 +750,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     ) async throws -> UpstreamConnection {
         let slot = UpstreamExchangeSlot()
         let notifier = UpstreamInactiveNotifier()
+        let readGate = UpstreamReadGate()
         let tlsInfo = UpstreamTLSInfoBox()
         let identity = key.identity
         // Settled by ALPN (TLS) or by prior knowledge (cleartext h2c). Held in a box
@@ -769,7 +781,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                         ))
                     }
                     guard key.preferHTTP2 else {
-                        try Self.addHTTP1Handlers(sync: sync, slot: slot, notifier: notifier)
+                        try Self.addHTTP1Handlers(sync: sync, slot: slot, notifier: notifier, readGate: readGate)
                         negotiation.settle(.http1, multiplexer: nil)
                         return channel.eventLoop.makeSucceededVoidFuture()
                     }
@@ -800,7 +812,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                         }
                         return channel.eventLoop.makeCompletedFuture {
                             try Self.addHTTP1Handlers(
-                                sync: channel.pipeline.syncOperations, slot: slot, notifier: notifier
+                                sync: channel.pipeline.syncOperations, slot: slot, notifier: notifier,
+                                readGate: readGate
                             )
                             negotiation.settle(.http1, multiplexer: nil)
                         }
@@ -848,7 +861,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
             probe = nil
         }
         let connection = UpstreamConnection(
-            key: key, channel: channel, slot: slot,
+            key: key, channel: channel, slot: slot, readGate: readGate,
             negotiated: negotiated, multiplexer: multiplexer,
             tlsInfo: tlsInfo, setup: setup, probe: probe
         )
@@ -880,7 +893,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
     private static func addHTTP1Handlers(
         sync: ChannelPipeline.SynchronousOperations,
         slot: UpstreamExchangeSlot,
-        notifier: UpstreamInactiveNotifier
+        notifier: UpstreamInactiveNotifier,
+        readGate: UpstreamReadGate
     ) throws {
         try sync.addHTTPClientHandlers()
         // Between the framing and the decompressor: the last point at which the body
@@ -897,6 +911,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         // Safe to keep across a pooled connection's later requests: it builds a
         // decoder per response `.head` and drops it on `.end`.
         try sync.addHandler(NIOHTTPResponseDecompressor(limit: .size(maxDecompressedBodyBytes)))
+        // After the decompressor, so it counts the bytes the consumer is handed.
+        try sync.addHandler(readGate)
         try sync.addHandler(UpstreamResponseRelay(slot: slot, notifier: notifier))
     }
 
