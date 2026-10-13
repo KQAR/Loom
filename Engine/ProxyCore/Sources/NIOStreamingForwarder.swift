@@ -566,6 +566,7 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
                 let sync = stream.pipeline.syncOperations
                 try sync.addHandler(HTTP2FramePayloadToHTTP1ClientCodec(httpProtocol: scheme))
                 try sync.addHandler(UpstreamEncodedBodyCounter(slot: slot))
+                try sync.addHandler(UpstreamInflationPacer(gate: readGate))
                 try sync.addHandler(
                     NIOHTTPResponseDecompressor(limit: .size(Self.maxDecompressedBodyBytes))
                 )
@@ -910,6 +911,8 @@ final class NIOStreamingForwarder: UpstreamForwarding, @unchecked Sendable {
         //
         // Safe to keep across a pooled connection's later requests: it builds a
         // decoder per response `.head` and drops it on `.end`.
+        // Feeds the decompressor in slices the gate can still stop — see the type.
+        try sync.addHandler(UpstreamInflationPacer(gate: readGate))
         try sync.addHandler(NIOHTTPResponseDecompressor(limit: .size(maxDecompressedBodyBytes)))
         // After the decompressor, so it counts the bytes the consumer is handed.
         try sync.addHandler(readGate)
