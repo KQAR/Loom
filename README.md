@@ -40,8 +40,7 @@ sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 It symlinks the bundled `loom` skill into the agent's skills directory and registers
 the MCP server at `http://127.0.0.1:9092/mcp`. Because the skill is a link into the
 app, **updating Loom updates the skill** — there is nothing to re-install. (It also
-removes the old `loom@loom` plugin if you had it.) Launch the Loom app and restart
-the agent; it then has the full tool set (read + write) plus the skill explaining them.
+removes the old `loom@loom` plugin if you had it.) Then launch Loom and restart the agent.
 
 ## Using it over MCP
 

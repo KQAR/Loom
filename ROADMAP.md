@@ -1062,6 +1062,39 @@ hoisted out of the row loop, and an invalid pattern matches **nothing** and show
 falling back to a substring would put rows on screen the filter never selected and an empty table
 with no explanation reads as "no traffic".
 
+### Memory that grew with the wrong thing, and a skill that lagged the app (done, 0.0.35)
+
+A static audit of the hot paths, every finding confirmed against the code and then measured
+in Release. One shape throughout: a cost that should have scaled with the work in flight
+scaled with something else — the body, the gap between two peers' speeds, the connection's
+age, the size of the history.
+
+**Bodies held whole, with no bound.** A rule that edits a body or a matched breakpoint
+buffered the response up to the decompressor's 1 GB limit — 2065 MB RSS for one header-only
+rewrite (#382). `BufferCap` stops it at 64 MB and fails the exchange with
+`BufferedBodyTooLarge` in `Flow.error`; forwarding unedited would silently skip what the
+operator armed. `BufferShape` then decides per side (#385), which also exposed a rewrite from
+a **file** that had never happened at all.
+
+**No back-pressure on the response leg.** The gap between how fast an origin sent and a client
+read was held in Loom's memory — a phone pulling 2 GB cost 2 GB (#383). `UpstreamReadGate`
+holds `read()` past 1 MB. The blind tunnel had the same defect plus a worse one (#384): it
+closed the partner on its own EOF, so a slow client received 35 MB of a gigabyte. After: all
+of it, at 14 MB.
+
+**Growth that nothing reported.** `flows.sqlite` had a row cap and no byte cap (#386); past
+4 GB the oldest rows lose bodies and keep rows, and say what they lost. Per-exchange closures
+on keep-alive connections, a ring paying `removeFirst` per flow, a second copy per chunk
+(#388); an inspector re-deriving multi-MB bodies per render (#387); a sidebar re-globbing every
+host per batch (#389).
+
+**The skill now ships inside the app (#390).** It reached agents through a plugin marketplace,
+and Claude Code caches a plugin per version — so every release left the skill behind until
+someone ran `/plugin update`. `install-agent.sh`, bundled in `Contents/Resources`, links the
+bundled skill into the agent's skills directory and registers the fixed MCP URL once; Sparkle
+replaces the bundle in place, so an app update is a skill update. The marketplace and its
+three hand-synced version fields are gone.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
