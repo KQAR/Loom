@@ -23,6 +23,16 @@ public enum FlowLimits {
     /// the plateau is ~3.2 GB at this cap against 659 MB at the old 20 000.
     public static let persistedRows = 99_999
 
+    /// Body bytes kept in `flows.sqlite` — request, response and WebSocket frames
+    /// together. `persistedRows` alone bounded the *count*, and a row may carry 5 MB a
+    /// side, so the file had no ceiling a user could reason about: 100 000 rows of
+    /// large downloads is hundreds of gigabytes. Past this the oldest rows keep their
+    /// metadata and lose their bodies (`Flow.bodiesEvicted`), the way the ring's
+    /// `bodyBudget` slims rather than drops, so every row stays resolvable and
+    /// `windowRows ≤ persistedRows` keeps meaning something. Set above the ~3.2 GB a
+    /// full store of 32 KB bodies measured, so ordinary traffic never meets it.
+    public static let persistedBodyBytes = 4 << 30
+
     /// Rows the main window's list holds. Sits at the store's cap rather than the
     /// ring's: history is read up into the window after launch, and a window smaller
     /// than the store is a table that disagrees with its own search results. Five
