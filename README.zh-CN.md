@@ -1,6 +1,14 @@
+<p align="center">
+  <img src="App/Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" alt="Loom app icon">
+</p>
+
 # Loom
 
 [English](README.md) | **简体中文**
+
+<p align="center">
+  <img src="docs/assets/screenshot.png" alt="Loom 主窗口(浅色 / 深色)">
+</p>
 
 一个常驻状态栏的 **AI 可操作 HTTP/HTTPS 调试代理**(macOS)。它像 Charles/Proxyman
 一样抓包,但主要的操作者是通过 **MCP** 对话的 AI Agent——而且 MCP 暴露的是**写操作**
