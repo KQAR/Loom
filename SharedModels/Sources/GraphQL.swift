@@ -35,6 +35,10 @@ public enum GraphQLParser {
     /// transport used by Apollo, Relay, urql, etc.).
     public static func parse(_ request: CapturedRequest) -> GraphQLOperation? {
         guard request.method.uppercased() == "POST", let body = request.body, !body.isEmpty else { return nil }
+        // A byte scan before the parse: every JSON POST came through here, and the
+        // parse is a full `JSONSerialization` of a body that, for a REST call, has no
+        // `query` key to find. Absent the key, it cannot be GraphQL.
+        guard body.range(of: Data(#""query""#.utf8)) != nil else { return nil }
         guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return nil }
         guard let query = object["query"] as? String, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }

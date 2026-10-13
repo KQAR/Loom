@@ -18,6 +18,8 @@ struct ResponsePane: View {
     /// Whether the body is currently a tree — reported up by `BodyView`, because only
     /// it knows whether the parse succeeded and stayed under the render limit.
     @State private var bodyIsOutline = false
+    /// See `RequestPane.bodyTextMemo`.
+    @State private var bodyTextMemo = RenderMemo<BodyMemoKey, String?>()
 
     /// Same reason as `RequestPane.Derived`: `tabs` needs the cookies (to decide
     /// whether the tab exists) and `content` needs them (to render it), so as a
@@ -146,7 +148,10 @@ struct ResponsePane: View {
     @ViewBuilder private func paneActions(_ derived: Derived) -> some View {
         switch tab {
         case .body:
-            if let text = RequestPane.bodyText(flow.response?.body) {
+            if let text = bodyTextMemo.value(
+                for: BodyMemoKey(flowID: flow.id, bytes: flow.response?.body?.count),
+                { RequestPane.bodyText(flow.response?.body) }
+            ) {
                 FloatingPaneActions(
                     copyText: text,
                     copyHelp: "Copy body",
