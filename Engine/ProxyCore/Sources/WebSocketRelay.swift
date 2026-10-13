@@ -230,6 +230,8 @@ final class WebSocketCaptureSink: @unchecked Sendable {
     private var messages: [WebSocketMessage] = []
     private var capturedBytes = 0
     private var capped = false
+    /// Past the cap — the taps stop copying payloads they would only drop.
+    var isCapped: Bool { capped }
     /// Frames seen after the cap tripped — recorded as a count on the flow so the
     /// transcript is honestly labelled partial.
     private var dropped = 0
@@ -368,6 +370,12 @@ struct WebSocketStreamTap {
     /// failure, or a handshake that never terminated. The relay is unaffected:
     /// bytes are forwarded before they're ever parsed.
     var failure: String? { handshakeFailure ?? parser.failure }
+
+    /// See `WebSocketFrameParser.discardsPayloads`.
+    var discardsPayloads: Bool {
+        get { parser.discardsPayloads }
+        set { parser.discardsPayloads = newValue }
+    }
     private var handshakeFailure: String?
 
     init(expectsHandshake: Bool) {
@@ -433,6 +441,7 @@ final class WebSocketTapHandler: ChannelInboundHandler, @unchecked Sendable {
         // the tap can't read still reaches its peer byte for byte.
         context.fireChannelRead(data)
         if let bytes = buffer.getBytes(at: buffer.readerIndex, length: buffer.readableBytes) {
+            if sink.isCapped { tap.discardsPayloads = true }
             for frame in tap.consume(bytes) {
                 sink.record(direction: direction, frame: frame)
             }

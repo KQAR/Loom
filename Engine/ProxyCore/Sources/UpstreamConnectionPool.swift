@@ -430,11 +430,29 @@ final class UpstreamConnection: @unchecked Sendable {
             state.idleGeneration += 1
             return true
         }
-        if shouldClose { channel.close(promise: nil) }
+        if shouldClose {
+            replaceIdleExpiry(nil)
+            channel.close(promise: nil)
+        }
     }
 
     /// Bump and return the generation. A caller scheduling an idle expiry keeps the
     /// returned value and compares it when the timer fires.
+    /// The pending idle-expiry task, so a lease or a newer release can cancel it.
+    /// Expiry is still decided by generation — this is not about correctness — but an
+    /// uncancelled timer held the connection for its full `idleTimeout` after every
+    /// release, so a hot connection reused at 1 000 req/s kept ~45 000 of them alive.
+    private let idleExpiry = Mutex<Scheduled<Void>?>(nil)
+
+    func replaceIdleExpiry(_ next: Scheduled<Void>?) {
+        let previous = idleExpiry.withLock { current -> Scheduled<Void>? in
+            let previous = current
+            current = next
+            return previous
+        }
+        previous?.cancel()
+    }
+
     func nextIdleGeneration() -> Int {
         state.withLock { state in
             state.idleGeneration += 1
@@ -705,6 +723,7 @@ final class UpstreamConnectionPool: Sendable {
         for connection in dead { connection.close() }
         guard let leased else { return nil }
         _ = leased.nextIdleGeneration()
+        leased.replaceIdleExpiry(nil)
         return Lease(connection: leased, idle: leased.markLeased())
     }
 
@@ -750,10 +769,13 @@ final class UpstreamConnectionPool: Sendable {
     /// release bumps it, so a timer scheduled for an earlier idle period recognises
     /// itself as stale and a re-parked connection carries a fresh one.
     private func scheduleIdleExpiry(_ connection: UpstreamConnection, generation: Int) {
-        connection.channel.eventLoop.scheduleTask(in: limits.idleTimeout) { [weak self] in
-            guard let self, connection.isIdleGenerationCurrent(generation) else { return }
+        // `weak connection` too: a pending timer is no reason to keep a socket's object
+        // alive, and the cancel below is a courtesy — not every path reaches it.
+        let scheduled = connection.channel.eventLoop.scheduleTask(in: limits.idleTimeout) { [weak self, weak connection] in
+            guard let self, let connection, connection.isIdleGenerationCurrent(generation) else { return }
             expire(connection)
         }
+        connection.replaceIdleExpiry(scheduled)
     }
 
     /// Watch a **shared h2** connection for going quiet, re-arming until it does.

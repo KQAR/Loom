@@ -93,7 +93,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                 urlString: resolved.head.uri, store: store,
                 clientLeg: Self.clientLeg(for: resolved.head)
             )
-        case var .body(chunk):
+        case let .body(chunk):
             if droppingRequest { return }
             // First body chunk: begin streaming. Pausing auto-read (mirrors the
             // TLS-swap pause) means the only reads are the ones the bridge asks for as
@@ -110,7 +110,7 @@ final class ProxyHandler: ChannelInboundHandler, RemovableChannelHandler, @unche
                                             trailers: bridge.trailers),
                               capture: bridge.capture)
             }
-            if let bytes = chunk.readBytes(length: chunk.readableBytes) { bodyBridge?.yield(Data(bytes)) }
+            if chunk.readableBytes > 0 { bodyBridge?.yield(Data(chunk.readableBytesView)) }
         case let .end(trailers):
             if let connectHead {
                 self.connectHead = nil

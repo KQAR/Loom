@@ -340,7 +340,14 @@ actor FlowStore {
             aggregates.contribute(flow)
             bodyBytes += bodySize(of: flow)
             if flows.count > capacity {
-                let overflow = flows.count - capacity
+                // Cut to below capacity, not to it. `removeFirst` shifts the whole ring
+                // — 784-byte `Flow`s, measured at 23 µs a call in Release at 2 000 —
+                // and trimming exactly to the cap left the next append over it again,
+                // so a full ring paid that on every new flow, more than the rest of the
+                // upsert put together. Same trade, and the same direction, as
+                // `CaptureFeature.State.trimSlack`: the ring never exceeds `capacity`,
+                // and between trims it holds up to 2.5 % fewer.
+                let overflow = flows.count - (capacity - capacity / 40)
                 for evicted in flows.prefix(overflow) {
                     bodyBytes -= bodySize(of: evicted)
                     positions[evicted.id] = nil
