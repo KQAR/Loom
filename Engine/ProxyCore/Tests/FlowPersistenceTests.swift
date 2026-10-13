@@ -93,6 +93,51 @@ import LoomSharedModels
         #expect(stripped.attachingWebSocketPayloads([Data("x".utf8)]) == stripped)
     }
 
+    /// The row count bounded the store and nothing bounded its bytes. Past the body
+    /// budget the oldest rows lose their bodies and keep everything else — and say so,
+    /// so a later read reports "evicted, it was 1024 bytes", never "no body".
+    @Test func overTheBodyBudget_theOldestRowsLoseTheirBodiesNotTheirRows() throws {
+        let store = try #require(FlowPersistence(fileURL: fileURL, maxBodyBytes: 4096, protectedNewest: 1))
+        let flows = (1 ... 10).map { n in
+            Flow(
+                id: UUID(),
+                request: CapturedRequest(method: "GET", url: "https://api.test/\(n)", headers: []),
+                startedAt: Date(timeIntervalSince1970: TimeInterval(n)),
+                outcome: .completed(
+                    CapturedResponse(statusCode: 200, headers: [], body: Data(repeating: 0x61, count: 1024)),
+                    at: Date(timeIntervalSince1970: TimeInterval(n) + 0.1)
+                )
+            )
+        }
+        for flow in flows { store.save(flow) }
+        store.flush()
+
+        #expect(store.recent(limit: 100).count == 10, "eviction must never delete a row")
+        let oldest = try #require(store.flow(id: flows[0].id))
+        #expect(oldest.bodiesEvicted == true)
+        #expect(oldest.response?.body == nil)
+        #expect(oldest.response?.fullBodyBytes == 1024, "the size it had must survive the eviction")
+        let newest = try #require(store.flow(id: flows[9].id))
+        #expect(newest.response?.body?.count == 1024, "the protected newest rows keep their bodies")
+        #expect(newest.bodiesEvicted == nil)
+
+        let kept = flows.filter { store.flow(id: $0.id)?.response?.body != nil }.count
+        #expect(kept * 1024 <= 4096, "the store is back under its budget")
+    }
+
+    /// A store already over its budget — written before the budget existed, or under a
+    /// larger one — is brought under it on open, not at the next write.
+    @Test func aStoreOverItsBudgetIsTrimmedOnOpen() throws {
+        do {
+            let store = try #require(FlowPersistence(fileURL: fileURL))
+            for n in 1 ... 6 { store.save(flow(n)) }
+            store.flush()
+        }
+        let reopened = try #require(FlowPersistence(fileURL: fileURL, maxBodyBytes: 0, protectedNewest: 0))
+        #expect(reopened.recent(limit: 10).count == 6)
+        #expect(reopened.recent(limit: 10).allSatisfy { reopened.flow(id: $0.id)?.bodiesEvicted == true })
+    }
+
     @Test func bodies_missingRow_isNil() throws {
         let store = try #require(FlowPersistence(fileURL: fileURL))
         #expect(store.bodies(id: UUID()) == nil)
