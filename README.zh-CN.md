@@ -36,8 +36,7 @@ sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 
 它把 App 内置的 `loom` skill 符号链接到 Agent 的 skills 目录,并注册
 `http://127.0.0.1:9092/mcp` 这个 MCP 服务。skill 是指向 App 内部的链接,所以**更新 Loom
-就等于更新 skill**,无需重新安装(装过旧的 `loom@loom` 插件也会顺手卸掉)。启动 Loom App
-并重启 Agent,之后即可使用全部读/写工具,以及讲解用法的 skill。
+就等于更新 skill**,无需重新安装(装过旧的 `loom@loom` 插件也会顺手卸掉)。然后启动 Loom 并重启 Agent。
 
 ## 通过 MCP 使用
 
