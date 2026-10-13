@@ -35,7 +35,7 @@ struct CodeTextView: NSViewRepresentable {
         /// `NSString` bridge and the comparison walks the whole document — up
         /// to 5 MB, ~10×/s while a body streams, whether or not find is open.
         var overridden: String?
-        private var original = ""
+        private(set) var original = ""
         private var wired = false
         let host = WireTextHost()
 
@@ -106,9 +106,14 @@ struct CodeTextView: NSViewRepresentable {
         textView.textContainerInset = textInset
         let coordinator = context.coordinator
         if coordinator.applied != identity {
+            // Only the original is ever extended in place: a decoded view on screen is
+            // a different string, and appending to it would splice two documents.
+            let showingOriginal = coordinator.overridden == nil
             coordinator.overridden = nil
             coordinator.appliedFind = nil
-            apply(text, to: textView)
+            if !showingOriginal || !Self.appendGrowth(of: coordinator.original, to: text, in: textView) {
+                apply(text, to: textView)
+            }
             coordinator.applied = identity
         }
         coordinator.bind(textView, original: text)
@@ -128,6 +133,28 @@ struct CodeTextView: NSViewRepresentable {
         textView.textColor = .textColor
         highlightHead(of: text, in: textView)
         textView.scroll(.zero)
+    }
+
+    /// A streaming body only grows, and each ~100 ms batch used to replace the whole
+    /// document — up to the 5 MB capture cap, on the main thread — and scroll it back
+    /// to the top under the reader. When the new text is the old text plus more, only
+    /// the more is appended and the scroll position stays.
+    ///
+    /// Decided on the bytes, not on the identity: the result is the same string either
+    /// way, so a coincidental prefix costs nothing but a kept scroll position. The
+    /// comparison is a byte-wise prefix check, far cheaper than re-laying-out the
+    /// document it saves.
+    static func appendGrowth(of old: String, to text: String, in textView: NSTextView) -> Bool {
+        guard !old.isEmpty, text.utf8.count > old.utf8.count, text.utf8.starts(with: old.utf8),
+              let storage = textView.textStorage
+        else { return false }
+        // `old` is whole UTF-8, so its length is a scalar boundary in `text` too.
+        let tail = text[text.utf8.index(text.startIndex, offsetBy: old.utf8.count)...]
+        storage.append(NSAttributedString(string: String(tail), attributes: [
+            .font: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
+            .foregroundColor: NSColor.textColor,
+        ]))
+        return true
     }
 
     /// Background-highlight the supplied find ranges without touching the head's
