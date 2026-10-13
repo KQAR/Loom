@@ -90,15 +90,69 @@ struct RequestBody: Sendable {
     /// Pulling respects the stream's back-pressure, so this never reads faster than
     /// the consumer here. The trailers are read *after* the sequence ends, which is
     /// the only point at which they exist.
-    func collect() async throws -> CollectedRequestBody {
+    ///
+    /// `cap` bounds a *live* body only: a `.bytes` body is already in memory, so
+    /// refusing it would free nothing.
+    func collect(cap: BufferCap? = nil) async throws -> CollectedRequestBody {
         switch source {
         case let .bytes(data):
             return CollectedRequestBody(body: data, trailers: trailers?.current)
         case let .stream(chunks, _):
             var data = Data()
-            for try await chunk in chunks { data.append(chunk) }
+            for try await chunk in chunks {
+                try cap?.check(holding: data.count, adding: chunk.count, side: .request)
+                data.append(chunk)
+            }
             return CollectedRequestBody(body: data, trailers: trailers?.current)
         }
+    }
+}
+
+/// How much a buffering decorator may hold of one body before it gives up.
+///
+/// A matched breakpoint, or a rule that edits a body, rewrites the response or
+/// short-circuits, has to hold the *whole* body — and before this nothing bounded
+/// that: one `set_rule` matching a large download or an endless SSE stream would
+/// accumulate it in memory up to the decompressor's 1 GB limit, per exchange.
+/// Over the cap the exchange **fails** with `BufferedBodyTooLarge` rather than
+/// passing through unedited: forwarding the original would silently skip a rule or a
+/// hold the operator armed, and the failure lands in `Flow.error` where an agent reads
+/// it.
+///
+/// Known ceiling: a block/mock/mapLocal drains the request body only to discard it, so
+/// a huge upload to one fails instead of getting its 403/mock; drain-without-keeping
+/// if that ever matters.
+struct BufferCap: Sendable {
+    static let maxBytes = 64 << 20
+
+    let bytes: Int
+    let holder: BufferedBodyTooLarge.Holder
+
+    static let rule = BufferCap(bytes: maxBytes, holder: .rule)
+    static let breakpoint = BufferCap(bytes: maxBytes, holder: .breakpoint)
+
+    /// Subtraction, never `held + chunk`: the chunk length is the peer's.
+    func check(holding held: Int, adding chunk: Int, side: BufferedBodyTooLarge.Side) throws {
+        guard chunk > bytes - held else { return }
+        Log.rules.error("A \(holder.rawValue, privacy: .public) buffered a \(side.rawValue, privacy: .public) body past \(bytes) bytes; failing the exchange.")
+        throw BufferedBodyTooLarge(side: side, limit: bytes, holder: holder)
+    }
+}
+
+struct BufferedBodyTooLarge: Error, LocalizedError {
+    enum Side: String, Sendable { case request, response }
+    enum Holder: String, Sendable { case rule = "traffic rule", breakpoint }
+
+    let side: Side
+    let limit: Int
+    let holder: Holder
+
+    var errorDescription: String? {
+        let why = switch holder {
+        case .rule: "A matched traffic rule needs the whole \(side.rawValue) body in memory (it edits a body, rewrites the response, or answers in Loom's place)"
+        case .breakpoint: "A matched breakpoint holds the whole exchange in memory so it can be edited"
+        }
+        return "\(why), and the \(side.rawValue) body passed Loom's \(limit >> 20) MB buffering limit, so the exchange was failed rather than buffered further. Narrow the \(holder.rawValue)'s match so it does not cover large or endless transfers."
     }
 }
 

@@ -49,6 +49,50 @@ import LoomSharedModels
         #expect(bodies.request == nil, "this fixture has no request body")
     }
 
+    private func webSocketFlow() -> Flow {
+        Flow(
+            id: UUID(),
+            request: CapturedRequest(method: "GET", url: "wss://ws.test/feed", headers: []),
+            startedAt: Date(timeIntervalSince1970: 50),
+            outcome: .completed(CapturedResponse(statusCode: 101, headers: []), at: Date(timeIntervalSince1970: 51)),
+            webSocketMessages: [
+                WebSocketMessage(direction: .clientToServer, kind: .text, payload: Data("hello".utf8), timestamp: Date(timeIntervalSince1970: 50)),
+                WebSocketMessage(direction: .serverToClient, kind: .ping, payload: Data(), timestamp: Date(timeIntervalSince1970: 50.5)),
+                WebSocketMessage(direction: .serverToClient, kind: .binary, payload: Data([0, 1, 2]), timestamp: Date(timeIntervalSince1970: 51)),
+            ]
+        )
+    }
+
+    /// Frame payloads live in their own column: the list read keeps every frame's
+    /// metadata and none of its bytes, and every hydrating read puts them back.
+    @Test func webSocketPayloads_leaveTheJSONColumn_andHydrateBack() throws {
+        let store = try #require(FlowPersistence(fileURL: fileURL))
+        let saved = webSocketFlow()
+        store.save(saved)
+
+        let listed = try #require(store.recent(limit: 1).first)
+        #expect(listed.webSocketMessages?.count == 3)
+        #expect(listed.webSocketPayloadsStripped)
+
+        #expect(store.flow(id: saved.id)?.webSocketMessages == saved.webSocketMessages)
+        let frames = try #require(store.bodies(id: saved.id, includingWebSocket: true)?.webSocket)
+        #expect(listed.attachingWebSocketPayloads(frames).webSocketMessages == saved.webSocketMessages)
+        #expect(store.bodies(id: saved.id)?.webSocket == nil, "not read unless asked for")
+    }
+
+    @Test func webSocketPayloads_rejectAnythingButWholeFrames() throws {
+        let messages = webSocketFlow().webSocketMessages
+        let column = try #require(WebSocketPayloads.encode(messages))
+        #expect(WebSocketPayloads.decode(column)?.count == 3)
+        #expect(WebSocketPayloads.decode(column.dropLast()) == nil, "truncated payload")
+        #expect(WebSocketPayloads.decode(Data([0, 0, 0])) == nil, "truncated length")
+        #expect(WebSocketPayloads.decode(Data([0xFF, 0xFF, 0xFF, 0xFF])) == nil, "length past the end")
+        #expect(WebSocketPayloads.encode([]) == nil)
+        // A count mismatch attaches nothing rather than pairing bytes with the wrong frames.
+        let stripped = webSocketFlow().strippingWebSocketPayloads()
+        #expect(stripped.attachingWebSocketPayloads([Data("x".utf8)]) == stripped)
+    }
+
     @Test func bodies_missingRow_isNil() throws {
         let store = try #require(FlowPersistence(fileURL: fileURL))
         #expect(store.bodies(id: UUID()) == nil)

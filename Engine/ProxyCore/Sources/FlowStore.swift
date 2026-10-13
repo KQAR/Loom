@@ -800,12 +800,22 @@ actor FlowStore {
     /// `nonisolated` and fed an explicit persistence handle: callers run it off
     /// the actor (persistence serializes on its own queue, so it needs no actor
     /// protection, and blocking the actor on `queue.sync` was the whole problem).
+    ///
+    /// WebSocket frames hydrate the same way: a WS flow loaded from disk carries its
+    /// frames without their bytes (`FlowPersistence.save`), which is exactly
+    /// `webSocketPayloadsStripped`.
     private nonisolated static func hydrated(_ flow: Flow, from persistence: FlowPersistence?) -> Flow {
+        let needsFrames = flow.webSocketPayloadsStripped
         guard flow.request.body == nil, flow.response?.body == nil,
-              let persistence, let bodies = persistence.bodies(id: flow.id),
-              bodies.request != nil || bodies.response != nil
+              let persistence,
+              let stored = persistence.bodies(id: flow.id, includingWebSocket: needsFrames)
         else { return flow }
-        return flow.attachingBodies(request: bodies.request, response: bodies.response)
+        var result = flow
+        if stored.request != nil || stored.response != nil {
+            result = result.attachingBodies(request: stored.request, response: stored.response)
+        }
+        if let frames = stored.webSocket { result = result.attachingWebSocketPayloads(frames) }
+        return result
     }
 
     var count: Int { flows.count }

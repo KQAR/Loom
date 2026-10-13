@@ -215,7 +215,7 @@ extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure ==
     /// event and are consumed there (`StreamRelay` / replay), so they are not carried on
     /// the buffered result. Shared by every buffered `forward`; replay folds inline
     /// instead because it needs the rules even when the stream fails mid-flight.
-    func collect() async throws -> ForwardResult {
+    func collect(cap: BufferCap? = nil) async throws -> ForwardResult {
         var statusCode = 200
         var httpVersion: String?
         var headers: [HeaderPair] = []
@@ -227,7 +227,9 @@ extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure ==
             case .metadata: break
             case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
             case let .head(code, version, hdrs): statusCode = code; httpVersion = version; headers = hdrs
-            case let .body(chunk): body.append(chunk)
+            case let .body(chunk):
+                try cap?.check(holding: body.count, adding: chunk.count, side: .response)
+                body.append(chunk)
             case let .end(sectionTrailers): trailers = sectionTrailers
             }
         }

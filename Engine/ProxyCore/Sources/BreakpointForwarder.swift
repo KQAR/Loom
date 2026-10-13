@@ -78,7 +78,7 @@ final class BreakpointForwarder: UpstreamForwarding {
                     var method = method
                     var url = url
                     var headers = headers
-                    let collected = try await body.collect()
+                    let collected = try await body.collect(cap: .breakpoint)
                     var body = collected.body
                     // Not editable at a breakpoint (the edit surface is method / URL /
                     // headers / body), but carried through it: a hold that silently
@@ -126,7 +126,9 @@ final class BreakpointForwarder: UpstreamForwarding {
                         // would describe a response the consumer has not been given.
                         case let .transport(info): transport = (transport ?? FlowTransport()).merging(info)
                         case let .head(code, version, hdrs): statusCode = code; httpVersion = version; responseHeaders = hdrs
-                        case let .body(chunk): responseBody.append(chunk)
+                        case let .body(chunk):
+                            try BufferCap.breakpoint.check(holding: responseBody.count, adding: chunk.count, side: .response)
+                            responseBody.append(chunk)
                         case let .end(trailers): responseTrailers = trailers
                         }
                     }
