@@ -88,6 +88,20 @@ final class UpstreamReadGate: ChannelDuplexHandler, @unchecked Sendable {
         release?.read()
     }
 
+    /// At or past the high watermark — whether `UpstreamInflationPacer` may feed the
+    /// decompressor another slice.
+    var isSaturated: Bool { state.withLock { $0.outstanding >= Self.highWatermark } }
+
+    /// Decompressed bytes past this gate the consumer has not pulled.
+    var outstandingBytes: Int { state.withLock { $0.outstanding } }
+
+    /// Record a read someone below this gate swallowed on its behalf, so the next
+    /// release re-issues it. Without this, a read the gate let through and the pacer
+    /// then held would be lost, and the exchange would wait forever.
+    func holdRead() {
+        state.withLock { $0.heldRead = true }
+    }
+
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         if case let .body(buffer) = unwrapInboundIn(data) {
             let bytes = buffer.readableBytes
@@ -103,6 +117,85 @@ final class UpstreamReadGate: ChannelDuplexHandler, @unchecked Sendable {
             return false
         }
         if proceed { context.read() }
+    }
+}
+
+/// Feeds a compressed response body to the decompressor a slice at a time, and only
+/// while the consumer is keeping up.
+///
+/// `UpstreamReadGate` counts *decompressed* bytes, after the decompressor, and the
+/// decompressor inflates each input buffer completely in one call: DEFLATE tops out
+/// near 1032:1, so a single 64 KB socket read could become ~66 MB before the gate saw
+/// any of it. Sliced to `sliceBytes` and fed only while the gate is below its
+/// watermark, one step inflates at most ~4 MB, and the rest of the compressed input
+/// waits here — compressed, which is the cheap form to wait in.
+///
+/// An uncompressed response passes straight through; there is nothing to pace.
+///
+/// Escape-hatch kind 1 (ProxyCore/CLAUDE.md § Sendable escape hatches): event-loop
+/// confined, no lock.
+final class UpstreamInflationPacer: ChannelDuplexHandler, @unchecked Sendable {
+    typealias InboundIn = HTTPClientResponsePart
+    typealias InboundOut = HTTPClientResponsePart
+    typealias OutboundIn = HTTPClientRequestPart
+    typealias OutboundOut = HTTPClientRequestPart
+
+    static let sliceBytes = 4 << 10
+
+    private let gate: UpstreamReadGate
+    private var compressed = false
+    private var held = CircularBuffer<ByteBuffer>()
+    /// The response's end, kept behind any held body so it cannot overtake it.
+    private var heldEnd: HTTPHeaders??
+
+    init(gate: UpstreamReadGate) {
+        self.gate = gate
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        switch unwrapInboundIn(data) {
+        case let .head(head):
+            let encoding = head.headers[canonicalForm: "Content-Encoding"].first?.lowercased()
+            compressed = encoding != nil && encoding != "identity"
+            context.fireChannelRead(data)
+        case let .body(buffer) where compressed:
+            held.append(buffer)
+            drain(context: context)
+        case .body:
+            context.fireChannelRead(data)
+        case let .end(trailers):
+            guard !held.isEmpty else {
+                context.fireChannelRead(data)
+                return
+            }
+            heldEnd = .some(trailers)
+        }
+    }
+
+    func read(context: ChannelHandlerContext) {
+        if !held.isEmpty {
+            drain(context: context)
+            // Still holding: the socket has nothing to add yet. The gate is saturated
+            // (that is the only reason a drain stops early), so park the read with it.
+            guard held.isEmpty else {
+                gate.holdRead()
+                return
+            }
+        }
+        context.read()
+    }
+
+    private func drain(context: ChannelHandlerContext) {
+        while !held.isEmpty, !gate.isSaturated {
+            var first = held.removeFirst()
+            let slice = first.readSlice(length: min(Self.sliceBytes, first.readableBytes))!
+            if first.readableBytes > 0 { held.prepend(first) }
+            context.fireChannelRead(wrapInboundOut(.body(slice)))
+        }
+        if held.isEmpty, let trailers = heldEnd {
+            heldEnd = nil
+            context.fireChannelRead(wrapInboundOut(.end(trailers)))
+        }
     }
 }
 

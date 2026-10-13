@@ -57,7 +57,9 @@ authoritative byte path, never retained beyond the bounded `Flow` projection, an
 that capped copy persists to SQLite. Wire bytes are back-pressured both ways: the
 request through `RequestBodyBridge`'s watermarks, the response through
 `UpstreamReadGate` (upstream reads pause on what the consumer has pulled) and
-`StreamRelay.clientWriteBudget` (the relay stops pulling while writes are unfinished).
+`StreamRelay.clientWriteBudget` (the relay stops pulling while writes are unfinished),
+`UpstreamInflationPacer` (one read cannot inflate past the gate), and `GlueHandler`'s
+writability for tunnels and the WebSocket splice.
 Any stage that pumps one stream into another breaks that — pull, never pump.
 **The event stream must never be treated as a replayable byte log.** Any change to
 this path must preserve the cap.
@@ -76,9 +78,9 @@ in [`CLAUDE.md`](CLAUDE.md)).
 
 ## WebSocket
 
-The byte-transparent `WebSocketRelay` splice stays on the data plane — no parse, no
-reframe, no buffer. `WebSocketTapHandler` emits capped frame observations that become
-the `Flow`'s frame timeline without touching the splice's throughput.
+The splice is `GlueHandler`'s, as for CONNECT tunnels — no parse, no reframe, no
+buffer. `WebSocketTapHandler` only observes, emitting capped frame observations that
+become the `Flow`'s frame timeline.
 
 ---
 
