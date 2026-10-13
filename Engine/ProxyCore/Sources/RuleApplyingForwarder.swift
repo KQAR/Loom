@@ -66,7 +66,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
                 // URL, `plan.url` no longer matches this string and the resolver
                 // drops it on its own.
                 origin: nil, clientProtocol: clientProtocol, clientURLString: clientURLString
-            ).collect()
+            ).collect(cap: .rule)
         case let .block(ruleName):
             result = ForwardResult(
                 statusCode: 403,
@@ -131,6 +131,15 @@ final class RuleApplyingForwarder: UpstreamForwarding {
         // against the same request all over again, so every active rule's predicate
         // ran twice per exchange.
         let matched = RuleEngine.matchingRules(state: rules.snapshot(), method: method, url: url, origin: origin)
+        // Nothing matched: the plan is the identity, so delegate untouched rather than
+        // re-yield every event through a second stream and task — the same fast path
+        // `BreakpointForwarder` takes. This is the common case, and it is paid per chunk.
+        guard !matched.isEmpty else {
+            return base.forwardStream(
+                method: method, url: url, headers: headers, body: body,
+                origin: origin, clientProtocol: clientProtocol, clientURLString: clientURLString
+            )
+        }
         let needsBuffering = matched.contains { rule in
             let a = rule.actions
             switch a.route {
@@ -152,7 +161,7 @@ final class RuleApplyingForwarder: UpstreamForwarding {
             return AsyncThrowingStream { continuation in
                 let task = Task {
                     do {
-                        let collected = try await body.collect()
+                        let collected = try await body.collect(cap: .rule)
                         let plan = RuleEngine.planRequest(matched: matched, method: method, url: url, headers: headers, body: collected.body)
                         // Emit rule hits before running the plan so they survive an
                         // upstream failure (the exchange records what matched even if

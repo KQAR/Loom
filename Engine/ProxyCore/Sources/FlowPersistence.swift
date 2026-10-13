@@ -83,6 +83,9 @@ final class FlowPersistence: @unchecked Sendable {
         let json: Data
         let requestBody: Data?
         let responseBody: Data?
+        /// Every WebSocket frame's payload, framed by `WebSocketPayloads` — out of
+        /// `json` for the reason the bodies are.
+        let webSocketPayloads: Data?
         /// The four values `aggregate()` folds, lifted out of the JSON so counting
         /// them is a `GROUP BY` instead of a decode per row — see `aggregate()`.
         let appKey: String?
@@ -133,7 +136,7 @@ final class FlowPersistence: @unchecked Sendable {
         exec("""
         CREATE TABLE IF NOT EXISTS flows (
             id TEXT PRIMARY KEY, startedAt REAL, host TEXT, method TEXT, status INTEGER,
-            json BLOB, reqBody BLOB, respBody BLOB,
+            json BLOB, reqBody BLOB, respBody BLOB, wsPayloads BLOB,
             appKey TEXT, appJSON BLOB, deviceKey TEXT, deviceJSON BLOB, isError INTEGER,
             recordKind TEXT
         );
@@ -213,6 +216,9 @@ final class FlowPersistence: @unchecked Sendable {
         sqlite3_finalize(stmt)
         if !existing.contains("reqBody") { exec("ALTER TABLE flows ADD COLUMN reqBody BLOB;") }
         if !existing.contains("respBody") { exec("ALTER TABLE flows ADD COLUMN respBody BLOB;") }
+        // Same shape for WebSocket frames: a row from before this column keeps its
+        // payloads inline in `json` and reads back exactly as it always did.
+        if !existing.contains("wsPayloads") { exec("ALTER TABLE flows ADD COLUMN wsPayloads BLOB;") }
     }
 
     deinit {
@@ -231,18 +237,34 @@ final class FlowPersistence: @unchecked Sendable {
     }
 
     func save(_ flow: Flow) {
+        // Strong capture on purpose: a save must not be dropped because the store
+        // was released before the queue got to it. This means the last reference can
+        // be released *by the queue*, so `deinit` may run on it — which is why
+        // `deinit` flushes directly instead of via `queue.sync`.
+        //
+        // The encode happens on the queue, not here: the caller is `FlowStore`, and
+        // a WebSocket flow's metadata carries up to 5 MB of frames, base64-inflated —
+        // tens of milliseconds during which every capture upsert queued behind the
+        // actor. Ordering is unchanged, because reads drain this same queue.
+        queue.async { self.encodeAndEnqueue(flow) }
+    }
+
+    private func encodeAndEnqueue(_ flow: Flow) {
         // Metadata JSON is body-free; the bodies ride in their own BLOB columns so
         // list/boot reads never pay to decode (or base64-inflate) megabyte bodies.
         let data: Data
         do {
-            data = try encoder.encode(flow.strippingBodies())
+            // Frame payloads go too: a WebSocket flow holds up to 5 MB of them, and
+            // inline they were base64-inflated into the one column every list, boot
+            // and prune read decodes.
+            data = try encoder.encode(flow.strippingBodies().strippingWebSocketPayloads())
         } catch {
             let reason = "A captured flow could not be encoded, so it is in this window and not in the history: \(error.localizedDescription)"
             Log.store.error("Encoding flow \(flow.id.uuidString, privacy: .public) failed: \(reason, privacy: .public)")
             degradations?.record(.flowHistoryIncomplete, reason)
             return
         }
-        let row = Row(
+        enqueue(Row(
             id: flow.id.uuidString,
             startedAt: flow.startedAt.timeIntervalSince1970,
             host: flow.host,
@@ -251,18 +273,14 @@ final class FlowPersistence: @unchecked Sendable {
             json: data,
             requestBody: flow.request.body,
             responseBody: flow.response?.body,
+            webSocketPayloads: WebSocketPayloads.encode(flow.webSocketMessages),
             appKey: flow.sourceApp?.groupingKey,
             appJSON: flow.sourceApp.flatMap { try? encoder.encode($0) },
             deviceKey: flow.sourceDevice?.groupingKey,
             deviceJSON: flow.sourceDevice.flatMap { try? encoder.encode($0) },
             isError: FlowAggregates.isError(flow),
             recordKind: flow.recordKind.rawValue
-        )
-        // Strong capture on purpose: a save must not be dropped because the store
-        // was released before the queue got to it. This means the last reference can
-        // be released *by the queue*, so `deinit` may run on it — which is why
-        // `deinit` flushes directly instead of via `queue.sync`.
-        queue.async { self.enqueue(row) }
+        ))
     }
 
     /// Newest-first, like `FlowStore.recent`. Body-free: the JSON metadata blob no
@@ -312,7 +330,7 @@ final class FlowPersistence: @unchecked Sendable {
         queue.sync {
             writePending()
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT json, reqBody, respBody FROM flows WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK
+            guard sqlite3_prepare_v2(db, "SELECT json, reqBody, respBody, wsPayloads FROM flows WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK
             else { return nil }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, id.uuidString, -1, transient)
@@ -320,7 +338,10 @@ final class FlowPersistence: @unchecked Sendable {
                   let blob = sqlite3_column_blob(stmt, 0)
             else { return nil }
             let json = Data(bytes: blob, count: Int(sqlite3_column_bytes(stmt, 0)))
-            guard let flow = try? decoder.decode(Flow.self, from: json) else { return nil }
+            guard var flow = try? decoder.decode(Flow.self, from: json) else { return nil }
+            if let frames = Self.blob(stmt, 3).flatMap(WebSocketPayloads.decode) {
+                flow = flow.attachingWebSocketPayloads(frames)
+            }
             let request = Self.blob(stmt, 1)
             let response = Self.blob(stmt, 2)
             // A legacy row carries its bodies inline in `json` and null columns —
@@ -480,16 +501,25 @@ final class FlowPersistence: @unchecked Sendable {
     /// The stored request/response bodies for one flow, or nil if the row is gone.
     /// Each side is nil when that body was empty. Legacy rows (bodies still inline
     /// in `json`) return nil columns — the caller's in-memory copy already has them.
-    func bodies(id: UUID) -> (request: Data?, response: Data?)? {
+    ///
+    /// Frame payloads are read only when asked for: a live WebSocket flow in the ring
+    /// still holds its own, and reading 5 MB to discard it would be the cost this
+    /// column exists to avoid.
+    func bodies(id: UUID, includingWebSocket: Bool = false)
+        -> (request: Data?, response: Data?, webSocket: [Data]?)? {
         queue.sync {
             writePending()
             var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT reqBody, respBody FROM flows WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK
+            let sql = includingWebSocket
+                ? "SELECT reqBody, respBody, wsPayloads FROM flows WHERE id = ?;"
+                : "SELECT reqBody, respBody FROM flows WHERE id = ?;"
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK
             else { return nil }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_text(stmt, 1, id.uuidString, -1, transient)
             guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
-            return (Self.blob(stmt, 0), Self.blob(stmt, 1))
+            let frames = includingWebSocket ? Self.blob(stmt, 2).flatMap(WebSocketPayloads.decode) : nil
+            return (Self.blob(stmt, 0), Self.blob(stmt, 1), frames)
         }
     }
 
@@ -590,6 +620,7 @@ final class FlowPersistence: @unchecked Sendable {
         bindBlob(stmt, 12, row.deviceJSON)
         sqlite3_bind_int(stmt, 13, row.isError ? 1 : 0)
         sqlite3_bind_text(stmt, 14, row.recordKind, -1, transient)
+        bindBlob(stmt, 15, row.webSocketPayloads)
         return sqlite3_step(stmt) == SQLITE_DONE
     }
 
@@ -599,8 +630,9 @@ final class FlowPersistence: @unchecked Sendable {
         if let insertStatement { return insertStatement }
         let sql = """
         INSERT OR REPLACE INTO flows (id, startedAt, host, method, status, json, reqBody, respBody,
-                                      appKey, appJSON, deviceKey, deviceJSON, isError, recordKind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                                      appKey, appJSON, deviceKey, deviceJSON, isError, recordKind,
+                                      wsPayloads)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -846,5 +878,68 @@ final class FlowPersistence: @unchecked Sendable {
 
     private func exec(_ sql: String) {
         sqlite3_exec(db, sql, nil, nil, nil)
+    }
+}
+
+/// The `wsPayloads` column: every frame's payload, in message order, each as a 4-byte
+/// big-endian length and then its bytes. The message metadata (direction, kind,
+/// timestamp) stays in `json`; only the bytes move, so a list read knows how many
+/// frames there were without paying for what they said.
+enum WebSocketPayloads {
+    /// Nil when there is nothing worth a column — no messages, or none carrying bytes.
+    static func encode(_ messages: [WebSocketMessage]?) -> Data? {
+        guard let messages, messages.contains(where: { !$0.payload.isEmpty }) else { return nil }
+        var data = Data(capacity: messages.reduce(0) { $0 + 4 + $1.payload.count })
+        for message in messages {
+            var length = UInt32(message.payload.count).bigEndian
+            withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+            data.append(message.payload)
+        }
+        return data
+    }
+
+    /// Nil for anything that is not exactly a sequence of whole frames — a column this
+    /// store wrote is never that, and a partial answer would attach payloads to the
+    /// wrong messages.
+    static func decode(_ data: Data) -> [Data]? {
+        var payloads: [Data] = []
+        var offset = data.startIndex
+        while offset < data.endIndex {
+            guard data.endIndex - offset >= 4 else { return nil }
+            let length = data[offset..<offset + 4].reduce(0) { $0 << 8 | Int($1) }
+            offset += 4
+            guard length <= data.endIndex - offset else { return nil }
+            payloads.append(Data(data[offset..<offset + length]))
+            offset += length
+        }
+        return payloads
+    }
+}
+
+extension Flow {
+    /// The frames with their bytes emptied — the shape `json` stores.
+    func strippingWebSocketPayloads() -> Flow {
+        guard let messages = webSocketMessages, !messages.isEmpty else { return self }
+        var copy = self
+        copy.webSocketMessages = messages.map { var m = $0; m.payload = Data(); return m }
+        return copy
+    }
+
+    /// True while this flow's frames have been stripped and the bytes are elsewhere:
+    /// it has frames and not one of them carries a byte.
+    var webSocketPayloadsStripped: Bool {
+        guard let messages = webSocketMessages, !messages.isEmpty else { return false }
+        return messages.allSatisfy(\.payload.isEmpty)
+    }
+
+    /// Put stored payloads back, one per message. Left alone on a count mismatch,
+    /// because pairing bytes with the wrong frames is worse than showing none.
+    func attachingWebSocketPayloads(_ payloads: [Data]) -> Flow {
+        guard let messages = webSocketMessages, messages.count == payloads.count,
+              webSocketPayloadsStripped
+        else { return self }
+        var copy = self
+        copy.webSocketMessages = zip(messages, payloads).map { var m = $0; m.payload = $1; return m }
+        return copy
     }
 }
