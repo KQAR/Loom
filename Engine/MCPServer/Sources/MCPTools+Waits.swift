@@ -113,9 +113,15 @@ extension MCPToolExecutor {
             )
         }
 
+        // Prepared once for the whole wait. `query.matches` is the one-off form: it
+        // rebuilds the glob, the needle matcher and the header needles on every call,
+        // and here it ran on every stream event — two to four per exchange, one per
+        // WebSocket frame batch — for the length of the wait.
+        let metadata = query.metadataPredicate()
+        let bodies = query.bodyPredicate()
         let matched = await Self.waitCollecting(
             from: stream, id: \.id, seconds: seconds, limit: limit,
-            accepts: { until.isSatisfied(by: $0) && query.matches($0) }
+            accepts: { until.isSatisfied(by: $0) && metadata.matches($0) && bodies.matches($0) }
         )
         return waitResult(
             matched: matched, timedOut: matched.count < limit,
