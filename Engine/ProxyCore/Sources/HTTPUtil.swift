@@ -287,19 +287,30 @@ enum HTTPUtil {
     }
 
     /// Write one streamed body chunk (chunk-encoded by the response encoder).
-    static func writeResponseChunk(channel: Channel, data: Data) {
-        guard !data.isEmpty else { return }
+    ///
+    /// Returns the write's completion so a caller can pace on it — see
+    /// `StreamRelay`, which waits on it whenever the client channel stops being
+    /// writable. Failures are logged here and never thrown: the caller's only use for
+    /// the future is *when*, and a dead client is noticed through its close.
+    @discardableResult
+    static func writeResponseChunk(channel: Channel, data: Data) -> EventLoopFuture<Void> {
+        guard !data.isEmpty else { return channel.eventLoop.makeSucceededVoidFuture() }
         var writable = channel.allocator.buffer(capacity: data.count)
         writable.writeBytes(data)
         let buffer = writable // frozen for the closure, as in `writeResponse`
+        let promise = channel.eventLoop.makePromise(of: Void.self)
         channel.eventLoop.execute {
-            channel.writeAndFlush(HTTPServerResponsePart.body(.byteBuffer(buffer))).whenFailure { error in
-                Log.proxy.error("""
-                Writing a response body chunk to the client failed; the response is \
-                truncated from here: \(String(describing: error), privacy: .public)
-                """)
+            channel.writeAndFlush(HTTPServerResponsePart.body(.byteBuffer(buffer))).whenComplete { result in
+                if case let .failure(error) = result {
+                    Log.proxy.error("""
+                    Writing a response body chunk to the client failed; the response is \
+                    truncated from here: \(String(describing: error), privacy: .public)
+                    """)
+                }
+                promise.succeed()
             }
         }
+        return promise.futureResult
     }
 
     /// Terminate a streamed response (sends the final chunk) and close if needed.
