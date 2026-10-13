@@ -1,6 +1,14 @@
+<p align="center">
+  <img src="App/Resources/Assets.xcassets/AppIcon.appiconset/icon_256x256.png" width="128" alt="Loom app icon">
+</p>
+
 # Loom
 
 **English** | [简体中文](README.zh-CN.md)
+
+<p align="center">
+  <img src="docs/assets/screenshot.png" alt="Loom main window in light and dark mode">
+</p>
 
 An **AI-operable HTTP/HTTPS debugging proxy** for macOS that lives in the status
 bar. It captures traffic like Charles/Proxyman, but its primary operator is an AI
