@@ -106,6 +106,18 @@ struct RequestBody: Sendable {
             return CollectedRequestBody(body: data, trailers: trailers?.current)
         }
     }
+
+    /// Consume the body without keeping it, returning the trailer section — for an
+    /// exchange whose own body goes nowhere (a block, a mock, a body a rule replaces).
+    /// Draining rather than ignoring it is what lets the client finish its upload and
+    /// the capture copy (`RequestBodyCapture`) record it; holding none of it is what
+    /// lets an upload of any size get its answer.
+    func drain() async throws -> [HeaderPair]? {
+        if case let .stream(chunks, _) = source {
+            for try await _ in chunks {}
+        }
+        return trailers?.current
+    }
 }
 
 /// How much a buffering decorator may hold of one body before it gives up.
@@ -119,9 +131,10 @@ struct RequestBody: Sendable {
 /// hold the operator armed, and the failure lands in `Flow.error` where an agent reads
 /// it.
 ///
-/// Known ceiling: a block/mock/mapLocal drains the request body only to discard it, so
-/// a huge upload to one fails instead of getting its 403/mock; drain-without-keeping
-/// if that ever matters.
+/// Only a rule that needs the *original* body buffers it — one with a body
+/// substitution. A block/mock/mapLocal, or a body replaced wholesale, drains the client's
+/// body without keeping it (`RequestBody.drain`), and a response edit leaves the request
+/// streaming; see `RuleApplyingForwarder.plan`.
 struct BufferCap: Sendable {
     static let maxBytes = 64 << 20
 
