@@ -9,7 +9,7 @@
 
 ## 安装 App
 
-Loom 的工具由运行中的 App 提供,下面的插件只负责把 Agent 指向它。从
+Loom 的工具由运行中的 App 提供,Agent skill 也随 App 一起分发。从
 [最新 release](https://github.com/KQAR/Loom/releases/latest) 下载 `Loom.dmg`,
 或按下文自行构建。
 

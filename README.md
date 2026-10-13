@@ -10,8 +10,8 @@ rules), not just read queries. The agent closes the debug loop
 
 ## Install the app
 
-Loom's tools are served by the running app — the plugin below only points your
-agent at it. Grab `Loom.dmg` from the
+Loom's tools are served by the running app, and the agent skill ships inside it.
+Grab `Loom.dmg` from the
 [latest release](https://github.com/KQAR/Loom/releases/latest), or build from
 source (below).
 
