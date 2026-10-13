@@ -239,3 +239,45 @@ extension AsyncThrowingStream where Element == UpstreamResponseEvent, Failure ==
         )
     }
 }
+
+/// A response stream whose first pull does the preparatory work — a delay, a request
+/// body to drain or collect, a breakpoint hold — and then yields `leading` followed by
+/// `rest`'s events, pulled one at a time.
+///
+/// For a decorator that has to *do something first* and must still not pump: copying
+/// the base stream into a second one as fast as it can was what drained
+/// `NIOStreamingForwarder`'s stream on the consumer's behalf and so opened
+/// `UpstreamReadGate` for good. The work runs in the consumer's task, so cancelling the
+/// consumer cancels it.
+///
+/// `@unchecked Sendable` for the reason `PulledIterator` is: `AsyncThrowingStream`'s
+/// unfolding producer is called once at a time, by the one consumer.
+final class DeferredResponseStream: @unchecked Sendable {
+    typealias Events = AsyncThrowingStream<UpstreamResponseEvent, Error>
+    typealias Prepared = (leading: [UpstreamResponseEvent], rest: Events?)
+
+    private var prepare: (@Sendable () async throws -> Prepared)?
+    /// Reversed, so `popLast` hands them out in order.
+    private var leading: [UpstreamResponseEvent] = []
+    private var rest: PulledIterator<Events.Iterator>?
+
+    private init(_ prepare: @escaping @Sendable () async throws -> Prepared) {
+        self.prepare = prepare
+    }
+
+    static func events(_ prepare: @escaping @Sendable () async throws -> Prepared) -> Events {
+        let state = DeferredResponseStream(prepare)
+        return AsyncThrowingStream { try await state.next() }
+    }
+
+    private func next() async throws -> UpstreamResponseEvent? {
+        if let prepare {
+            self.prepare = nil
+            let prepared = try await prepare()
+            leading = prepared.leading.reversed()
+            rest = prepared.rest.map { PulledIterator($0.makeAsyncIterator()) }
+        }
+        if let event = leading.popLast() { return event }
+        return try await rest?.next()
+    }
+}
