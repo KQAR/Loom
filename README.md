@@ -30,17 +30,17 @@ source (below).
 
 ## Connect your agent (Claude Code / Cursor)
 
-The agent skill ships inside the app. Run this once:
+The agent skill ships inside the app. Easiest: choose **Loom ▸ Copy Agent Setup
+Prompt** and paste it into your agent, which runs the setup itself. Or run it once:
 
 ```bash
 sh /Applications/Loom.app/Contents/Resources/install-agent.sh          # Claude Code
 sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 ```
 
-It symlinks the bundled `loom` skill into the agent's skills directory and registers
-the MCP server at `http://127.0.0.1:9092/mcp`. Because the skill is a link into the
-app, **updating Loom updates the skill** — there is nothing to re-install. (It also
-removes the old `loom@loom` plugin if you had it.) Then launch Loom and restart the agent.
+It links the bundled skill into the agent and registers the MCP server at
+`http://127.0.0.1:9092/mcp`, so **updating Loom updates the skill**. (It also removes
+the old `loom@loom` plugin.) Then launch Loom and restart the agent.
 
 ## Using it over MCP
 

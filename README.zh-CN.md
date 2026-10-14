@@ -27,7 +27,8 @@ Loom 的工具由运行中的 App 提供,Agent skill 也随 App 一起分发。�
 
 ## 连接 Agent(Claude Code / Cursor)
 
-Agent skill 随 App 一起分发。执行一次即可:
+Agent skill 随 App 一起分发。最省事的做法:选 **Loom ▸ Copy Agent Setup Prompt**,
+粘贴给 Agent,让它自己完成安装。也可以手动执行一次:
 
 ```bash
 sh /Applications/Loom.app/Contents/Resources/install-agent.sh          # Claude Code
