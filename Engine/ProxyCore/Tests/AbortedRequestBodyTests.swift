@@ -105,7 +105,12 @@ private final class BodyStreamRecorder: UpstreamForwarding, Sendable {
         method: String, url: URL, headers: [HeaderPair], body: RequestBody
     ) -> AsyncThrowingStream<UpstreamResponseEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            // Deliberately no `onTermination = { task.cancel() }`, unlike the real
+            // forwarder. A client close also cancels the relay (`ClientCloseWatch`),
+            // and wiring that through here raced a `CancellationError` against the
+            // handler's abort — measured, 17 of 600 runs. What this suite pins is the
+            // abort, so it has to be the only thing that can end the stream.
+            Task {
                 do {
                     _ = try await body.collect()
                     self.state.withLock { $0.finishedCleanly = true }
@@ -117,7 +122,6 @@ private final class BodyStreamRecorder: UpstreamForwarding, Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
