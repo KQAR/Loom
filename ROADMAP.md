@@ -1095,6 +1095,15 @@ bundled skill into the agent's skills directory and registers the fixed MCP URL 
 replaces the bundle in place, so an app update is a skill update. The marketplace and its
 three hand-synced version fields are gone.
 
+### The agent sets itself up (done, 0.0.36)
+
+0.0.35 made the skill update with the app but left connecting an agent as a shell command a
+human runs. Loom's operator is the agent, so the setup is now the agent's too: **Copy Setup
+Prompt for Your Agent** on the "Waiting for traffic" empty state — first run lands there,
+before any agent is connected — and **Loom ▸ Copy Agent Setup Prompt** once traffic replaces it
+(#393). The prompt names this copy's `install-agent.sh` by its real bundle path, shell-quoted,
+so a Loom run from outside `/Applications` hands out a command that works.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
