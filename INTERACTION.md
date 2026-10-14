@@ -72,7 +72,7 @@ The agent is never a black box the human can't interrupt.
 ## Degraded & Empty States
 
 - **Faults** (proxy bind failure, upstream unreachable, cert not trusted) render as fault cards at the top of the status-bar console. The agent's affected tool calls return the matching structured error, so human and agent learn of the fault together.
-- **Empty list** (main window) has two honest meanings and must not look identical: *proxy stopped* (start it from the console) vs *running, nothing captured yet* (hint: point a client at the listener's own `host:port` / `curl -x` — the same address the toolbar chip names, never a hardcoded `127.0.0.1`, which is wrong the moment LAN device connection is on). Use `ContentUnavailableView` for both.
+- **Empty list** (main window) has two honest meanings and must not look identical: *proxy stopped* (start it from the console) vs *running, nothing captured yet* (hint: point a client at the listener's own `host:port` / `curl -x` — the same address the toolbar chip names, never a hardcoded `127.0.0.1`, which is wrong the moment LAN device connection is on — plus a *Copy Setup Prompt for Your Agent* action, since first run is when no agent is connected yet). Use `ContentUnavailableView` for both.
 
 ## Menu-bar icon & notifications
 

@@ -1148,6 +1148,11 @@ public struct MainView: View {
                 Label("Waiting for traffic", systemImage: "dot.radiowaves.left.and.right")
             } description: {
                 Text("Send requests through \(store.displayHost):\(String(store.status.port))\n`curl -x http://\(store.displayHost):\(String(store.status.port)) http://…`")
+            } actions: {
+                // First run is when an agent isn't connected yet, and this is the
+                // screen first run lands on. The app menu keeps the same copy for later.
+                Button("Copy Setup Prompt for Your Agent") { AgentSetupPrompt.copy() }
+                    .help("Paste it into Claude Code or Cursor, and the agent installs Loom's skill and MCP server itself")
             }
         } else if let reason = store.proxyStartError {
             // A stopped proxy has two very different causes, and "Proxy stopped"
