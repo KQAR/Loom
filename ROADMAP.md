@@ -1104,6 +1104,22 @@ before any agent is connected — and **Loom ▸ Copy Agent Setup Prompt** once 
 (#393). The prompt names this copy's `install-agent.sh` by its real bundle path, shell-quoted,
 so a Loom run from outside `/Applications` hands out a command that works.
 
+### Three things found while taking screenshots (done, 0.0.37)
+
+**A backfilled app was never counted (#396).** A flow is recorded when its head is parsed,
+before libproc names the app, and `attributeSourceApp` then set the app in place — the one
+mutation of a recorded flow that skipped the aggregates. The device read 21 while its apps
+read 1, until a relaunch re-aggregated from disk.
+
+**Test suites left a plist in `~/Library/Preferences` per run (#397)** — 3,797 of them.
+`removePersistentDomain` leaves the file, and deleting it does not hold: cfprefsd writes an
+empty one back within seconds. Suites are now named by an absolute path under the temp
+directory, which CFPreferences honours as the plist's location.
+
+**A flake was the test racing itself (#395).** Its recorder copied the forwarder's
+`onTermination` cancel, so a client close reached it twice and the assertion saw whichever
+won — 17 of 600 runs.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
