@@ -417,7 +417,13 @@ actor FlowStore {
     /// stale pending copy — this mutates only the attribution.
     func attributeSourceApp(id: UUID, _ app: SourceApp) {
         guard let idx = index(of: id), flows[idx].sourceApp == nil else { return }
+        // Attribution is part of what the flow was counted under (`appCounts`,
+        // `deviceAppCounts`), so it goes back through the aggregates like any other
+        // change. Assigning it in place left every backfilled app uncounted until a
+        // relaunch re-aggregated from disk: the device read 21 while its apps read 1.
+        aggregates.retract(flows[idx])
         flows[idx].sourceApp = app
+        aggregates.contribute(flows[idx])
         // A completed flow already persisted without the attribution — refresh it.
         if flows[idx].completedAt != nil {
             persistence?.save(flows[idx])

@@ -127,6 +127,25 @@ import Foundation
         #expect(flow?.statusCode == 200, "the backfill must not overwrite the recorded outcome")
     }
 
+    /// The resolver usually answers after the head-parsed record is already counted
+    /// with no app, so the backfill is what puts the app into the sidebar's counts.
+    @Test func attributeSourceApp_countsTheAppItAttributes() async {
+        let store = FlowStore()
+        let id = UUID()
+        var flow = pendingFlow(id: id)
+        flow.sourceDevice = SourceDevice(ip: "127.0.0.1", kind: .local)
+        await store.upsert(flow)
+        let app = SourceApp(name: "MyApp", bundleID: "com.example.MyApp", pid: 5)
+
+        await store.attributeSourceApp(id: id, app)
+
+        let counts = await store.flowAggregates().aggregates
+        #expect(counts.appCounts[app.groupingKey] == 1)
+        #expect(counts.deviceAppCounts["127.0.0.1"]?[app.groupingKey] == 1)
+        #expect(counts.deviceCounts["127.0.0.1"] == 1, "re-counting the flow must not double its device")
+        #expect(counts.exchangeCount == 1)
+    }
+
     @Test func attributeSourceApp_neverOverwritesAnExistingAttribution() async {
         let store = FlowStore()
         let id = UUID()
