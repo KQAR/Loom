@@ -15,6 +15,8 @@ import LoomSharedModels
 /// the final in-memory state.
 @Suite("Config persist ordering", .timeLimit(.minutes(1)))
 struct ConfigPersistOrderingTests {
+    private let scratch = ScratchDefaults()
+
     private func makeRule(_ name: String) -> TrafficRule {
         TrafficRule(name: name, match: RuleMatch(urlPattern: "*"), actions: RuleActions(route: .block))
     }
@@ -51,9 +53,7 @@ struct ConfigPersistOrderingTests {
     /// The SSL scope is the higher-stakes one: a stale scope surviving a relaunch
     /// means HTTPS stops being intercepted and the user just sees an empty capture.
     @Test func concurrentScopeUpdates_persistTheFinalValue() async throws {
-        let suite = "com.loom.tests.persistorder.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = scratch.make()
 
         let config = InterceptionConfig(defaults: defaults)
         await withTaskGroup(of: Void.self) { group in

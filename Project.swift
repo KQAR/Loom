@@ -337,7 +337,7 @@ let project = Project(
             bundleId: "com.loom.proxycoretests",
             deploymentTargets: loomDeploymentTargets,
             infoPlist: .default,
-            sources: ["Engine/ProxyCore/Tests/**"],
+            sources: ["Engine/ProxyCore/Tests/**", "TestSupport/ScratchDefaults.swift"],
             dependencies: [
                 .target(name: "LoomProxyCore"),
                 .target(name: "LoomSharedModels"),
@@ -364,7 +364,7 @@ let project = Project(
             bundleId: "com.loom.appfeaturetests",
             deploymentTargets: loomDeploymentTargets,
             infoPlist: .default,
-            sources: ["Features/AppFeature/Tests/**"],
+            sources: ["Features/AppFeature/Tests/**", "TestSupport/ScratchDefaults.swift"],
             dependencies: [
                 .target(name: "AppFeature"),
                 .target(name: "ProxyClient"),
@@ -419,7 +419,7 @@ let project = Project(
             bundleId: "com.loom.privilegedhelperclienttests",
             deploymentTargets: loomDeploymentTargets,
             infoPlist: .default,
-            sources: ["Clients/PrivilegedHelperClient/Tests/**"],
+            sources: ["Clients/PrivilegedHelperClient/Tests/**", "TestSupport/ScratchDefaults.swift"],
             dependencies: [
                 .target(name: "PrivilegedHelperClient"),
                 .target(name: "LoomSharedModels"),

@@ -171,10 +171,9 @@ import LoomSharedModels
 }
 
 @Suite struct InterceptionConfigPersistenceTests {
-    private func makeDefaults() -> UserDefaults {
-        let suite = "com.loom.tests.\(UUID().uuidString)"
-        return UserDefaults(suiteName: suite)!
-    }
+    private let scratch = ScratchDefaults()
+
+    private func makeDefaults() -> UserDefaults { scratch.make() }
 
     @Test func scopeSurvivesReinit() {
         // Regression: SSL scope was in-memory only, so every relaunch reset to
