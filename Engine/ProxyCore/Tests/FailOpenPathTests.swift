@@ -15,6 +15,7 @@ import LoomSharedModels
 /// and what the degraded path actually does.
 @Suite final class FailOpenPathTests {
     private let directory: URL
+    private let scratch = ScratchDefaults()
 
     init() {
         directory = FileManager.default.temporaryDirectory
@@ -88,9 +89,7 @@ import LoomSharedModels
     // MARK: SSL scope
 
     @Test func interceptionConfig_corruptStoredScope_fallsBackToDisabled() throws {
-        let suite = "com.loom.tests.failopen.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = scratch.make()
         defaults.set(Data("garbage".utf8), forKey: "com.loom.sslScope")
 
         let config = InterceptionConfig(defaults: defaults)
@@ -98,9 +97,7 @@ import LoomSharedModels
     }
 
     @Test func interceptionConfig_goodStoredScope_isRestored() throws {
-        let suite = "com.loom.tests.failopen.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = scratch.make()
 
         let config = InterceptionConfig(defaults: defaults)
         config.update(SSLScope(enabled: true, include: ["api.example.com"]))

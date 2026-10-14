@@ -12,9 +12,9 @@ import Testing
 /// where a window's spare width goes.
 @MainActor
 @Suite struct RequestTableColumnTests {
-    private func defaults(_ name: String = UUID().uuidString) -> UserDefaults {
-        UserDefaults(suiteName: name)!
-    }
+    private let scratch = ScratchDefaults()
+
+    private func defaults() -> UserDefaults { scratch.make() }
 
     // MARK: Hidden columns
 
