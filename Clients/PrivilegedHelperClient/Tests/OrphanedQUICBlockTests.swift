@@ -13,13 +13,10 @@ import LoomSharedModels
 /// runs pfctl and may escalate) so it can be pinned without a machine that happens
 /// to have a proxy set — and without any test ever reaching an auth prompt.
 @Suite struct OrphanedQUICBlockTests {
+    private let scratch = ScratchDefaults()
+
     /// A throwaway domain so these never read or clobber the real `com.loom.quicBlocked`.
-    private func scratchDefaults() -> UserDefaults {
-        let suite = "com.loom.tests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return defaults
-    }
+    private func scratchDefaults() -> UserDefaults { scratch.make() }
 
     @Test func noRecordedBlock_isNothingToClean() {
         // The common launch: cheap, silent, no prompt.
