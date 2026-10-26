@@ -162,6 +162,11 @@ extension MCPToolExecutor {
             `legacyBareRequests` counts requests that declared no revision at all and is \
             deliberately *not* evidence: a stripped header or a hand-typed curl looks the same. \
             Absent entirely when nothing is counting (the engine embedded without a server).
+
+            `update` says whether a newer Loom has been found: `available` (with `version`) — \
+            tell the user, and point them at the **Update** button in the menu-bar panel's \
+            footer; `upToDate`; or `unknown` (no check has answered yet — not the same as \
+            current). Absent when the engine runs without the app's updater.
             """,
             inputSchema: .object(),
             handler: { ex, args in try await ex.handleGetVersion(args) }

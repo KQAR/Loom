@@ -160,6 +160,23 @@ import LoomSharedModels
         let out = try json(try await makeExecutor().call(name: "get_version", arguments: [:]))
         #expect(out["app"] as? String == "Loom")
         #expect(out["appVersion"] as? String == "9.9")
+        // No updater injected: absent, never a guess.
+        #expect(out["update"] == nil)
+    }
+
+    @Test func getVersion_reportsEachUpdateStateApart() async throws {
+        for (status, expected, version) in [
+            (AppUpdateStatus.unknown, "unknown", nil),
+            (.upToDate, "upToDate", nil),
+            (.available(version: "0.0.37"), "available", "0.0.37"),
+        ] as [(AppUpdateStatus, String, String?)] {
+            var executor = makeExecutor()
+            executor.updateStatus = { status }
+            let out = try json(try await executor.call(name: "get_version", arguments: [:]))
+            let update = try #require(out["update"] as? [String: Any])
+            #expect(update["status"] as? String == expected)
+            #expect(update["version"] as? String == version)
+        }
     }
 
     @Test func getRecentFlows_rendersSummaries() async throws {

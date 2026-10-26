@@ -4,6 +4,7 @@ import MCPServer
 import PrivilegedHelperClient
 import LoomProxyCore
 import SwiftUI
+import UpdaterClient
 
 @main
 struct LoomApp: App {
@@ -12,9 +13,17 @@ struct LoomApp: App {
         AppFeature()
     }
     // `routing` is what lets an agent see *and* fix "nothing is pointed at the
-    // proxy" — client-layer capability the engine can't reach, injected here.
+    // proxy" — client-layer capability the engine can't reach, injected here. So is
+    // `updateStatus`: Sparkle is client-layer too.
     private let mcp = MCPServer(
-        engine: ProxyEngine.shared, appVersion: appVersion, routing: SystemRoutingAdapter()
+        engine: ProxyEngine.shared, appVersion: appVersion, routing: SystemRoutingAdapter(),
+        updateStatus: {
+            switch await UpdaterClient.liveValue.availability() {
+            case .unknown: .unknown
+            case .upToDate: .upToDate
+            case let .available(version): .available(version: version)
+            }
+        }
     )
 
     init() {

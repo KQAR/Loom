@@ -3,7 +3,8 @@ import Foundation
 
 /// Availability of a newer release, surfaced to the status-bar panel so the
 /// footer button can switch from a low-key "Check for Updates" to a prominent
-/// "Update" call-to-action. `.unknown` until the first probe answers.
+/// "Update" call-to-action. `.unknown` until a probe answers — or, across a relaunch, until one is
+/// restored: a found update persists until the installed build catches up to it.
 public enum UpdateAvailability: Equatable, Sendable {
     case unknown
     case upToDate
@@ -27,6 +28,8 @@ public enum UpdateAvailability: Equatable, Sendable {
 public struct UpdaterClient: Sendable {
     /// Whether Sparkle can run a user-initiated check right now.
     public var canCheckForUpdates: @Sendable () async -> Bool = { false }
+    /// The last known availability, without subscribing — what `get_version` reports.
+    public var availability: @Sendable () async -> UpdateAvailability = { .unknown }
     /// Availability changes; replays the last known value on subscribe.
     public var availabilityStream: @Sendable () async -> AsyncStream<UpdateAvailability> = { .finished }
     /// User-initiated check — shows Sparkle's install UI regardless of the last probe.
@@ -38,6 +41,7 @@ public struct UpdaterClient: Sendable {
 extension UpdaterClient: DependencyKey {
     public static let liveValue = UpdaterClient(
         canCheckForUpdates: { await UpdaterCoordinator.shared.canCheckForUpdates },
+        availability: { await UpdaterCoordinator.shared.current },
         availabilityStream: { await UpdaterCoordinator.shared.availabilityStream() },
         checkForUpdates: { await UpdaterCoordinator.shared.checkForUpdates() },
         checkInBackgroundIfDue: { await UpdaterCoordinator.shared.checkInBackgroundIfDue() }
