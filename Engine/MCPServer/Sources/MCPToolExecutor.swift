@@ -24,6 +24,10 @@ struct MCPToolExecutor {
     /// and "nothing was counting" are different answers.
     var eraLog: MCPEraLog?
 
+    /// Whether a newer Loom has been found. Injected by the app (Sparkle lives in the
+    /// client layer); nil for an embedder or a test, where `get_version` omits `update`.
+    var updateStatus: (@Sendable () async -> AppUpdateStatus)?
+
     /// Name → tool, indexed from the one table in `MCPToolSchemas`. Dispatch is a
     /// lookup, not a growing switch — and no longer a second list to keep in step
     /// with the advertised one, because both come from the same values.

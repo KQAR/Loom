@@ -27,6 +27,9 @@ extension MCPToolExecutor {
         if let eraLog {
             payload["protocolTraffic"] = MCPRender.dict(ProtocolTrafficRender(eraLog.snapshot()))
         }
+        if let updateStatus {
+            payload["update"] = MCPRender.dict(AppUpdateRender(await updateStatus()))
+        }
         return prettyJSON(payload)
     }
 

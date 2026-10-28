@@ -1426,3 +1426,33 @@ struct FlowDiffRender: Encodable {
         captureTruncated = comparison.isPartial ? true : nil
     }
 }
+
+// MARK: - App update
+
+/// Whether a newer Loom has been found — the app maps Sparkle's answer into this, so
+/// MCPServer never depends on Sparkle. Three-valued because "nobody has asked yet" and
+/// "asked, and this is the newest" are different answers, and an agent that reads the
+/// first as the second tells the user they're current when they may not be.
+public enum AppUpdateStatus: Sendable, Equatable {
+    case unknown
+    case upToDate
+    case available(version: String)
+}
+
+/// `get_version.update`. The footer's "Update" button had exactly one reader, a human
+/// with the panel open — and Loom's main operator is an agent, which couldn't see it.
+struct AppUpdateRender: Encodable {
+    var status: String
+    /// Present only when `status` is `available`.
+    var version: String?
+
+    init(_ status: AppUpdateStatus) {
+        switch status {
+        case .unknown: self.status = "unknown"
+        case .upToDate: self.status = "upToDate"
+        case let .available(version):
+            self.status = "available"
+            self.version = version
+        }
+    }
+}

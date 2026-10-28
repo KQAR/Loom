@@ -89,7 +89,7 @@ each one is *for*.
 
 | Tool | For |
 | --- | --- |
-| `get_version` | app + protocol version — cheap readiness ping |
+| `get_version` | app + protocol version — cheap readiness ping; `update.status == "available"` means tell the user to click **Update** in the menu-bar panel footer |
 | `get_proxy_status` | running state, ports, routing (`systemProxy`), refusals, `droppedByRules`, whether `set_system_proxy` will prompt (`privilegedHelper`) — plus `listenerError` / `socksError` / `degradations` when something is off. **First call when a capture is empty** |
 | `list_devices` | who sent traffic (this Mac + LAN devices), with counts |
 | `get_recent_flows` | newest-first summaries; filter server-side (host, method, url/header/body contains, status, since, app, device) |

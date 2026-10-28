@@ -112,6 +112,8 @@ public final class MCPServer: @unchecked Sendable {
     /// report honestly that they aren't available.
     private let routing: SystemRoutingControlling?
     private let appVersion: String
+    /// Optional, same reasoning as `routing`: the updater is Sparkle, client-layer.
+    private let updateStatus: (@Sendable () async -> AppUpdateStatus)?
     private let group: EventLoopGroup
     private var channel: Channel?
     private let token: String
@@ -132,10 +134,12 @@ public final class MCPServer: @unchecked Sendable {
         engine: ProxyControlling,
         appVersion: String,
         token: String = UUID().uuidString,
-        routing: SystemRoutingControlling? = nil
+        routing: SystemRoutingControlling? = nil,
+        updateStatus: (@Sendable () async -> AppUpdateStatus)? = nil
     ) {
         self.engine = engine
         self.routing = routing
+        self.updateStatus = updateStatus
         self.appVersion = appVersion
         self.token = token
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -150,7 +154,8 @@ public final class MCPServer: @unchecked Sendable {
     public func start(port: Int = 0, announce: Bool = true) async throws -> Int {
         let executor = MCPToolExecutor(
             engine: engine, appVersion: appVersion,
-            protocolVersion: Self.protocolVersion, routing: routing, eraLog: eraLog
+            protocolVersion: Self.protocolVersion, routing: routing, eraLog: eraLog,
+            updateStatus: updateStatus
         )
         let dispatcher = MCPDispatcher(executor: executor, eraLog: eraLog)
         let token = self.token
