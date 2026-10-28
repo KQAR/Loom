@@ -126,6 +126,45 @@ import LoomSharedModels
         #expect(exported.allSatisfy { $0.response?.body != nil }, "bodies hydrated for every entry")
     }
 
+    /// The `export_har(host:)` bug: the newest `limit` were taken first and filtered
+    /// after, so a host whose traffic had aged out of the ring exported nothing.
+    @Test func searchHydrated_filtersBeforeTheLimit_andReachesDisk() async throws {
+        let persistence = try #require(FlowPersistence(fileURL: fileURL))
+        let store = FlowStore(capacity: 2, persistence: persistence)
+        func at(_ host: String, _ n: Int) -> Flow {
+            var flow = flow(n, body: Data("b\(n)".utf8))
+            flow.request.url = "https://\(host)/\(n)"
+            return flow
+        }
+        for n in 1 ... 3 { await store.upsert(at("ep1.facebook.com", n)) }
+        await store.upsert(at("cdn.facebook.com", 4))
+        await store.upsert(at("notfacebook.com.evil", 5))
+        for n in 6 ... 9 { await store.upsert(at("noise.test", n)) }
+        await store.flush()
+
+        var exact = FlowQuery()
+        exact.host = "ep1.facebook.com"
+        let exported = await store.searchHydrated(matching: exact, limit: 2)
+        #expect(exported.flows.map(\.request.url) == ["https://ep1.facebook.com/3", "https://ep1.facebook.com/2"],
+                "every match is on disk, out of the 2-slot ring; limit applies after the filter")
+        #expect(exported.flows.map { $0.response?.body } == [Data("b3".utf8), Data("b2".utf8)], "bodies hydrated")
+        #expect(exported.budgetExhausted == false)
+        #expect(exported.storedFlowCount == 9)
+
+        var glob = FlowQuery()
+        glob.host = "*.facebook.com"
+        let globbed = await store.searchHydrated(matching: glob, limit: 10)
+        #expect(globbed.flows.map(\.request.url).sorted() == [
+            "https://cdn.facebook.com/4", "https://ep1.facebook.com/1",
+            "https://ep1.facebook.com/2", "https://ep1.facebook.com/3",
+        ], "a glob, not a substring: `notfacebook.com.evil` stays out")
+
+        var substring = FlowQuery()
+        substring.host = "facebook"
+        #expect(await store.searchHydrated(matching: substring, limit: 10).flows.isEmpty,
+                "host is exact or glob, like every other filter")
+    }
+
     @Test func recentHydrated_ringSatisfiesTheLimit_doesNotTouchDisk() async throws {
         let persistence = try #require(FlowPersistence(fileURL: fileURL))
         let store = FlowStore(capacity: 10, persistence: persistence)

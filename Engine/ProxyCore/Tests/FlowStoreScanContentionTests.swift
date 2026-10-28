@@ -78,6 +78,37 @@ import LoomSharedModels
         )
     }
 
+    /// The HAR export's read, which hydrates every match from disk: the scan and the
+    /// blob reads both run off the actor, so a big filtered export is not a stall in
+    /// front of capture either.
+    @Test func aFilteredExportDoesNotBlockCaptureWrites() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-export-contention-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = try #require(FlowPersistence(fileURL: directory.appendingPathComponent("flows.sqlite")))
+        let store = FlowStore(capacity: 2000, persistence: persistence)
+        let body = Data(repeating: 0x61, count: 32 * 1024)
+        for i in 0 ..< 4000 {
+            var flow = flow(i)
+            flow.outcome = .completed(CapturedResponse(statusCode: 200, headers: [], body: body), at: Date())
+            await store.upsert(flow)
+        }
+        await store.flush()
+
+        var query = FlowQuery()
+        query.host = "*.example.test"
+        let exporting = Task {
+            while !Task.isCancelled { _ = await store.searchHydrated(matching: query, limit: 1000) }
+        }
+        defer { exporting.cancel() }
+
+        let contended = await medianUpsertMS(store, from: 100_000, count: 200)
+        #expect(
+            contended < 0.5,
+            "An upsert took \(contended) ms while filtered exports ran — the export's scan or hydration is holding the actor."
+        )
+    }
+
     /// The scan must return the same flows it always did — the snapshot is a COW
     /// reference to the ring as of the call, not a relaxation of what "matching" means.
     @Test func theOffActorScanSeesTheRingAsOfTheCall() async {

@@ -788,6 +788,25 @@ actor FlowStore {
         await Self.hydrate(recent(limit: limit), upTo: limit, persistence: persistence)
     }
 
+    /// `search(matching:)` with bodies re-attached — the filtered HAR export.
+    ///
+    /// Filter first, then hydrate only what matched: the scan is the body-free one
+    /// `get_stats` uses (off the actor, read-through to disk, row-budgeted), so the
+    /// blob reads are paid for the `limit` flows being exported and nothing else.
+    /// An empty query keeps `recentHydrated`'s disk top-up, which the unfiltered
+    /// `search` doesn't do.
+    func searchHydrated(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
+        guard !query.isEmpty else {
+            return FlowSearchResult(
+                flows: await recentHydrated(limit: limit),
+                storedFlowCount: persistence?.approximateStoredRowCount
+            )
+        }
+        var result = await search(matching: query, limit: limit)
+        result.flows = await Self.hydrate(result.flows, upTo: result.flows.count, persistence: persistence)
+        return result
+    }
+
     /// `@concurrent`, for the reason `matchingBodies` gives — and here cancellation
     /// buys the most: this is the HAR-export assembly, up to `limit` multi-MB blob
     /// reads, and it was the one detached task large enough that abandoning the

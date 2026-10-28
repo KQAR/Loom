@@ -359,10 +359,15 @@ public protocol FlowProviding: Sendable {
     /// when the numbers cover what has been restored so far. Reported rather than
     /// smoothed over: "12" and "12 so far" are different claims.
     func flowAggregates() async -> (aggregates: FlowAggregates, coversHistory: Bool)
-    /// Like `recentFlows`, but with request/response bodies hydrated — for
+    /// Like `searchFlows`, but with request/response bodies hydrated — for
     /// exports (HAR) that need the full payload, not just summaries. Kept
     /// separate so the common list/summary path stays body-free (cheap).
-    func recentFlowsForExport(limit: Int) async -> [Flow]
+    ///
+    /// The filter is applied **before** the limit, over everything retained, for
+    /// the reason `recentFlows(matching:)` gives: "export this host" used to take
+    /// the newest `limit` flows and filter those, so a host whose traffic wasn't
+    /// among them exported an empty file with nothing saying why.
+    func recentFlowsForExport(matching query: FlowQuery, limit: Int) async -> FlowSearchResult
     func flow(id: UUID) async -> Flow?
     /// A live stream of flows as they are captured or updated.
     ///

@@ -188,6 +188,32 @@ import LoomSharedModels
         #expect((redacted["headers"] as? [String])?.contains("authorization") == true)
     }
 
+    /// `host` is the shared filter now — exact or glob, applied before `limit` — not
+    /// a substring applied to the newest `limit` flows.
+    @Test func theExportFiltersWithTheSharedVocabularyBeforeTheLimit() async throws {
+        let engine = StubEngine()
+        engine.flows = ["a.example.com", "b.example.com", "example.com.evil", "a.example.com"].enumerated().map { n, host in
+            Flow(
+                id: UUID(),
+                request: CapturedRequest(method: "GET", url: "https://\(host)/\(n)", headers: []),
+                startedAt: Date(timeIntervalSince1970: TimeInterval(n)),
+                outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date(timeIntervalSince1970: TimeInterval(n)))
+            )
+        }
+        let executor = makeExecutor(engine)
+        func export(_ arguments: sending [String: Any]) async throws -> [String: Any] {
+            var arguments = arguments
+            arguments["filename"] = "filter-test-\(UUID().uuidString).har"
+            let out = try await json(executor.call(name: "export_har", arguments: arguments))
+            if let path = out["path"] as? String { try? FileManager.default.removeItem(atPath: path) }
+            return out
+        }
+        #expect(try await export(["host": "*.example.com"])["entries"] as? Int == 3)
+        #expect(try await export(["host": "example.com"])["entries"] as? Int == 0, "exact, not a substring")
+        #expect(try await export(["host": "b.example.com", "limit": 1])["entries"] as? Int == 1)
+        #expect(try await export(["url_contains": "evil"])["entries"] as? Int == 1)
+    }
+
     @Test func anUnredactedExportSaysNothingAboutRedaction() async throws {
         let engine = StubEngine()
         engine.flows = [Flow(

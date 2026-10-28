@@ -64,7 +64,7 @@ struct MCPTool: Sendable {
 /// longer a matter of trust: each entry below carries its own handler.
 extension MCPToolExecutor {
     /// The flow-filter arguments, shared verbatim by `get_recent_flows`,
-    /// `wait_for_flow` and `get_stats` — one filter vocabulary, parsed by one
+    /// `wait_for_flow`, `get_stats` and `export_har` — one filter vocabulary, parsed by one
     /// `flowQuery(from:)`, so they can't drift into subtly different notions of
     /// "matching". A tool adds its own arguments with `.adding`, which refuses to
     /// shadow one of these.
@@ -906,8 +906,13 @@ extension MCPToolExecutor {
             name: "export_har",
             description: """
             Export captured flows to a HAR 1.2 file (readable by Chrome DevTools / Charles / \
-            Proxyman, and by Loom's own import_har) and return the path. Optionally filter by \
-            host and cap the count.
+            Proxyman, and by Loom's own import_har) and return the path. Takes the same filters \
+            as `get_recent_flows` (`host` is exact or glob, plus `since_seconds`, `url_contains`, \
+            `status`, …), applied across every retained flow — memory and the durable store — \
+            BEFORE `limit`, so older traffic for a host is exported too. `flowsRetained` is the \
+            store-wide denominator; `historyScanTruncated: true` (present only when it happened) \
+            means the history walk stopped at its row budget and the file may be missing older \
+            matches — narrow with `since_seconds` and export again.
 
             Set `redact: true` when the file is going anywhere — a ticket, a chat, a CI artifact. \
             It replaces credential-bearing header values and query parameters with `<redacted>` \
@@ -917,9 +922,8 @@ extension MCPToolExecutor {
             Redaction is off by default because a debugging export usually needs the token; that \
             is often the bug. This is a write action (writes a file).
             """,
-            inputSchema: .object([
-                "host": .string("Only include flows whose host contains this string."),
-                "limit": .integer("Max flows to include (default 1000, newest first)."),
+            inputSchema: Self.flowFilterSchema.adding([
+                "limit": .integer("Max flows to include after filtering (default 1000, newest first)."),
                 "filename": .string("Output file name (basename only; a .har suffix is added if missing). Written under ~/Library/Application Support/com.loom/exports/. Defaults to loom-export.har."),
                 "redact": .boolean(
                     "Scrub credentials: Authorization/Cookie/API-key headers and token-ish query parameters become `<redacted>`."
