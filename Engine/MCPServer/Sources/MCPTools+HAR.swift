@@ -7,13 +7,13 @@ import LoomSharedModels
 extension MCPToolExecutor {
     func handleExportHAR(_ arguments: MCPArguments) async throws -> String {
         let limit = try arguments.int("limit", or: 1000)
-        // HAR needs full request/response bodies, so hydrate (bodies live in
-        // separate storage now); the list/summary tools stay on the body-free path.
-        var flows = await engine.recentFlowsForExport(limit: limit)
-        if let host = try arguments.string("host"), !host.isEmpty {
-            let needle = host.lowercased()
-            flows = flows.filter { ($0.host ?? "").lowercased().contains(needle) }
-        }
+        // The shared filter vocabulary, applied in the store before `limit` — it used
+        // to be a host substring applied *after* taking the newest `limit`, so a host
+        // outside them exported an empty file. HAR needs full bodies, so the matches
+        // are hydrated; the list/summary tools stay on the body-free path.
+        let query = try Self.flowQuery(from: arguments)
+        let result = await engine.recentFlowsForExport(matching: query, limit: limit)
+        var flows = result.flows
         // Redaction runs on the way out, over the flows actually being written — so
         // there is no path where an unredacted flow reaches the file after the caller
         // asked for a redacted export.
@@ -42,6 +42,10 @@ extension MCPToolExecutor {
             throw MCPToolFailure("could not write HAR to \(url.path): \(error.localizedDescription)")
         }
         var payload: [String: Any] = ["path": url.path, "entries": flows.count]
+        // Same two bounds `get_stats` reports, so an export short of what the agent
+        // expected says whether it was "not retained" or "not searched".
+        if let retained = result.storedFlowCount { payload["flowsRetained"] = retained }
+        if result.budgetExhausted { payload["historyScanTruncated"] = true }
         if let redaction {
             // Say what was scrubbed, so a human asked to attach the file knows what it
             // does and doesn't still contain.

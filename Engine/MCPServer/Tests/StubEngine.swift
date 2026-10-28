@@ -36,7 +36,9 @@ final class StubEngine: ProxyControlling {
     func recentFlows(matching query: FlowQuery, limit: Int) async -> [Flow] {
         Array(flows.lazy.filter(query.matches).prefix(limit))
     }
-    func recentFlowsForExport(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
+    func recentFlowsForExport(matching query: FlowQuery, limit: Int) async -> FlowSearchResult {
+        FlowSearchResult(flows: Array(flows.lazy.filter(query.matches).prefix(limit)))
+    }
     func flow(id: UUID) async -> Flow? { flows.first { $0.id == id } }
 
     /// Live streams the blocking `wait_*` tools subscribe to. A test pushes through

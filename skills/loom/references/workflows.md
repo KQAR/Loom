@@ -96,8 +96,8 @@ arguments; this file is about sequence and interpretation.
   appears in `get_ssl_scope` as `clientHandshakeFailed`, retaining failure/success
   counts. `status` is `stillFailing` or `mixed`; `latestResult` says which outcome
   happened last without erasing the other one.
-- **"Give me a HAR of today's traffic to that host."** → `export_har` with a host
-  filter; return the path. If it's going into a ticket or a chat, pass **both**
+- **"Give me a HAR of today's traffic to that host."** → `export_har` with `host`
+  and `since_seconds` (the same filters as `get_recent_flows`); return the path. If it's going into a ticket or a chat, pass **both**
   `redact: true` and `redact_bodies: true` — headers alone leave every payload
   intact — and tell the human what was scrubbed. The tool says so in its result
   when bodies were kept; don't call a file redacted when it isn't.

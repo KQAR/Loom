@@ -78,6 +78,56 @@ import LoomSharedModels
         )
     }
 
+    /// The HAR export's read, which hydrates every match from disk: the scan and the
+    /// blob reads both run off the actor, so a big filtered export is not a stall in
+    /// front of capture either.
+    ///
+    /// Sampled on a wall-clock cadence rather than back to back, unlike the test above.
+    /// One export holds the actor for tens of milliseconds when it is wrong, and a
+    /// tight loop of upserts lands almost all of its samples in the gaps between
+    /// exports — measured, moving the hydration onto the actor left a back-to-back
+    /// median at 0.004 ms. A sample every millisecond hits a busy actor in proportion
+    /// to how long it is busy: measured here, **0.008 ms** off the actor against
+    /// **7.5 ms** with the hydration moved back onto it.
+    @Test func aFilteredExportDoesNotBlockCaptureWrites() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("loom-export-contention-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = try #require(FlowPersistence(fileURL: directory.appendingPathComponent("flows.sqlite")))
+        // Rows read from disk arrive with their bodies; what the export hydrates is the
+        // ring's flows the 64 MB body budget slimmed. At 128 KB each it keeps ~500, so
+        // ~700 of these are blob reads.
+        let store = FlowStore(capacity: 2000, persistence: persistence)
+        let body = Data(repeating: 0x61, count: 128 * 1024)
+        for i in 0 ..< 1200 {
+            var flow = flow(i)
+            flow.outcome = .completed(CapturedResponse(statusCode: 200, headers: [], body: body), at: Date())
+            await store.upsert(flow)
+        }
+        await store.flush()
+
+        var query = FlowQuery()
+        query.host = "*.example.test"
+        let exporting = Task {
+            while !Task.isCancelled { _ = await store.searchHydrated(matching: query, limit: 1000) }
+        }
+        defer { exporting.cancel() }
+
+        var samples: [Double] = []
+        for i in 0 ..< 150 {
+            try await Task.sleep(for: .milliseconds(1))
+            let flow = flow(100_000 + i)
+            let started = DispatchTime.now().uptimeNanoseconds
+            await store.upsert(flow)
+            samples.append(Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        }
+        let contended = samples.sorted()[samples.count / 2]
+        #expect(
+            contended < 0.5,
+            "An upsert took \(contended) ms while filtered exports ran — the export's scan or hydration is holding the actor."
+        )
+    }
+
     /// The scan must return the same flows it always did — the snapshot is a COW
     /// reference to the ring as of the call, not a relaxation of what "matching" means.
     @Test func theOffActorScanSeesTheRingAsOfTheCall() async {
