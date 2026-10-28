@@ -40,6 +40,13 @@ public enum FlowLimits {
     /// one short of 100 000 rather than at a round number.
     public static let windowRows = 99_999
 
+    /// Body bytes Loom records per side of one exchange. The peer always receives
+    /// every byte; only the recorded copy stops here (`fullBodyBytes` says so). It is
+    /// also the ceiling on what a reader will *inflate* a `Content-Encoding`d request
+    /// body to (`ContentDecoding`): a decoded body larger than anything Loom would
+    /// have recorded is a bomb to a renderer, whatever it is on the wire.
+    public static let capturedBodyBytes = 5_000_000
+
     /// `memoryRing ≤ windowRows ≤ persistedRows`.
     ///
     /// Stated as a property rather than left implicit because each inequality has a

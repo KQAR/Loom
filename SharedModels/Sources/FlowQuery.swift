@@ -265,7 +265,7 @@ public struct FlowQuery: Equatable, Sendable {
 
         public func matches(_ flow: Flow) -> Bool {
             guard let folded else { return true }
-            let inRequest = side.includesRequest && ByteSearch.contains(folded: folded, in: flow.request.body)
+            let inRequest = side.includesRequest && ByteSearch.contains(folded: folded, in: flow.request.decodedBody.data)
             let inResponse = side.includesResponse && ByteSearch.contains(folded: folded, in: flow.response?.body)
             return inRequest || inResponse
         }

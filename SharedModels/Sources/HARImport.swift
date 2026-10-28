@@ -204,11 +204,13 @@ public enum HARImport {
     }
 
     /// `postData.text`, honoring Loom's `_encoding: base64` extension so a binary
-    /// request body survives an export/import round trip.
+    /// request body survives an export/import round trip — and `_wireBase64`, the
+    /// still-encoded bytes Loom exports beside a decoded `text`, because the body a
+    /// flow stores (and a replay sends) is the one that crossed the wire.
     private static func postData(_ raw: Any?) -> Data? {
-        guard let post = raw as? [String: Any], let text = post["text"] as? String, !text.isEmpty else {
-            return nil
-        }
+        guard let post = raw as? [String: Any] else { return nil }
+        if let wire = post["_wireBase64"] as? String, let bytes = Data(base64Encoded: wire) { return bytes }
+        guard let text = post["text"] as? String, !text.isEmpty else { return nil }
         if isBase64(post["_encoding"] ?? post["encoding"]), let decoded = Data(base64Encoded: text) {
             return decoded
         }

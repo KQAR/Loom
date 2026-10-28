@@ -278,17 +278,30 @@ struct RenderedRequest: Encodable {
     /// Say so explicitly, with the real wire size.
     var bodyCaptureTruncated: Bool?
     var bodyBytesOnWire: Int?
+    /// The request's `Content-Encoding`, when it declared one. `body` is then the
+    /// decoded payload if `encodedBodyBytes` is present, and the recorded bytes —
+    /// with `bodyDecodeError` saying why — if it is not.
+    var contentEncoding: String?
+    /// Body bytes as they crossed the wire, still encoded; present only when
+    /// `body` was decoded from them, so `body`'s size and this one are never the
+    /// same number by accident. Mirrors `transport.responseEncodedBodyBytes`.
+    var encodedBodyBytes: Int?
+    var bodyDecodeError: String?
     /// The trailer field section, omitted entirely when the client sent none — so
     /// an absent key means "no trailers", never "an empty list of them".
     var trailers: [RenderedHeader]?
 
-    init(_ request: CapturedRequest, body: RenderedBody) {
+    init(_ request: CapturedRequest, offset: Int = 0, maxBytes: Int = MCPToolExecutor.defaultBodyBytes) {
         method = request.method
         url = request.url
         httpVersion = request.httpVersion
         headers = RenderedHeader.list(request.headers)
         trailers = request.trailers.map(RenderedHeader.list)
-        self.body = body
+        let decoded = request.decodedBody
+        body = MCPToolExecutor.bodyField(decoded.data, offset: offset, maxBytes: maxBytes)
+        contentEncoding = decoded.contentEncoding
+        encodedBodyBytes = decoded.encodedBodyBytes
+        bodyDecodeError = decoded.decodeFailure?.description
         if let wireBytes = request.fullBodyBytes {
             bodyCaptureTruncated = true
             bodyBytesOnWire = wireBytes

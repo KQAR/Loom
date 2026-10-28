@@ -7,6 +7,8 @@ struct BodyView: View {
     /// Total bytes that crossed the wire when `data` is only the captured prefix
     /// (nil = complete). Drives the "this is partial" strip.
     var fullBodyBytes: Int?
+    /// Says the body was decoded from a `Content-Encoding` (or why it wasn't).
+    var encodingNote: String?
     /// In-pane find. JSON and raw both highlight hits, step with Enter /
     /// chevrons (`1/N`), and scroll the current hit into view.
     var find: InspectorFind = InspectorFind()
@@ -42,6 +44,7 @@ struct BodyView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let fullBodyBytes { truncationStrip(captured: data?.count ?? 0, wire: fullBodyBytes) }
+            if let encodingNote { strip(symbol: "arrow.up.left.and.arrow.down.right", encodingNote) }
             content
         }
         .preference(key: InspectorFindReportKey.self, value: findReport)
@@ -126,10 +129,16 @@ struct BodyView: View {
     /// cap banner: the peer got every byte, but the recorded copy stops at the cap,
     /// so a partial body must never read as a complete one.
     private func truncationStrip(captured: Int, wire: Int) -> some View {
+        strip(
+            symbol: "scissors",
+            "Captured \(Self.byteCount(captured)) of \(Self.byteCount(wire)) — the rest was forwarded but not recorded"
+        )
+    }
+
+    private func strip(symbol: String, _ text: String) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
-            Image(systemName: "scissors").font(.caption2)
-            Text("Captured \(Self.byteCount(captured)) of \(Self.byteCount(wire)) — the rest was forwarded but not recorded")
-                .font(.caption)
+            Image(systemName: symbol).font(.caption2)
+            Text(text).font(.caption)
         }
         .foregroundStyle(.secondary)
         .padding(.horizontal, LoomTheme.Space.sm)
