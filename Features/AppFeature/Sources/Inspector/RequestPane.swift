@@ -24,6 +24,15 @@ struct RequestPane: View {
     @State private var bodyIsOutline = false
     @State private var derivedMemo = RenderMemo<DerivedKey, Derived>()
     @State private var bodyTextMemo = RenderMemo<BodyMemoKey, String?>()
+    /// The body as shown — inflated when the client sent it with a `Content-Encoding`.
+    /// Memoised because that is a decompression, and this pane re-renders per batch.
+    @State private var decodedMemo = RenderMemo<BodyMemoKey, DecodedBody>()
+
+    private var decoded: DecodedBody {
+        decodedMemo.value(for: BodyMemoKey(flowID: flow.id, bytes: flow.request.body?.count)) {
+            flow.request.decodedBody
+        }
+    }
 
     /// Everything `Derived` reads off the request.
     private struct DerivedKey: Equatable {
@@ -135,9 +144,10 @@ struct RequestPane: View {
             HeadersList(headers: flow.request.headers, trailers: flow.request.trailers, find: headersFind)
         case .cookies: CookiesView(cookies: derived.cookies, find: cookiesFind)
         case .body: BodyView(
-            data: flow.request.body,
+            data: decoded.data,
             identity: "req-body:\(flow.id)",
             fullBodyBytes: flow.request.fullBodyBytes,
+            encodingNote: Self.encodingNote(decoded),
             find: bodyFind,
             expansion: bodyExpansion
         )
@@ -150,7 +160,7 @@ struct RequestPane: View {
         case .body:
             if let text = bodyTextMemo.value(
                 for: BodyMemoKey(flowID: flow.id, bytes: flow.request.body?.count),
-                { Self.bodyText(flow.request.body) }
+                { Self.bodyText(decoded.data) }
             ) {
                 FloatingPaneActions(
                     copyText: text,
@@ -189,6 +199,17 @@ struct RequestPane: View {
         !headers.isEmpty || !(trailers?.isEmpty ?? true)
     }
 
+    /// The line above a body whose `Content-Encoding` was — or could not be — undone.
+    /// Both cases say so: decoded bytes must not read as what was sent, and recorded
+    /// bytes must not read as "this is binary" when the reason is an encoding.
+    static func encodingNote(_ decoded: DecodedBody) -> String? {
+        guard let coding = decoded.contentEncoding else { return nil }
+        if let wire = decoded.encodedBodyBytes {
+            return "Decoded from \(coding) — \(InspectorText.byteCount(wire)) on the wire"
+        }
+        return decoded.decodeFailure.map { "Shown as recorded (\(coding)): \($0)" }
+    }
+
     /// Body as a UTF-8 string, or nil when empty/non-text (no copy/find then).
     static func bodyText(_ data: Data?) -> String? {
         guard let data, !data.isEmpty, let text = String(data: data, encoding: .utf8), !text.isEmpty
@@ -202,7 +223,7 @@ struct RequestPane: View {
         var lines = ["\(request.method) \(request.url)"]
         lines += request.headers.map { "\($0.name): \($0.value)" }
         lines.append("")
-        if let body = request.body, let string = String(data: body, encoding: .utf8) {
+        if let body = request.decodedBody.data, let string = String(data: body, encoding: .utf8) {
             lines.append(string)
         }
         // After the body: that is where a trailer section sits on the wire.

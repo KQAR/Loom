@@ -348,8 +348,11 @@ public extension FlowComparison {
             // capture; as a *difference* it would report every replay of a trailing
             // request against a run that had none, which is noise.
             trailers: compareHeaders(base.trailers ?? [], compared.trailers ?? []),
+            // Decoded on both sides: two gzip streams of the same JSON can differ in
+            // every byte, and one compressed and one plain can be the same body. The
+            // coding itself is a header, and the header diff reports it.
             body: compareBodies(
-                base.body, compared.body,
+                base.decodedBody.data, compared.decodedBody.data,
                 baseWireBytes: base.fullBodyBytes, comparedWireBytes: compared.fullBodyBytes
             )
         )

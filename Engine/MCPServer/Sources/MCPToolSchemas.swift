@@ -449,6 +449,13 @@ extension MCPToolExecutor {
                 bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A \
                 body that isn't UTF-8 text comes back as {binary, bytes} rather than an empty string.
 
+                A request body sent with a `Content-Encoding` (gzip, deflate, br, or several) is \
+                returned **decoded**: `request.contentEncoding` names the coding and \
+                `request.encodedBodyBytes` is the size that crossed the wire, present only when the \
+                body was decoded. When the coding could not be undone (unsupported, corrupt, over the \
+                5 MB limit, or a truncated capture) the body is the recorded bytes and \
+                `request.bodyDecodeError` says why. `body_contains` searches the decoded body.
+
                 `request.httpVersion` and `response.httpVersion` are two different facts and can \
                 disagree: the first is what the client negotiated with Loom, the second is Loom's own \
                 hop to the origin. Loom now matches the client's protocol upstream where it can, so \

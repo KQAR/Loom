@@ -69,10 +69,7 @@ extension MCPToolExecutor {
             )
         }
         let detail = FlowDetailRender(
-            request: RenderedRequest(
-                flow.request,
-                body: bodyField(flow.request.body, offset: offset, maxBytes: maxBytes)
-            ),
+            request: RenderedRequest(flow.request, offset: offset, maxBytes: maxBytes),
             response: flow.response.map { response in
                 RenderedResponse(
                     response,

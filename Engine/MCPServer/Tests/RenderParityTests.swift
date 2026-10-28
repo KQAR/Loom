@@ -199,9 +199,24 @@ import Testing
         check(Census(
             "CapturedRequest → get_flow_detail.request",
             model: request,
-            render: RenderedRequest(request, body: .text("")),
+            render: RenderedRequest(request),
             accountedFor: [
                 "fullBodyBytes": "renamed: `bodyCaptureTruncated` + `bodyBytesOnWire`, which say *why* the number is there",
+            ]
+        ))
+    }
+
+    /// The decode is computed, not stored, so the request census above cannot see
+    /// it — this one makes "decoded, and from what" reach the agent.
+    @Test func decodedBody_carriesEveryModelField() {
+        let request = CapturedRequest(method: "GET", url: "https://a.test", headers: [])
+        check(Census(
+            "DecodedBody → get_flow_detail.request",
+            model: request.decodedBody,
+            render: RenderedRequest(request),
+            accountedFor: [
+                "data": "rendered as `body` — the decoded payload when there is one",
+                "decodeFailure": "renamed to `bodyDecodeError`, the failure's description",
             ]
         ))
     }

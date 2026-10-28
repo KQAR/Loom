@@ -196,11 +196,15 @@ public enum HARExport {
             bodyTruncated = request.isBodyTruncated ? true : nil
             trailers = request.trailers.map(HARExport.nameValues)
             if let body = request.body, !body.isEmpty {
-                let rendered = HARExport.renderBody(body)
+                // Decoded for whoever reads the HAR; the wire bytes ride along so
+                // `import_har` restores the body a replay must send.
+                let decoded = request.decodedBody
+                let rendered = HARExport.renderBody(decoded.data ?? body)
                 postData = PostData(
                     mimeType: HARExport.contentType(request.headers) ?? "application/octet-stream",
                     text: rendered.text,
-                    encoding: rendered.base64 ? "base64" : nil
+                    encoding: rendered.base64 ? "base64" : nil,
+                    wireBase64: decoded.isDecoded ? body.base64EncodedString() : nil
                 )
             } else {
                 postData = nil
@@ -212,10 +216,14 @@ public enum HARExport {
         let mimeType: String
         let text: String
         let encoding: String?
+        /// Vendor extension: present only when `text` is the body *decoded* from its
+        /// `Content-Encoding`, holding the bytes that actually crossed the wire.
+        let wireBase64: String?
         // postData has no spec `encoding` field, so flag base64 as an extension.
         enum CodingKeys: String, CodingKey {
             case mimeType, text
             case encoding = "_encoding"
+            case wireBase64 = "_wireBase64"
         }
     }
 

@@ -10,7 +10,7 @@ enum StreamRelay {
     /// Bound the captured body so an endless stream (SSE) can't grow the store
     /// without limit — the client still receives every byte; only the recorded
     /// copy is capped.
-    static let captureCap = 5_000_000
+    static let captureCap = FlowLimits.capturedBodyBytes
 
     /// Response bytes the relay may have handed to the client channel and not yet seen
     /// written, before it stops pulling from upstream. Big enough that a client keeping
