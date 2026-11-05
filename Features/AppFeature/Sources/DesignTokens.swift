@@ -154,6 +154,16 @@ public enum LoomTheme {
         public static let tiny = Font.system(size: 9)                        // JSON depth guides
     }
 
+    /// The main window sidebar's one icon box (DESIGN.md `components.sidebar.icon`).
+    /// Every leading glyph — category, domain globe, device, favicon, app icon — is
+    /// drawn into it, so a tall `iphone`, a wide `desktopcomputer` and a 16px favicon
+    /// occupy the same square and every title starts on one line.
+    public enum SidebarIcon {
+        public static let size: CGFloat = 16
+        /// Icon → title gap, the same on every row.
+        public static let gap: CGFloat = Space.xs
+    }
+
     /// Width of the status-bar console popover (DESIGN.md).
     ///
     /// 272, down from 300. The panel is config and control, never traffic, so its
