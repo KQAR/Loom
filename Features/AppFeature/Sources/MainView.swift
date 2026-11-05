@@ -366,7 +366,7 @@ public struct MainView: View {
         .tag(FlowCategory.host(entry.host))
         // The indent is the only thing saying this row belongs to the domain
         // above it, since these are siblings in the list.
-        .padding(.leading, indented ? LoomTheme.Space.md : 0)
+        .padding(.leading, indented ? LoomTheme.SidebarIcon.childIndent : 0)
         .help(entry.intercepted ? "\(entry.host) — decrypted (in the SSL scope)" : entry.host)
         .contextMenu {
             Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
@@ -426,7 +426,7 @@ public struct MainView: View {
                 .tag(FlowCategory.app(device: ip, key: key))
                 // The indent is the only thing saying this row belongs to the
                 // device above it, since these are siblings in the list.
-                .padding(.leading, LoomTheme.Space.md)
+                .padding(.leading, LoomTheme.SidebarIcon.childIndent)
                 .help(app.app.attribution == .userAgent
                       ? "\(app.app.name) — identified from its User-Agent"
                       : app.app.name)

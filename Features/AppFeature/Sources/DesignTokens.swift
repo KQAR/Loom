@@ -162,6 +162,10 @@ public enum LoomTheme {
         public static let size: CGFloat = 16
         /// Icon → title gap, the same on every row.
         public static let gap: CGFloat = Space.xs
+        /// A tree child's indent: one icon box plus its gap, so the child's icon sits
+        /// under its parent's title — the Finder outline, which says "belongs to"
+        /// without a disclosure line.
+        public static let childIndent: CGFloat = size + gap
     }
 
     /// Width of the status-bar console popover (DESIGN.md).
