@@ -243,7 +243,9 @@ public struct MainView: View {
             }
         } icon: {
             icon()
+                .frame(width: LoomTheme.SidebarIcon.size, height: LoomTheme.SidebarIcon.size)
         }
+        .labelStyle(SidebarLabelStyle())
     }
 
     private var sidebar: some View {
@@ -253,11 +255,11 @@ public struct MainView: View {
         // reducer, not here — a view that filtered the set would be a second place
         // the rules live.
         List(selection: $store.capture.selection.sending(\.capture.categoriesSelected)) {
-            countedRow(count: store.capture.allCount) { Text("All Flows") } icon: { categoryIcon("tray.full") }
+            countedRow(count: store.capture.allCount) { Text("All Flows") } icon: { SidebarGlyph(name: "tray.full", tint: LoomTheme.Palette.accent) }
                 .tag(FlowCategory.all)
-            countedRow(count: store.capture.requestCount) { Text("Requests") } icon: { categoryIcon("doc.text") }
+            countedRow(count: store.capture.requestCount) { Text("Requests") } icon: { SidebarGlyph(name: "doc.text", tint: LoomTheme.Palette.success) }
                 .tag(FlowCategory.requests)
-            countedRow(count: store.capture.connectionCount) { Text("Connections") } icon: { categoryIcon("link") }
+            countedRow(count: store.capture.connectionCount) { Text("Connections") } icon: { SidebarGlyph(name: "link", tint: LoomTheme.Palette.Syntax.bool) }
                 .tag(FlowCategory.connections)
                 .help(
                     "\(store.capture.connectionFailureCount) failed · "
@@ -267,11 +269,11 @@ public struct MainView: View {
             // number here that is a fault rather than a size, and it is the number a
             // human opens this window to check.
             countedRow(count: store.capture.errorCount,
-                       countTint: store.capture.errorCount > 0 ? LoomTheme.Palette.error : nil) { Text("Errors") } icon: { categoryIcon("exclamationmark.triangle") }
+                       countTint: store.capture.errorCount > 0 ? LoomTheme.Palette.error : nil) { Text("Errors") } icon: { SidebarGlyph(name: "exclamationmark.triangle", tint: LoomTheme.Palette.waiting) }
                 .tag(FlowCategory.errors)
-            countedRow(count: store.rules.rulesState.rules.count) { Text("Rules") } icon: { categoryIcon("wand.and.stars") }
+            countedRow(count: store.rules.rulesState.rules.count) { Text("Rules") } icon: { SidebarGlyph(name: "wand.and.stars", tint: LoomTheme.Palette.accent) }
                 .tag(FlowCategory.rules)
-            countedRow(count: store.audit.entries.count) { Text("Audit") } icon: { categoryIcon("checklist") }
+            countedRow(count: store.audit.entries.count) { Text("Audit") } icon: { SidebarGlyph(name: "checklist", tint: LoomTheme.Palette.pending) }
                 .tag(FlowCategory.audit)
             breakpointsSidebarRow
 
@@ -337,7 +339,7 @@ public struct MainView: View {
                 Spacer(minLength: 0)
             }
         } icon: {
-            categoryIcon("globe")
+            SidebarGlyph(name: "globe")
         }
         .tag(FlowCategory.domain(group.domain))
         .help(
@@ -397,7 +399,7 @@ public struct MainView: View {
                 Spacer(minLength: 0)
             }
         } icon: {
-            categoryIcon(Self.deviceGlyph(entry.device))
+            SidebarGlyph(name: Self.deviceGlyph(entry.device))
         }
         .tag(FlowCategory.device(ip))
         .help(entry.device.typeSummary.map { "\($0) · \(entry.device.ip)" } ?? entry.device.ip)
@@ -468,20 +470,8 @@ public struct MainView: View {
         }
     }
 
-    /// A sidebar category glyph. `.listStyle(.sidebar)` tints a `Label`'s symbol with the
-    /// system accent, which reads as a highlight on every row at once — so these are drawn
-    /// monochrome/secondary and selection is left to say what's selected. The only glyph
-    /// allowed to carry color is the held-breakpoint one, which is an alert, not a category.
-    @ViewBuilder private func categoryIcon(_ name: String) -> some View {
-        // A custom symbol lives in the asset catalog and is addressed by name, not
-        // through `systemName` — which does not fall back, it just yields nothing.
-        // One prefix decides it, so a caller passes a name and never a flag.
-        (name.hasPrefix("loom.") ? Image(name) : Image(systemName: name))
-            .symbolRenderingMode(.monochrome)
-            .foregroundStyle(.secondary)
-    }
-
-    /// Breakpoints category. While something is held the row goes orange and its
+    /// Breakpoints category. Idle, its glyph wears the neutral identity tint; while
+    /// something is held the row goes orange and its
     /// count is of *held exchanges*, not armed breakpoints — a parked live
     /// connection is the thing the human has to act on; how many breakpoints an
     /// agent armed is only interesting when none of them is holding anything.
@@ -497,12 +487,17 @@ public struct MainView: View {
         return countedRow(count: held > 0 ? held : store.breakpoints.armed.count) {
             breakpointsTitle(held: held)
         } icon: {
-            Image(systemName: held > 0 ? "pause.circle.fill" : "pause.circle")
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(held > 0 ? LoomTheme.Palette.warning : .secondary)
-                .contentTransition(
-                    reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
-                )
+            // Idle is the neutral identity tint, so the held orange is the only
+            // orange the sidebar can show — and it is a state, so it does not dim
+            // with the window (the title beside it doesn't either).
+            SidebarGlyph(
+                name: held > 0 ? "pause.circle.fill" : "pause.circle",
+                tint: held > 0 ? LoomTheme.Palette.warning : LoomTheme.Palette.pending,
+                isAlert: held > 0
+            )
+            .contentTransition(
+                reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
+            )
         }
         .tag(FlowCategory.breakpoints)
         .help(held > 0
@@ -523,12 +518,12 @@ public struct MainView: View {
 
     /// Sidebar row title with a trailing pin glyph when pinned.
     /// A row's name plus its markers. Both markers are `.caption2` `.secondary`
-    /// glyphs against the name, not tints: the sidebar's one coloured glyph is the
-    /// held-breakpoint alert, and "decrypted" is configuration, not a fault. The
+    /// glyphs against the name, not tints: the sidebar's one state-coloured glyph is
+    /// the held-breakpoint alert, and "decrypted" is configuration, not a fault. The
     /// open lock is the same glyph the request table's SSL column uses for an
     /// exchange Loom read, so the two surfaces say one thing with one symbol.
     @ViewBuilder private func rowTitle(_ text: String, pinned: Bool, decrypted: Bool = false) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: LoomTheme.Space.xxs) {
             Text(text).lineLimit(1).truncationMode(.middle)
             if decrypted {
                 Image(systemName: "lock.open.fill")
@@ -1263,6 +1258,54 @@ public struct MainView: View {
     /// scan yields both. A string that isn't a URL shows whole, same as `host(_:)`.
     static func hostReading(_ raw: String) -> URLHost.HostReading {
         URLHost.hostReading(ofURLString: raw) ?? URLHost.HostReading(key: raw, label: raw)
+    }
+}
+
+// MARK: - Sidebar icon box
+
+/// Every sidebar row's layout: the icon box, one token-sized gap, the title.
+/// Loom's own rather than the `List`'s default, whose gap followed each glyph's
+/// width — so titles under a wide `desktopcomputer` started further right than
+/// those under a narrow `iphone`.
+struct SidebarLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: LoomTheme.SidebarIcon.gap) {
+            configuration.icon
+            configuration.title
+        }
+    }
+}
+
+/// A sidebar glyph scaled into the shared box (DESIGN.md `components.sidebar.icon`).
+///
+/// `tint` is a category's fixed identity hue; without one the glyph is a member
+/// (device, globe) and stays `.secondary`. An identity tint is drawn only while the
+/// window is key: a `List` dims its rows when the window stops being key, an explicit
+/// `Color` does not, and one bright row in a dimmed sidebar reads as an alert
+/// (DESIGN.md § Ink ladder). It also gives way on an emphasized selection, where an
+/// accent glyph on the accent highlight would vanish. `isAlert` is the exception —
+/// a held breakpoint is a state with something to say, and keeps its hue.
+///
+/// Two environment reads and a branch; nothing is looked up per row.
+struct SidebarGlyph: View {
+    let name: String
+    var tint: Color? = nil
+    var isAlert = false
+    @Environment(\.controlActiveState) private var activeState
+    @Environment(\.backgroundProminence) private var prominence
+
+    var body: some View {
+        // A custom symbol lives in the asset catalog and is addressed by name, not
+        // through `systemName` — which does not fall back, it just yields nothing.
+        let image = (name.hasPrefix("loom.") ? Image(name) : Image(systemName: name))
+            .resizable()
+            .scaledToFit()
+            .symbolRenderingMode(.monochrome)
+        if let tint, isAlert || (activeState == .key && prominence != .increased) {
+            image.foregroundStyle(tint)
+        } else {
+            image.foregroundStyle(.secondary)
+        }
     }
 }
 

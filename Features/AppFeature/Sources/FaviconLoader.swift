@@ -142,6 +142,9 @@ struct FaviconView: View {
                     .frame(width: 16, height: 16)
             } else {
                 Image(systemName: "globe")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
                     .foregroundStyle(.secondary)
             }
         }

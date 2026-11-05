@@ -94,6 +94,9 @@ struct AppIconView: View {
                 .frame(width: 16, height: 16)
         } else {
             Image(systemName: Self.fallbackGlyph(for: app))
+                .resizable()
+                .scaledToFit()
+                .frame(width: 16, height: 16)
                 .foregroundStyle(.secondary)
         }
     }
