@@ -366,7 +366,7 @@ public struct MainView: View {
         .tag(FlowCategory.host(entry.host))
         // The indent is the only thing saying this row belongs to the domain
         // above it, since these are siblings in the list.
-        .padding(.leading, indented ? LoomTheme.Space.md : 0)
+        .padding(.leading, indented ? LoomTheme.SidebarIcon.childIndent : 0)
         .help(entry.intercepted ? "\(entry.host) — decrypted (in the SSL scope)" : entry.host)
         .contextMenu {
             Button(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin") {
@@ -426,7 +426,7 @@ public struct MainView: View {
                 .tag(FlowCategory.app(device: ip, key: key))
                 // The indent is the only thing saying this row belongs to the
                 // device above it, since these are siblings in the list.
-                .padding(.leading, LoomTheme.Space.md)
+                .padding(.leading, LoomTheme.SidebarIcon.childIndent)
                 .help(app.app.attribution == .userAgent
                       ? "\(app.app.name) — identified from its User-Agent"
                       : app.app.name)
@@ -894,18 +894,17 @@ public struct MainView: View {
             // beside — whether anything on the network can reach it — and the glyph's
             // own 30pt box already carries visual air on both sides.
             HStack(spacing: 2) {
-                // The dot travels *with* the address rather than being pinned to the
-                // strip's leading edge: the reserved width is spent on the left (see
-                // `addressWidth`), so a dot left behind out there would sit in the
-                // slack with a growing gap between it and the thing it is about.
-                HStack(spacing: LoomTheme.Space.xs) {
-                    // green = proxy up & recording · yellow = up but paused · grey = off.
-                    Circle()
-                        .fill(captureDotColor)
-                        .frame(width: 7, height: 7)
-                    addressButton
+                ZStack(alignment: .trailing) {
+                    // Sized by every text this slot can show, not by a guessed number:
+                    // the widest of them reserves the width, so switching LAN on or off
+                    // never moves the strip, and no slack is reserved for an address
+                    // the listener cannot have (it binds 0.0.0.0 or 127.0.0.1, never a
+                    // LAN IP — a width sized for one showed as a gap before the dot).
+                    ForEach(addressCandidates, id: \.self) { candidate in
+                        addressRow(Text(verbatim: candidate)).hidden()
+                    }
+                    addressRow(addressButton)
                 }
-                .frame(width: Self.addressWidth, alignment: .trailing)
                 // Shown even while the proxy is stopped — see `DeviceReadiness`. It
                 // used to be hidden, which removed the control precisely when someone
                 // was looking for why their phone couldn't connect.
@@ -954,7 +953,7 @@ public struct MainView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                // **A fixed width, and this is what stops the strip jumping.** The
+                // **A reserved width (`addressCandidates`), and this is what stops the strip jumping.** The
                 // address is the only item here that resizes with its content —
                 // `0.0.0.0:9090`, `127.0.0.1:9090` and `192.168.1.20:9090` are three
                 // widths — and this strip is `.principal`, i.e. centred on the
@@ -973,14 +972,26 @@ public struct MainView: View {
         }
     }
 
-    /// Width reserved for the capture dot **and** the address, so their content can
-    /// never resize the strip. `192.168.100.100:65535` is the widest realistic
-    /// address (`callout` monospaced, ~7.2pt/character) plus the dot and its gap.
-    ///
-    /// The group is trailing-aligned inside it, so the slack sits on the left and a
-    /// shorter address grows leftwards — the phone button on the right, which is what
-    /// the address is about, keeps a fixed gap and never moves.
-    private static let addressWidth: CGFloat = 167
+    /// The capture dot and an address, as one row. The dot travels *with* the address:
+    /// the group is trailing-aligned, so any slack sits on the left and a shorter
+    /// address grows leftwards while the phone button keeps a fixed gap.
+    private func addressRow(_ address: some View) -> some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            // green = proxy up & recording · yellow = up but paused · grey = off.
+            Circle()
+                .fill(captureDotColor)
+                .frame(width: 7, height: 7)
+            address
+                .font(.callout.monospaced())
+        }
+    }
+
+    /// Every text the address slot can show at the current port. Only the port is
+    /// variable, and it changes by a deliberate edit, so the strip still holds still.
+    private var addressCandidates: [String] {
+        let port = store.status.port
+        return ["127.0.0.1:\(port)", "0.0.0.0:\(port)", "Proxy stopped"]
+    }
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
     private var captureDotColor: Color {
