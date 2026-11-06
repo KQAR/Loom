@@ -1120,6 +1120,22 @@ directory, which CFPreferences honours as the plist's location.
 `onTermination` cancel, so a client close reached it twice and the assertion saw whichever
 won — 17 of 600 runs.
 
+### Updates that stuck, request bodies that read, a sidebar that lines up (done, 0.0.38)
+
+**A found update was forgotten on relaunch (#399).** The availability lived only in memory
+and the probe runs once a day, so a relaunch within 24h hid the Update button — one Mac sat
+on 0.0.31 for two months. It now persists, and `get_version` reports it to the agent.
+
+**A gzipped request body read as `<N bytes>` everywhere (#400).** Responses are inflated
+before recording; requests were not. Every reader — Inspector, `get_flow_detail`,
+`body_contains`, `diff_flows`, HAR — now decodes the request's `Content-Encoding`.
+
+**`export_har` limited before it filtered (#401)**, so older flows for a host never made it
+in. It now filters first, over the durable store, with the same host matching as other tools.
+
+**Sidebar polish (#402, #403):** one 16pt icon box, identity tints, and tree children
+indented so their icon sits under the parent's title.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
