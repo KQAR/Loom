@@ -876,9 +876,15 @@ public struct MainView: View {
         // answers it — the container this view deliberately doesn't use (see `body`). Same
         // glyph as the system item, and the standard ⌃⌘S.
         if #available(macOS 26, *) {
-            // No glass circle: the chip beside it draws none either.
-            ToolbarItem(placement: .navigation) { sidebarToggle }
-                .sharedBackgroundVisibility(.hidden)
+            // The system's shared glass is hidden and ours drawn instead, so the toggle's
+            // glass is the chip's: same material, same 34pt height (owner decision).
+            ToolbarItem(placement: .navigation) {
+                sidebarToggle
+                    .padding(.vertical, Self.chipVerticalPadding)
+                    .padding(.horizontal, Self.chipVerticalPadding + (Self.chipRowHeight - Self.chipGlyphBoxWidth) / 2)
+                    .glassEffect(.regular, in: .circle)
+            }
+            .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(placement: .navigation) { sidebarToggle }
         }
@@ -925,6 +931,11 @@ public struct MainView: View {
     private static let chipRowHeight: CGFloat = 26
     private static let captureDotSize: CGFloat = 7
     private static let chipGlyphBoxWidth: CGFloat = 30
+    /// Capsule edge to the dot's ink, and so to the eraser's: 13.5pt.
+    private static let chipEndInset = chipVerticalPadding + (chipRowHeight - captureDotSize) / 2
+    /// How far the eraser's ink sits inside its 30pt box at `LoomTheme.Icon.toolbar` —
+    /// measured at 2x (7.1pt), since a glyph's ink is not its box.
+    private static let eraserInkInset: CGFloat = 7
 
     @ViewBuilder
     private var contentTopBar: some View {
@@ -1001,10 +1012,11 @@ public struct MainView: View {
         // a round mark at a capsule's end reads as off-centre whenever the side inset
         // differs from the vertical one. Derived, not tuned — the row is the 26pt glyph
         // box, the capsule adds `chipVerticalPadding` above and below.
-        .padding(.leading, Self.chipVerticalPadding + (Self.chipRowHeight - Self.captureDotSize) / 2)
-        // Same rule at the trailing end, for the eraser: its 30pt box is wider than the
-        // 26pt row, so the box overhangs the concentric inset by half the difference.
-        .padding(.trailing, Self.chipVerticalPadding + (Self.chipRowHeight - Self.chipGlyphBoxWidth) / 2)
+        .padding(.leading, Self.chipEndInset)
+        // The eraser's ink ends as far from the trailing end as the dot's does from the
+        // leading one (owner decision): equal visible margins outrank a concentric eraser,
+        // which sat 4.5pt tighter and made the capsule read lopsided.
+        .padding(.trailing, Self.chipEndInset - Self.eraserInkInset)
     }
 
     /// The address, and the way in to changing it. It reads as text and behaves as a
