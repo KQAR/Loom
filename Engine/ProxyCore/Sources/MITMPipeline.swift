@@ -305,11 +305,15 @@ enum TunnelFlow {
     ///   table to a device (the sidebar's most-used filter, and `get_recent_flows`'s
     ///   `device_ip`) dropped every CONNECT row, so "what is this phone not showing me"
     ///   answered nothing.
+    /// - Returns: the row's id, so the splice can backfill what the connection
+    ///   carried once it closes (`glue(recordedFlow:)`).
+    @discardableResult
     static func record(
-        host: String, port: Int, reason: TunnelReason,
+        id: UUID = UUID(), host: String, port: Int, reason: TunnelReason,
         startedAt: Date, client: Channel?, store: FlowStore
-    ) {
+    ) -> UUID {
         let flow = Flow(
+            id: id,
             request: CapturedRequest(method: "CONNECT", url: "https://\(host):\(port)", headers: []),
             startedAt: startedAt,
             outcome: .completed(CapturedResponse(statusCode: 200, headers: []), at: Date()),
@@ -317,6 +321,7 @@ enum TunnelFlow {
             tunnelDiagnostic: Flow.TunnelDiagnostic(host: host, port: port, reason: reason)
         )
         Task { await store.upsert(flow) }
+        return flow.id
     }
 
     /// The other way a tunnel ends: Loom terminated the TLS and the **connection
@@ -376,24 +381,53 @@ enum TunnelFlow {
     ///   one function: a tunnel that skipped registration would be one an operator
     ///   could never turn into a captured exchange without restarting their client,
     ///   and which call site forgot would be invisible.
+    ///
+    /// - Parameters alreadyFromClient/alreadyToClient: bytes the caller relayed by
+    ///   hand before the glue existed, so the tally covers the whole connection.
+    /// - Parameter recordedFlow: the CONNECT row for this connection, if one was
+    ///   recorded — it gets the traffic when the tunnel closes.
+    ///
+    /// **What the tunnel carried is counted here, once, for every relay** — the
+    /// same one-function argument as registration. At close the total folds into
+    /// `TunneledHostLog` (the agent's per-host aggregate) and onto the row (the
+    /// human's per-connection view). Counting costs an integer add per read; the
+    /// lock and the store hop are paid once per tunnel, at close.
     static func glue(
         client: Channel, upstream: Channel,
         host: String, port: Int,
+        alreadyFromClient: Int = 0, alreadyToClient: Int = 0,
+        recordedFlow: (id: UUID, store: FlowStore)? = nil,
+        log: TunneledHostLog = .shared,
         registry: RelayedTunnelRegistry = .shared
     ) -> EventLoopFuture<Void> {
         registry.register(host: host, port: port, client: client)
-        return glueChannels(client: client, upstream: upstream)
+        return client.eventLoop.makeCompletedFuture {
+            let tally = TunnelTally(
+                alreadyFromClient: alreadyFromClient, alreadyToClient: alreadyToClient
+            ) { traffic in
+                log.recordTraffic(host: host, port: port, traffic)
+                if let recordedFlow {
+                    // ponytail: unordered Tasks — a tunnel that closes before its
+                    // row's own upsert lands loses the row's copy (the host
+                    // aggregate above still has it). Order them if that ever shows.
+                    Task { await recordedFlow.store.attributeTunnelTraffic(id: recordedFlow.id, traffic) }
+                }
+            }
+            try glueChannels(client: client, upstream: upstream, tally: tally)
+        }
     }
 
-    private static func glueChannels(client: Channel, upstream: Channel) -> EventLoopFuture<Void> {
-        // The pair is built *inside* the loop-bound body for the same reason as
-        // `MITMPipeline`'s handlers: `GlueHandler` is event-loop confined and not
-        // `Sendable`. Adding both on the one loop is also what the shared-loop
-        // requirement above already demands, so this is not a new constraint.
-        client.eventLoop.makeCompletedFuture {
-            let (clientGlue, upstreamGlue) = GlueHandler.matchedPair()
-            try client.pipeline.syncOperations.addHandler(clientGlue)
-            try upstream.pipeline.syncOperations.addHandler(upstreamGlue)
-        }
+    /// The pair is built *inside* the loop-bound body for the same reason as
+    /// `MITMPipeline`'s handlers: `GlueHandler` is event-loop confined and not
+    /// `Sendable`. Adding both on the one loop is also what the shared-loop
+    /// requirement above already demands, so this is not a new constraint.
+    private static func glueChannels(client: Channel, upstream: Channel, tally: TunnelTally) throws {
+        let (clientGlue, upstreamGlue) = GlueHandler.matchedPair()
+        try client.pipeline.syncOperations.addHandlers(
+            TunnelByteCounter(tally: tally, readsFromClient: true), clientGlue
+        )
+        try upstream.pipeline.syncOperations.addHandlers(
+            TunnelByteCounter(tally: tally, readsFromClient: false), upstreamGlue
+        )
     }
 }

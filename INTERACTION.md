@@ -27,7 +27,7 @@ Plus the headless **MCP endpoint** — the operator's surface.
 
 ### Status-bar console (config & control)
 
-Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control, in three bands: a header (capture dot + proxy address + a Privileged Helper key + the on/off switch), a **switch strip** (System · HTTPS · Rules · Device — tinted glyph over a caption), an **alert channel** that exists only while something is wrong, **config rows** for the things whose state is a phrase (Reverse Proxies · SSL Scope · Client Certificates · Breakpoints — the conditional ones absent rather than empty), and a footer carrying the way into the main window. Which band a control belongs in, and why the alert channel is what makes a three-value tint safe, live in [`DESIGN.md` § Layout](DESIGN.md#layout) (`menu-panel` / `header-glyph` / `switch-tile` / `console-alert` / `config-row`) — one diagram, there, not here.
+Click the menu-bar icon → a compact popover (`.menuBarExtraStyle(.window)`). No traffic here — only state and control, in three bands: a header (capture dot + proxy address + a Privileged Helper key + the on/off switch), a **switch strip** (System · HTTPS · Rules · Redact · Device — tinted glyph over a caption), an **alert channel** that exists only while something is wrong, **config rows** for the things whose state is a phrase (Reverse Proxies · SSL Scope · Client Certificates · Breakpoints — the conditional ones absent rather than empty), and a footer carrying the way into the main window. Which band a control belongs in, and why the alert channel is what makes a three-value tint safe, live in [`DESIGN.md` § Layout](DESIGN.md#layout) (`menu-panel` / `header-glyph` / `switch-tile` / `console-alert` / `config-row`) — one diagram, there, not here.
 
 When faults (proxy bind failure, cert not trusted) exist, they appear as cards above the config rows — the console is the single front door for "something needs you". Otherwise it is config + control only.
 
@@ -58,6 +58,10 @@ Every write tool call is recorded in a durable, row-capped audit log (`audit.sql
 The audit trail says what the agent *did*; the console and main window say what the state *is*. Both are supervision, and the second one is the easier to get wrong: a surface holding a copy of engine state has an agent as its other writer, so a write the human is not shown is a write they cannot supervise — indistinguishable, from where they sit, from the write never happening.
 
 So: **every agent write reaches the human's copy of it without the human reopening anything.** The audit stream is the one signal all write tools pass through, so the re-read hangs off it (opt-out, not allowlist — coalesced, so a scripted burst costs one re-read). The writer that is a *human in another app* — CA trust granted in Terminal or revoked in Keychain Access, helper approval in System Settings — is covered by re-reading when Loom comes back to the front. Mechanics and the reasoning: [`AGENTS.md` § Scope](AGENTS.md#scope).
+
+### 4. Redacted reads
+
+MCP reads show credentials as `<redacted>` while the console's **Redact** tile is on (default). No tool lifts it; replay sends the original.
 
 ## Take-over (manual override)
 

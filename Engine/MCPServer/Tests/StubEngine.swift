@@ -12,6 +12,9 @@ final class StubEngine: ProxyControlling {
     var cert = CertificateStatus.notGenerated
     var proxyStatus = ProxyStatus(isRunning: true, port: 9090, capturedCount: 0)
     var recording = true
+    /// Off here, unlike the engine's default: most tests assert on raw header values,
+    /// and the redaction tests switch it on explicitly.
+    var redactAgentReads = false
     var devices: [DeviceSummary] = []
 
     // Spies
@@ -30,6 +33,7 @@ final class StubEngine: ProxyControlling {
     func status() async -> ProxyStatus {
         var status = proxyStatus
         status.reverseProxies = storedReverseProxies
+        status.redactsAgentReads = redactAgentReads
         return status
     }
     func recentFlows(limit: Int) async -> [Flow] { Array(flows.prefix(limit)) }
@@ -175,6 +179,8 @@ final class StubEngine: ProxyControlling {
 
     // CaptureControlling
     func setRecording(_ recording: Bool) async { self.recording = recording }
+    func agentReadRedaction() async -> Bool { redactAgentReads }
+    func setAgentReadRedaction(_ enabled: Bool) async { redactAgentReads = enabled }
     private(set) var importedFlows: [Flow] = []
     func importFlows(_ flows: [Flow]) async -> Int {
         importedFlows.append(contentsOf: flows)

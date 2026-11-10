@@ -22,7 +22,8 @@ extension ProxyEngine {
             recentRefusals: refusals.recent,
             refusedConnections: refusals.total,
             reverseProxies: reverseProxyConfig.snapshot(),
-            droppedByRules: await store.droppedFlowCount
+            droppedByRules: await store.droppedFlowCount,
+            redactsAgentReads: redactsAgentReads
         )
     }
 
@@ -132,6 +133,19 @@ extension ProxyEngine {
     /// paused means observed traffic just isn't stored as flows.
     public func setRecording(_ recording: Bool) async {
         await store.setRecording(recording)
+    }
+
+    public func agentReadRedaction() -> Bool { redactsAgentReads }
+
+    /// **Default on.** What an agent reads lands in a model's context and in the
+    /// conversation transcript, both of which leave this machine; an
+    /// `Authorization` header there is a live credential copied somewhere Loom
+    /// cannot take it back from. Off is one click for the human when the token
+    /// itself is the bug. Replay is unaffected either way: it re-sends the stored
+    /// original, so an agent working from redacted reads still closes the loop.
+    public func setAgentReadRedaction(_ enabled: Bool) {
+        redactsAgentReads = enabled
+        redactionDefaults?.set(enabled, forKey: Self.redactionDefaultsKey)
     }
 
     /// Ingest flows that never crossed this machine's wire (a HAR import).

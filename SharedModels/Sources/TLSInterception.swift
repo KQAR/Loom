@@ -152,11 +152,18 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
     /// Client-facing handshake evidence. Present only after Loom attempted TLS
     /// interception and the client failed at least once.
     public var clientTLS: ClientTLS?
+    /// Bytes the relayed connections to this origin carried, summed over the ones
+    /// that have **closed**. Nil until the first one closes — absent is unmeasured,
+    /// never "nothing moved": a tunnel still open has not reported yet.
+    ///
+    /// The point of it is the one distinction an unread relay otherwise erases:
+    /// "connected and sent nothing" and "moved 3 MB" both record no flow at all.
+    public var traffic: TunnelTraffic?
 
     public init(
         host: String, port: Int, connections: Int = 1,
         firstSeen: Date, lastSeen: Date, reason: TunnelReason, detail: String? = nil,
-        clientTLS: ClientTLS? = nil
+        clientTLS: ClientTLS? = nil, traffic: TunnelTraffic? = nil
     ) {
         self.host = host
         self.port = port
@@ -166,6 +173,7 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
         self.reason = reason
         self.detail = detail
         self.clientTLS = clientTLS
+        self.traffic = traffic
     }
 
     public var id: String { "\(host):\(port)" }
@@ -191,6 +199,40 @@ public struct TunneledHost: Equatable, Codable, Sendable, Identifiable {
         if reason == .protocolError { return true }
         guard reason == .clientHandshakeFailed else { return false }
         return true
+    }
+}
+
+/// What a byte-for-byte relay carried. Counted by the splice itself
+/// (`GlueHandler`), so it is exactly the bytes Loom forwarded — ciphertext for an
+/// unread TLS tunnel, the protocol's own bytes for SSH and friends.
+///
+/// One value on two grains: a CONNECT row's `Flow.TunnelDiagnostic` holds one
+/// connection (`connections == 1`), a `TunneledHost` folds every closed connection
+/// to that origin.
+public struct TunnelTraffic: Equatable, Codable, Sendable {
+    /// Client → origin.
+    public var bytesFromClient: Int
+    /// Origin → client.
+    public var bytesToClient: Int
+    /// Closed connections folded into this value.
+    public var connections: Int
+    /// How long a connection stayed open — the longest of them, once folded.
+    public var openSeconds: Double
+
+    public init(bytesFromClient: Int, bytesToClient: Int, connections: Int = 1, openSeconds: Double) {
+        self.bytesFromClient = bytesFromClient
+        self.bytesToClient = bytesToClient
+        self.connections = connections
+        self.openSeconds = openSeconds
+    }
+
+    public func adding(_ other: TunnelTraffic) -> TunnelTraffic {
+        TunnelTraffic(
+            bytesFromClient: bytesFromClient + other.bytesFromClient,
+            bytesToClient: bytesToClient + other.bytesToClient,
+            connections: connections + other.connections,
+            openSeconds: max(openSeconds, other.openSeconds)
+        )
     }
 }
 

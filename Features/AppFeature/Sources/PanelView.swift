@@ -227,10 +227,10 @@ public struct PanelView: View {
 
     // MARK: Switch strip
 
-    /// The three booleans. Nothing else may join them: a control whose state is a
-    /// phrase rather than on/off belongs in a config row, which has room to say
-    /// the phrase — the caption under each glyph names the control, never what it
-    /// is currently doing.
+    /// The booleans (System · HTTPS · Rules · Redact) plus Device. Nothing whose
+    /// state is a phrase rather than on/off may join them: that belongs in a config
+    /// row, which has room to say the phrase — the caption under each glyph names
+    /// the control, never what it is currently doing.
     private var switchStrip: some View {
         // Half the gap the rows use. Four controls that belong to one question
         // should read as one strip, and at Space.xs they read as four separate
@@ -279,6 +279,20 @@ public struct PanelView: View {
                 help: rulesHelp
             ) {
                 store.send(.rules(.toggleRulesTapped))
+            }
+
+            // A boolean, so a tile — the band rule is the tint question, and this
+            // one answers it in two values. It is the console's only control over
+            // what the *agent* sees rather than what traffic does, and it lives here
+            // rather than behind an MCP tool on purpose: a redaction the agent could
+            // switch off would not keep anything out of its context.
+            PanelTile(
+                icon: redactionIcon,
+                mode: store.status.redactsAgentReads ? .on : .off,
+                title: "Redact",
+                help: redactionHelp
+            ) {
+                store.send(.toggleAgentRedactionTapped)
             }
 
             // The fourth member, and the only one that isn't a switch: it opens
@@ -338,6 +352,18 @@ public struct PanelView: View {
     /// pulse. `.inverse` is the filled member of the `wand.and.stars` family.
     private var rulesIcon: String {
         store.rules.rulesEnabled ? "wand.and.stars.inverse" : "wand.and.stars"
+    }
+
+    /// The eye is the agent's: slashed while it reads credentials as `<redacted>`.
+    /// Same family, so the swap is the slash being drawn on, like Device's.
+    private var redactionIcon: String {
+        store.status.redactsAgentReads ? "eye.slash" : "eye"
+    }
+
+    private var redactionHelp: String {
+        store.status.redactsAgentReads
+            ? "Agents read credentials (Authorization, Cookie, API keys, token query values) as <redacted> — tap to show them. Replay still sends the real values."
+            : "Agents read captured credentials in full — tap to redact them"
     }
 
     /// Rules on with no rules is deliberately **not** a warning. It is the state

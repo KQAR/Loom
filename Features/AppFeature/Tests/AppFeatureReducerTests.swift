@@ -280,6 +280,28 @@ import Testing
         }
     }
 
+    /// The Redact tile writes through to the engine and reads back from `status`, so a
+    /// relaunch (or any other surface) shows the engine's answer, not a local flag.
+    @Test func redactTile_writesThroughAndFollowsTheEngine() async {
+        let written = LockIsolated<[Bool]>([])
+        let store = TestStore(initialState: AppFeature.State()) {
+            AppFeature()
+        } withDependencies: {
+            $0.proxyClient.setAgentReadRedaction = { enabled in written.withValue { $0.append(enabled) } }
+        }
+        #expect(store.state.status.redactsAgentReads, "on by default")
+        await store.send(.toggleAgentRedactionTapped) {
+            $0.status.redactsAgentReads = false
+        }
+        #expect(written.value == [false])
+
+        await store.send(.engineStatusRefreshed(
+            ProxyStatus(isRunning: true, port: 9090, capturedCount: 0, redactsAgentReads: true)
+        )) {
+            $0.status.redactsAgentReads = true
+        }
+    }
+
     // MARK: The capture gate is the engine's, not a second copy
 
     /// `set_recording` is a write tool, so an agent can pause capture. `isRecording`

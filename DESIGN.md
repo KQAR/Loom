@@ -112,13 +112,13 @@ components:
   menu-panel:
     material: "{colors.panel-material}"
     width: "{metrics.console-width}"
-    structure: "header (capture dot · address · Privileged Helper key · proxy switch) · switch-tile strip (System · HTTPS · Rules · Device) · console-alert channel (present only when something is wrong) · config rows (Reverse Proxies / SSL Scope / Client Certificates / Breakpoints — the last three conditional, absent rather than empty) · footer (version · Open Main Window + wordmark · Quit)"
+    structure: "header (capture dot · address · Privileged Helper key · proxy switch) · switch-tile strip (System · HTTPS · Rules · Redact · Device) · console-alert channel (present only when something is wrong) · config rows (Reverse Proxies / SSL Scope / Client Certificates / Breakpoints — the last three conditional, absent rather than empty) · footer (version · Open Main Window + wordmark · Quit)"
     note: "config & control only — NO request list here"
     banding: "which band a control lands in is decided by ONE question: can its state be read off a three-value tint? Boolean → switch-tile. State that is a PHRASE (`all but 2 · 3 unread`, `1 need attention`, `2 not listening`) → config-row, which has room for words. No state worth a caption (a navigation, or the helper) → header-glyph. A control that outgrows its band moves band; a caption that starts reporting state is the tell that it should have."
   switch-tile:
-    use: "the three structurally identical booleans — System Proxy, HTTPS, Rules — plus Connect Device, which is not a switch but reads as one member of the same question (how does traffic reach Loom). Nothing else, and Device never takes the warning tint."
-    anatomy: "a 16pt semibold glyph over a {typography.caption} caption, equal thirds of the content width, NO background block, HStack spacing {spacing.xxs} (half a row's — four controls answering one question should read as one strip, not four adjacent buttons). The TINT of glyph AND caption is the state: OFF = .secondary · ON = {colors.accent} · WARNING = {colors.status-warning}. The only fill is the {rounded.md} hover highlight ({colors.panel-selection}) — an interaction state, not a display one. Optional count badge offset off the GLYPH's top-trailing corner (out of layout, so it cannot break the equal thirds) — only on a tile with something countable (Rules), never on a bare boolean, where a `1` would read as a quantity."
-    caption: "names the control, NEVER its state — 'System', never 'System — on'. State is the tint's job, and a caption that repeated it would be a second truth to keep in step. Keep it to ONE short word: the strip is four columns at {metrics.console-width}/4 ≈ 56pt, which is why 'System Proxy' became 'System' — the unabbreviated name is in the tooltip. lineLimit(1) and NO minimumScaleFactor (see § Motion — it made the type jitter). The unabbreviated sentence lives in the tooltip AND in .accessibilityHint, so VoiceOver gets it too."
+    use: "the structurally identical booleans — System Proxy, HTTPS, Rules, Redact (credentials in agent reads; human-only, no MCP tool flips it) — plus Connect Device, which is not a switch. Nothing else; Device and Redact never take the warning tint."
+    anatomy: "a 16pt semibold glyph over a {typography.caption} caption, equal thirds of the content width, NO background block, HStack spacing {spacing.xxs} (half a row's — five controls should read as one strip, not five adjacent buttons). The TINT of glyph AND caption is the state: OFF = .secondary · ON = {colors.accent} · WARNING = {colors.status-warning}. The only fill is the {rounded.md} hover highlight ({colors.panel-selection}) — an interaction state, not a display one. Optional count badge offset off the GLYPH's top-trailing corner (out of layout, so it cannot break the equal thirds) — only on a tile with something countable (Rules), never on a bare boolean, where a `1` would read as a quantity."
+    caption: "names the control, NEVER its state — 'System', never 'System — on'. State is the tint's job, and a caption that repeated it would be a second truth to keep in step. Keep it to ONE short word: the strip is five columns at {metrics.console-width}/5 ≈ 50pt, which is why 'System Proxy' became 'System' — the unabbreviated name is in the tooltip. lineLimit(1) and NO minimumScaleFactor (see § Motion — it made the type jitter). The unabbreviated sentence lives in the tooltip AND in .accessibilityHint, so VoiceOver gets it too."
     warning-state: "ON but not doing its job — HTTPS with an untrusted root CA decrypts nothing; System Proxy that another app has taken routes nothing here. It is NOT the same as off, and it MUST be paired with a console-alert (or a fault-card, which is a richer form of one): a warning tile alone is a dead end, because the only thing you can do to it is the one thing that makes it worse."
     not-a-warning: "on-with-nothing-configured (Rules enabled, zero rules) stays ON. That is a fresh install, and orange there teaches the reader to ignore the colour — same rule as the SSL Scope row's `unread` count excluding deliberate pass-throughs."
   console-alert:
@@ -346,8 +346,8 @@ utility — closer to the system's own controls than to a themed Electron tool.
    ● 127.0.0.1:9090 🔑           [◉]     header: dot · address · helper key · proxy switch
      SOCKS5 :9091                        second listener — PORT ONLY, same host as above
 
-     🌍       🔒      ⚙︎ ②      📱②      tile strip — tinted glyph over a caption
-   System   HTTPS    Rules    Device     TINT = state: secondary off · accent on · orange warning
+    🌍     🔒     ⚙︎ ②    👁‍🗨     📱②     tile strip — tinted glyph over a caption
+  System  HTTPS   Rules  Redact  Device   TINT = state: secondary off · accent on · orange warning
 
   ⚠ Another proxy app has it …  ›         console-alert — ABSENT unless something is wrong
 
@@ -808,7 +808,7 @@ rejecting what failed:
 
 - **`menu-panel`** — the console. Vibrant material, `{metrics.console-width}` wide: header (status +
   `header-glyph`s) → `switch-tile` strip → `console-alert` channel → config rows → footer. **No traffic.**
-- **`switch-tile`** — the strip (System · HTTPS · Rules · Device): a tinted glyph over a caption, no
+- **`switch-tile`** — the strip (System · HTTPS · Rules · Redact · Device): a tinted glyph over a caption, no
   background block. The **tint** is the state (secondary off · accent on · `{colors.status-warning}` warning);
   the caption names the control and never its state. A warning tile must always be paired with a
   `console-alert` or a `fault-card`; see `{components.switch-tile}`.

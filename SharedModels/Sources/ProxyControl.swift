@@ -136,6 +136,13 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
     /// Which rules, and what each cost, is on `RulesState.droppedCounts`.
     public var droppedByRules = 0
 
+    /// Whether flow content read over MCP passes through `FlowRedaction.agentReads`
+    /// first. On, an `Authorization` reads `<redacted>` to the agent — and that
+    /// value is Loom's, not the server's, which is why this is part of the status
+    /// rather than a setting an agent has to guess at. Replay still sends the
+    /// captured original. See `CaptureControlling.setAgentReadRedaction`.
+    public var redactsAgentReads = true
+
     public init(
         isRunning: Bool, port: Int, capturedCount: Int, retainedCount: Int? = nil,
         isRecording: Bool = true,
@@ -144,7 +151,8 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         degradations: [EngineDegradation] = [],
         recentRefusals: [ConnectionRefusal] = [], refusedConnections: Int = 0,
         reverseProxies: [ReverseProxyStatus] = [],
-        droppedByRules: Int = 0
+        droppedByRules: Int = 0,
+        redactsAgentReads: Bool = true
     ) {
         self.isRunning = isRunning
         self.port = port
@@ -160,6 +168,7 @@ public struct ProxyStatus: Equatable, Codable, Sendable {
         self.refusedConnections = refusedConnections
         self.reverseProxies = reverseProxies
         self.droppedByRules = droppedByRules
+        self.redactsAgentReads = redactsAgentReads
     }
 
     /// Reachable from other devices on the network, not just this Mac.
@@ -513,6 +522,16 @@ public protocol CaptureControlling: Sendable {
     /// `FlowProviding.flowsClearedStream()`, so a surface showing the old flows
     /// doesn't keep presenting them as current.
     func clearFlows() async
+    /// Whether flow content an agent reads over MCP is redacted
+    /// (`FlowRedaction.agentReads`). A cheap read on purpose: every MCP read tool
+    /// asks it, and `status()` costs several store hops.
+    func agentReadRedaction() async -> Bool
+    /// Turn agent-read redaction on or off. Persisted.
+    ///
+    /// **Deliberately not an MCP tool.** The switch exists to keep credentials out
+    /// of an agent's context and transcript; a write the agent could make itself
+    /// would make it a suggestion. The human flips it from the console.
+    func setAgentReadRedaction(_ enabled: Bool) async
     /// Capture-stage dropping is a rule action (`RuleActions.dropFromCapture`), not a
     /// list of its own. Matching exchanges are forwarded exactly as they would be
     /// without the rule and never recorded. Distinct from `SSLScope.exclude`: that
@@ -649,6 +668,8 @@ public enum ProxyCapability: String, CaseIterable, Sendable {
     case setRecording
     case setListenPort
     case clearFlows
+    case agentReadRedaction
+    case setAgentReadRedaction
     // RulesControlling
     case rulesState
     case setRulesEnabled

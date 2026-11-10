@@ -160,6 +160,12 @@ import Testing
             model: diagnostic,
             render: TunnelDiagnosticRender(diagnostic)
         ))
+        let traffic = TunnelTraffic(bytesFromClient: 1, bytesToClient: 2, openSeconds: 3)
+        check(Census(
+            "TunnelTraffic → flow.tunnel.traffic / tunneledHosts[].traffic",
+            model: traffic,
+            render: TunnelTrafficRender(traffic)
+        ))
     }
 
     @Test func transport_carriesEveryModelField() {
@@ -511,7 +517,8 @@ import Testing
                 lanReachable: status.isLANReachable, capturedCount: status.capturedCount,
                 flowsRetained: status.retainedCount,
                 isRecording: status.isRecording, socksPort: status.socksPort,
-                systemProxy: "unavailable"
+                systemProxy: "unavailable",
+                redactsAgentReads: status.redactsAgentReads
             ),
             accountedFor: [
                 "retainedCount": "renamed to `flowsRetained`, matching what `get_stats` already calls the same number — one name for one quantity beats a second one an agent has to learn",

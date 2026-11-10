@@ -17,8 +17,15 @@ import LoomSharedModels
 enum FlowDiff {
     /// Diff `compared` against `base`, rendered as the tool's JSON object. Only
     /// the parts that actually differ appear; `identical` is true when nothing did.
-    static func diff(base: Flow, compared: Flow) -> [String: Any] {
-        render(FlowComparison.compare(base: base, compared: compared))
+    ///
+    /// Compared over the originals and redacted afterwards (`FlowRedaction.apply(to:
+    /// FlowComparison)` says why the order matters).
+    static func diff(base: Flow, compared: Flow, redaction: FlowRedaction? = nil) -> [String: Any] {
+        let comparison = FlowComparison.compare(base: base, compared: compared)
+        guard let redaction else { return render(comparison) }
+        var rendered = FlowDiffRender(redaction.apply(to: comparison))
+        rendered.redacted = true
+        return MCPRender.dict(rendered)
     }
 
     static func render(_ comparison: FlowComparison) -> [String: Any] {

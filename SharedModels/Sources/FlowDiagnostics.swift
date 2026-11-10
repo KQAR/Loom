@@ -54,12 +54,19 @@ public extension Flow {
         /// never persisted. New records always provide the reason.
         public var reason: TunnelReason?
         public var detail: String?
+        /// What the relay carried, filled in when the connection closes. Nil while
+        /// it is open, and for a failed tunnel (nothing was relayed).
+        public var traffic: TunnelTraffic?
 
-        public init(host: String, port: Int, reason: TunnelReason?, detail: String? = nil) {
+        public init(
+            host: String, port: Int, reason: TunnelReason?, detail: String? = nil,
+            traffic: TunnelTraffic? = nil
+        ) {
             self.host = host
             self.port = port
             self.reason = reason
             self.detail = detail
+            self.traffic = traffic
         }
     }
 

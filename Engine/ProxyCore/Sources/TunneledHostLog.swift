@@ -166,6 +166,20 @@ final class TunneledHostLog: Sendable {
         }
     }
 
+    /// Fold one closed relay's traffic into the host's entry.
+    ///
+    /// Only into an entry that exists: the entry is written when the relay starts,
+    /// so a missing one was evicted or reset (`clearFlows`) while the tunnel ran,
+    /// and re-creating it here would bring back a host the operator just cleared.
+    func recordTraffic(host: String, port: Int, _ traffic: TunnelTraffic) {
+        let key = "\(host.lowercased()):\(port)"
+        state.withLock {
+            guard var existing = $0.hosts[key] else { return }
+            existing.traffic = existing.traffic?.adding(traffic) ?? traffic
+            $0.hosts[key] = existing
+        }
+    }
+
     /// A decoded HTTP/2 stream proves the prior connection-level codec verdict no
     /// longer describes this host. A TLS handshake alone cannot prove that.
     func clearProtocolErrorAfterDecodedStream(host: String, port: Int) {

@@ -91,6 +91,40 @@ public struct FlowRedaction: Equatable, Sendable {
         flows.map(apply(to:))
     }
 
+    /// What an agent reads over MCP while `ProxyStatus.redactsAgentReads` is on:
+    /// the default headers and query keys, **bodies kept**. Dropping bodies would
+    /// take the payload out of every debugging loop, which is what an agent is
+    /// reading the capture *for*; the credential that leaks by default is the one
+    /// on every request, in the header.
+    public static let agentReads = FlowRedaction()
+
+    /// A held exchange, by the same rules as a flow.
+    public func apply(to pending: PendingBreakpoint) -> PendingBreakpoint {
+        var copy = pending
+        copy.url = redact(url: pending.url)
+        copy.requestHeaders = redact(headers: pending.requestHeaders)
+        copy.responseHeaders = pending.responseHeaders.map(redact(headers:))
+        if dropBodies {
+            copy.requestBody = nil
+            copy.responseBody = nil
+        }
+        return copy
+    }
+
+    /// A comparison, redacted **after** it was computed over the originals.
+    ///
+    /// Redacting the two flows first and comparing those would make a rotated token
+    /// read as identical — `<redacted>` equals `<redacted>` — and `diff_flows`
+    /// answering "no difference" for the one header that changed is a wrong answer,
+    /// not a thin one. Compared first, the change survives with its values hidden.
+    public func apply(to comparison: FlowComparison) -> FlowComparison {
+        var copy = comparison
+        copy.request.url = comparison.request.url.map(redact(urlChange:))
+        copy.request.headers = comparison.request.headers.map(redact(headerChange:))
+        copy.response.headers = comparison.response.headers.map(redact(headerChange:))
+        return copy
+    }
+
     // MARK: - Pieces
 
     private func redact(headers: [HeaderPair]) -> [HeaderPair] {
@@ -104,7 +138,10 @@ public struct FlowRedaction: Equatable, Sendable {
     }
 
     /// Replace the values of credential-bearing query parameters, leaving the rest of
-    /// the URL — path, other parameters, order — exactly as captured.
+    /// the URL — path, other parameters, order — exactly as captured. Public for a
+    /// render that carries a bare URL rather than a flow (`get_stats`' slowest list).
+    public func redacted(url: String) -> String { redact(url: url) }
+
     private func redact(url: String) -> String {
         guard !queryKeys.isEmpty,
               var components = URLComponents(string: url),
@@ -121,6 +158,23 @@ public struct FlowRedaction: Equatable, Sendable {
         }
         guard touched else { return url }
         return components.string ?? url
+    }
+
+    private func redact(urlChange: FlowComparison.ValueChange<String>) -> FlowComparison.ValueChange<String> {
+        var copy = urlChange
+        copy.base = urlChange.base.map(redact(url:))
+        copy.compared = urlChange.compared.map(redact(url:))
+        return copy
+    }
+
+    private func redact(headerChange: FlowComparison.HeaderChange) -> FlowComparison.HeaderChange {
+        guard headerNames.contains(where: { $0.caseInsensitiveCompare(headerChange.name) == .orderedSame }) else {
+            return headerChange
+        }
+        var copy = headerChange
+        copy.base = headerChange.base?.map { _ in Self.placeholder }
+        copy.compared = headerChange.compared?.map { _ in Self.placeholder }
+        return copy
     }
 
     private func redact(outcome: FlowOutcome) -> FlowOutcome {

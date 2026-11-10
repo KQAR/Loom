@@ -53,6 +53,14 @@ struct FlowSummary: View {
                     if let reason = diagnostic.reason {
                         row("Reason", reason.rawValue)
                     }
+                    // Only once the connection has closed — an open tunnel has not
+                    // counted yet, and "0 B" there would claim it carried nothing.
+                    if let traffic = diagnostic.traffic {
+                        row("Relayed out", InspectorText.byteCount(traffic.bytesFromClient))
+                        row("Relayed in", InspectorText.byteCount(traffic.bytesToClient))
+                        row("Open for", Duration.seconds(traffic.openSeconds)
+                            .formatted(.units(allowed: [.hours, .minutes, .seconds, .milliseconds], width: .abbreviated, maximumUnitCount: 2)))
+                    }
                 }
                 row("Method", flow.request.method, color: LoomTheme.methodColor(flow.request.method))
                 // Same hue the table's status dot uses for the same code. Two renderings of

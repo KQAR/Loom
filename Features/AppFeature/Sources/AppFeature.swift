@@ -366,6 +366,8 @@ public struct AppFeature: Sendable {
         /// A LAN device connected to (or was first seen by) the proxy.
         case connectedDeviceCountChanged(Int)
         case toggleRecordingTapped
+        /// The console's Redact tile — `ProxyStatus.redactsAgentReads`.
+        case toggleAgentRedactionTapped
         /// Footer "Check for Updates" / "Update" tap — runs a user-initiated
         /// Sparkle check (shows its download/install UI).
         case checkForUpdatesTapped
@@ -866,6 +868,7 @@ public struct AppFeature: Sendable {
                 state.status.capturedCount = status.capturedCount
                 state.status.port = status.port
                 state.status.isRecording = status.isRecording
+                state.status.redactsAgentReads = status.redactsAgentReads
                 state.status.listenHost = status.listenHost
                 state.status.socksPort = status.socksPort
                 state.status.reverseProxies = status.reverseProxies
@@ -884,6 +887,13 @@ public struct AppFeature: Sendable {
                 state.configuredPort = status.port
                 return .run { _ in ProxyPortStore.save(status.port) }
 
+
+            case .toggleAgentRedactionTapped:
+                // Optimistic, and safe to be: the human is this setting's only writer
+                // (there is no MCP tool for it), and the next status read reconciles.
+                state.status.redactsAgentReads.toggle()
+                let enabled = state.status.redactsAgentReads
+                return .run { _ in await proxyClient.setAgentReadRedaction(enabled) }
 
             case .toggleRecordingTapped:
                 state.isRecording.toggle()

@@ -64,6 +64,12 @@ public actor ProxyEngine: ProxyControlling {
 
     /// Lazily generated on first `start()` (or first cert query) and cached.
     var ca: CertificateAuthority?
+    /// `ProxyStatus.redactsAgentReads`. On by default — see `setAgentReadRedaction`.
+    var redactsAgentReads: Bool
+    /// Where it persists; nil for an in-memory engine (tests, embedders that keep
+    /// no state), which starts at the default every time.
+    let redactionDefaults: UserDefaults?
+    static let redactionDefaultsKey = "com.loom.redactAgentReads"
 
     var running = false
     /// Set by `shutdown()`; the engine is terminal afterwards (its event-loop group
@@ -204,6 +210,9 @@ public actor ProxyEngine: ProxyControlling {
         self.config = durable
             ? InterceptionConfig(degradations: degradations)
             : InterceptionConfig(defaults: nil, degradations: degradations)
+        let redactionDefaults: UserDefaults? = durable ? .standard : nil
+        self.redactionDefaults = redactionDefaults
+        self.redactsAgentReads = redactionDefaults?.object(forKey: Self.redactionDefaultsKey) as? Bool ?? true
         self.reverseProxyConfig = durable
             ? ReverseProxyConfig(degradations: degradations)
             : ReverseProxyConfig(fileURL: nil, degradations: degradations)
