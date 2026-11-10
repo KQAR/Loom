@@ -817,6 +817,8 @@ public struct MainView: View {
             store.send(.phoneButtonTapped(.mainWindow))
         } label: {
             Image(systemName: deviceReadiness.symbol)
+                // The chip's one size, like every glyph beside it.
+                .font(LoomTheme.Icon.toolbar)
                 // Highlighted while a phone could actually reach Loom; secondary
                 // otherwise, whether that is because LAN capture is off or because
                 // the proxy isn't listening.
@@ -872,14 +874,28 @@ public struct MainView: View {
         // `toggleSidebar(_:)` down the responder chain, and only `NSSplitViewController`
         // answers it — the container this view deliberately doesn't use (see `body`). Same
         // glyph as the system item, and the standard ⌃⌘S.
-        ToolbarItem(placement: .navigation) {
-            Button(action: toggleSidebar) {
-                Image(systemName: "sidebar.left")
-            }
-            .keyboardShortcut("s", modifiers: [.control, .command])
-            .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-            .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        if #available(macOS 26, *) {
+            // No glass circle: the chip beside it draws none either.
+            ToolbarItem(placement: .navigation) { sidebarToggle }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigation) { sidebarToggle }
         }
+    }
+
+    /// Same glyph size and box as every icon in the chip, so the header reads as one row
+    /// of one size — the system toolbar button drew it at its own size and weight.
+    private var sidebarToggle: some View {
+        Button(action: toggleSidebar) {
+            Image(systemName: "sidebar.left")
+                .font(LoomTheme.Icon.toolbar)
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut("s", modifiers: [.control, .command])
+        .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
     }
 
     /// Both the button and ⌃⌘S land here, so the animation is stated once. `.snappy` rather
@@ -891,78 +907,57 @@ public struct MainView: View {
         }
     }
 
-    /// The content pane's top bar, in three places: the capture verbs at the leading edge,
-    /// what the proxy is doing in the centre, and the switches that change what it does at
-    /// the trailing edge — one capsule each.
+    /// The content pane's top bar: the status chip, centred on the pane.
     ///
-    /// **Not toolbar items, and that is the point.** `.principal` centres on the window,
-    /// and every way of moving a principal run onto the pane failed: padding an item
-    /// stretches its glass capsule, and an invisible offset item does not track the
-    /// sidebar — measured, an NSToolbar item keeps the size it was inserted with, so the
-    /// groups stood still while the sidebar slid, and could only jump by re-inserting.
-    /// Laid out in the pane, they are placed by ordinary layout and move with the
-    /// sidebar's own animation, frame for frame.
+    /// **Not a toolbar item, and that is the point.** `.principal` centres on the window,
+    /// and every way of moving a principal item onto the pane failed: padding it stretches
+    /// its glass capsule, and an invisible offset item does not track the sidebar —
+    /// measured, an NSToolbar item keeps the size it was inserted with, so the chip stood
+    /// still while the sidebar slid, and could only jump by re-inserting. Laid out in the
+    /// pane, it is centred by ordinary layout and moves with the sidebar's own animation.
+    /// It also draws no glass: on macOS 27 a toolbar item gets the shared-glass capsule
+    /// whatever `UIDesignRequiresCompatibility` says, and the chip is specified without one.
     private var contentTopBar: some View {
-        // With the sidebar closed the pane's leading edge is the window's, where the
-        // traffic lights and the sidebar toggle sit: the verbs move aside, animated by the
-        // sidebar's own transaction. Only the verbs — the status stays on the pane's centre.
-        TopBarLayout(gap: LoomTheme.Space.xs,
-                     leadingInset: sidebarVisible ? 0 : Self.titlebarLeadingControlsWidth) {
-            topBarCapsule { captureGroup }
-            topBarCapsule { statusGroup }
-            topBarCapsule { toggleGroup }
-        }
-        .padding(.horizontal, LoomTheme.Space.sm)
+        statusChip
     }
 
-    /// The traffic lights plus the sidebar toggle, from the window's leading edge: the
-    /// toggle's trailing edge was measured at 132pt, plus a gap.
-    private static let titlebarLeadingControlsWidth: CGFloat = 140
-
-    /// One group's capsule: the system's glass on macOS 26+, where the toolbar these
-    /// groups left would have drawn it; nothing before, as that toolbar drew nothing.
-    @ViewBuilder
-    private func topBarCapsule(@ViewBuilder _ group: () -> some View) -> some View {
-        let padded = group().padding(.horizontal, LoomTheme.Space.xxs).padding(.vertical, LoomTheme.Space.xxs)
-        if #available(macOS 26, *) {
-            padded.glassEffect(.regular.interactive(), in: .capsule)
-        } else {
-            padded
-        }
-    }
-
-    /// What the proxy is doing: dot + a state word + the listener's address, then the
-    /// phone button. The word is what makes the state readable without the dot's hue —
-    /// green / yellow / grey alone was the one state in this window carried by colour.
-    private var statusGroup: some View {
-        // The address and the phone button are one pair, spaced tighter than the
-        // rest of the strip: the phone control is *about* the address it sits
-        // beside — whether anything on the network can reach it — and the glyph's
-        // own 30pt box already carries visual air on both sides.
-        HStack(spacing: 2) {
-            ZStack(alignment: .leading) {
-                // Sized by every text this slot can show, not by a guessed number:
-                // the widest of them reserves the width, so switching LAN or Record
-                // never moves the strip, and no slack is reserved for an address
-                // the listener cannot have (it binds 0.0.0.0 or 127.0.0.1, never a
-                // LAN IP — a width sized for one showed as a gap before the dot).
-                ForEach(statusCandidates, id: \.self) { candidate in
-                    statusRow(word: candidate.word, address: candidate.address).hidden()
-                }
-                addressButton
-            }
-            // Shown even while the proxy is stopped — see `DeviceReadiness`. It
-            // used to be hidden, which removed the control precisely when someone
-            // was looking for why their phone couldn't connect.
-            phoneButton
-        }
-        .padding(.leading, LoomTheme.Space.sm)
-        .padding(.trailing, LoomTheme.Space.xxs)
-    }
-
-    /// The switches: System proxy, SSL, Map/rewrite.
-    private var toggleGroup: some View {
+    /// The status chip: capture dot + address, then the state toggles. Extracted only so
+    /// `toolbarContent` stays readable; the toolbar item draws its own background.
+    ///
+    /// It centres on the *window*, not on the content pane, because that is what
+    /// `.principal` does. Two ways to shift it onto the pane were tried and both cost more
+    /// than they fix: padding the item's leading edge by a sidebar width stretches the
+    /// shared-glass capsule by the same 300pt, and hiding that shared background to draw
+    /// the capsule here leaves the toolbar rendering a full-width backdrop instead. (The
+    /// capsule itself is gone now that the app renders in the pre-26 design — see
+    /// `UIDesignRequiresCompatibility` in `Project.swift` — but window-centring is
+    /// `.principal`'s own behavior in both designs, so this note still applies.)
+    private var statusChip: some View {
         HStack(spacing: LoomTheme.Space.xs) {
+            // The address and the phone button are one pair, spaced tighter than the
+            // rest of the strip: the phone control is *about* the address it sits
+            // beside — whether anything on the network can reach it — and the glyph's
+            // own 30pt box already carries visual air on both sides.
+            HStack(spacing: 2) {
+                ZStack(alignment: .trailing) {
+                    // Sized by every text this slot can show, not by a guessed number:
+                    // the widest of them reserves the width, so switching LAN on or off
+                    // never moves the strip, and no slack is reserved for an address
+                    // the listener cannot have (it binds 0.0.0.0 or 127.0.0.1, never a
+                    // LAN IP — a width sized for one showed as a gap before the dot).
+                    ForEach(addressCandidates, id: \.self) { candidate in
+                        addressRow(Text(verbatim: candidate)).hidden()
+                    }
+                    addressRow(addressButton)
+                }
+                // Shown even while the proxy is stopped — see `DeviceReadiness`. It
+                // used to be hidden, which removed the control precisely when someone
+                // was looking for why their phone couldn't connect.
+                phoneButton
+            }
+
+            Divider().frame(height: 14)
+
             // Same split as the console's strip, and for the same reasons: the
             // system proxy is the async one, so it pulses and does not morph (the
             // `globe` family has no honest on/off pair — see PanelView); the two
@@ -979,92 +974,70 @@ public struct MainView: View {
                        help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
                 store.send(.rules(.toggleRulesTapped))
             }
-        }
-        .padding(.horizontal, LoomTheme.Space.xxs)
-    }
 
-    /// Record and Clear: both are capture lifecycle, so they sit together, directly
-    /// right of the status they act on rather than one of them floating over the list.
-    private var captureGroup: some View {
-        HStack(spacing: LoomTheme.Space.xs) {
+            // Record and Clear live at the right end of the ip toolbar, split from
+            // the status toggles by a divider: both are capture lifecycle, so they
+            // sit together rather than one of them floating over the flow list.
+            Divider().frame(height: 14)
             recordButton
             clearButton
         }
-        .padding(.horizontal, LoomTheme.Space.xxs)
+        .padding(.horizontal, LoomTheme.Space.sm)
     }
 
-    /// The status row, and the way in to changing the port. It reads as text and
-    /// behaves as a button, because the address is the thing someone is looking at when
-    /// 9090 turns out to be taken — and "Stopped" is the thing they are looking at when
-    /// it was — so a Settings pane elsewhere would be a second place to look for the
-    /// fact already on screen. `ProxyPortCard` is the only editor.
+    /// The address, and the way in to changing it. It reads as text and behaves as a
+    /// button, because the address is the thing someone is looking at when 9090 turns
+    /// out to be taken — a Settings pane elsewhere would be a second place to look
+    /// for the fact already on screen. `ProxyPortCard` is the only editor.
     private var addressButton: some View {
         Button { showingPortEditor = true } label: {
-            // **A reserved width (`statusCandidates`), and this is what stops the strip
-            // jumping.** The address resizes with its content — `0.0.0.0:9090` and
-            // `127.0.0.1:9090` are two widths, "Recording" and "Paused" two more — and
-            // these groups are `.principal`, i.e. centred on the *window*. So switching
-            // LAN off did not just change the text: it narrowed the whole strip, and
-            // every glyph to the right of it slid sideways.
-            statusRow(word: captureStateWord, address: listenerAddress)
+            Text(verbatim: store.status.isRunning
+                ? "\(store.displayHost):\(store.status.port)"
+                : "Proxy stopped")
+                .font(.callout.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                // **A reserved width (`addressCandidates`), and this is what stops the strip jumping.** The
+                // address is the only item here that resizes with its content —
+                // `0.0.0.0:9090`, `127.0.0.1:9090` and `192.168.1.20:9090` are three
+                // widths — and this strip is `.principal`, i.e. centred on the
+                // *window*. So switching LAN off did not just change the text: it
+                // narrowed the whole strip, and every glyph to the right of it slid
+                // sideways. The phone symbol looked like it was disappearing and
+                // reappearing somewhere else, which is exactly what it was doing —
+                // the symbol changed in place and the place moved.
+                //
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(listenerAddress.map { "\(captureStateWord), \($0)" } ?? captureStateWord)
-        .accessibilityHint("Change the proxy port")
         .help("Change the proxy port")
         .popover(isPresented: $showingPortEditor, arrowEdge: .bottom) {
             ProxyPortCard(store: store) { showingPortEditor = false }
         }
     }
 
-    /// Dot, state word, address — as one row. The slot is leading-aligned, so the dot and
-    /// the word start at the same place in every state and a state change reads in place;
-    /// any slack (widest under "Stopped", which has no address) sits before the phone
-    /// button.
-    private func statusRow(word: String, address: String?) -> some View {
+    /// The capture dot and an address, as one row. The dot travels *with* the address:
+    /// the group is trailing-aligned, so any slack sits on the left and a shorter
+    /// address grows leftwards while the phone button keeps a fixed gap.
+    private func addressRow(_ address: some View) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
             // green = proxy up & recording · yellow = up but paused · grey = off.
             Circle()
                 .fill(captureDotColor)
                 .frame(width: 7, height: 7)
-            Text(word)
-                .font(.callout.weight(.medium))
-                .lineLimit(1)
-            if let address {
-                Text(verbatim: address)
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            address
+                .font(.callout.monospaced())
         }
     }
 
-    /// The listener's `host:port`, or nil while nothing is listening — naming an
-    /// address the listener is not on sends someone to debug their client.
-    private var listenerAddress: String? {
-        store.status.isRunning ? "\(store.displayHost):\(store.status.port)" : nil
-    }
-
-    /// The dot's three values in words, so the state survives without its hue.
-    private var captureStateWord: String {
-        guard store.status.isRunning else { return "Stopped" }
-        return store.isRecording ? "Recording" : "Paused"
-    }
-
-    /// Every row the status slot can show at the current port. Only the port is
+    /// Every text the address slot can show at the current port. Only the port is
     /// variable, and it changes by a deliberate edit, so the strip still holds still.
-    private var statusCandidates: [StatusCandidate] {
+    private var addressCandidates: [String] {
         let port = store.status.port
-        return ["Recording", "Paused"].flatMap { word in
-            ["127.0.0.1:\(port)", "0.0.0.0:\(port)"].map { StatusCandidate(word: word, address: $0) }
-        } + [StatusCandidate(word: "Stopped", address: nil)]
+        return ["127.0.0.1:\(port)", "0.0.0.0:\(port)", "Proxy stopped"]
     }
 
-    private struct StatusCandidate: Hashable {
-        let word: String
-        let address: String?
-    }
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
     private var captureDotColor: Color {
@@ -1622,42 +1595,6 @@ private struct ToolbarFrost<Bar: View>: View {
             .frame(height: proxy.safeAreaInsets.top)
             .offset(y: -proxy.safeAreaInsets.top)
         }
-    }
-}
-
-/// Leading · centre · trailing, for exactly three subviews. The centre one is centred
-/// on the bar when that leaves it clear of both sides, and otherwise moved just far enough
-/// to clear them — so a narrow pane shifts it off-centre instead of overlapping.
-/// `leadingInset` moves the leading one only; the centre keeps the bar's midpoint.
-private struct TopBarLayout: Layout {
-    var gap: CGFloat
-    var leadingInset: CGFloat
-
-    /// Animatable, so the leading group slides with the sidebar instead of jumping.
-    var animatableData: CGFloat {
-        get { leadingInset }
-        set { leadingInset = newValue }
-    }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        let natural = leadingInset + sizes.map(\.width).reduce(0, +) + gap * CGFloat(max(sizes.count - 1, 0))
-        return CGSize(width: proposal.width ?? natural, height: sizes.map(\.height).max() ?? 0)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard subviews.count == 3 else { return }
-        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        let (leading, centre, trailing) = (sizes[0], sizes[1], sizes[2])
-        let leadingX = bounds.minX + leadingInset
-        let low = leadingX + leading.width + gap
-        let high = bounds.maxX - trailing.width - gap - centre.width
-        let centred = bounds.midX - centre.width / 2
-        // `high < low` when even the squeeze doesn't fit; prefer clearing the leading group.
-        let centreX = max(low, min(centred, high))
-        subviews[0].place(at: CGPoint(x: leadingX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
-        subviews[1].place(at: CGPoint(x: centreX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
-        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: .unspecified)
     }
 }
 
