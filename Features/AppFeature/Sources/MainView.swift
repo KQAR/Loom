@@ -915,10 +915,18 @@ public struct MainView: View {
     /// measured, an NSToolbar item keeps the size it was inserted with, so the chip stood
     /// still while the sidebar slid, and could only jump by re-inserting. Laid out in the
     /// pane, it is centred by ordinary layout and moves with the sidebar's own animation.
-    /// It also draws no glass: on macOS 27 a toolbar item gets the shared-glass capsule
-    /// whatever `UIDesignRequiresCompatibility` says, and the chip is specified without one.
+    ///
+    /// One glass capsule around the whole chip on macOS 26+ (owner decision), its groups
+    /// split inside it by the chip's own vertical dividers; none before, matching the
+    /// pre-26 toolbar.
+    @ViewBuilder
     private var contentTopBar: some View {
-        statusChip
+        let chip = statusChip.padding(.vertical, LoomTheme.Space.xxs)
+        if #available(macOS 26, *) {
+            chip.glassEffect(.regular, in: .capsule)
+        } else {
+            chip
+        }
     }
 
     /// The status chip: capture dot + address, then the state toggles. Extracted only so
