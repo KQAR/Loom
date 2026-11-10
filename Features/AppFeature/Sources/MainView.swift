@@ -131,13 +131,30 @@ public struct MainView: View {
                 // entirely off the leading edge and slides in as the box grows, instead of
                 // squashing from its full width to nothing.
                 .frame(width: currentSidebarWidth)
-                .overlay(alignment: .trailing) { sidebarDivider }
                 .frame(
                     width: sidebarVisible ? currentSidebarWidth : 0,
                     alignment: .trailing
                 )
                 .clipped()
+                // The sidebar's material runs to the top of the window, under the traffic
+                // lights, and so does its edge: the top of the window is two columns, not
+                // one band across both (the band is the content pane's — `ToolbarFrost`).
+                // Both sit *outside* `.clipped()`, which clips to the safe-area frame and
+                // would cut them off at the band's bottom edge; they take the animated
+                // width from the frame they're attached to.
+                .background { EffectView(material: .sidebar, blending: .behindWindow).ignoresSafeArea() }
+                .overlay(alignment: .trailing) {
+                    // The HStack is what makes the `Divider` vertical: outside a stack it
+                    // draws horizontally, across the middle of the sidebar.
+                    HStack(spacing: 0) {
+                        if sidebarVisible { sidebarDivider }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                }
             content
+                // The band covers the content pane only, starting at the sidebar's edge:
+                // the sidebar runs to the top of the window, so the top is not one strip.
+                .overlay(alignment: .top) { ToolbarFrost() }
                 .toolbar { toolbarContent }
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -157,9 +174,7 @@ public struct MainView: View {
         // (`Project.swift`), which puts the whole app back in the pre-26 system design that
         // DESIGN.md specifies. Keep that key and this band stays gone; drop it and every dead
         // end above is live again — so re-read them before trying to fix it per view.
-        // Frosts the toolbar band so the request table blurs under the status chip instead
-        // of reading crisply through it — see `WindowChrome` for why neither
-        // `.toolbarBackground` nor AppKit's own titlebar fill does the job here.
+        // Transparent titlebar, no title, no hairline — see `WindowChrome`.
         .background(WindowChrome())
         .task { store.send(.viewAppeared) }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
@@ -312,6 +327,9 @@ public struct MainView: View {
             }
         }
         .listStyle(.sidebar)
+        // The material is drawn by `body` instead, extended under the titlebar; the List's
+        // own stops at the safe area and would leave a seam where the band used to be.
+        .scrollContentBackground(.hidden)
         // Width is applied by `body`, which animates exactly that value on collapse; this
         // only needs to fill vertically. (`navigationSplitViewColumnWidth` is a no-op
         // outside `NavigationSplitView`, and the divider is deliberately not draggable.)
@@ -1516,33 +1534,24 @@ private struct RequestTableView: View {
     }
 }
 
-/// Gives the toolbar band a frosted-glass backing, because `.windowStyle(.hiddenTitleBar)`
-/// (LoomApp) leaves it painting *nothing*: it sets `titlebarAppearsTransparent` **and**
-/// `.fullSizeContentView`, so the request table extends under the band and its rows read
-/// crisply through the status chip.
+/// The window's chrome settings: a transparent titlebar over `.fullSizeContentView`, no
+/// title, no hairline. `.windowStyle(.hiddenTitleBar)` (LoomApp) already sets most of
+/// this; re-asserting it here keeps the window right after a re-key or style change.
 ///
-/// Two things were tried first and neither is the fix — don't re-add them:
-/// - SwiftUI's `.toolbarBackground(.visible, for: .windowToolbar)` is a no-op under that
+/// It used to also insert one frosted `NSVisualEffectView` across the whole titlebar
+/// container. That made the top of the window one continuous band, with the sidebar
+/// starting under it. The frost now belongs to the content pane only (`ToolbarFrost`),
+/// so the sidebar runs to the top of the window and the band starts at its edge.
+///
+/// Two things were tried for the band before it was hand-rolled — don't re-add them:
+/// - SwiftUI's `.toolbarBackground(.visible, for: .windowToolbar)` is a no-op under this
 ///   window style.
 /// - Flipping `titlebarAppearsTransparent` back to `false` gives an *opaque* band (AppKit's
-///   `NSTitlebarBackgroundView` fill), not a translucent one, whether or not the content
-///   extends beneath it.
-///
-/// So the band is hand-rolled: an `NSVisualEffectView` inserted at the back of the titlebar
-/// container. `.withinWindow` blending is the load-bearing part — it samples the content
-/// *below it in this window* (the table), which is what makes the rows blur rather than
-/// showing through; `.behindWindow` would blur the desktop and ignore the table entirely.
-/// It goes in the titlebar container rather than the content view so it sits under the
-/// toolbar items (the chip stays crisp) and needs no titlebar-height math.
+///   `NSTitlebarBackgroundView` fill), full width, not a translucent one.
 ///
 /// The representable itself is zero-size and behind the content — it only exists for the
 /// window handle.
 private struct WindowChrome: NSViewRepresentable {
-    /// Named so a re-apply (window re-key, style change) reuses the one band instead of
-    /// stacking a new blur behind the toolbar every pass. (`NSView.tag` is get-only, so the
-    /// marker is the identifier.)
-    private static let backdropID = NSUserInterfaceItemIdentifier("com.loom.toolbarBackdrop")
-
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         // The window isn't attached yet in `makeNSView`; apply once it is.
@@ -1563,26 +1572,44 @@ private struct WindowChrome: NSViewRepresentable {
         // separation the design wants, so the table reads as one surface sliding under it.
         window.titlebarSeparatorStyle = .none
         window.toolbar?.showsBaselineSeparator = false
-        // The titlebar container is reached through a standard window button rather than a
-        // private class name: the buttons are documented API and live in exactly that view.
-        guard let titlebar = window.standardWindowButton(.closeButton)?.superview else { return }
-        guard titlebar.subviews.first(where: { $0.identifier == Self.backdropID }) == nil else { return }
-        let backdrop = NSVisualEffectView()
-        backdrop.material = .titlebar
-        backdrop.blendingMode = .withinWindow
-        backdrop.state = .active // keep the frost on when the window loses focus
-        backdrop.identifier = Self.backdropID
-        // Plain blur: no border, no shadow, nothing that reads as a second edge.
-        backdrop.wantsLayer = true
-        backdrop.layer?.borderWidth = 0
-        backdrop.shadow = nil
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        titlebar.addSubview(backdrop, positioned: .below, relativeTo: titlebar.subviews.first)
-        NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: titlebar.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: titlebar.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
-        ])
     }
+}
+
+/// The content pane's toolbar band: a frost exactly as tall as the top safe-area inset
+/// (the titlebar + toolbar), laid over the top of the pane so the request table blurs
+/// beneath the status groups instead of reading crisply through them.
+///
+/// `.withinWindow` blending is the load-bearing part — it samples what is *below it in
+/// this window* (the table); `.behindWindow` would blur the desktop and leave the rows
+/// crisp. It sits in the content view, which AppKit stacks under the titlebar container,
+/// so the toolbar items stay on top of it.
+private struct ToolbarFrost: View {
+    var body: some View {
+        GeometryReader { proxy in
+            EffectView(material: .titlebar, blending: .withinWindow)
+                .frame(height: proxy.safeAreaInsets.top)
+                .offset(y: -proxy.safeAreaInsets.top)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// An `NSVisualEffectView` with a fixed material — the sidebar column's and the toolbar
+/// band's backing.
+private struct EffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blending: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blending
+        // The toolbar frost stays on when the window loses focus; the sidebar follows
+        // the window's state, as AppKit's own sidebars do.
+        view.state = blending == .withinWindow ? .active : .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
