@@ -891,24 +891,33 @@ public struct MainView: View {
         }
     }
 
-    /// The content pane's top bar: what the proxy is doing, the switches that change what
-    /// it does, and the capture verbs, centred on the pane — one capsule each.
+    /// The content pane's top bar, in three places: the capture verbs at the leading edge,
+    /// what the proxy is doing in the centre, and the switches that change what it does at
+    /// the trailing edge — one capsule each.
     ///
     /// **Not toolbar items, and that is the point.** `.principal` centres on the window,
     /// and every way of moving a principal run onto the pane failed: padding an item
     /// stretches its glass capsule, and an invisible offset item does not track the
     /// sidebar — measured, an NSToolbar item keeps the size it was inserted with, so the
     /// groups stood still while the sidebar slid, and could only jump by re-inserting.
-    /// Laid out in the pane, they are centred by ordinary layout and move with the
+    /// Laid out in the pane, they are placed by ordinary layout and move with the
     /// sidebar's own animation, frame for frame.
     private var contentTopBar: some View {
-        HStack(spacing: LoomTheme.Space.xs) {
+        // With the sidebar closed the pane's leading edge is the window's, where the
+        // traffic lights and the sidebar toggle sit: the verbs move aside, animated by the
+        // sidebar's own transaction. Only the verbs — the status stays on the pane's centre.
+        TopBarLayout(gap: LoomTheme.Space.xs,
+                     leadingInset: sidebarVisible ? 0 : Self.titlebarLeadingControlsWidth) {
+            topBarCapsule { captureGroup }
             topBarCapsule { statusGroup }
             topBarCapsule { toggleGroup }
-            topBarCapsule { captureGroup }
         }
         .padding(.horizontal, LoomTheme.Space.sm)
     }
+
+    /// The traffic lights plus the sidebar toggle, from the window's leading edge: the
+    /// toggle's trailing edge was measured at 132pt, plus a gap.
+    private static let titlebarLeadingControlsWidth: CGFloat = 140
 
     /// One group's capsule: the system's glass on macOS 26+, where the toolbar these
     /// groups left would have drawn it; nothing before, as that toolbar drew nothing.
@@ -1613,6 +1622,42 @@ private struct ToolbarFrost<Bar: View>: View {
             .frame(height: proxy.safeAreaInsets.top)
             .offset(y: -proxy.safeAreaInsets.top)
         }
+    }
+}
+
+/// Leading · centre · trailing, for exactly three subviews. The centre one is centred
+/// on the bar when that leaves it clear of both sides, and otherwise moved just far enough
+/// to clear them — so a narrow pane shifts it off-centre instead of overlapping.
+/// `leadingInset` moves the leading one only; the centre keeps the bar's midpoint.
+private struct TopBarLayout: Layout {
+    var gap: CGFloat
+    var leadingInset: CGFloat
+
+    /// Animatable, so the leading group slides with the sidebar instead of jumping.
+    var animatableData: CGFloat {
+        get { leadingInset }
+        set { leadingInset = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let natural = leadingInset + sizes.map(\.width).reduce(0, +) + gap * CGFloat(max(sizes.count - 1, 0))
+        return CGSize(width: proposal.width ?? natural, height: sizes.map(\.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 3 else { return }
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let (leading, centre, trailing) = (sizes[0], sizes[1], sizes[2])
+        let leadingX = bounds.minX + leadingInset
+        let low = leadingX + leading.width + gap
+        let high = bounds.maxX - trailing.width - gap - centre.width
+        let centred = bounds.midX - centre.width / 2
+        // `high < low` when even the squeeze doesn't fit; prefer clearing the leading group.
+        let centreX = max(low, min(centred, high))
+        subviews[0].place(at: CGPoint(x: leadingX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+        subviews[1].place(at: CGPoint(x: centreX, y: bounds.midY), anchor: .leading, proposal: .unspecified)
+        subviews[2].place(at: CGPoint(x: bounds.maxX, y: bounds.midY), anchor: .trailing, proposal: .unspecified)
     }
 }
 
