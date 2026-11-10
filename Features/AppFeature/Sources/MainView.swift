@@ -817,8 +817,9 @@ public struct MainView: View {
             store.send(.phoneButtonTapped(.mainWindow))
         } label: {
             Image(systemName: deviceReadiness.symbol)
-                // The chip's one size, like every glyph beside it.
-                .font(LoomTheme.Icon.toolbar)
+                // A compound glyph (phone + radio waves) reads larger than a round one at
+                // the same point size; this is the optical match, not the numeric one.
+                .font(LoomTheme.Icon.toolbarWide)
                 // Highlighted while a phone could actually reach Loom; secondary
                 // otherwise, whether that is because LAN capture is off or because
                 // the proxy isn't listening.
@@ -883,12 +884,12 @@ public struct MainView: View {
         }
     }
 
-    /// Same glyph size and box as every icon in the chip, so the header reads as one row
-    /// of one size — the system toolbar button drew it at its own size and weight.
+    /// The chip's glyph box and weight, at the optical size of a wide glyph, so the header
+    /// reads as one row of one size — the system toolbar button drew it at its own.
     private var sidebarToggle: some View {
         Button(action: toggleSidebar) {
             Image(systemName: "sidebar.left")
-                .font(LoomTheme.Icon.toolbar)
+                .font(LoomTheme.Icon.toolbarWide)
                 .frame(width: 30, height: 26)
                 .contentShape(Rectangle())
         }
@@ -923,6 +924,7 @@ public struct MainView: View {
     /// The chip's row height: every control in it is a 30×26 glyph box.
     private static let chipRowHeight: CGFloat = 26
     private static let captureDotSize: CGFloat = 7
+    private static let chipGlyphBoxWidth: CGFloat = 30
 
     @ViewBuilder
     private var contentTopBar: some View {
@@ -1000,7 +1002,9 @@ public struct MainView: View {
         // differs from the vertical one. Derived, not tuned — the row is the 26pt glyph
         // box, the capsule adds `chipVerticalPadding` above and below.
         .padding(.leading, Self.chipVerticalPadding + (Self.chipRowHeight - Self.captureDotSize) / 2)
-        .padding(.trailing, LoomTheme.Space.sm)
+        // Same rule at the trailing end, for the eraser: its 30pt box is wider than the
+        // 26pt row, so the box overhangs the concentric inset by half the difference.
+        .padding(.trailing, Self.chipVerticalPadding + (Self.chipRowHeight - Self.chipGlyphBoxWidth) / 2)
     }
 
     /// The address, and the way in to changing it. It reads as text and behaves as a
@@ -1069,7 +1073,8 @@ public struct MainView: View {
     private var recordButton: some View {
         Button { store.send(.toggleRecordingTapped) } label: {
             Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
-                .font(LoomTheme.Icon.toolbar)
+                // A filled square reads larger than the outlined circle it swaps with.
+                .font(store.isRecording ? LoomTheme.Icon.toolbarFilled : LoomTheme.Icon.toolbar)
                 .contentTransition(
                     reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
                 )
