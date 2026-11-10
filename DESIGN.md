@@ -734,6 +734,11 @@ console, depth is the material plus tint; do not stack opaque cards on it. Never
 
 **Capsule = control, rounded-rect = container.** `RoundedRectangle` is always `.continuous`.
 
+**An element at a capsule's end is inset concentrically.** Its side inset equals its top/bottom inset, so it
+sits centred in the end cap — a dot or glyph further from the side than from the top reads as drifting inward.
+Derive the side inset from the vertical one (`MainView.statusChip`: vertical padding + (row − dot) / 2), never
+tune it by eye, and keep the element's position fixed: a slot whose slack falls *before* the element moves it.
+
 ## Brand mark
 
 **`loom.mark`** — a custom SF Symbol, not a system one: an **outlined window

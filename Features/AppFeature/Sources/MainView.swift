@@ -919,9 +919,14 @@ public struct MainView: View {
     /// One glass capsule around the whole chip on macOS 26+ (owner decision), its groups
     /// split inside it by the chip's own vertical dividers; none before, matching the
     /// pre-26 toolbar.
+    private static let chipVerticalPadding = LoomTheme.Space.xxs
+    /// The chip's row height: every control in it is a 30×26 glyph box.
+    private static let chipRowHeight: CGFloat = 26
+    private static let captureDotSize: CGFloat = 7
+
     @ViewBuilder
     private var contentTopBar: some View {
-        let chip = statusChip.padding(.vertical, LoomTheme.Space.xxs)
+        let chip = statusChip.padding(.vertical, Self.chipVerticalPadding)
         if #available(macOS 26, *) {
             chip.glassEffect(.regular, in: .capsule)
         } else {
@@ -947,7 +952,7 @@ public struct MainView: View {
             // beside — whether anything on the network can reach it — and the glyph's
             // own 30pt box already carries visual air on both sides.
             HStack(spacing: 2) {
-                ZStack(alignment: .trailing) {
+                ZStack(alignment: .leading) {
                     // Sized by every text this slot can show, not by a guessed number:
                     // the widest of them reserves the width, so switching LAN on or off
                     // never moves the strip, and no slack is reserved for an address
@@ -990,7 +995,12 @@ public struct MainView: View {
             recordButton
             clearButton
         }
-        .padding(.horizontal, LoomTheme.Space.sm)
+        // The dot sits as far from the capsule's leading end as from its top and bottom:
+        // a round mark at a capsule's end reads as off-centre whenever the side inset
+        // differs from the vertical one. Derived, not tuned — the row is the 26pt glyph
+        // box, the capsule adds `chipVerticalPadding` above and below.
+        .padding(.leading, Self.chipVerticalPadding + (Self.chipRowHeight - Self.captureDotSize) / 2)
+        .padding(.trailing, LoomTheme.Space.sm)
     }
 
     /// The address, and the way in to changing it. It reads as text and behaves as a
@@ -1025,15 +1035,15 @@ public struct MainView: View {
         }
     }
 
-    /// The capture dot and an address, as one row. The dot travels *with* the address:
-    /// the group is trailing-aligned, so any slack sits on the left and a shorter
-    /// address grows leftwards while the phone button keeps a fixed gap.
+    /// The capture dot and an address, as one row. The slot is leading-aligned, so the dot
+    /// keeps one place — the capsule-end inset `statusChip` derives — and any slack from a
+    /// shorter address sits before the phone button.
     private func addressRow(_ address: some View) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
             // green = proxy up & recording · yellow = up but paused · grey = off.
             Circle()
                 .fill(captureDotColor)
-                .frame(width: 7, height: 7)
+                .frame(width: Self.captureDotSize, height: Self.captureDotSize)
             address
                 .font(.callout.monospaced())
         }
