@@ -28,11 +28,6 @@ public struct MainView: View {
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
     @State private var sidebarVisible = true
-    /// The content pane's width and the three principal groups' widths, measured so the
-    /// centring offset (`principalOffset`) can shrink rather than push the groups into the
-    /// toolbar's overflow menu on a narrow window.
-    @State private var contentWidth: CGFloat = 0
-    @State private var principalGroupWidths: [Int: CGFloat] = [:]
     /// Collapse state of the two grouping sections. Persisted (`@AppStorage`) rather
     /// than plain `@State`: these grow without bound during a capture — hosts especially,
     /// which is why they're the sections worth collapsing — so a human who folds Hosts
@@ -159,8 +154,7 @@ public struct MainView: View {
             content
                 // The band covers the content pane only, starting at the sidebar's edge:
                 // the sidebar runs to the top of the window, so the top is not one strip.
-                .overlay(alignment: .top) { ToolbarFrost() }
-                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
+                .overlay(alignment: .top) { ToolbarFrost { contentTopBar } }
                 .toolbar { toolbarContent }
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -886,71 +880,7 @@ public struct MainView: View {
             .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
             .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
         }
-        // Three principal items, centred together: what the proxy is doing, the switches
-        // that change what it does, and the capture verbs. One item drew all eight
-        // controls on one shared-glass capsule, where the status read as just another
-        // button. On macOS 26+ a fixed spacer splits the glass into one capsule per group;
-        // earlier systems draw no capsule, and the dividers that used to separate the
-        // groups go with it, because the gap between capsules now does that job.
-        // `.principal` centres on the *window*; these groups belong to the content pane.
-        // An invisible item as wide as the sidebar leads the principal run, so the run's
-        // centre stays the window's and its visible part moves right by half a sidebar —
-        // onto the content pane's centre. It is a separate item with its glass hidden, not
-        // padding on `statusGroup`: padding an item stretches its glass capsule by the same
-        // amount (docs/decisions/navigation-split-view.md).
-        if sidebarVisible {
-            if #available(macOS 26, *) {
-                ToolbarItem(placement: .principal) { principalOffset }
-                    .sharedBackgroundVisibility(.hidden)
-                ToolbarSpacer(.fixed, placement: .principal)
-            } else {
-                ToolbarItem(placement: .principal) { principalOffset }
-            }
-        }
-        ToolbarItem(placement: .principal) { measured(statusGroup, as: 0) }
-        if #available(macOS 26, *) { ToolbarSpacer(.fixed, placement: .principal) }
-        ToolbarItem(placement: .principal) { measured(toggleGroup, as: 1) }
-        if #available(macOS 26, *) { ToolbarSpacer(.fixed, placement: .principal) }
-        ToolbarItem(placement: .principal) { measured(captureGroup, as: 2) }
     }
-
-    /// The leading half of the centring trick in `toolbarContent`: as wide as the sidebar,
-    /// less the fixed spacer that follows it on macOS 26+, so the visible groups centre on
-    /// the content pane rather than the window.
-    ///
-    /// Capped by the room the window has. The whole principal run — this item included —
-    /// centres on the window, and when it no longer fits between the leading items and
-    /// the trailing edge AppKit moves the groups into the overflow menu (measured at an
-    /// 800pt window: everything but the status group went there). A narrow window
-    /// therefore gets groups that sit as near the content's centre as fits, not hidden ones.
-    private var principalOffset: some View {
-        let spacer: CGFloat
-        if #available(macOS 26, *) { spacer = Self.toolbarFixedSpacer } else { spacer = 0 }
-        let ideal = currentSidebarWidth - spacer
-        let windowWidth = contentWidth + currentSidebarWidth
-        let groups = principalGroupWidths.values.reduce(0, +) + 2 * spacer
-        let room = windowWidth - 2 * Self.toolbarLeadingInset - groups - spacer
-        return Color.clear
-            .frame(width: max(min(ideal, room), 0), height: 1)
-            .accessibilityHidden(true)
-    }
-
-    private func measured(_ group: some View, as key: Int) -> some View {
-        group.onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
-            principalGroupWidths[key] = $0
-        }
-    }
-
-    /// What a `ToolbarSpacer(.fixed)` plus the item gaps around it add between two
-    /// principal items on macOS 26+. AppKit doesn't publish it: measured off renders at two
-    /// window widths (1200 and 1512pt), where without it the groups sat 7.75pt right of the
-    /// content pane's centre in both — i.e. a constant 15.5pt surplus.
-    private static let toolbarFixedSpacer: CGFloat = 15.5
-
-    /// How far the leading toolbar items (traffic lights + the sidebar toggle) reach into
-    /// the window, plus a gap: the toggle's trailing edge was measured at 132pt. The
-    /// centred run must stay clear of this on both sides, being centred.
-    private static let toolbarLeadingInset: CGFloat = 140
 
     /// Both the button and ⌃⌘S land here, so the animation is stated once. `.snappy` rather
     /// than a longer spring: the slide resizes the content pane every frame and the request
@@ -961,13 +891,37 @@ public struct MainView: View {
         }
     }
 
-    /// The three principal groups centre on the *window*, not on the content pane,
-    /// because that is what `.principal` does. Two ways to shift them onto the pane were
-    /// tried and both cost more than they fix: padding the item's leading edge by a
-    /// sidebar width stretches the shared-glass capsule by the same 300pt, and hiding
-    /// that shared background to draw the capsule here leaves the toolbar rendering a
-    /// full-width backdrop instead.
+    /// The content pane's top bar: what the proxy is doing, the switches that change what
+    /// it does, and the capture verbs, centred on the pane — one capsule each.
     ///
+    /// **Not toolbar items, and that is the point.** `.principal` centres on the window,
+    /// and every way of moving a principal run onto the pane failed: padding an item
+    /// stretches its glass capsule, and an invisible offset item does not track the
+    /// sidebar — measured, an NSToolbar item keeps the size it was inserted with, so the
+    /// groups stood still while the sidebar slid, and could only jump by re-inserting.
+    /// Laid out in the pane, they are centred by ordinary layout and move with the
+    /// sidebar's own animation, frame for frame.
+    private var contentTopBar: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
+            topBarCapsule { statusGroup }
+            topBarCapsule { toggleGroup }
+            topBarCapsule { captureGroup }
+        }
+        .padding(.horizontal, LoomTheme.Space.sm)
+    }
+
+    /// One group's capsule: the system's glass on macOS 26+, where the toolbar these
+    /// groups left would have drawn it; nothing before, as that toolbar drew nothing.
+    @ViewBuilder
+    private func topBarCapsule(@ViewBuilder _ group: () -> some View) -> some View {
+        let padded = group().padding(.horizontal, LoomTheme.Space.xxs).padding(.vertical, LoomTheme.Space.xxs)
+        if #available(macOS 26, *) {
+            padded.glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            padded
+        }
+    }
+
     /// What the proxy is doing: dot + a state word + the listener's address, then the
     /// phone button. The word is what makes the state readable without the dot's hue —
     /// green / yellow / grey alone was the one state in this window carried by colour.
@@ -1634,23 +1588,31 @@ private struct WindowChrome: NSViewRepresentable {
     }
 }
 
-/// The content pane's toolbar band: a frost exactly as tall as the top safe-area inset
-/// (the titlebar + toolbar), laid over the top of the pane so the request table blurs
-/// beneath the status groups instead of reading crisply through them.
+/// The content pane's toolbar band, and the bar laid out in it: a frost exactly as tall
+/// as the top safe-area inset (the titlebar), laid over the top of the pane so the request
+/// table blurs beneath it, with `bar` centred on top.
 ///
 /// `.withinWindow` blending is the load-bearing part — it samples what is *below it in
 /// this window* (the table); `.behindWindow` would blur the desktop and leave the rows
-/// crisp. It sits in the content view, which AppKit stacks under the titlebar container,
-/// so the toolbar items stay on top of it.
-private struct ToolbarFrost: View {
+/// crisp. The band's empty space drags the window, as a titlebar does
+/// (`WindowDragGesture`); without it, a press there would land on the table under it.
+private struct ToolbarFrost<Bar: View>: View {
+    @ViewBuilder var bar: Bar
+
     var body: some View {
         GeometryReader { proxy in
-            EffectView(material: .titlebar, blending: .withinWindow)
-                .frame(height: proxy.safeAreaInsets.top)
-                .offset(y: -proxy.safeAreaInsets.top)
+            ZStack {
+                EffectView(material: .titlebar, blending: .withinWindow)
+                    .accessibilityHidden(true)
+                Color.clear
+                    .contentShape(.rect)
+                    .gesture(WindowDragGesture())
+                    .allowsWindowActivationEvents()
+                bar
+            }
+            .frame(height: proxy.safeAreaInsets.top)
+            .offset(y: -proxy.safeAreaInsets.top)
         }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 
