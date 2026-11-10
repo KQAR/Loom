@@ -9,24 +9,29 @@ import UpdaterClient
 @main
 struct LoomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    private let store = Store(initialState: AppFeature.State()) {
-        AppFeature()
-    }
-    // `routing` is what lets an agent see *and* fix "nothing is pointed at the
-    // proxy" — client-layer capability the engine can't reach, injected here. So is
-    // `updateStatus`: Sparkle is client-layer too.
-    private let mcp = MCPServer(
-        engine: ProxyEngine.shared, appVersion: appVersion, routing: SystemRoutingAdapter(),
-        updateStatus: {
-            switch await UpdaterClient.liveValue.availability() {
-            case .unknown: .unknown
-            case .upToDate: .upToDate
-            case let .available(version): .available(version: version)
-            }
-        }
-    )
+    private let store: StoreOf<AppFeature>
+    private let mcp: MCPServer
 
     init() {
+        let store = Store(initialState: AppFeature.State()) {
+            AppFeature()
+        }
+        self.store = store
+        // `routing` is what lets an agent see *and* fix "nothing is pointed at the
+        // proxy" — client-layer capability the engine can't reach, injected here. So is
+        // `updateStatus`: Sparkle is client-layer too. And `reveal`: the window and its
+        // selection are the app's, and the engine must not know TCA exists.
+        self.mcp = MCPServer(
+            engine: ProxyEngine.shared, appVersion: appVersion, routing: SystemRoutingAdapter(),
+            updateStatus: {
+                switch await UpdaterClient.liveValue.availability() {
+                case .unknown: .unknown
+                case .upToDate: .upToDate
+                case let .available(version): .available(version: version)
+                }
+            },
+            reveal: { id in await FlowRevealer.reveal(id, in: store) }
+        )
         // Claim the MCP port before *either* listener starts — synchronously, because
         // this is the race it exists to prevent: a reverse-proxy endpoint persisted on
         // 9092 gets bound during the engine's start, and if it wins, Loom comes up with

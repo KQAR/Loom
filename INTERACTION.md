@@ -51,7 +51,7 @@ The MCP server binds **loopback only** (`127.0.0.1:9092`), deliberately **not** 
 
 ### 2. Durable audit trail (accountability)
 
-Every write tool call is recorded in a durable, row-capped audit log (`audit.sqlite`, survives relaunch): tool, arguments, outcome, timestamp. The human reviews it after the fact in the main window's **sidebar → Audit** panel; an agent reads it back via `get_audit_log`. Read tools are never logged, so the trail is exactly the writes — "what did it do?" is always answerable, and each rule hit also lands on the affected flow (`appliedRules`, shown as the wand icon) so a change is traceable to its rule.
+Every write tool call is recorded in a durable, row-capped audit log (`audit.sqlite`, survives relaunch): tool, arguments, outcome, timestamp. The human reviews it after the fact in the main window's **sidebar → Audit** panel; an agent reads it back via `get_audit_log`. `reveal_flow` (the agent selecting a flow for the human to look at) is audited although it changes no engine state: it moves the *human's* selection and filters, and that should be traceable. It never takes focus. Read tools are never logged, so the trail is exactly the writes — "what did it do?" is always answerable, and each rule hit also lands on the affected flow (`appliedRules`, shown as the wand icon) so a change is traceable to its rule.
 
 ### 3. Supervision that does not lag (the mirror)
 

@@ -614,6 +614,30 @@ extension MCPToolExecutor {
             handler: { ex, args in try await ex.handleReplayFlow(args) }
         ),
         MCPTool(
+            name: "reveal_flow",
+            description: """
+            Point the human at one flow: select it in Loom's main window request table and open \
+            the inspector on it, opening the window if it is closed. Use it when you want the \
+            person supervising to look at something ("this is the failing call") instead of \
+            describing where to find it. Loom is not brought to the front — the window is opened \
+            or raised behind whatever app the human is using, so tell them to switch to Loom.
+
+            If the row is hidden by the window's current filters, the ones hiding it are reset and \
+            named in `cleared`: `sidebar_selection` (back to All Flows), `find_bar` (closed), \
+            `quick_filters` (cleared). Mention it — the human's view changed under them. An unknown \
+            id is an error, and so is a flow the window cannot show (older than the rows it holds); \
+            no state of the proxy changes either way. This is a write action — it changes the \
+            human's window, not traffic or engine state — and is recorded in the audit trail so \
+            the human can see it was you who moved their selection.
+            """,
+            inputSchema: .object(
+                ["id": .string("Flow UUID.")],
+                required: ["id"]
+            ),
+            isWrite: true,
+            handler: { ex, args in try await ex.handleRevealFlow(args) }
+        ),
+        MCPTool(
             name: "diff_flows",
             description: """
             Diff two captured flows and report exactly what differs: request method/url, \

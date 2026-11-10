@@ -119,6 +119,7 @@ will affect before doing it. Every call is recorded in the audit trail.
 | `set_recording` | pause/resume storing flows — keeps background noise out of a capture |
 | `clear_flows` | discard the whole capture, memory and disk. Not undoable, and it empties the human's window too |
 | `replay_flow` | re-send with overrides; `count`/`concurrency` for "is it intermittent?" |
+| `reveal_flow` | show the human one flow in the main window; `cleared` names filters it reset |
 | `set_rule` | create or update a structured rule (shape below) |
 | `delete_rule` | remove one rule |
 | `set_rules_enabled` | master switch for the rule engine |

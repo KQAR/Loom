@@ -195,3 +195,25 @@ extension MCPToolExecutor {
         return prettyJSON(FlowDiff.diff(base: base, compared: compared))
     }
 }
+
+extension MCPToolExecutor {
+    func handleRevealFlow(_ arguments: MCPArguments) async throws -> String {
+        let id = try arguments.requiredUUID("id", "a flow UUID string")
+        guard await engine.flow(id: id) != nil else {
+            throw MCPToolFailure("no flow with id \(id.uuidString)")
+        }
+        guard let reveal else {
+            throw MCPToolFailure(
+                "There is no window to show it in (Loom's engine is running without the app). "
+                + "Give the human the flow id instead."
+            )
+        }
+        let outcome = await reveal(id)
+        // Not shown is a failure, not a result with a flag in it: an agent that skims a
+        // success would tell the human to look at a row that isn't there.
+        guard outcome.shown else {
+            throw MCPToolFailure(outcome.reason ?? "The window could not show that flow.")
+        }
+        return prettyJSON(MCPRender.dict(outcome))
+    }
+}

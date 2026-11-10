@@ -860,6 +860,10 @@ struct RequestTable: NSViewRepresentable {
         private func applySelection(_ id: Flow.ID?, in table: NSTableView) {
             // Recorded before the early returns: they mean "the table already shows
             // this", which is exactly what the record claims.
+            // A selection the *store* moved (`reveal_flow`, a replay landing) may be
+            // anywhere in the window, and the reason to move it is that someone should
+            // look at it — so that one is scrolled to. A click or a reload is not.
+            let storeMoved = id != appliedSelection
             appliedSelection = id
             let current = table.selectedRow
             // Already right: either the selected row is the selected flow, or both sides
@@ -873,6 +877,7 @@ struct RequestTable: NSViewRepresentable {
             defer { applyingSelection = false }
             if let target {
                 table.selectRowIndexes(IndexSet(integer: target), byExtendingSelection: false)
+                if storeMoved { table.scrollRowToVisible(target) }
             } else {
                 table.deselectAll(nil)
             }

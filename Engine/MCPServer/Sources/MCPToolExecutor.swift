@@ -28,6 +28,10 @@ struct MCPToolExecutor {
     /// client layer); nil for an embedder or a test, where `get_version` omits `update`.
     var updateStatus: (@Sendable () async -> AppUpdateStatus)?
 
+    /// Selects a flow in the human's main window (`reveal_flow`). Injected by the app,
+    /// which owns the window; nil for an embedder or a test, where the tool says so.
+    var reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)?
+
     /// Name → tool, indexed from the one table in `MCPToolSchemas`. Dispatch is a
     /// lookup, not a growing switch — and no longer a second list to keep in step
     /// with the advertised one, because both come from the same values.
