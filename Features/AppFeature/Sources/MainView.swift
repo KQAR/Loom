@@ -28,6 +28,11 @@ public struct MainView: View {
     /// Sidebar visibility — hand-rolled because the container has no built-in collapse
     /// (see the container note on `body`).
     @State private var sidebarVisible = true
+    /// The content pane's width and the three principal groups' widths, measured so the
+    /// centring offset (`principalOffset`) can shrink rather than push the groups into the
+    /// toolbar's overflow menu on a narrow window.
+    @State private var contentWidth: CGFloat = 0
+    @State private var principalGroupWidths: [Int: CGFloat] = [:]
     /// Collapse state of the two grouping sections. Persisted (`@AppStorage`) rather
     /// than plain `@State`: these grow without bound during a capture — hosts especially,
     /// which is why they're the sections worth collapsing — so a human who folds Hosts
@@ -155,6 +160,7 @@ public struct MainView: View {
                 // The band covers the content pane only, starting at the sidebar's edge:
                 // the sidebar runs to the top of the window, so the top is not one strip.
                 .overlay(alignment: .top) { ToolbarFrost() }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
                 .toolbar { toolbarContent }
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -886,12 +892,65 @@ public struct MainView: View {
         // button. On macOS 26+ a fixed spacer splits the glass into one capsule per group;
         // earlier systems draw no capsule, and the dividers that used to separate the
         // groups go with it, because the gap between capsules now does that job.
-        ToolbarItem(placement: .principal) { statusGroup }
+        // `.principal` centres on the *window*; these groups belong to the content pane.
+        // An invisible item as wide as the sidebar leads the principal run, so the run's
+        // centre stays the window's and its visible part moves right by half a sidebar —
+        // onto the content pane's centre. It is a separate item with its glass hidden, not
+        // padding on `statusGroup`: padding an item stretches its glass capsule by the same
+        // amount (docs/decisions/navigation-split-view.md).
+        if sidebarVisible {
+            if #available(macOS 26, *) {
+                ToolbarItem(placement: .principal) { principalOffset }
+                    .sharedBackgroundVisibility(.hidden)
+                ToolbarSpacer(.fixed, placement: .principal)
+            } else {
+                ToolbarItem(placement: .principal) { principalOffset }
+            }
+        }
+        ToolbarItem(placement: .principal) { measured(statusGroup, as: 0) }
         if #available(macOS 26, *) { ToolbarSpacer(.fixed, placement: .principal) }
-        ToolbarItem(placement: .principal) { toggleGroup }
+        ToolbarItem(placement: .principal) { measured(toggleGroup, as: 1) }
         if #available(macOS 26, *) { ToolbarSpacer(.fixed, placement: .principal) }
-        ToolbarItem(placement: .principal) { captureGroup }
+        ToolbarItem(placement: .principal) { measured(captureGroup, as: 2) }
     }
+
+    /// The leading half of the centring trick in `toolbarContent`: as wide as the sidebar,
+    /// less the fixed spacer that follows it on macOS 26+, so the visible groups centre on
+    /// the content pane rather than the window.
+    ///
+    /// Capped by the room the window has. The whole principal run — this item included —
+    /// centres on the window, and when it no longer fits between the leading items and
+    /// the trailing edge AppKit moves the groups into the overflow menu (measured at an
+    /// 800pt window: everything but the status group went there). A narrow window
+    /// therefore gets groups that sit as near the content's centre as fits, not hidden ones.
+    private var principalOffset: some View {
+        let spacer: CGFloat
+        if #available(macOS 26, *) { spacer = Self.toolbarFixedSpacer } else { spacer = 0 }
+        let ideal = currentSidebarWidth - spacer
+        let windowWidth = contentWidth + currentSidebarWidth
+        let groups = principalGroupWidths.values.reduce(0, +) + 2 * spacer
+        let room = windowWidth - 2 * Self.toolbarLeadingInset - groups - spacer
+        return Color.clear
+            .frame(width: max(min(ideal, room), 0), height: 1)
+            .accessibilityHidden(true)
+    }
+
+    private func measured(_ group: some View, as key: Int) -> some View {
+        group.onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+            principalGroupWidths[key] = $0
+        }
+    }
+
+    /// What a `ToolbarSpacer(.fixed)` plus the item gaps around it add between two
+    /// principal items on macOS 26+. AppKit doesn't publish it: measured off renders at two
+    /// window widths (1200 and 1512pt), where without it the groups sat 7.75pt right of the
+    /// content pane's centre in both — i.e. a constant 15.5pt surplus.
+    private static let toolbarFixedSpacer: CGFloat = 15.5
+
+    /// How far the leading toolbar items (traffic lights + the sidebar toggle) reach into
+    /// the window, plus a gap: the toggle's trailing edge was measured at 132pt. The
+    /// centred run must stay clear of this on both sides, being centred.
+    private static let toolbarLeadingInset: CGFloat = 140
 
     /// Both the button and ⌃⌘S land here, so the animation is stated once. `.snappy` rather
     /// than a longer spring: the slide resizes the content pane every frame and the request
