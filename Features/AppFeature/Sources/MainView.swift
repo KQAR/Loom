@@ -131,13 +131,30 @@ public struct MainView: View {
                 // entirely off the leading edge and slides in as the box grows, instead of
                 // squashing from its full width to nothing.
                 .frame(width: currentSidebarWidth)
-                .overlay(alignment: .trailing) { sidebarDivider }
                 .frame(
                     width: sidebarVisible ? currentSidebarWidth : 0,
                     alignment: .trailing
                 )
                 .clipped()
+                // The sidebar's material runs to the top of the window, under the traffic
+                // lights, and so does its edge: the top of the window is two columns, not
+                // one band across both (the band is the content pane's — `ToolbarFrost`).
+                // Both sit *outside* `.clipped()`, which clips to the safe-area frame and
+                // would cut them off at the band's bottom edge; they take the animated
+                // width from the frame they're attached to.
+                .background { EffectView(material: .sidebar, blending: .behindWindow).ignoresSafeArea() }
+                .overlay(alignment: .trailing) {
+                    // The HStack is what makes the `Divider` vertical: outside a stack it
+                    // draws horizontally, across the middle of the sidebar.
+                    HStack(spacing: 0) {
+                        if sidebarVisible { sidebarDivider }
+                    }
+                    .ignoresSafeArea(edges: .top)
+                }
             content
+                // The band covers the content pane only, starting at the sidebar's edge:
+                // the sidebar runs to the top of the window, so the top is not one strip.
+                .overlay(alignment: .top) { ToolbarFrost { contentTopBar } }
                 .toolbar { toolbarContent }
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -157,9 +174,7 @@ public struct MainView: View {
         // (`Project.swift`), which puts the whole app back in the pre-26 system design that
         // DESIGN.md specifies. Keep that key and this band stays gone; drop it and every dead
         // end above is live again — so re-read them before trying to fix it per view.
-        // Frosts the toolbar band so the request table blurs under the status chip instead
-        // of reading crisply through it — see `WindowChrome` for why neither
-        // `.toolbarBackground` nor AppKit's own titlebar fill does the job here.
+        // Transparent titlebar, no title, no hairline — see `WindowChrome`.
         .background(WindowChrome())
         .task { store.send(.viewAppeared) }
         .sheet(item: $store.scope(state: \.rules.editor, action: \.rules.editor)) { editorStore in
@@ -312,6 +327,9 @@ public struct MainView: View {
             }
         }
         .listStyle(.sidebar)
+        // The material is drawn by `body` instead, extended under the titlebar; the List's
+        // own stops at the safe area and would leave a seam where the band used to be.
+        .scrollContentBackground(.hidden)
         // Width is applied by `body`, which animates exactly that value on collapse; this
         // only needs to fill vertically. (`navigationSplitViewColumnWidth` is a no-op
         // outside `NavigationSplitView`, and the divider is deliberately not draggable.)
@@ -799,6 +817,9 @@ public struct MainView: View {
             store.send(.phoneButtonTapped(.mainWindow))
         } label: {
             Image(systemName: deviceReadiness.symbol)
+                // A compound glyph (phone + radio waves) reads larger than a round one at
+                // the same point size; this is the optical match, not the numeric one.
+                .font(LoomTheme.Icon.toolbarWide)
                 // Highlighted while a phone could actually reach Loom; secondary
                 // otherwise, whether that is because LAN capture is off or because
                 // the proxy isn't listening.
@@ -854,17 +875,34 @@ public struct MainView: View {
         // `toggleSidebar(_:)` down the responder chain, and only `NSSplitViewController`
         // answers it — the container this view deliberately doesn't use (see `body`). Same
         // glyph as the system item, and the standard ⌃⌘S.
-        ToolbarItem(placement: .navigation) {
-            Button(action: toggleSidebar) {
-                Image(systemName: "sidebar.left")
+        if #available(macOS 26, *) {
+            // The system's shared glass is hidden and ours drawn instead, so the toggle's
+            // glass is the chip's: same material, same 34pt height (owner decision).
+            ToolbarItem(placement: .navigation) {
+                sidebarToggle
+                    .padding(.vertical, Self.chipVerticalPadding)
+                    .padding(.horizontal, Self.chipVerticalPadding + (Self.chipRowHeight - Self.chipGlyphBoxWidth) / 2)
+                    .glassEffect(.regular, in: .circle)
             }
-            .keyboardShortcut("s", modifiers: [.control, .command])
-            .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
-            .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .navigation) { sidebarToggle }
         }
-        ToolbarItem(placement: .principal) {
-            statusChip
+    }
+
+    /// The chip's glyph box and weight, at the optical size of a wide glyph, so the header
+    /// reads as one row of one size — the system toolbar button drew it at its own.
+    private var sidebarToggle: some View {
+        Button(action: toggleSidebar) {
+            Image(systemName: "sidebar.left")
+                .font(LoomTheme.Icon.toolbarWide)
+                .frame(width: 30, height: 26)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .keyboardShortcut("s", modifiers: [.control, .command])
+        .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
+        .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
     }
 
     /// Both the button and ⌃⌘S land here, so the animation is stated once. `.snappy` rather
@@ -873,6 +911,39 @@ public struct MainView: View {
     private func toggleSidebar() {
         withAnimation(.snappy(duration: 0.2)) {
             sidebarVisible.toggle()
+        }
+    }
+
+    /// The content pane's top bar: the status chip, centred on the pane.
+    ///
+    /// **Not a toolbar item, and that is the point.** `.principal` centres on the window,
+    /// and every way of moving a principal item onto the pane failed: padding it stretches
+    /// its glass capsule, and an invisible offset item does not track the sidebar —
+    /// measured, an NSToolbar item keeps the size it was inserted with, so the chip stood
+    /// still while the sidebar slid, and could only jump by re-inserting. Laid out in the
+    /// pane, it is centred by ordinary layout and moves with the sidebar's own animation.
+    ///
+    /// One glass capsule around the whole chip on macOS 26+ (owner decision), its groups
+    /// split inside it by the chip's own vertical dividers; none before, matching the
+    /// pre-26 toolbar.
+    private static let chipVerticalPadding = LoomTheme.Space.xxs
+    /// The chip's row height: every control in it is a 30×26 glyph box.
+    private static let chipRowHeight: CGFloat = 26
+    private static let captureDotSize: CGFloat = 7
+    private static let chipGlyphBoxWidth: CGFloat = 30
+    /// Capsule edge to the dot's ink, and so to the eraser's: 13.5pt.
+    private static let chipEndInset = chipVerticalPadding + (chipRowHeight - captureDotSize) / 2
+    /// How far the eraser's ink sits inside its 30pt box at `LoomTheme.Icon.toolbar` —
+    /// measured at 2x (7.1pt), since a glyph's ink is not its box.
+    private static let eraserInkInset: CGFloat = 7
+
+    @ViewBuilder
+    private var contentTopBar: some View {
+        let chip = statusChip.padding(.vertical, Self.chipVerticalPadding)
+        if #available(macOS 26, *) {
+            chip.glassEffect(.regular, in: .capsule)
+        } else {
+            chip
         }
     }
 
@@ -894,7 +965,7 @@ public struct MainView: View {
             // beside — whether anything on the network can reach it — and the glyph's
             // own 30pt box already carries visual air on both sides.
             HStack(spacing: 2) {
-                ZStack(alignment: .trailing) {
+                ZStack(alignment: .leading) {
                     // Sized by every text this slot can show, not by a guessed number:
                     // the widest of them reserves the width, so switching LAN on or off
                     // never moves the strip, and no slack is reserved for an address
@@ -937,7 +1008,15 @@ public struct MainView: View {
             recordButton
             clearButton
         }
-        .padding(.horizontal, LoomTheme.Space.sm)
+        // The dot sits as far from the capsule's leading end as from its top and bottom:
+        // a round mark at a capsule's end reads as off-centre whenever the side inset
+        // differs from the vertical one. Derived, not tuned — the row is the 26pt glyph
+        // box, the capsule adds `chipVerticalPadding` above and below.
+        .padding(.leading, Self.chipEndInset)
+        // The eraser's ink ends as far from the trailing end as the dot's does from the
+        // leading one (owner decision): equal visible margins outrank a concentric eraser,
+        // which sat 4.5pt tighter and made the capsule read lopsided.
+        .padding(.trailing, Self.chipEndInset - Self.eraserInkInset)
     }
 
     /// The address, and the way in to changing it. It reads as text and behaves as a
@@ -972,15 +1051,15 @@ public struct MainView: View {
         }
     }
 
-    /// The capture dot and an address, as one row. The dot travels *with* the address:
-    /// the group is trailing-aligned, so any slack sits on the left and a shorter
-    /// address grows leftwards while the phone button keeps a fixed gap.
+    /// The capture dot and an address, as one row. The slot is leading-aligned, so the dot
+    /// keeps one place — the capsule-end inset `statusChip` derives — and any slack from a
+    /// shorter address sits before the phone button.
     private func addressRow(_ address: some View) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
             // green = proxy up & recording · yellow = up but paused · grey = off.
             Circle()
                 .fill(captureDotColor)
-                .frame(width: 7, height: 7)
+                .frame(width: Self.captureDotSize, height: Self.captureDotSize)
             address
                 .font(.callout.monospaced())
         }
@@ -992,6 +1071,7 @@ public struct MainView: View {
         let port = store.status.port
         return ["127.0.0.1:\(port)", "0.0.0.0:\(port)", "Proxy stopped"]
     }
+
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
     private var captureDotColor: Color {
@@ -1005,7 +1085,8 @@ public struct MainView: View {
     private var recordButton: some View {
         Button { store.send(.toggleRecordingTapped) } label: {
             Image(systemName: store.isRecording ? "stop.fill" : "record.circle")
-                .font(LoomTheme.Icon.toolbar)
+                // A filled square reads larger than the outlined circle it swaps with.
+                .font(store.isRecording ? LoomTheme.Icon.toolbarFilled : LoomTheme.Icon.toolbar)
                 .contentTransition(
                     reduceMotion ? .identity : .symbolEffect(.replace.magic(fallback: .downUp))
                 )
@@ -1483,33 +1564,24 @@ private struct RequestTableView: View {
     }
 }
 
-/// Gives the toolbar band a frosted-glass backing, because `.windowStyle(.hiddenTitleBar)`
-/// (LoomApp) leaves it painting *nothing*: it sets `titlebarAppearsTransparent` **and**
-/// `.fullSizeContentView`, so the request table extends under the band and its rows read
-/// crisply through the status chip.
+/// The window's chrome settings: a transparent titlebar over `.fullSizeContentView`, no
+/// title, no hairline. `.windowStyle(.hiddenTitleBar)` (LoomApp) already sets most of
+/// this; re-asserting it here keeps the window right after a re-key or style change.
 ///
-/// Two things were tried first and neither is the fix — don't re-add them:
-/// - SwiftUI's `.toolbarBackground(.visible, for: .windowToolbar)` is a no-op under that
+/// It used to also insert one frosted `NSVisualEffectView` across the whole titlebar
+/// container. That made the top of the window one continuous band, with the sidebar
+/// starting under it. The frost now belongs to the content pane only (`ToolbarFrost`),
+/// so the sidebar runs to the top of the window and the band starts at its edge.
+///
+/// Two things were tried for the band before it was hand-rolled — don't re-add them:
+/// - SwiftUI's `.toolbarBackground(.visible, for: .windowToolbar)` is a no-op under this
 ///   window style.
 /// - Flipping `titlebarAppearsTransparent` back to `false` gives an *opaque* band (AppKit's
-///   `NSTitlebarBackgroundView` fill), not a translucent one, whether or not the content
-///   extends beneath it.
-///
-/// So the band is hand-rolled: an `NSVisualEffectView` inserted at the back of the titlebar
-/// container. `.withinWindow` blending is the load-bearing part — it samples the content
-/// *below it in this window* (the table), which is what makes the rows blur rather than
-/// showing through; `.behindWindow` would blur the desktop and ignore the table entirely.
-/// It goes in the titlebar container rather than the content view so it sits under the
-/// toolbar items (the chip stays crisp) and needs no titlebar-height math.
+///   `NSTitlebarBackgroundView` fill), full width, not a translucent one.
 ///
 /// The representable itself is zero-size and behind the content — it only exists for the
 /// window handle.
 private struct WindowChrome: NSViewRepresentable {
-    /// Named so a re-apply (window re-key, style change) reuses the one band instead of
-    /// stacking a new blur behind the toolbar every pass. (`NSView.tag` is get-only, so the
-    /// marker is the identifier.)
-    private static let backdropID = NSUserInterfaceItemIdentifier("com.loom.toolbarBackdrop")
-
     func makeNSView(context: Context) -> NSView {
         let view = NSView(frame: .zero)
         // The window isn't attached yet in `makeNSView`; apply once it is.
@@ -1530,26 +1602,52 @@ private struct WindowChrome: NSViewRepresentable {
         // separation the design wants, so the table reads as one surface sliding under it.
         window.titlebarSeparatorStyle = .none
         window.toolbar?.showsBaselineSeparator = false
-        // The titlebar container is reached through a standard window button rather than a
-        // private class name: the buttons are documented API and live in exactly that view.
-        guard let titlebar = window.standardWindowButton(.closeButton)?.superview else { return }
-        guard titlebar.subviews.first(where: { $0.identifier == Self.backdropID }) == nil else { return }
-        let backdrop = NSVisualEffectView()
-        backdrop.material = .titlebar
-        backdrop.blendingMode = .withinWindow
-        backdrop.state = .active // keep the frost on when the window loses focus
-        backdrop.identifier = Self.backdropID
-        // Plain blur: no border, no shadow, nothing that reads as a second edge.
-        backdrop.wantsLayer = true
-        backdrop.layer?.borderWidth = 0
-        backdrop.shadow = nil
-        backdrop.translatesAutoresizingMaskIntoConstraints = false
-        titlebar.addSubview(backdrop, positioned: .below, relativeTo: titlebar.subviews.first)
-        NSLayoutConstraint.activate([
-            backdrop.leadingAnchor.constraint(equalTo: titlebar.leadingAnchor),
-            backdrop.trailingAnchor.constraint(equalTo: titlebar.trailingAnchor),
-            backdrop.topAnchor.constraint(equalTo: titlebar.topAnchor),
-            backdrop.bottomAnchor.constraint(equalTo: titlebar.bottomAnchor),
-        ])
     }
+}
+
+/// The content pane's toolbar band, and the bar laid out in it: a frost exactly as tall
+/// as the top safe-area inset (the titlebar), laid over the top of the pane so the request
+/// table blurs beneath it, with `bar` centred on top.
+///
+/// `.withinWindow` blending is the load-bearing part — it samples what is *below it in
+/// this window* (the table); `.behindWindow` would blur the desktop and leave the rows
+/// crisp. The band's empty space drags the window, as a titlebar does
+/// (`WindowDragGesture`); without it, a press there would land on the table under it.
+private struct ToolbarFrost<Bar: View>: View {
+    @ViewBuilder var bar: Bar
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                EffectView(material: .titlebar, blending: .withinWindow)
+                    .accessibilityHidden(true)
+                Color.clear
+                    .contentShape(.rect)
+                    .gesture(WindowDragGesture())
+                    .allowsWindowActivationEvents()
+                bar
+            }
+            .frame(height: proxy.safeAreaInsets.top)
+            .offset(y: -proxy.safeAreaInsets.top)
+        }
+    }
+}
+
+/// An `NSVisualEffectView` with a fixed material — the sidebar column's and the toolbar
+/// band's backing.
+private struct EffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blending: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blending
+        // The toolbar frost stays on when the window loses focus; the sidebar follows
+        // the window's state, as AppKit's own sidebars do.
+        view.state = blending == .withinWindow ? .active : .followsWindowActiveState
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }

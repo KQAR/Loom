@@ -149,6 +149,12 @@ public enum LoomTheme {
     /// need a fixed point size, so no view inlines `Font.system(size:)`.
     public enum Icon {
         public static let toolbar = Font.system(size: 16, weight: .semibold) // toolbar status glyphs
+        /// Optical sizes for header glyphs that read larger than a round one at 16pt
+        /// (DESIGN.md § Shapes, optical size). Measured at 2x against `globe` / `record.circle`
+        /// (33px): a wide or compound glyph — `sidebar.left` 37x30, the phone with its
+        /// radio waves 53x35 — reads bigger, and so does a filled square (`stop.fill`).
+        public static let toolbarWide = Font.system(size: 14, weight: .semibold)
+        public static let toolbarFilled = Font.system(size: 15, weight: .semibold)
         public static let card = Font.system(size: 13)                       // cert card / panel-row glyphs
         public static let badge = Font.system(size: 11, weight: .bold)       // count badge
         public static let tiny = Font.system(size: 9)                        // JSON depth guides

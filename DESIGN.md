@@ -9,6 +9,7 @@ system-design:
   why: "This spec's controls are macOS 14 controls (§ Known Gaps: .bordered / .borderedProminent, never .glass), and everything in the tree is drawn that way. What macOS 26 adds is SYSTEM chrome with no per-view opt-out — the shared-glass toolbar capsule that stretches when a .principal item is padded, and the NSScrollPocket band across the window top that survives titlebarAppearsTransparent and scrollEdgeEffectHidden. The key removes both, so the window matches this spec rather than the spec being rewritten around the OS."
   scope: "System control metrics revert with it (measured on 26.5: NSButton 37×24 → 47×32, NSTextField h 24 → 21, titlebar 32 → 28pt). Loom's OWN metrics do not move — sidebar 300 default, {spacing}, {rounded}, the 7pt capture dot are all unchanged, and no view code is tuned to either design."
   expiry: "Apple documents the key as temporary and intends to drop it after Xcode 26. When it stops working the glass chrome returns; that is a decision to re-make here — adopt it deliberately, per surface — not a build regression to chase."
+  expired-on-27: "Measured on macOS 27.0.1: a Debug build of the app with the key in its Info.plist draws the shared-glass toolbar capsules. The key no longer holds there, so the main window draws its chip's glass itself, outside the toolbar ({components.main-window}.toolbar), and the sidebar toggle's. Other surfaces have not been re-checked under 27 yet."
 
 colors:
   source: "Features/AppFeature/Resources/Assets.xcassets — every chromatic token below is a
@@ -140,8 +141,8 @@ components:
   main-window:
     structure: "HStack(spacing: 0): sidebar | request-table top / inspector-panel bottom, with a hand-rolled draggable divider (NOT VSplitView: a bare NSSplitView inserts and removes subviews outright, so the inspector could only pop in and out — it slides now, and the divider was all VSplitView was buying). The request table is an NSTableView this app OWNS (RequestTable), not SwiftUI's Table: Table evaluates only visible row bodies but walks its whole collection ~5x per data change (measured: 100,006 subscripts for 20,001 rows, 70-120ms), which at a capture batch every 100ms is the main thread. A find bar sits above the table as a ROW IN THE SAME VStack, hidden until ⌘F, and its appearance is animated (the table moves with it). NOT a safe-area inset: an inset changes the table's safe area, which AppKit turns into a scroll-view content inset OUTSIDE SwiftUI's animation transaction — the bar slid while NSTableHeaderView jumped. In the stack the table's FRAME is what changes, and a representable's frame is set on every tick, so header, rows and bar move as one. The animation is scoped to the bar's presence (.animation(_:value:)), never a blanket one: that would also animate the table's own updates, which arrive ten times a second under capture. The table OPENS AT THE NEWEST ROW and follows the tail as a GLIDE (a display link closing the remaining distance per unit time), never as a per-batch jump, and never while the reader is scrolling — a batch that fades rows in and jumps the viewport reads as blinking, not as movement. Columns: double-clicking a divider fits one to its content, right-clicking the header chooses which are shown (remembered across launches; hiding the last is refused). Layout follows standard HTTP-debugger conventions (Proxyman/Charles-style). No sidebar/window title. NOT NavigationSplitView: it defeats the request table's row-view reuse and pays a quadratic AppKit KVO teardown on every sidebar switch — 8.7 s vs 143 ms measured at 2000 flows (CLAUDE.md § Known Issues). NOT HSplitView either: a bare NSSplitView has no collapse semantics, so the sidebar could only be inserted/removed (it pops), and its draggable divider is hand-rolled here instead. NOT an NSSplitViewController bridge: on macOS 26 a real .sidebar split item is a floating glass card inset 8pt and 40pt off the top, which is not this flush sidebar. Collapse animates the pane WIDTH {sizes.sidebar-width}↔0, trailing-aligned + clipped, so it pushes out rather than squashing; toolbar 'sidebar.left' button (.navigation placement) + ⌃⌘S share one animated action."
     defaultSize: "{metrics.main-window-default}"
-    titlebar: "FROSTED, not opaque and not bare: the request table extends under the toolbar band and blurs beneath it. Content surfaces below stay opaque — the frost is the band only. NSVisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active) at the BACK of the titlebar container, so toolbar items read crisply over it. .withinWindow is load-bearing: it samples the table below it in this window, where .behindWindow would blur the desktop and leave the rows crisp. NO baseline hairline (titlebarSeparatorStyle = .none, showsBaselineSeparator = false), no border, no shadow — the frost is the only separation. Two rejected: SwiftUI .toolbarBackground(.visible, for: .windowToolbar) is a no-op under .windowStyle(.hiddenTitleBar); titlebarAppearsTransparent = false gives AppKit's OPAQUE fill, not a translucent one."
-    toolbar: "chip centred on the WINDOW via .principal — that is what .principal does in either system design, and shifting it onto the content pane was measured and rejected twice (padding the item stretched macOS 26's shared-glass capsule by the same amount; hiding that shared background made the toolbar render a full-width backdrop). The capsule itself is absent under {system-design}. Chip: status dot + the LISTENER's host:port (verbatim, no digit grouping) — the LAN IP while the proxy is bound to 0.0.0.0, 127.0.0.1 while it is not, never 'whatever address this machine happens to have'; naming an interface the listener is not on is worse than naming a narrow one, because it sends someone to debug their client rather than the LAN switch that caused it — + three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') tinted secondary off / {colors.accent} on — the SAME three values the console's switch-tiles use, because this window and that panel are two renderings of one state. They used to be green, which both contradicted the tile spec and spent the 2xx hue on something that is not a status; SSL keeps one extra value, {colors.status-waiting} for on-but-CA-not-trusted, which is 'waiting on you', not broken. Left (.navigation): a hand-rolled 'sidebar.left' toggle — AppKit's .toggleSidebar item sends toggleSidebar(_:) down the responder chain and only NSSplitViewController answers it, which is the container this window deliberately doesn't use. NOTHING is .primaryAction: Record ('record.circle'/'stop.fill' + label) sits at the RIGHT END OF THE CHIP behind a divider, because it is the same capture state the dot already reports and splitting them across the band made two places to look; Clear is the flow list's own floating {components.clear-fab}, not a toolbar button, because a destructive control belongs against the thing it destroys. No search field HERE and no title — filtering is the find bar above the table (see main-window § Find bar); `.searchable` would put a stretchy field into this band, whose macOS 26 glass capsule grows with its .principal item. All icons 16pt with ≥26pt tap targets."
+    titlebar: "TWO COLUMNS to the top, not one band across both (owner decision). The sidebar's .sidebar material and its divider run to the window's top edge under the traffic lights and the sidebar toggle. The CONTENT PANE's top is a frosted band the table blurs beneath; content below stays opaque. ToolbarFrost = NSVisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active), overlaid on the content pane at exactly its top safe-area height. .withinWindow is load-bearing: it samples the table below it, where .behindWindow would blur the desktop and leave the rows crisp. (In the titlebar container it spanned the window: the one strip.) Sidebar layers sit OUTSIDE its .clipped() (a safe-area clip). No hairline, border or shadow. Rejected: SwiftUI .toolbarBackground(.visible, for: .windowToolbar) is a no-op under .windowStyle(.hiddenTitleBar); titlebarAppearsTransparent = false gives AppKit's OPAQUE full-width fill."
+    toolbar: "ONE chip, laid out IN THE CONTENT PANE's top band (MainView.contentTopBar), centred on the pane by plain layout so it slides with the sidebar. NOT an NSToolbar item: .principal centres on the window, an NSToolbar item keeps the size it was inserted with (measured: an offset item could not track the sidebar, only jump), and a toolbar item's glass is the system's, not ours to shape. Chip, in ONE .glassEffect capsule on macOS 26+ (none before), groups split inside it by vertical dividers (owner decision): status dot + the listener's host:port (verbatim, no digit grouping) + the phone button │ three status toggles (System proxy 'globe' · SSL 'lock.shield' · Map/rewrite 'wand.and.stars') │ Record ('record.circle'/'stop.fill') + Clear ('eraser', single click, wiggles on fire as its only confirmation; floating over the list, it vanished with the list). The address is where the listener is BOUND — 0.0.0.0 while LAN capture is on, 127.0.0.1 while it is not (`AppFeature.State.displayHost`), never 'whatever address this machine happens to have'; naming an interface the listener is not on sends someone to debug their client rather than the LAN switch that caused it. What a phone types in is the phone popover's QR material. Toggles are tinted secondary off / {colors.accent} on — the SAME values the console's switch-tiles use, because this window and that panel are two renderings of one state; SSL keeps {colors.status-waiting} for on-but-CA-not-trusted. Left (.navigation): a hand-rolled 'sidebar.left' toggle — AppKit's .toggleSidebar item answers only to NSSplitViewController, which this window doesn't use; system glass hidden, our own .glassEffect circle at the chip's 34pt height. EVERY header glyph, the toggle included, sits in a 30×26 box at one OPTICAL size (§ Shapes): LoomTheme.Icon.toolbar (16pt semibold) for round glyphs, toolbarFilled (15) for stop.fill, toolbarWide (14) for sidebar.left and the phone. The chip's ends have equal visible margins (§ Shapes). No request count (the sidebar's All Flows count is that number), no search field and no title — filtering is the find bar above the table (see main-window § Find bar)."
   sidebar:         # left column — categories
     style: ".listStyle(.sidebar)"
     anatomy: "All Flows · Requests · Connections · Errors · Rules · Audit · Breakpoints (each a Label + a TRAILING PLAIN COUNT — {typography.numeric} .tertiary, never .badge(): these are bucket sizes, not alerts) · Sections 'Devices' / 'Hosts'. All Flows stays the unfiltered Charles-style sequence; Requests and Connections are one OR dimension and compose with Errors/host/device. Every row's leading glyph obeys `icon`."
@@ -201,10 +202,6 @@ components:
     body-json: "when a body parses as JSON (object/array, ≤200KB), Body renders a collapsible, syntax-highlighted tree (JSONView) preserving original key order — chevron nodes, keys .label, strings {colors.syntax-string}, numbers {colors.syntax-number}, bool {colors.syntax-bool}, null secondary; deep nodes start collapsed. Non-JSON / oversized falls back to the line-numbered raw view. Editor syntax colors are a deliberate exception to 'color only for status'."
     tabStrip: "text tabs, selected = semibold + 2pt accent underline (custom, not segmented)"
     tab-counts: "a tab whose contents are a countable list carries the number in a NEUTRAL CAPSULE beside the title — `Color.secondary` digits on a {colors.attention-fill} rounded fill — not in parentheses inside the label and NOT in a hue. It answers a different question from the title (is there anything in here, and how much), which is what the strip is scanned for; interpolated into the label it inherited .secondary and disappeared into the word. A hue is ruled out rather than merely unchosen: every one in this app is a status, and {colors.accent} in particular is what the *selected tab's own underline* is drawn in, so an accent count put the same blue twice on one tab. This does not contradict {components.sidebar-counts}: there every row has a count and a column of capsules would read as a column of alerts, here a strip has two or three. Tabs whose contents are not a list (Summary / Raw / Body / GraphQL / Diff) carry no capsule."
-  clear-fab:       # discard the capture — floats over the flow list, not in the toolbar
-    where: "bottom-trailing OVERLAY on the request table, not a toolbar item and not a reserved strip: the table keeps its full height and the row stripes fill it."
-    anatomy: "at rest a 12pt {colors.status-error} dot, so it barely covers content. On hover it springs to a 44pt material circle with a `trash` glyph. HELD to fire (0.7 s, `MainView.clearHoldDuration`): a red ring charges around the glyph and springs back if released early."
-    why-hold: "the console cannot present a dialog and this window will not grow one for a control this destructive — the hold IS the confirmation, and unlike a dialog it costs nothing when you are not using it. It is also why the control may be this small: a stray click cannot fire it."
   glyph-button:    # the shared 'this is clickable' bare symbol — DesignTokens.swift
     anatomy: "an SF Symbol alone, {colors.accent}, in a {rounded.sm} box that FILLS at {colors.attention-fill} on hover (§ Motion). No bezel, no label. 24pt inside a form, where it sits beside 30pt fields; `compact` = 20 (an AppKit small control's height) on a panel header, whose height is set by one line of {typography.callout} — at 24 the glyph became the tallest thing in the row and pushed the header taller."
     words: "the tooltip and the accessibility label carry them. A glyph-only add is honest ONLY where the position already says what is being added — a card or a panel whose whole content is the list. Anywhere else, use a labelled button."
@@ -610,7 +607,7 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 
 ```
 ┌───────────────┬─────────────────────────────────────────────┐
-│ Sidebar       │    ● 10.0.11.196:9090 🌐 🛡 🪄 │ ▶ Record    │  toolbar (chip centred)
+│ Sidebar       │    ● 0.0.0.0:9090 📱 │ 🌐 🛡 🪄 │ ■ ⌫        │  top bar (chip, pane-centred)
 │ All Flows  6  ├─────────────────────────────────────────────┤
 │ Requests   4  │  Capture totals · 2 connections · 1 failed  │  conditional summary
 │ Connections 2├─────────────────────────────────────────────┤
@@ -618,7 +615,7 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 │ Rules      3  ├─────────────────────────────────────────────┤
 │ Audit     12  │  ●  Method  Host        Path         Time    │  request-table
 │ ▸ Hosts       │  ●  GET     127.0.0.1   /api/users   12ms    │  (columns)
-│   127…     3  │  ●  GET     127.0.0.1   /api/missing  9ms  ⬤ │  ← clear-fab floats
+│   127…     3  │  ●  GET     127.0.0.1   /api/missing  9ms    │
 │   local…   3  ├───────────────── drag ──────────────────────┤
 │               │  https://127.0.0.1/api/users              ✕  │  inspector header
 │               │  [Summary][Raw][Headers][Body] │ [Raw][…]    │  (Request | Response)
@@ -636,12 +633,11 @@ this width that is two truncated buttons over four wrapped lines for a one-word 
 - **Content**: with no selection, the request table fills the whole pane. Selecting a row slides the tabbed
   `inspector-panel` up below it over a **hand-rolled draggable divider** (not a `VSplitView` — see
   `{components.main-window}.structure`); the header's ✕ closes it by deselecting.
-- **Toolbar band is frosted** (`{components.main-window}.titlebar`): the request table extends under it and
-  blurs beneath it — no hairline, no border, no shadow. Everything below the band stays opaque.
-- **Toolbar**: a sidebar toggle at the leading edge, and one centred chip — status dot + the listener's
-  `host:port` + three status toggles (System proxy, SSL, Map/rewrite) + **Record** (start/stop) behind a
-  divider, with the macOS 26 shared-glass container hidden. Nothing is right-aligned and there is no window
-  title; discarding the capture is the `{components.clear-fab}` over the list, not a toolbar button.
+- **Two columns to the top** (`{components.main-window}.titlebar`): the sidebar runs under the traffic lights;
+  the frosted band covers the content pane only, and the table blurs beneath it — no hairline, border or shadow.
+- **Toolbar**: a sidebar toggle at the leading edge, and one chip centred on the content pane — dot + the
+  listener's `host:port` + phone │ System proxy, SSL, Map/rewrite │ Record, Clear — in one glass capsule, every glyph
+  one size (`{components.main-window}.toolbar`). No window title; the request count stays in the sidebar.
 - **Find bar**: hidden by default, ⌘F (Edit ▸ Find ▸ Find in Requests) reveals it directly **above the request table**,
   `.bar` material, one row: scope picker (`{components.loom-picker}`: URL / Headers / Body) · needle · result
   count · ✕. The picker **leads**, so the line reads "in URL · find …" left to right. It animates in and out as
@@ -738,6 +734,16 @@ console, depth is the material plus tint; do not stack opaque cards on it. Never
 
 **Capsule = control, rounded-rect = container.** `RoundedRectangle` is always `.continuous`.
 
+**An element at a capsule's end is inset concentrically, and the other end matches it.** The leading dot's side
+inset equals its top/bottom inset — further from the side than the top reads as drifting inward. Derive it
+(`MainView.statusChip`: vertical padding + (row − dot) / 2), never tune by eye, and keep its slot's slack *after*
+it. The trailing glyph's ink then sits at that same margin (owner decision): unequal ends read lopsided.
+
+**Glyphs in one row match optically, not numerically.** At one point size a filled square reads larger than an
+outlined circle, and a wide or compound glyph (a rectangle, a phone with radio waves) larger still. Measure the
+rendered bounding boxes at 2x against a round glyph and step the outliers down — named `LoomTheme.Icon` sizes,
+never an inline number.
+
 ## Brand mark
 
 **`loom.mark`** — a custom SF Symbol, not a system one: an **outlined window
@@ -831,11 +837,10 @@ rejecting what failed:
 - **`main-window`** — `HStack` (not `NavigationSplitView`, not `HSplitView`, and the inner split is not a
   `VSplitView` either — see main-window.structure above): `sidebar` | `request-table` over `inspector-panel`
   across a hand-rolled draggable divider. Opaque
-  content surfaces under a **frosted toolbar band** (`{components.main-window}.titlebar` — the table slides
-  under it and blurs, with no hairline, border or shadow), no sidebar/window title. Toolbar per
-  `{components.main-window}.toolbar` — a leading sidebar toggle and one centered chip carrying Record; nothing
-  right-aligned, no search field (the find bar sits above the table, hidden until ⌘F) and no Clear button (it is
-  the `{components.clear-fab}` over the list).
+  content surfaces under a **frosted band over the content pane only**, the sidebar running to the window top
+  (`{components.main-window}.titlebar`), no sidebar/window title. Toolbar per
+  `{components.main-window}.toolbar` — a leading sidebar toggle and one chip centred on
+  the content pane; no search field (the find bar sits above the table, hidden until ⌘F).
 - **`sidebar`** (`.listStyle(.sidebar)`) — `All Flows` / `Requests` / `Connections` / `Errors` / `Rules` / `Audit` / `Breakpoints` as
   rows with a trailing count (`{components.sidebar-counts}`), then `Devices` / `Hosts` trees, every glyph in one
   box with an identity tint (`{components.sidebar}.icon`). Selection scopes the table.
@@ -857,8 +862,6 @@ rejecting what failed:
 - **`sidebar-panel`** — Rules / Audit / Breakpoints replace the table with a full-pane list: a summary phrase
   left, one `{components.glyph-button}` right, per `{components.sidebar-panel}`. These are supervision views of
   what the agent wrote over MCP, never a second authoring path.
-- **`clear-fab`** — discarding the capture: a red dot over the list that expands on hover and is **held** to
-  fire. Not a toolbar button and not a dialog — see `{components.clear-fab}`.
 - **Shared controls** (`DesignTokens.swift`, beside `CapsuleBadge`) — `{components.glyph-button}` and
   `{components.loom-picker}` are used across the console cards, the rule editor, the sidebar panels and the find
   bar. A control on its third surface belongs in that file, not in the feature that happened to need it first.
