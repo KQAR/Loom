@@ -862,9 +862,17 @@ public struct MainView: View {
             .accessibilityLabel(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
             .help(sidebarVisible ? "Hide Sidebar" : "Show Sidebar")
         }
-        ToolbarItem(placement: .principal) {
-            statusChip
-        }
+        // Three principal items, centred together: what the proxy is doing, the switches
+        // that change what it does, and the capture verbs. One item drew all eight
+        // controls on one shared-glass capsule, where the status read as just another
+        // button. On macOS 26+ a fixed spacer splits the glass into one capsule per group;
+        // earlier systems draw no capsule, and the dividers that used to separate the
+        // groups go with it, because the gap between capsules now does that job.
+        ToolbarItem(placement: .principal) { statusGroup }
+        if #available(macOS 26, *) { ToolbarSpacer(.fixed, placement: .principal) }
+        ToolbarItem(placement: .principal) { toggleGroup }
+        if #available(macOS 26, *) { ToolbarSpacer(.fixed, placement: .principal) }
+        ToolbarItem(placement: .principal) { captureGroup }
     }
 
     /// Both the button and ⌃⌘S land here, so the animation is stated once. `.snappy` rather
@@ -876,43 +884,45 @@ public struct MainView: View {
         }
     }
 
-    /// The status chip: capture dot + address, then the state toggles. Extracted only so
-    /// `toolbarContent` stays readable; the toolbar item draws its own background.
+    /// The three principal groups centre on the *window*, not on the content pane,
+    /// because that is what `.principal` does. Two ways to shift them onto the pane were
+    /// tried and both cost more than they fix: padding the item's leading edge by a
+    /// sidebar width stretches the shared-glass capsule by the same 300pt, and hiding
+    /// that shared background to draw the capsule here leaves the toolbar rendering a
+    /// full-width backdrop instead.
     ///
-    /// It centres on the *window*, not on the content pane, because that is what
-    /// `.principal` does. Two ways to shift it onto the pane were tried and both cost more
-    /// than they fix: padding the item's leading edge by a sidebar width stretches the
-    /// shared-glass capsule by the same 300pt, and hiding that shared background to draw
-    /// the capsule here leaves the toolbar rendering a full-width backdrop instead. (The
-    /// capsule itself is gone now that the app renders in the pre-26 design — see
-    /// `UIDesignRequiresCompatibility` in `Project.swift` — but window-centring is
-    /// `.principal`'s own behavior in both designs, so this note still applies.)
-    private var statusChip: some View {
-        HStack(spacing: LoomTheme.Space.xs) {
-            // The address and the phone button are one pair, spaced tighter than the
-            // rest of the strip: the phone control is *about* the address it sits
-            // beside — whether anything on the network can reach it — and the glyph's
-            // own 30pt box already carries visual air on both sides.
-            HStack(spacing: 2) {
-                ZStack(alignment: .trailing) {
-                    // Sized by every text this slot can show, not by a guessed number:
-                    // the widest of them reserves the width, so switching LAN on or off
-                    // never moves the strip, and no slack is reserved for an address
-                    // the listener cannot have (it binds 0.0.0.0 or 127.0.0.1, never a
-                    // LAN IP — a width sized for one showed as a gap before the dot).
-                    ForEach(addressCandidates, id: \.self) { candidate in
-                        addressRow(Text(verbatim: candidate)).hidden()
-                    }
-                    addressRow(addressButton)
+    /// What the proxy is doing: dot + a state word + the listener's address, then the
+    /// phone button. The word is what makes the state readable without the dot's hue —
+    /// green / yellow / grey alone was the one state in this window carried by colour.
+    private var statusGroup: some View {
+        // The address and the phone button are one pair, spaced tighter than the
+        // rest of the strip: the phone control is *about* the address it sits
+        // beside — whether anything on the network can reach it — and the glyph's
+        // own 30pt box already carries visual air on both sides.
+        HStack(spacing: 2) {
+            ZStack(alignment: .leading) {
+                // Sized by every text this slot can show, not by a guessed number:
+                // the widest of them reserves the width, so switching LAN or Record
+                // never moves the strip, and no slack is reserved for an address
+                // the listener cannot have (it binds 0.0.0.0 or 127.0.0.1, never a
+                // LAN IP — a width sized for one showed as a gap before the dot).
+                ForEach(statusCandidates, id: \.self) { candidate in
+                    statusRow(word: candidate.word, address: candidate.address).hidden()
                 }
-                // Shown even while the proxy is stopped — see `DeviceReadiness`. It
-                // used to be hidden, which removed the control precisely when someone
-                // was looking for why their phone couldn't connect.
-                phoneButton
+                addressButton
             }
+            // Shown even while the proxy is stopped — see `DeviceReadiness`. It
+            // used to be hidden, which removed the control precisely when someone
+            // was looking for why their phone couldn't connect.
+            phoneButton
+        }
+        .padding(.leading, LoomTheme.Space.sm)
+        .padding(.trailing, LoomTheme.Space.xxs)
+    }
 
-            Divider().frame(height: 14)
-
+    /// The switches: System proxy, SSL, Map/rewrite.
+    private var toggleGroup: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
             // Same split as the console's strip, and for the same reasons: the
             // system proxy is the async one, so it pulses and does not morph (the
             // `globe` family has no honest on/off pair — see PanelView); the two
@@ -929,68 +939,91 @@ public struct MainView: View {
                        help: store.rules.rulesEnabled ? "Map / rewrite (mock): on" : "Map / rewrite (mock): off") {
                 store.send(.rules(.toggleRulesTapped))
             }
+        }
+        .padding(.horizontal, LoomTheme.Space.xxs)
+    }
 
-            // Record and Clear live at the right end of the ip toolbar, split from
-            // the status toggles by a divider: both are capture lifecycle, so they
-            // sit together rather than one of them floating over the flow list.
-            Divider().frame(height: 14)
+    /// Record and Clear: both are capture lifecycle, so they sit together, directly
+    /// right of the status they act on rather than one of them floating over the list.
+    private var captureGroup: some View {
+        HStack(spacing: LoomTheme.Space.xs) {
             recordButton
             clearButton
         }
-        .padding(.horizontal, LoomTheme.Space.sm)
+        .padding(.horizontal, LoomTheme.Space.xxs)
     }
 
-    /// The address, and the way in to changing it. It reads as text and behaves as a
-    /// button, because the address is the thing someone is looking at when 9090 turns
-    /// out to be taken — a Settings pane elsewhere would be a second place to look
-    /// for the fact already on screen. `ProxyPortCard` is the only editor.
+    /// The status row, and the way in to changing the port. It reads as text and
+    /// behaves as a button, because the address is the thing someone is looking at when
+    /// 9090 turns out to be taken — and "Stopped" is the thing they are looking at when
+    /// it was — so a Settings pane elsewhere would be a second place to look for the
+    /// fact already on screen. `ProxyPortCard` is the only editor.
     private var addressButton: some View {
         Button { showingPortEditor = true } label: {
-            Text(verbatim: store.status.isRunning
-                ? "\(store.displayHost):\(store.status.port)"
-                : "Proxy stopped")
-                .font(.callout.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                // **A reserved width (`addressCandidates`), and this is what stops the strip jumping.** The
-                // address is the only item here that resizes with its content —
-                // `0.0.0.0:9090`, `127.0.0.1:9090` and `192.168.1.20:9090` are three
-                // widths — and this strip is `.principal`, i.e. centred on the
-                // *window*. So switching LAN off did not just change the text: it
-                // narrowed the whole strip, and every glyph to the right of it slid
-                // sideways. The phone symbol looked like it was disappearing and
-                // reappearing somewhere else, which is exactly what it was doing —
-                // the symbol changed in place and the place moved.
-                //
+            // **A reserved width (`statusCandidates`), and this is what stops the strip
+            // jumping.** The address resizes with its content — `0.0.0.0:9090` and
+            // `127.0.0.1:9090` are two widths, "Recording" and "Paused" two more — and
+            // these groups are `.principal`, i.e. centred on the *window*. So switching
+            // LAN off did not just change the text: it narrowed the whole strip, and
+            // every glyph to the right of it slid sideways.
+            statusRow(word: captureStateWord, address: listenerAddress)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(listenerAddress.map { "\(captureStateWord), \($0)" } ?? captureStateWord)
+        .accessibilityHint("Change the proxy port")
         .help("Change the proxy port")
         .popover(isPresented: $showingPortEditor, arrowEdge: .bottom) {
             ProxyPortCard(store: store) { showingPortEditor = false }
         }
     }
 
-    /// The capture dot and an address, as one row. The dot travels *with* the address:
-    /// the group is trailing-aligned, so any slack sits on the left and a shorter
-    /// address grows leftwards while the phone button keeps a fixed gap.
-    private func addressRow(_ address: some View) -> some View {
+    /// Dot, state word, address — as one row. The slot is leading-aligned, so the dot and
+    /// the word start at the same place in every state and a state change reads in place;
+    /// any slack (widest under "Stopped", which has no address) sits before the phone
+    /// button.
+    private func statusRow(word: String, address: String?) -> some View {
         HStack(spacing: LoomTheme.Space.xs) {
             // green = proxy up & recording · yellow = up but paused · grey = off.
             Circle()
                 .fill(captureDotColor)
                 .frame(width: 7, height: 7)
-            address
-                .font(.callout.monospaced())
+            Text(word)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+            if let address {
+                Text(verbatim: address)
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
     }
 
-    /// Every text the address slot can show at the current port. Only the port is
+    /// The listener's `host:port`, or nil while nothing is listening — naming an
+    /// address the listener is not on sends someone to debug their client.
+    private var listenerAddress: String? {
+        store.status.isRunning ? "\(store.displayHost):\(store.status.port)" : nil
+    }
+
+    /// The dot's three values in words, so the state survives without its hue.
+    private var captureStateWord: String {
+        guard store.status.isRunning else { return "Stopped" }
+        return store.isRecording ? "Recording" : "Paused"
+    }
+
+    /// Every row the status slot can show at the current port. Only the port is
     /// variable, and it changes by a deliberate edit, so the strip still holds still.
-    private var addressCandidates: [String] {
+    private var statusCandidates: [StatusCandidate] {
         let port = store.status.port
-        return ["127.0.0.1:\(port)", "0.0.0.0:\(port)", "Proxy stopped"]
+        return ["Recording", "Paused"].flatMap { word in
+            ["127.0.0.1:\(port)", "0.0.0.0:\(port)"].map { StatusCandidate(word: word, address: $0) }
+        } + [StatusCandidate(word: "Stopped", address: nil)]
+    }
+
+    private struct StatusCandidate: Hashable {
+        let word: String
+        let address: String?
     }
 
     /// green = proxy up & recording · yellow = up but recording paused · grey = off.
