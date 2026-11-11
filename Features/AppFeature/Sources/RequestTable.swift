@@ -388,7 +388,15 @@ struct RequestTable: NSViewRepresentable {
         /// says they are done looking. Held here rather than by writing `followTail`:
         /// measured, that write read back `true` on the very next batch and the list
         /// followed the tail away from the revealed row within 100 ms.
-        private var holdForReveal = false
+        ///
+        /// Holds the row's id rather than a flag, because centring it once is not enough:
+        /// a reveal with the inspector closed opens it, and the inspector **slides** in
+        /// (`.snappy`, 0.22 s), so the viewport keeps shrinking for a dozen frames after
+        /// the one-turn-later `centre(on:)` ran. AppKit keeps the top offset across that
+        /// resize, so a row centred in the full-height viewport ended on its bottom edge.
+        /// `viewportDidMove` re-centres on every viewport-height change while this is set.
+        private var revealed: Flow.ID?
+        private var holdForReveal: Bool { revealed != nil }
 
         init(
             selection: Binding<Flow.ID?>,
@@ -428,6 +436,12 @@ struct RequestTable: NSViewRepresentable {
             clipView.postsBoundsChangedNotifications = true
             nc.addObserver(self, selector: #selector(viewportDidMove),
                            name: NSView.boundsDidChangeNotification, object: clipView)
+            // A resize (the inspector sliding in) changes the clip view's *frame*, and
+            // AppKit posts no bounds notification for that — so without this the viewport
+            // height change `viewportDidMove` attributes was only seen when something
+            // happened to scroll at the same time.
+            nc.addObserver(self, selector: #selector(viewportDidMove),
+                           name: NSView.frameDidChangeNotification, object: clipView)
             // Object is nil rather than the window: this view has no window yet at attach
             // time, and it can move between windows afterwards. The handler filters.
             nc.addObserver(self, selector: #selector(windowOcclusionChanged),
@@ -494,7 +508,6 @@ struct RequestTable: NSViewRepresentable {
             // *visual* — see `apply` and the follow below.
             apply(diff, in: table)
             if applySelection(newSelection, in: table) {
-                holdForReveal = true
                 stopGliding()
                 return
             }
@@ -902,6 +915,7 @@ struct RequestTable: NSViewRepresentable {
             // row below the viewport ends up on its bottom edge). Centred for the same
             // reason — an edge is where the next layout change hides it.
             let id = rows[target].id
+            revealed = id
             DispatchQueue.main.async { self.centre(on: id) }
             return true
         }
@@ -941,7 +955,7 @@ struct RequestTable: NSViewRepresentable {
         /// keeps the glide out of their way, and refreshes the readout.
         @objc private func userScrolling() {
             lastLiveScrollAt = Date()
-            holdForReveal = false
+            revealed = nil
             // Unconditional: this notification *means* the operator, so it re-derives
             // even if a batch changed the document's height during the gesture.
             lastSampledDocumentHeight = documentHeight
@@ -970,13 +984,15 @@ struct RequestTable: NSViewRepresentable {
         @objc private func viewportDidMove() {
             let height = documentHeight
             let viewport = viewportHeight
-            defer {
-                lastSampledDocumentHeight = height
-                lastSampledViewportHeight = viewport
-            }
+            let documentHeightChanged = height != lastSampledDocumentHeight
+            let viewportHeightChanged = viewport != lastSampledViewportHeight
+            // Recorded before acting: `centre` moves the clip view, which re-enters here.
+            lastSampledDocumentHeight = height
+            lastSampledViewportHeight = viewport
+            if viewportHeightChanged, let revealed { centre(on: revealed) }
             guard Self.shouldSampleFollow(
-                documentHeightChanged: height != lastSampledDocumentHeight,
-                viewportHeightChanged: viewport != lastSampledViewportHeight,
+                documentHeightChanged: documentHeightChanged,
+                viewportHeightChanged: viewportHeightChanged,
                 gliding: displayLink != nil
             ) else { return }
             let atBottom = isAtBottom()

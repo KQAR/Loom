@@ -176,6 +176,39 @@ import Testing
         #expect(harness.state.selection == nil, "a store-driven sync is not a user selection")
     }
 
+    /// A reveal with the inspector closed opens it, and the inspector slides in — so the
+    /// viewport keeps shrinking after the one-turn-later centre already ran. AppKit keeps
+    /// the top offset across a resize, so the row centred in the tall viewport ended on
+    /// the short one's bottom edge. Every reveal with the inspector closed — which is why
+    /// the first one after launch always showed it.
+    @Test func aRevealedRowStaysCentredWhileTheViewportShrinks() async throws {
+        let harness = Harness()
+        harness.scrollView.frame = NSRect(x: 0, y: 0, width: 400, height: 600)
+        let rows = (0 ..< 200).map { flow($0) }
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: nil)
+        harness.table.sizeToFit()
+
+        harness.coordinator.update(rows: Versioned(rows), capture: Versioned(capture(rows)), selection: rows[150].id)
+        try await Task.sleep(for: .milliseconds(50)) // the deferred centre
+
+        // Within the middle half of the viewport. Not exact: `scrollToVisible` keeps out
+        // of the content inset, which moves the centre by the inset's height.
+        func isCentred() -> Bool {
+            let visible = harness.scrollView.contentView.bounds
+            return abs(harness.table.rect(ofRow: 150).midY - visible.midY) <= visible.height / 4
+        }
+        #expect(isCentred())
+
+        // The inspector's slide, a few frames of it.
+        for height in stride(from: 560.0, through: 320.0, by: -40) {
+            harness.scrollView.setFrameSize(NSSize(width: 400, height: height))
+        }
+        #expect(
+            isCentred(),
+            "the revealed row must stay centred as the inspector shrinks the viewport — row \(harness.table.rect(ofRow: 150)), clip \(harness.scrollView.contentView.bounds)"
+        )
+    }
+
     // MARK: The property the fix is for
 
     /// Having a selection must not make a batch cost the window.
