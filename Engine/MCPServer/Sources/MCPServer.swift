@@ -114,6 +114,8 @@ public final class MCPServer: @unchecked Sendable {
     private let appVersion: String
     /// Optional, same reasoning as `routing`: the updater is Sparkle, client-layer.
     private let updateStatus: (@Sendable () async -> AppUpdateStatus)?
+    /// Optional, same reasoning: selecting a row is the app's window, not the engine.
+    private let reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)?
     private let group: EventLoopGroup
     private var channel: Channel?
     private let token: String
@@ -135,9 +137,11 @@ public final class MCPServer: @unchecked Sendable {
         appVersion: String,
         token: String = UUID().uuidString,
         routing: SystemRoutingControlling? = nil,
-        updateStatus: (@Sendable () async -> AppUpdateStatus)? = nil
+        updateStatus: (@Sendable () async -> AppUpdateStatus)? = nil,
+        reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)? = nil
     ) {
         self.engine = engine
+        self.reveal = reveal
         self.routing = routing
         self.updateStatus = updateStatus
         self.appVersion = appVersion
@@ -155,7 +159,7 @@ public final class MCPServer: @unchecked Sendable {
         let executor = MCPToolExecutor(
             engine: engine, appVersion: appVersion,
             protocolVersion: Self.protocolVersion, routing: routing, eraLog: eraLog,
-            updateStatus: updateStatus
+            updateStatus: updateStatus, reveal: reveal
         )
         let dispatcher = MCPDispatcher(executor: executor, eraLog: eraLog)
         let token = self.token

@@ -381,6 +381,15 @@ struct RequestTable: NSViewRepresentable {
         /// selection again: `NSTableView` posts nothing for a click on the selected row.
         private var appliedSelection: Flow.ID?
 
+        /// Set when the store moved the selection and the table scrolled to it
+        /// (`reveal_flow`, a replay landing): the point was that someone looks at that
+        /// row, so neither the next batch nor the window un-occluding may glide back to
+        /// the tail. Cleared by the operator's own scroll, which is the only thing that
+        /// says they are done looking. Held here rather than by writing `followTail`:
+        /// measured, that write read back `true` on the very next batch and the list
+        /// followed the tail away from the revealed row within 100 ms.
+        private var holdForReveal = false
+
         init(
             selection: Binding<Flow.ID?>,
             followTail: Binding<Bool>,
@@ -484,7 +493,11 @@ struct RequestTable: NSViewRepresentable {
             // against a count that moved. What is skipped while occluded is everything
             // *visual* — see `apply` and the follow below.
             apply(diff, in: table)
-            applySelection(newSelection, in: table)
+            if applySelection(newSelection, in: table) {
+                holdForReveal = true
+                stopGliding()
+                return
+            }
             guard visible else {
                 // Nothing is being shown, so there is nothing to follow and no geometry
                 // worth reading. `followTail` is left frozen at its last on-screen value,
@@ -496,7 +509,7 @@ struct RequestTable: NSViewRepresentable {
             // head is trimmed by exactly what the tail gained, so the count is constant
             // while the list keeps moving — and a count gate silently stops following at
             // the one point where there is the most to follow.
-            if wasAtBottom, diff != .none { scrollToBottom() }
+            if wasAtBottom, diff != .none, !holdForReveal { scrollToBottom() }
             // `followTail` is deliberately **not** written here. It is the operator's
             // answer, re-derived in `viewportDidMove` when they move the viewport;
             // writing it from our own edit is exactly how the follow used to turn itself
@@ -589,7 +602,7 @@ struct RequestTable: NSViewRepresentable {
             // Set rather than glided, for the same reason the initial tail scroll is: a
             // list arriving already at the tail is where it belongs, not something that
             // travelled while the window was being revealed.
-            if followTail, mayScrollProgrammatically { setOffsetY(maximumOffsetY) }
+            if followTail, !holdForReveal, mayScrollProgrammatically { setOffsetY(maximumOffsetY) }
         }
 
         /// Turn a diff into the smallest set of table operations that expresses it, then
@@ -857,25 +870,47 @@ struct RequestTable: NSViewRepresentable {
         /// row still holds the selected flow, at a new index nobody had to find. The
         /// search is kept for the cases where that fails (a `.reload`, or a selection
         /// the store moved), and those are gestures, not traffic.
-        private func applySelection(_ id: Flow.ID?, in table: NSTableView) {
+        /// Returns whether it scrolled to a selection the store moved.
+        @discardableResult
+        private func applySelection(_ id: Flow.ID?, in table: NSTableView) -> Bool {
             // Recorded before the early returns: they mean "the table already shows
             // this", which is exactly what the record claims.
+            // A selection the *store* moved (`reveal_flow`, a replay landing) may be
+            // anywhere in the window, and the reason to move it is that someone should
+            // look at it — so that one is scrolled to. A click or a reload is not.
+            let storeMoved = id != appliedSelection
             appliedSelection = id
             let current = table.selectedRow
             // Already right: either the selected row is the selected flow, or both sides
             // agree there is no selection.
-            if current >= 0, rows.indices.contains(current), rows[current].id == id { return }
-            if current < 0, id == nil { return }
+            if current >= 0, rows.indices.contains(current), rows[current].id == id { return false }
+            if current < 0, id == nil { return false }
 
             let target = id.flatMap { id in rows.firstIndex { $0.id == id } }
-            guard target != (current >= 0 ? current : nil) else { return }
+            guard target != (current >= 0 ? current : nil) else { return false }
             applyingSelection = true
             defer { applyingSelection = false }
-            if let target {
-                table.selectRowIndexes(IndexSet(integer: target), byExtendingSelection: false)
-            } else {
+            guard let target else {
                 table.deselectAll(nil)
+                return false
             }
+            table.selectRowIndexes(IndexSet(integer: target), byExtendingSelection: false)
+            guard storeMoved else { return false }
+            // Next turn, not now: the inspector opening on this selection shrinks the
+            // viewport in this same transaction, and a row scrolled to against the old
+            // height lands under it (`scrollRowToVisible` moves the least it can, so a
+            // row below the viewport ends up on its bottom edge). Centred for the same
+            // reason — an edge is where the next layout change hides it.
+            let id = rows[target].id
+            DispatchQueue.main.async { self.centre(on: id) }
+            return true
+        }
+
+        private func centre(on id: Flow.ID) {
+            guard let table, let scrollView, let row = rows.lastIndex(where: { $0.id == id }) else { return }
+            let rect = table.rect(ofRow: row)
+            let pad = max(0, (scrollView.contentView.bounds.height - rect.height) / 2)
+            table.scrollToVisible(rect.insetBy(dx: 0, dy: -pad))
         }
 
         // MARK: Tail-follow
@@ -906,6 +941,7 @@ struct RequestTable: NSViewRepresentable {
         /// keeps the glide out of their way, and refreshes the readout.
         @objc private func userScrolling() {
             lastLiveScrollAt = Date()
+            holdForReveal = false
             // Unconditional: this notification *means* the operator, so it re-derives
             // even if a batch changed the document's height during the gesture.
             lastSampledDocumentHeight = documentHeight

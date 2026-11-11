@@ -1469,3 +1469,33 @@ struct AppUpdateRender: Encodable {
         }
     }
 }
+
+// MARK: - reveal_flow
+
+/// What the human's window had to change to put a flow on screen. The app maps its own
+/// filter state into this, so MCPServer never depends on the feature layer.
+public enum FlowRevealAdjustment: String, Sendable, Equatable, Encodable {
+    /// The sidebar selection (a category, host, device or a Rules/Audit/Breakpoints
+    /// panel) excluded the flow, so it was reset to All Flows.
+    case sidebarSelection = "sidebar_selection"
+    /// The ⌘F find bar's needle excluded it, so the bar was closed and cleared.
+    case findBar = "find_bar"
+    /// The quick-filter chips excluded it, so they were cleared.
+    case quickFilters = "quick_filters"
+}
+
+/// The app's answer to `reveal_flow`. `shown: false` carries `reason`, because "the
+/// human can't see it" is the one outcome the agent must not report as done.
+public struct FlowRevealOutcome: Sendable, Equatable, Encodable {
+    public var shown: Bool
+    /// Filters reset to make the row visible — empty when it already was. The human
+    /// saw their view change, so the agent should be able to say why.
+    public var cleared: [FlowRevealAdjustment]
+    public var reason: String?
+
+    public init(shown: Bool, cleared: [FlowRevealAdjustment] = [], reason: String? = nil) {
+        self.shown = shown
+        self.cleared = cleared
+        self.reason = reason
+    }
+}

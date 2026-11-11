@@ -806,6 +806,27 @@ public struct CaptureFeature: Sendable {
 
         /// Metadata-only selected flow (from the body-free list). The inspector
         /// reads `selectedFlowDetail` for the full payload.
+        /// A filter `revealPlan` may have to reset to put a flow on screen.
+        public enum RevealAdjustment: Sendable, Equatable {
+            case sidebarSelection, findBar, quickFilters
+        }
+
+        /// What `revealFlow` has to reset for this flow's row to be visible — empty when
+        /// it already is, nil when the window doesn't hold the flow at all (older than
+        /// its rows, or not yet arrived on the capture stream). Only the filters that
+        /// actually exclude it are reset; the others are the human's and stay put.
+        ///
+        /// Public because the app reports the same answer back to the agent before
+        /// sending the action: one function, so the report and the reset can't disagree.
+        public func revealPlan(for id: Flow.ID) -> [RevealAdjustment]? {
+            guard let flow = flows.value[id: id] else { return nil }
+            var plan: [RevealAdjustment] = []
+            if panelCategory != nil || !categoryMatches(flow) { plan.append(.sidebarSelection) }
+            if search.isActive && !search.predicate()(flow) { plan.append(.findBar) }
+            if quickFilter.isActive && !quickFilter.predicate()(flow) { plan.append(.quickFilters) }
+            return plan
+        }
+
         public var selectedFlow: Flow? { selectedFlowID.flatMap { flows[id: $0] } }
         /// The selected flow with bodies hydrated (fetched on selection / kept
         /// fresh from the live stream). Nil until the fetch lands.
@@ -848,6 +869,9 @@ public struct CaptureFeature: Sendable {
         /// rules for what a set of these may contain are Loom's, not SwiftUI's.
         case categoriesSelected(Set<FlowCategory>)
         case flowSelected(Flow.ID?)
+        /// An agent asked the human to look at this flow (`reveal_flow`): reset
+        /// whatever filter hides it (`State.revealPlan`), then select it.
+        case revealFlow(Flow.ID)
 
         // MARK: Filter bar (⌘F)
         //
@@ -1092,6 +1116,23 @@ public struct CaptureFeature: Sendable {
                 // silently dropped, or the result count would disagree with the rows.
                 state.search.outOfWindowMatches = ids.count(where: { state.flows[id: $0] == nil })
                 return .none
+
+            case let .revealFlow(id):
+                guard let plan = state.revealPlan(for: id) else { return .none }
+                var effects: [Effect<Action>] = []
+                if plan.contains(.findBar) {
+                    state.search.dismiss()
+                    effects.append(.cancel(id: CancelID.search))
+                }
+                if plan.contains(.quickFilters) { state.quickFilter.clear() }
+                if plan.contains(.sidebarSelection) {
+                    state.selection = [.all]
+                    // Same reason as `categoriesSelected`: the category is part of the
+                    // engine query, so a standing search must be asked again.
+                    if state.search.isActive { effects.append(runSearch(&state)) }
+                }
+                effects.append(.send(.flowSelected(id)))
+                return .merge(effects)
 
             case let .flowSelected(id):
                 state.selectedFlowID = id
