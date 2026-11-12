@@ -1136,6 +1136,25 @@ in. It now filters first, over the durable store, with the same host matching as
 **Sidebar polish (#402, #403):** one 16pt icon box, identity tints, and tree children
 indented so their icon sits under the parent's title.
 
+### Redacted agent reads, a flow the agent can point at, current dependencies (done, 0.0.39)
+
+**Agent reads redact credentials (#407).** Every MCP read that returns flow content goes
+through one redaction while the console's Redact tile is on (persisted, default on, no MCP
+tool by design). The engine keeps originals, so replay and `resume` send real values, and
+`diff_flows` still sees a rotated token as a change. Relayed tunnels now count their bytes,
+reported in `get_ssl_scope.tunneledHosts[].traffic` and on the CONNECT row.
+
+**`reveal_flow` (#406, #408).** An agent can open the main window on a flow: it resets only
+the filters hiding the row, selects it, keeps it centred while the inspector slides in, and
+reports what it reset.
+
+**Main window (#405):** the sidebar runs to the top of the window, and the toolbar chip sits
+centred on the content pane in one glass capsule.
+
+**Dependencies (#409):** TCA 1.26.2, swift-nio 2.105, nio-http2 1.46, swift-crypto 5.1
+(the library's crypto range widens to `<6.0.0`; no lower bound moved). nio-http2 1.46 does
+not fix the h2 upload stall (#99).
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
