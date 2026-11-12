@@ -91,6 +91,13 @@ import Testing
         case .setRecording: return .wired(client.setRecording)
         case .setListenPort: return .wired(client.setListenPort)
         case .clearFlows: return .wired(client.clearFlows)
+        case .agentReadRedaction:
+            return .deliberatelyAbsent("""
+            The human reads it as `ProxyStatus.redactsAgentReads`, a projection of the \
+            status every surface already re-reads. The dedicated getter exists for the MCP \
+            server, which asks on every read tool and can't pay for `status()`.
+            """)
+        case .setAgentReadRedaction: return .wired(client.setAgentReadRedaction)
 
         // MARK: RulesControlling
         case .rulesState: return .wired(client.rulesState)

@@ -186,4 +186,46 @@ import LoomSharedModels
         // …and it still parses as a HAR.
         #expect(try HARImport.decode(har, label: "x.har").flows.count == 1)
     }
+
+    // MARK: - Agent reads
+
+    @Test func agentReadsKeepBodies() {
+        // The global switch redacts what leaks on every request — headers and query —
+        // and leaves the payload an agent is debugging.
+        let body = Data(#"{"q":1}"#.utf8)
+        let redacted = FlowRedaction.agentReads.apply(to: flow(
+            requestHeaders: [HeaderPair(name: "Authorization", value: "Bearer x")],
+            requestBody: body
+        ))
+        #expect(redacted.request.headers.first?.value == FlowRedaction.placeholder)
+        #expect(redacted.request.body == body)
+    }
+
+    @Test func aHeldExchangeIsRedactedByTheSameRules() {
+        let pending = PendingBreakpoint(
+            breakpointID: UUID(), phase: .response, method: "GET",
+            url: "https://api.example.com/x?token=s3cret&page=2",
+            requestHeaders: [HeaderPair(name: "Cookie", value: "sid=1"), HeaderPair(name: "Accept", value: "*/*")],
+            statusCode: 200,
+            responseHeaders: [HeaderPair(name: "Set-Cookie", value: "sid=2")]
+        )
+        let redacted = FlowRedaction.agentReads.apply(to: pending)
+        #expect(!redacted.url.contains("s3cret"))
+        #expect(redacted.url.contains("page=2"))
+        #expect(redacted.requestHeaders.map(\.value) == [FlowRedaction.placeholder, "*/*"])
+        #expect(redacted.responseHeaders?.first?.value == FlowRedaction.placeholder)
+    }
+
+    @Test func aRotatedTokenStillReadsAsAChange_withItsValuesHidden() throws {
+        // Redacting both flows first would compare `<redacted>` with `<redacted>` and
+        // report the one header that changed as identical.
+        let base = flow(requestHeaders: [HeaderPair(name: "Authorization", value: "Bearer old")])
+        let compared = flow(requestHeaders: [HeaderPair(name: "Authorization", value: "Bearer new")])
+        let comparison = FlowRedaction.agentReads.apply(to: FlowComparison.compare(base: base, compared: compared))
+
+        #expect(!comparison.isIdentical)
+        let change = try #require(comparison.request.headers.first { $0.name == "Authorization" })
+        #expect(change.base == [FlowRedaction.placeholder])
+        #expect(change.compared == [FlowRedaction.placeholder])
+    }
 }

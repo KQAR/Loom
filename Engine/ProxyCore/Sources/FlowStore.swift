@@ -431,6 +431,22 @@ actor FlowStore {
         broadcast(flows[idx])
     }
 
+    /// Record what a relayed CONNECT row's connection carried, once it closes.
+    ///
+    /// Same shape as `attributeSourceApp`: a targeted mutation of a row already in
+    /// the ring, never a whole-flow re-upsert. A row that left the ring (or a
+    /// `clearFlows` in between) is skipped — resurrecting a cleared row would be
+    /// worse than one row without a byte count, and the host aggregate in
+    /// `TunneledHostLog` has the number either way.
+    func attributeTunnelTraffic(id: UUID, _ traffic: TunnelTraffic) {
+        guard let idx = index(of: id), flows[idx].tunnelDiagnostic != nil else { return }
+        flows[idx].tunnelDiagnostic?.traffic = traffic
+        if flows[idx].completedAt != nil {
+            persistence?.save(flows[idx])
+        }
+        broadcast(flows[idx])
+    }
+
     func recent(limit: Int) -> [Flow] {
         Array(flows.suffix(max(0, limit)).reversed())
     }

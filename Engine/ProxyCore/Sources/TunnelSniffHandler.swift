@@ -288,9 +288,23 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
 
         let observeTunnels = self.observeTunnels
         let store = self.store
+        // Recorded before the splice so the glue can backfill the row's traffic.
+        // On the failure path the row is not written (the id is only reserved).
+        let rowID = UUID()
+        let clientSaidBytes = clientSaid.readableBytes
         upstream.pipeline.removeHandler(probeHandler)
             .flatMap { client.pipeline.removeHandler(self) }
-            .flatMap { TunnelFlow.glue(client: client, upstream: upstream, host: host, port: port) }
+            .flatMap {
+                // Both are handed over by hand below rather than through the glue,
+                // so the tally is told up front. Read here, not earlier: the probe
+                // buffers until it is removed, and it is removed by now.
+                TunnelFlow.glue(
+                    client: client, upstream: upstream, host: host, port: port,
+                    alreadyFromClient: clientSaidBytes,
+                    alreadyToClient: probeHandler.bufferedByteCount,
+                    recordedFlow: observeTunnels ? (id: rowID, store: store) : nil
+                )
+            }
             .assumeIsolated()
             .whenComplete { result in
                 guard case .success = result else {
@@ -308,7 +322,7 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
                 TunneledHostLog.shared.record(host: host, port: port, reason: .notTLSOrHTTP)
                 if observeTunnels {
                     TunnelFlow.record(
-                        host: host, port: port, reason: .notTLSOrHTTP,
+                        id: rowID, host: host, port: port, reason: .notTLSOrHTTP,
                         startedAt: startedAt, client: client, store: store
                     )
                 }
@@ -454,13 +468,15 @@ final class TunnelSniffHandler: ChannelInboundHandler, RemovableChannelHandler, 
         return ClientBootstrap(group: channel.eventLoop)
             .connect(host: host, port: port)
             .flatMap { upstream in
-                if observeTunnels {
-                    TunnelFlow.record(
+                let recorded = observeTunnels
+                    ? (id: TunnelFlow.record(
                         host: host, port: port, reason: reason,
                         startedAt: startedAt, client: channel, store: store
-                    )
-                }
-                return TunnelFlow.glue(client: channel, upstream: upstream, host: host, port: port)
+                    ), store: store)
+                    : nil
+                return TunnelFlow.glue(
+                    client: channel, upstream: upstream, host: host, port: port, recordedFlow: recorded
+                )
             }
     }
 }
@@ -518,6 +534,9 @@ final class UpstreamGreetingProbe: ChannelInboundHandler, RemovableChannelHandle
         }
         context.fireErrorCaught(error)
     }
+
+    /// How much the server has said so far — final once this handler is removed.
+    var bufferedByteCount: Int { buffered?.readableBytes ?? 0 }
 
     /// Hand over everything the server said. Called once, after this handler has
     /// been removed and the glue is in place.

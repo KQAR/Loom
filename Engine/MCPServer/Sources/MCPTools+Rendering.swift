@@ -25,8 +25,27 @@ extension MCPToolExecutor {
 
     // MARK: - Rendering
 
-    static func flowSummary(_ flow: Flow) -> [String: Any] {
-        MCPRender.dict(FlowSummaryRender(flow))
+    /// The redaction every flow-content read goes through for this call, or nil when
+    /// the human has it off (`ProxyStatus.redactsAgentReads`).
+    ///
+    /// **Applied here, at the render, and nowhere upstream of it.** The engine keeps
+    /// the original — that is what `replay_flow` and `resume` act on — so redacting
+    /// is a property of what leaves over MCP, never of what Loom stores. Asked once
+    /// per call, not cached: the human can flip it between two calls.
+    func agentRedaction() async -> FlowRedaction? {
+        await engine.agentReadRedaction() ? .agentReads : nil
+    }
+
+    static func flowSummary(_ flow: Flow, redaction: FlowRedaction? = nil) -> [String: Any] {
+        summary(redaction?.apply(to: flow) ?? flow, redacted: redaction != nil)
+    }
+
+    /// An already-redacted (or deliberately clear) flow, marked so the agent can
+    /// tell Loom's `<redacted>` from a value on the wire.
+    private static func summary(_ flow: Flow, redacted: Bool) -> [String: Any] {
+        var render = FlowSummaryRender(flow)
+        if redacted { render.redacted = true }
+        return MCPRender.dict(render)
     }
 
     /// One flow rendered for `get_flow_detail`. Bodies go through `bodyField`, so
@@ -34,11 +53,13 @@ extension MCPToolExecutor {
     /// a binary payload is labelled instead of silently becoming `""` — an agent
     /// must be able to tell "no body" from "2 MB of PNG".
     static func flowDetail(
-        _ flow: Flow,
+        _ original: Flow,
         offset: Int = 0,
         maxBytes: Int = defaultBodyBytes,
-        webSocketLimit: Int = defaultWebSocketMessages
+        webSocketLimit: Int = defaultWebSocketMessages,
+        redaction: FlowRedaction? = nil
     ) -> [String: Any] {
+        let flow = redaction?.apply(to: original) ?? original
         var webSocket: RenderedWebSocket?
         if let messages = flow.webSocketMessages {
             // A chatty socket records up to 10k frames; returning them all would
@@ -83,7 +104,8 @@ extension MCPToolExecutor {
         // Merged over the summary rather than restating it: the detail owns only the
         // keys it adds, and `webSocket` deliberately *replaces* the summary's bare
         // `true` with the frame log.
-        return flowSummary(flow).merging(MCPRender.dict(detail)) { _, detail in detail }
+        return summary(flow, redacted: redaction != nil)
+            .merging(MCPRender.dict(detail)) { _, detail in detail }
     }
 
     /// Default body budget per side for one tool call. Big enough for a normal API

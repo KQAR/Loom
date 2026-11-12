@@ -17,7 +17,14 @@ extension MCPToolExecutor {
         // Redaction runs on the way out, over the flows actually being written — so
         // there is no path where an unredacted flow reaches the file after the caller
         // asked for a redacted export.
-        let redaction = try Self.redaction(from: arguments)
+        var redaction = try Self.redaction(from: arguments)
+        // The file is on this machine, but its path goes back to the agent, which can
+        // read it — so while agent-read redaction is on, an export is never clearer
+        // than a `get_flow_detail` would have been. An explicit `redact: false` does
+        // not override the human's switch.
+        let switchOn = await engine.agentReadRedaction()
+        let forcedBySwitch = redaction == nil && switchOn
+        if forcedBySwitch { redaction = .agentReads }
         if let redaction { flows = redaction.apply(to: flows) }
         let data = HARExport.encode(flows, appVersion: appVersion)
         // Confine exports to the exports/ directory and take only a basename,
@@ -55,6 +62,12 @@ extension MCPToolExecutor {
                 "bodiesDropped": redaction.dropBodies,
                 "webSocketFramesDropped": redaction.dropBodies,
             ] as [String: Any]
+            if forcedBySwitch {
+                payload["redactedBecause"] = """
+                agent-read redaction is on (get_proxy_status.redactsAgentReads); only the \
+                human can turn it off, from Loom's console.
+                """
+            }
             if !redaction.dropBodies {
                 // `redact: true` reads as "safe to share now", and it is not: a login
                 // POST body or a token in a JSON response survives it untouched. Say

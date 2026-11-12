@@ -12,9 +12,9 @@
   "AGENTS.md": 10560,
   "DESIGN.md": 15370,
   "ROADMAP.md": 15620,
-  "Engine/ProxyCore/CLAUDE.md": 12280,
+  "Engine/ProxyCore/CLAUDE.md": 12360,
   "skills/loom/references/workflows.md": 2086,
-  "INTERACTION.md": 1825,
+  "INTERACTION.md": 1845,
   "skills/loom/SKILL.md": 1800,
   "Engine/ProxyCore/FORWARDING.md": 1327,
   ".claude/skills/embed-engine/SKILL.md": 796,
@@ -24,7 +24,7 @@
   "Clients/PrivilegedHelperClient/CLAUDE.md": 1587,
   ".github/CLAUDE.md": 316,
   ".claude/skills/pre-push-checks/SKILL.md": 955,
-  "Engine/MCPServer/CLAUDE.md": 1240,
+  "Engine/MCPServer/CLAUDE.md": 1340,
   ".claude/skills/docs-standard/SKILL.md": 1326,
   "README.md": 465
 }

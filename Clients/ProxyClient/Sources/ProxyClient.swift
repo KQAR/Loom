@@ -60,6 +60,9 @@ public struct ProxyClient: Sendable {
     public var stopInterceptingHost: @Sendable (_ host: String) async -> StopInterceptOutcome = { _ in StopInterceptOutcome() }
     /// Pause/resume capture; forwarding is unaffected.
     public var setRecording: @Sendable (_ recording: Bool) async -> Void
+    /// Redact credentials in what an agent reads over MCP. The human's switch, and
+    /// the only one — there is no MCP tool for it. Read back through `status`.
+    public var setAgentReadRedaction: @Sendable (_ enabled: Bool) async -> Void
     public var rulesState: @Sendable () async -> RulesState = { RulesState() }
     public var setRulesEnabled: @Sendable (_ enabled: Bool) async -> Void
     public var addRule: @Sendable (_ rule: TrafficRule) async throws -> Void
@@ -173,6 +176,7 @@ extension ProxyClient: DependencyKey {
             interceptHost: { await engine.interceptHost($0) },
             stopInterceptingHost: { await engine.stopInterceptingHost($0) },
             setRecording: { await engine.setRecording($0) },
+            setAgentReadRedaction: { await engine.setAgentReadRedaction($0) },
             rulesState: { await engine.rulesState() },
             setRulesEnabled: { await engine.setRulesEnabled($0) },
             addRule: { try await engine.addRule($0) },

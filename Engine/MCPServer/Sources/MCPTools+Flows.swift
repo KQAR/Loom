@@ -11,7 +11,8 @@ extension MCPToolExecutor {
         let limit = try arguments.int("limit", or: 20)
         let query = try Self.flowQuery(from: arguments)
         let flows = await engine.recentFlows(matching: query, limit: limit)
-        return prettyJSON(flows.map(Self.flowSummary))
+        let redaction = await agentRedaction()
+        return prettyJSON(flows.map { Self.flowSummary($0, redaction: redaction) })
     }
 
     func handleGetFlowDetail(_ arguments: MCPArguments) async throws -> String {
@@ -23,7 +24,8 @@ extension MCPToolExecutor {
             flow,
             offset: max(0, try arguments.int("body_offset", or: 0)),
             maxBytes: max(1, try arguments.int("max_bytes", or: Self.defaultBodyBytes)),
-            webSocketLimit: max(1, try arguments.int("ws_limit", or: Self.defaultWebSocketMessages))
+            webSocketLimit: max(1, try arguments.int("ws_limit", or: Self.defaultWebSocketMessages)),
+            redaction: await agentRedaction()
         ))
     }
 
@@ -40,7 +42,17 @@ extension MCPToolExecutor {
         let slowest = try arguments.int("slowest", or: 3)
 
         let result = await engine.searchFlows(matching: query, limit: Self.statsScanCap)
-        let stats = FlowStats.compute(flows: result.flows, grouping: grouping, limit: limit, slowest: slowest)
+        var stats = FlowStats.compute(flows: result.flows, grouping: grouping, limit: limit, slowest: slowest)
+        // The only flow content a stats call returns is the slowest few's URLs —
+        // redacted there rather than over the thousands of flows aggregated.
+        let redaction = await agentRedaction()
+        if let redaction {
+            stats.slowest = stats.slowest.map { slow in
+                var copy = slow
+                copy.url = redaction.redacted(url: slow.url)
+                return copy
+            }
+        }
 
         var payload: [String: Any] = [
             "groupBy": grouping.rawValue,
@@ -62,6 +74,7 @@ extension MCPToolExecutor {
         // matching traffic are still percentiles of *something*, which is exactly how
         // a partial answer gets mistaken for the answer.
         if let retained = result.storedFlowCount { payload["flowsRetained"] = retained }
+        if redaction != nil { payload["redacted"] = true }
         // Only ever present when true — a `false` here would add a key that was never
         // there and imply the question is usually worth asking.
         if result.budgetExhausted { payload["historyScanTruncated"] = true }
@@ -192,7 +205,7 @@ extension MCPToolExecutor {
             compared = baseFlow
         }
 
-        return prettyJSON(FlowDiff.diff(base: base, compared: compared))
+        return prettyJSON(FlowDiff.diff(base: base, compared: compared, redaction: await agentRedaction()))
     }
 }
 

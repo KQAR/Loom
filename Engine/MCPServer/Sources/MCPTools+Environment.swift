@@ -57,7 +57,8 @@ extension MCPToolExecutor {
             // No routing implementation wired (the engine embedded without the app):
             // "unavailable" says nothing about the machine, which is the honest answer
             // — and a different one from "off", which does.
-            systemProxy: "unavailable"
+            systemProxy: "unavailable",
+            redactsAgentReads: status.redactsAgentReads
         )
         if let routing {
             switch await routing.systemProxyRouting() {
@@ -97,6 +98,7 @@ extension MCPToolExecutor {
         // invisible on every surface *by design*, so the count is the only thing
         // standing between "a rule told Loom to drop this" and "the client never ran".
         if status.droppedByRules > 0 { render.droppedByRules = status.droppedByRules }
+        if status.redactsAgentReads { render.agentRedaction = AgentRedactionRender(.agentReads) }
         return prettyJSON(MCPRender.dict(render))
     }
 

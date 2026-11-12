@@ -61,6 +61,10 @@ struct FlowSummaryRender: Encodable {
     var bodiesEvicted: Bool?
     var sourceApp: SourceAppRender?
     var sourceDevice: SourceDeviceRender?
+    /// Present (and only ever `true`) when this flow was rendered through
+    /// `FlowRedaction.agentReads`: a `<redacted>` value here is Loom's, never what
+    /// the server or client sent. Not a model field — it describes the read.
+    var redacted: Bool?
 
     init(_ flow: Flow) {
         id = flow.id.uuidString
@@ -99,12 +103,32 @@ struct TunnelDiagnosticRender: Encodable {
     var port: Int
     var reason: String?
     var detail: String?
+    /// Absent while the connection is open and for a failed tunnel.
+    var traffic: TunnelTrafficRender?
 
     init(_ diagnostic: Flow.TunnelDiagnostic) {
         host = diagnostic.host
         port = diagnostic.port
         reason = diagnostic.reason?.rawValue
         detail = diagnostic.detail
+        traffic = diagnostic.traffic.map(TunnelTrafficRender.init)
+    }
+}
+
+/// What a relayed tunnel carried — one connection on a CONNECT row, every closed
+/// connection to the origin on a `tunneledHosts` entry.
+struct TunnelTrafficRender: Encodable {
+    var bytesFromClient: Int
+    var bytesToClient: Int
+    var connections: Int
+    var openSeconds: Double
+
+    init(_ traffic: TunnelTraffic) {
+        bytesFromClient = traffic.bytesFromClient
+        bytesToClient = traffic.bytesToClient
+        connections = traffic.connections
+        // Milliseconds are noise on a figure whose question is "seconds or hours".
+        openSeconds = (traffic.openSeconds * 1000).rounded() / 1000
     }
 }
 
@@ -543,6 +567,9 @@ struct PendingBreakpointRender: Encodable {
     var heldAt: Date
     var request: PendingRequestRender
     var response: PendingResponseRender?
+    /// As `FlowSummaryRender.redacted`. `resume` edits the live exchange, so a
+    /// header left out of `set_headers` keeps its real value, not `<redacted>`.
+    var redacted: Bool?
 }
 
 struct PendingRequestRender: Encodable {
@@ -641,6 +668,25 @@ struct ProxyStatusRender: Encodable {
     /// invisible on every surface and this count is the only trace. `list_rules` says
     /// which rules and what each cost.
     var droppedByRules: Int?
+    /// Whether flow content returned by the read tools is redacted — always present,
+    /// both values mean something. Only the human can change it (console).
+    var redactsAgentReads: Bool
+    /// What that redaction covers, when it is on.
+    var agentRedaction: AgentRedactionRender?
+}
+
+/// The rules behind `redactsAgentReads`, spelled out so an agent knows which
+/// `<redacted>` values to expect and that bodies are not among them.
+struct AgentRedactionRender: Encodable {
+    var headers: [String]
+    var queryKeys: [String]
+    var bodiesRedacted: Bool
+
+    init(_ redaction: FlowRedaction) {
+        headers = redaction.headerNames
+        queryKeys = redaction.queryKeys
+        bodiesRedacted = redaction.dropBodies
+    }
 }
 
 /// One fail-open the engine took: what it is, why, and whether it is a one-off or
@@ -779,6 +825,8 @@ struct TunneledHostRender: Encodable {
     /// codec's own words separate "your client sent too much" from "Loom broke").
     var detail: String?
     var clientTLS: ClientTLSObservationRender?
+    /// Summed over the relayed connections that have closed; absent until one has.
+    var traffic: TunnelTrafficRender?
 
     init(_ entry: TunneledHost) {
         host = entry.host
@@ -790,6 +838,7 @@ struct TunneledHostRender: Encodable {
         interceptable = entry.interceptable
         detail = entry.detail
         clientTLS = entry.clientTLS.map(ClientTLSObservationRender.init)
+        traffic = entry.traffic.map(TunnelTrafficRender.init)
     }
 }
 
@@ -1416,6 +1465,9 @@ struct FlowDiffRender: Encodable {
     var errorCode: ValueChangeRender<FlowError.Code>?
     var errorDetail: ValueChangeRender<String>?
     var identical: Bool
+    /// As `FlowSummaryRender.redacted`. The comparison ran over the originals, so a
+    /// header listed as changed with `<redacted>` on both sides really did change.
+    var redacted: Bool?
     /// Present (and only ever `true`) when a body compared here was a capped
     /// prefix. `identical: true` alongside it means "identical as far as Loom
     /// recorded" — a weaker claim, and one an agent must not round up.

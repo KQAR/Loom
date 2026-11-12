@@ -30,7 +30,9 @@ extension MCPToolExecutor {
         guard count > 1 else {
             do {
                 let flow = try await engine.replay(id: id, overrides: overrides)
-                var payload = Self.flowDetail(flow)
+                // The replay sent the stored original; only what comes back is
+                // redacted — and this result also lands in the audit trail.
+                var payload = Self.flowDetail(flow, redaction: await agentRedaction())
                 Self.attach(warnings: warnings, to: &payload)
                 return prettyJSON(payload)
             } catch let error as ProxyControlError {

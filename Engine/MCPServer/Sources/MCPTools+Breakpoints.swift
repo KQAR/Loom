@@ -39,9 +39,10 @@ extension MCPToolExecutor {
     func handleListPending(_ arguments: MCPArguments) async throws -> String {
         let armed = await engine.armedBreakpoints()
         let pending = await engine.pendingBreakpoints()
+        let redaction = await agentRedaction()
         return prettyJSON([
             "armed": armed.map(Self.breakpoint),
-            "pending": pending.map(Self.pendingBreakpoint),
+            "pending": pending.map { Self.pendingBreakpoint($0, redaction: redaction) },
         ])
     }
 
@@ -86,8 +87,9 @@ extension MCPToolExecutor {
         ))
     }
 
-    static func pendingBreakpoint(_ pending: PendingBreakpoint) -> [String: Any] {
-        MCPRender.dict(PendingBreakpointRender(
+    static func pendingBreakpoint(_ original: PendingBreakpoint, redaction: FlowRedaction? = nil) -> [String: Any] {
+        let pending = redaction?.apply(to: original) ?? original
+        return MCPRender.dict(PendingBreakpointRender(
             id: pending.id.uuidString,
             breakpointId: pending.breakpointID.uuidString,
             phase: pending.phase.rawValue,
@@ -106,7 +108,8 @@ extension MCPToolExecutor {
                     body: bodyField(pending.responseBody),
                     status: pending.statusCode
                 )
-                : nil
+                : nil,
+            redacted: redaction != nil ? true : nil
         ))
     }
 }

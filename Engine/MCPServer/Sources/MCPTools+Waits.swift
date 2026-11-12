@@ -107,7 +107,7 @@ extension MCPToolExecutor {
         if !existing.isEmpty {
             // The store hands back newest-first; a wait reads better oldest-first
             // (the order the exchanges actually happened in).
-            return waitResult(
+            return await waitResult(
                 matched: Array(existing.reversed()), timedOut: false,
                 startedWaitingAt: startedWaitingAt, windowFrom: windowFrom
             )
@@ -123,7 +123,7 @@ extension MCPToolExecutor {
             from: stream, id: \.id, seconds: seconds, limit: limit,
             accepts: { until.isSatisfied(by: $0) && metadata.matches($0) && bodies.matches($0) }
         )
-        return waitResult(
+        return await waitResult(
             matched: matched, timedOut: matched.count < limit,
             startedWaitingAt: startedWaitingAt, windowFrom: windowFrom
         )
@@ -131,9 +131,12 @@ extension MCPToolExecutor {
 
     func waitResult(
         matched: [Flow], timedOut: Bool, startedWaitingAt: Date, windowFrom: Date
-    ) -> String {
-        prettyJSON([
-            "matched": matched.map(Self.flowSummary),
+    ) async -> String {
+        // Asked when the wait ends, not when it began: a human who switched it on
+        // mid-wait meant it for what is about to be returned.
+        let redaction = await agentRedaction()
+        return prettyJSON([
+            "matched": matched.map { Self.flowSummary($0, redaction: redaction) },
             "timedOut": timedOut,
             "waitedMS": Int(Date().timeIntervalSince(startedWaitingAt) * 1000),
             // The retry cursor: the start of the window this call considered. Passing
@@ -160,20 +163,21 @@ extension MCPToolExecutor {
         let stream = await engine.pendingBreakpointStream()
         let alreadyHeld = await engine.pendingBreakpoints().filter(accepts)
         if !alreadyHeld.isEmpty {
-            return pendingWaitResult(alreadyHeld, timedOut: false, startedWaitingAt: startedWaitingAt)
+            return await pendingWaitResult(alreadyHeld, timedOut: false, startedWaitingAt: startedWaitingAt)
         }
 
         let held = await Self.waitCollecting(
             from: stream, id: \.id, seconds: seconds, limit: limit, accepts: accepts
         )
-        return pendingWaitResult(held, timedOut: held.count < limit, startedWaitingAt: startedWaitingAt)
+        return await pendingWaitResult(held, timedOut: held.count < limit, startedWaitingAt: startedWaitingAt)
     }
 
     func pendingWaitResult(
         _ pending: [PendingBreakpoint], timedOut: Bool, startedWaitingAt: Date
-    ) -> String {
-        prettyJSON([
-            "pending": pending.map(Self.pendingBreakpoint),
+    ) async -> String {
+        let redaction = await agentRedaction()
+        return prettyJSON([
+            "pending": pending.map { Self.pendingBreakpoint($0, redaction: redaction) },
             "timedOut": timedOut,
             "waitedMS": Int(Date().timeIntervalSince(startedWaitingAt) * 1000),
         ])

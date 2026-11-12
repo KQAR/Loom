@@ -179,6 +179,13 @@ extension MCPToolExecutor {
             through Loom (`systemProxy`). Check this first when a capture comes back empty — \
             "nothing happened" and "nothing was pointed at the proxy" look identical otherwise.
 
+            `redactsAgentReads` says whether the flow content every read tool returns has its \
+            credentials replaced with `<redacted>` (`agentRedaction` lists the headers and query \
+            keys; bodies are not redacted). On by default. A `<redacted>` value is Loom's, never \
+            what was on the wire, and every redacted result carries `redacted: true`. Only the \
+            human can turn it off (Loom's console) — there is no tool for it, by design. \
+            `replay_flow` and `resume` are unaffected: they act on the captured original.
+
             Two counts, and reading the wrong one is how a busy capture looks stalled. \
             `capturedCount` is the in-memory ring, which is small and **plateaus at its cap** — \
             once it is full it reports the same number forever, however much traffic arrives. \
@@ -333,7 +340,8 @@ extension MCPToolExecutor {
             name: "get_recent_flows",
             description: """
             List captured records, newest first, with `recordType` (`exchange` or `tunnel`), \
-            method, url, status, timing and startedAt. A tunnel record is **not an exchange**: \
+            method, url, status, timing and startedAt. `redacted: true` on a record means its \
+            credential query values read `<redacted>` (`get_proxy_status.redactsAgentReads`). A tunnel record is **not an exchange**: \
             it is one HTTPS connection Loom did not decrypt. Its typed `tunnel.reason` says why; \
             `errorCode` names the TLS outcome: `clientCertificateUnknown` is an \
             inconclusive `certificate_unknown` alert (not proof the leaf is invalid — apps \
@@ -443,7 +451,9 @@ extension MCPToolExecutor {
         MCPTool(
             name: "get_flow_detail",
             description: """
-                Get full detail for one record by id. HTTP exchanges include headers and bodies; \
+                Get full detail for one record by id. HTTP exchanges include headers and bodies \
+                (credential headers and query values read `<redacted>` when the record carries \
+                `redacted: true` — see `get_proxy_status.redactsAgentReads`); \
                 connection diagnostics have `recordType: "tunnel"` plus typed `tunnel` evidence. \
                 Bodies are bounded: a body longer than `max_bytes` comes back as {truncated, preview, \
                 bytes, offset, nextOffset} — page through it by passing `body_offset: nextOffset`. A \
@@ -587,6 +597,11 @@ extension MCPToolExecutor {
             (linked by `replayedFrom`) and obeys armed rules and breakpoints, exactly like live \
             traffic. This is a write action.
 
+            It re-sends the **captured original**, never what a read tool showed you: a header \
+            that reads `<redacted>` (agent-read redaction, `get_proxy_status.redactsAgentReads`) \
+            goes out with its real value. So don't copy a `<redacted>` value into `set_headers` — \
+            that would send the literal string. The returned flow is redacted like any read.
+
             With `count: 1` (the default) the reply is the new flow. With `count > 1` it is a \
             batch summary: `{requested, succeeded, failed, statusClasses, ttfbMS, durationMS, \
             replays: [{id, status, ttfbMS}], errors}` — failures are reported, not thrown, \
@@ -705,7 +720,7 @@ extension MCPToolExecutor {
         ),
         MCPTool(
             name: "list_pending",
-            description: "List currently armed breakpoints and every exchange held right now awaiting a resume decision. Each pending item carries its id (pass to resume), phase (request/response), full request, and — for a response pause — the response the client would receive. Returns immediately with whatever is held; to wait for the next hold instead of polling, use wait_for_pending.",
+            description: "List currently armed breakpoints and every exchange held right now awaiting a resume decision. Each pending item carries its id (pass to resume), phase (request/response), full request, and — for a response pause — the response the client would receive. Returns immediately with whatever is held; to wait for the next hold instead of polling, use wait_for_pending. With agent-read redaction on (`redacted: true`), credential headers read `<redacted>`; `resume` still forwards the real values for anything you don't override.",
             inputSchema: .object(),
             handler: { ex, args in try await ex.handleListPending(args) }
         ),
@@ -805,6 +820,12 @@ extension MCPToolExecutor {
             HTTP/2 codec could not read the connection and closed it; `detail` carries the \
             codec's own error. Read this before concluding \
             a client made no requests. \
+            `traffic` (`bytesFromClient`, `bytesToClient`, `connections`, `openSeconds` = the \
+            longest) sums the relayed connections that have CLOSED, so it separates "connected \
+            and sent nothing" from "moved 3 MB" — absent means none has closed yet, not zero \
+            bytes; a long-lived tunnel (SSH, a pooled HTTPS socket) reports only when it ends. \
+            The bytes are what Loom relayed, i.e. ciphertext for an unread TLS tunnel. The same \
+            per-connection figure is on each CONNECT row's `tunnel.traffic`. \
             `tunneledHostsEvicted` counts visible host entries dropped past the cap; \
             `clientTLSSuccessesEvicted` counts hidden pre-failure successes that were \
             bounded away, so a later host aggregate may under-count mixed evidence.
