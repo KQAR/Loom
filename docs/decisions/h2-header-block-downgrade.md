@@ -5,7 +5,7 @@
 > the shape. The invariant it produced lives in [`AGENTS.md` § Known Issues](../../AGENTS.md#known-issues), which links here —
 > read that first; come here when you are about to re-open the question.
 
-## The upstream defect (nio-http2 1.45.0, unfixed)
+## The upstream defect (nio-http2 1.45.0, unfixed — source unchanged in 1.46.0)
 
 SwiftNIO builds its HPACK decoder as `HPACKDecoder(allocator:)` with the library's 16 KB
 `maxHeaderListSize`, **whatever `initialSettings` advertises**, and raises it only in

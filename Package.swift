@@ -13,8 +13,9 @@ import PackageDescription
 // Engine/PrivilegedHelper stays out of the package on purpose.
 //
 // Dependency version ranges are chosen to include the pins a consumer like
-// Reticle already resolves (swift-nio 2.101.x, nio-ssl 2.37.x, certificates
-// 1.19.x, crypto 4.5.x, asn1 1.7.x), so both projects share one solution.
+// Reticle already resolves (it pins `exact:` swift-nio 2.101.2, nio-ssl 2.37.1,
+// certificates 1.19.2, crypto 4.5.0, asn1 1.7.1), so both projects share one
+// solution. Raise a lower bound only past what Reticle pins, or it can't resolve.
 let package = Package(
     name: "Loom",
     platforms: [
@@ -36,9 +37,10 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.26.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.4.0"),
         // ProxyCore imports Crypto + SwiftASN1 directly (CertificateAuthority).
-        // Crypto range spans 3.x–4.x so it can co-resolve with a consumer pinned
-        // to 4.5.x while still building standalone.
-        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0" ..< "5.0.0"),
+        // Crypto range spans 3.x–5.x: a consumer pinned to 4.5.x still co-resolves,
+        // and standalone it lands on the same 5.x the app graph gets through
+        // swift-certificates (which allows up to 6.0.0).
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0" ..< "6.0.0"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.0.0"),
     ],
     targets: [
