@@ -32,9 +32,9 @@ let project = Project(
                 // a `**` glob would copy its files in as loose resources and there
                 // would be no book. `folderReference` copies the directory as-is.
                 .folderReference(path: "App/Help/Loom.help"),
-                // The agent skill ships inside the app and is *linked* into the agent's
-                // skills directory by `install-agent.sh`, so an app update is a skill
-                // update — there is no second copy to fall behind.
+                // The agent skill ships inside the app and is served by `get_skill_guide`;
+                // `install-agent.sh` puts only a stub pointing at that tool into the
+                // agent's skills directory, so an app update is a skill update.
                 .folderReference(path: "skills"),
                 "App/Agent/install-agent.sh",
             ],

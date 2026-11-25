@@ -24,10 +24,12 @@ enum AgentSetupPrompt {
           sh \(script) claude   # Claude Code
           sh \(script) cursor   # Cursor
 
-        The script links Loom's bundled skill into your skills directory (so it updates with \
-        the app), registers the `loom` MCP server, and removes the old `loom@loom` plugin if \
-        it is installed. Show me its output, then tell me to restart you so the skill and the \
-        tools load.
+        The script registers the `loom` MCP server, writes a small `loom` skill stub into \
+        your skills directory (its guide is served by the running app over MCP, so it updates \
+        with Loom), and removes the old `loom@loom` plugin if it is installed. Show me its \
+        output, then tell me to restart you so the skill and the tools load. Later, \
+        `sh \(script) skill status` shows whether the stub is installed and current, and \
+        `skill remove` removes it.
         """
     }
 
@@ -39,6 +41,28 @@ enum AgentSetupPrompt {
     /// POSIX single-quoting: a bundle path may hold spaces, and in principle a quote.
     static func shellQuoted(_ path: String) -> String {
         "'" + path.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+    }
+}
+
+/// Rewrites the skill stubs an older Loom wrote (`install-agent.sh skill setup
+/// --installed-only`), run at launch so a Sparkle update — which relaunches — carries
+/// its stub along. Installs nothing new: setup stays the human's or agent's decision.
+public enum AgentSkillStubs {
+    public static func refreshInstalled() {
+        // Only this bundle's own script; the `/Applications` fallback is for a prompt's
+        // text, not for running another copy's installer.
+        guard let script = Bundle.main.path(forResource: "install-agent", ofType: "sh") else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [script, "skill", "setup", "--installed-only"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        process.terminationHandler = { _ in
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            if !text.isEmpty { NSLog("Loom skill stubs: %@", text) }
+        }
+        do { try process.run() } catch { NSLog("Loom skill stubs: could not run %@: %@", script, "\(error)") }
     }
 }
 

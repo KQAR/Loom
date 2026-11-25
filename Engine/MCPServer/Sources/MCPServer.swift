@@ -116,6 +116,8 @@ public final class MCPServer: @unchecked Sendable {
     private let updateStatus: (@Sendable () async -> AppUpdateStatus)?
     /// Optional, same reasoning: selecting a row is the app's window, not the engine.
     private let reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)?
+    /// Optional, same reasoning: the skill directory is in the app's bundle.
+    private let skillGuide: URL?
     private let group: EventLoopGroup
     private var channel: Channel?
     private let token: String
@@ -138,10 +140,12 @@ public final class MCPServer: @unchecked Sendable {
         token: String = UUID().uuidString,
         routing: SystemRoutingControlling? = nil,
         updateStatus: (@Sendable () async -> AppUpdateStatus)? = nil,
-        reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)? = nil
+        reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)? = nil,
+        skillGuide: URL? = nil
     ) {
         self.engine = engine
         self.reveal = reveal
+        self.skillGuide = skillGuide
         self.routing = routing
         self.updateStatus = updateStatus
         self.appVersion = appVersion
@@ -159,7 +163,7 @@ public final class MCPServer: @unchecked Sendable {
         let executor = MCPToolExecutor(
             engine: engine, appVersion: appVersion,
             protocolVersion: Self.protocolVersion, routing: routing, eraLog: eraLog,
-            updateStatus: updateStatus, reveal: reveal
+            updateStatus: updateStatus, reveal: reveal, skillGuide: skillGuide
         )
         let dispatcher = MCPDispatcher(executor: executor, eraLog: eraLog)
         let token = self.token

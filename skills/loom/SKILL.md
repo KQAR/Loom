@@ -23,9 +23,8 @@ is **you, the agent, over MCP** — and the MCP surface exposes **write actions*
 loop with no GUI; the human supervises from the menu-bar panel.
 
 The tools are hosted by the **running Loom app**, which serves MCP over HTTP on
-`127.0.0.1:9092`. This skill ships inside the app bundle and is linked into
-your skills directory, so it always matches the running app. All state and logic
-live in the app.
+`127.0.0.1:9092`. This guide is served by that app (`get_skill_guide`), so it
+always matches the tools you are talking to.
 
 **Each tool's own description is authoritative for its arguments and edge
 cases** (it arrives with `tools/list`). This file is the map: what to reach for,
@@ -89,6 +88,7 @@ each one is *for*.
 
 | Tool | For |
 | --- | --- |
+| `get_skill_guide` | this guide; `topic` reads a reference below |
 | `get_version` | app + protocol version — cheap readiness ping; `update.status == "available"` means tell the user to click **Update** in the menu-bar panel footer |
 | `get_proxy_status` | running state, ports, routing (`systemProxy`), refusals, `droppedByRules`, whether `set_system_proxy` will prompt (`privilegedHelper`) — plus `listenerError` / `socksError` / `degradations` when something is off. **First call when a capture is empty** |
 | `list_devices` | who sent traffic (this Mac + LAN devices), with counts |
