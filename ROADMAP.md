@@ -1155,6 +1155,18 @@ centred on the content pane in one glass capsule.
 (the library's crypto range widens to `<6.0.0`; no lower bound moved). nio-http2 1.46 does
 not fix the h2 upload stall (#99).
 
+### The agent skill becomes a stub that cannot dangle (done, 0.0.40)
+
+**Skill stubs + `get_skill_guide` (#411).** `install-agent.sh` used to symlink the agent's
+skills directory into Loom.app's bundled skill; moving or deleting the app, or running it
+from its DMG, left that link dangling and the agent silently without a skill, and
+`~/.agents/skills` (Codex, OpenCode, Pi, Cursor) was never covered. The running app now
+serves the guide over MCP, and the skills directories hold a pathless stub marked
+`loom-stub`; `install-agent.sh skill setup|status|remove` manage it, migrate the old links,
+and leave unmarked files alone. The app refreshes an outdated stub at launch, so a Sparkle
+update carries its stub along. Serving the guide over MCP rather than from a bundle path is
+what keeps the stub pathless, and the guide always matches the build serving port 9092.
+
 ## Structured Channel — decided
 
 MCP over loopback HTTP is the transport, effective M1:
