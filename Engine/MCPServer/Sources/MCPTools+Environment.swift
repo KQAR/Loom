@@ -33,6 +33,30 @@ extension MCPToolExecutor {
         return prettyJSON(payload)
     }
 
+    func handleGetSkillGuide(_ arguments: MCPArguments) async throws -> String {
+        guard let skillGuide else {
+            throw MCPToolFailure("No guide is bundled here (Loom's engine is running without the app).")
+        }
+        let references = skillGuide.appendingPathComponent("references")
+        // Topics are the files that exist, so a `topic` is a lookup and never a path.
+        let topics = ((try? FileManager.default.contentsOfDirectory(atPath: references.path)) ?? [])
+            .filter { $0.hasSuffix(".md") }.map { String($0.dropLast(3)) }.sorted()
+        guard let topic = try arguments.string("topic") else {
+            let guide = try String(contentsOf: skillGuide.appendingPathComponent("SKILL.md"), encoding: .utf8)
+            // The frontmatter is for a skills directory; the stub already carried it.
+            let body = guide.hasPrefix("---\n")
+                ? guide.components(separatedBy: "\n---\n").dropFirst().joined(separator: "\n---\n")
+                : guide
+            return String(body.drop(while: \.isNewline))
+                + "\n---\nTopics (the references/*.md above): \(topics.joined(separator: ", ")) "
+                + "— read one with get_skill_guide(topic:).\n"
+        }
+        guard topics.contains(topic) else {
+            throw MCPToolFailure("unknown topic \"\(topic)\"; topics: \(topics.joined(separator: ", "))")
+        }
+        return try String(contentsOf: references.appendingPathComponent(topic + ".md"), encoding: .utf8)
+    }
+
     func handleGetProxyStatus(_ arguments: MCPArguments) async throws -> String {
         let status = await engine.status()
         var render = ProxyStatusRender(

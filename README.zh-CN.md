@@ -35,9 +35,12 @@ sh /Applications/Loom.app/Contents/Resources/install-agent.sh          # Claude 
 sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 ```
 
-它把 App 内置的 `loom` skill 符号链接到 Agent 的 skills 目录,并注册
-`http://127.0.0.1:9092/mcp` 这个 MCP 服务。skill 是指向 App 内部的链接,所以**更新 Loom
-就等于更新 skill**,无需重新安装(装过旧的 `loom@loom` 插件也会顺手卸掉)。然后启动 Loom 并重启 Agent。
+它注册 `http://127.0.0.1:9092/mcp` 这个 MCP 服务,并写入一个很小的 `loom` skill stub
+(Claude Code 写 `~/.claude/skills`,Codex / OpenCode / Pi / Cursor 共用 `~/.agents/skills`)。
+skill 正文由运行中的 App 通过 MCP 提供,所以**更新 Loom 就等于更新 skill**,移动 App 也不会让它失效
+(装过旧的 `loom@loom` 插件会顺手卸掉,旧的符号链接也会迁移)。然后启动 Loom 并重启 Agent。
+`install-agent.sh skill status` 查看各目录的 stub 是否已装、是否最新;`skill setup` / `skill remove`
+只装或只删 stub。
 
 ## 通过 MCP 使用
 

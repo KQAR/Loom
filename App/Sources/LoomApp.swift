@@ -30,8 +30,14 @@ struct LoomApp: App {
                 case let .available(version): .available(version: version)
                 }
             },
-            reveal: { id in await FlowRevealer.reveal(id, in: store) }
+            reveal: { id in await FlowRevealer.reveal(id, in: store) },
+            // `get_skill_guide` serves this; what agents' skills directories hold is a
+            // stub pointing at the tool (`install-agent.sh`).
+            skillGuide: Bundle.main.resourceURL?.appendingPathComponent("skills/loom")
         )
+        // A stub written by an older Loom is rewritten by this one — how a Sparkle
+        // update (which relaunches) carries its stub along.
+        AgentSkillStubs.refreshInstalled()
         // Claim the MCP port before *either* listener starts — synchronously, because
         // this is the race it exists to prevent: a reverse-proxy endpoint persisted on
         // 9092 gets bound during the engine's start, and if it wins, Loom comes up with

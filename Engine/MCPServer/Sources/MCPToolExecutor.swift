@@ -32,6 +32,11 @@ struct MCPToolExecutor {
     /// which owns the window; nil for an embedder or a test, where the tool says so.
     var reveal: (@Sendable (Flow.ID) async -> FlowRevealOutcome)?
 
+    /// The bundled agent skill directory (`SKILL.md` + `references/`), which
+    /// `get_skill_guide` serves. Injected by the app, whose bundle holds it; nil for an
+    /// embedder or a test, where the tool says so.
+    var skillGuide: URL?
+
     /// Name → tool, indexed from the one table in `MCPToolSchemas`. Dispatch is a
     /// lookup, not a growing switch — and no longer a second list to keep in step
     /// with the advertised one, because both come from the same values.

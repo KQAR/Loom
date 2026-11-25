@@ -172,6 +172,21 @@ extension MCPToolExecutor {
             handler: { ex, args in try await ex.handleGetVersion(args) }
         ),
         MCPTool(
+            name: "get_skill_guide",
+            description: """
+            Loom's agent guide: which tool to reach for, the capture → modify → replay → diff \
+            loop, and what an empty capture actually means. Read it before driving Loom if your \
+            skills directory holds only Loom's stub. Served by this running app, so it matches \
+            the tools it serves. Without `topic` it returns the guide; its \
+            `references/<name>.md` links are topics — pass `topic: "<name>"` (e.g. `workflows`, \
+            `filing-a-bug`) to read one.
+            """,
+            inputSchema: .object(
+                ["topic": .string("A reference the guide links to, by file name without `.md`.")]
+            ),
+            handler: { ex, args in try await ex.handleGetSkillGuide(args) }
+        ),
+        MCPTool(
             name: "get_proxy_status",
             description: """
             Get the current proxy status: running state, listen address, captured flow count, \

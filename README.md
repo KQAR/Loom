@@ -38,9 +38,10 @@ sh /Applications/Loom.app/Contents/Resources/install-agent.sh          # Claude 
 sh /Applications/Loom.app/Contents/Resources/install-agent.sh cursor   # Cursor
 ```
 
-It links the bundled skill into the agent and registers the MCP server at
-`http://127.0.0.1:9092/mcp`, so **updating Loom updates the skill**. (It also removes
-the old `loom@loom` plugin.) Then launch Loom and restart the agent.
+It registers the MCP server at `http://127.0.0.1:9092/mcp` and writes a `loom` skill
+stub (`~/.claude/skills`; `~/.agents/skills` for Codex, OpenCode, Pi, Cursor) whose
+guide the running app serves, so **updating Loom updates the skill**. Then launch Loom
+and restart the agent; `install-agent.sh skill status|remove` manages the stubs.
 
 ## Using it over MCP
 
